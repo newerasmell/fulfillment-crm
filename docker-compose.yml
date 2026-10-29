@@ -1,0 +1,16 @@
+# Local dev/test database: Postgres 16 + pgvector.  `docker compose up -d db`
+# `crm` is the superuser (used only by the test helper to create throwaway databases);
+# the app connects as the non-superuser `crm_app`, so Postgres row-level security applies.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - crm-db:/var/lib/postgresql/data
+      - ./docker/db-init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+volumes:
+  crm-db:

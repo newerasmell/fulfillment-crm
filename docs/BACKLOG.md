@@ -6,10 +6,10 @@ into `P<phase>-<nn>a/b/c` lines directly below it, but never deletes or reorders
 Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, auditor PASS, PROGRESS.md updated.
 
 ## Phase 0 — Foundation
-- [ ] P0-01 Monorepo scaffold: pnpm, Next.js (App Router, TS strict) in `src/app`, worker entry `src/worker`, ESLint, Prettier, Vitest, Playwright, pino; scripts from CLAUDE.md (`dev`, `worker`, `db:migrate`, `test`, `typecheck`, `lint`, `check:live`, `docs:refresh`). Acceptance: all scripts run green on an empty app.
-- [ ] P0-02 docker-compose for local dev/test Postgres 16 + pgvector; `.env.example` (no real secrets); test DB reset helper. Acceptance: `pnpm test` creates and migrates a throwaway DB.
-- [ ] P0-03 Prisma schema for the full domain model of SPEC §3 (all tables, enums incl. liveMode, CRM statuses). Acceptance: migration applies; ERD comment in schema.
-- [ ] P0-04 Repository layer with mandatory accountId scoping + Postgres RLS policies. Acceptance: isolation test proves account A cannot read/write account B data through any repository.
+- [x] P0-01 Monorepo scaffold: pnpm, Next.js (App Router, TS strict) in `src/app`, worker entry `src/worker`, ESLint, Prettier, Vitest, Playwright, pino; scripts from CLAUDE.md (`dev`, `worker`, `db:migrate`, `test`, `typecheck`, `lint`, `check:live`, `docs:refresh`). Acceptance: all scripts run green on an empty app.
+- [x] P0-02 docker-compose for local dev/test Postgres 16 + pgvector; `.env.example` (no real secrets); test DB reset helper. Acceptance: `pnpm test` creates and migrates a throwaway DB.
+- [x] P0-03 Prisma schema for the full domain model of SPEC §3 (all tables, enums incl. liveMode, CRM statuses). Acceptance: migration applies; ERD comment in schema.
+- [x] P0-04 Repository layer with mandatory accountId scoping + Postgres RLS policies. Acceptance: isolation test proves account A cannot read/write account B data through any repository.
 - [ ] P0-05 Auth.js email+password, TOTP 2FA, sessions, rate-limited login. Acceptance: e2e login with 2FA.
 - [ ] P0-06 Accounts, memberships, roles (OWNER/ADMIN/OPERATOR/WAREHOUSE/VIEWER), account switcher, RBAC guard helpers. Acceptance: role matrix tests.
 - [ ] P0-07 Credentials vault (AES-256-GCM, key from env), write-only UI fields, masking in logs. Acceptance: secrets never appear in API responses or logs (test).
