@@ -10,19 +10,29 @@ const input =
 export function EnrolForm({
   token,
   secret,
+  sealed,
   otpauthUri,
   defaultName,
 }: {
   token: string;
   secret: string;
+  sealed: string;
   otpauthUri: string;
   defaultName: string;
 }) {
   const t = useTranslations("invite");
   const [state, action, pending] = useActionState(enrolAction.bind(null, token), undefined);
-  const known = ["invalid_code", "password_mismatch", "invalid", "invalid_invitation"];
+  const known = [
+    "invalid_code",
+    "password_mismatch",
+    "invalid",
+    "invalid_invitation",
+    "use_login",
+    "form_expired",
+  ];
   return (
     <form action={action} className="flex flex-col gap-4">
+      <input type="hidden" name="sealedSecret" value={sealed} />
       <section className="flex flex-col gap-2 rounded-xl border border-line bg-bg p-4">
         <span className="font-semibold">{t("step2fa")}</span>
         <a href={otpauthUri} className="font-semibold">

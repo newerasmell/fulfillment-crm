@@ -5,6 +5,8 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { systemDb } from "@/server/db/client";
 import {
   confirmCanary,
+  countHeldRequests,
+  releaseHeldRequests,
   enqueueOutbound,
   killSwitch,
   processOutbound,
@@ -187,19 +189,26 @@ describe("outbox sender + liveMode gate", () => {
     expect(rearmed.request.status).toBe("PENDING");
   });
 
-  it("kill switch: all connections to READ_ONLY, queue paused, nothing dropped", async () => {
+  it("kill switch: connections to READ_ONLY, queue paused, waiting requests HELD (nothing dropped)", async () => {
     const { enqueue, owner, connection } = await setup("LIVE");
     const { transport, resolve } = fakeTransport();
     const { request } = await enqueue("ks");
     await expect(killSwitch({ ...owner, role: "ADMIN" })).rejects.toBeInstanceOf(ForbiddenError);
-    await killSwitch(owner);
-    expect(await processOutbound(request.id, resolve)).toBe("PAUSED");
+    expect(await killSwitch(owner)).toEqual({ held: 1 });
+    expect((await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: request.id } })).status).toBe(
+      "HELD",
+    );
+    expect(await processOutbound(request.id, resolve)).toBe("skipped");
     expect(
       (await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: connection.id } })).liveMode,
     ).toBe("READ_ONLY");
-    await setConnectionMode(owner, connection.id, "LIVE");
+    // resume + raising the mode alone does NOT send held requests: only an explicit release does
     await resumeOutbox(owner);
-    expect((await sweepOutbox()).map((d) => d.id)).toContain(request.id);
+    await setConnectionMode(owner, connection.id, "LIVE");
+    expect((await sweepOutbox()).map((d) => d.id)).not.toContain(request.id);
+    expect(await countHeldRequests(owner.accountId)).toBe(1);
+    await expect(releaseHeldRequests({ ...owner, role: "ADMIN" })).rejects.toBeInstanceOf(ForbiddenError);
+    expect(await releaseHeldRequests(owner)).toBe(1);
     expect(await processOutbound(request.id, resolve)).toBe("SENT");
     expect(transport.send).toHaveBeenCalledTimes(1);
   });
@@ -260,24 +269,55 @@ describe("outbox sender + liveMode gate", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("kill switch → resume without raising the mode → requests stay held, then go out once the mode is raised", async () => {
-    const { enqueue, owner, connection } = await setup("LIVE");
+  it("held requests released while still READ_ONLY are refused; CANARY confirmations do not survive a kill switch", async () => {
+    const { enqueue, owner, connection } = await setup("CANARY");
     const { transport, resolve } = fakeTransport();
     const { request } = await enqueue("hold");
+    await processOutbound(request.id, resolve);
+    await confirmCanary(owner, request.id);
     await killSwitch(owner);
-    await resumeOutbox(owner); // natural order: un-pause first
-    expect(await processOutbound(request.id, resolve)).toBe("PAUSED"); // held, not REFUSED
-    expect(
-      (await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: request.id } })).lastError,
-    ).toBe("kill_switch_hold");
-    expect((await sweepOutbox()).map((d) => d.id)).toContain(request.id);
-    await setConnectionMode(owner, connection.id, "LIVE");
-    expect(await processOutbound(request.id, resolve)).toBe("SENT");
-    expect(transport.send).toHaveBeenCalledTimes(1);
-    // a request queued AFTER the kill switch while READ_ONLY is refused as usual
-    await setConnectionMode(owner, connection.id, "READ_ONLY");
-    const later = (await enqueue("after-ks")).request;
-    expect(await processOutbound(later.id, resolve)).toBe("REFUSED");
+    const held = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: request.id } });
+    expect(held).toMatchObject({ status: "HELD", confirmedAt: null });
+    await resumeOutbox(owner);
+    await setConnectionMode(owner, connection.id, "CANARY");
+    await releaseHeldRequests(owner);
+    expect(await processOutbound(request.id, resolve)).toBe("AWAITING_CONFIRMATION"); // needs a fresh click
+    expect(transport.send).not.toHaveBeenCalled();
+    // a request queued while READ_ONLY just before a kill switch is refused once released in READ_ONLY
+    const { owner: o2, enqueue: enq2 } = await setup("READ_ONLY");
+    const r2 = (await enq2("ro")).request;
+    await killSwitch(o2);
+    await resumeOutbox(o2);
+    await releaseHeldRequests(o2);
+    expect(await processOutbound(r2.id, resolve)).toBe("REFUSED");
+  });
+
+  it("kill switch while the worker is busy: no deadlock, no failure", async () => {
+    const { enqueue, owner } = await setup("LIVE");
+    const { resolve } = fakeTransport();
+    const ids = [];
+    for (let i = 0; i < 10; i++) ids.push((await enqueue(`busy-${i}`)).request.id);
+    const work = ids.map((id) => processOutbound(id, resolve));
+    await Promise.all([killSwitch(owner), killSwitch(owner), resumeOutbox(owner), ...work]);
+    const statuses = await systemDb().outboundRequest.groupBy({
+      by: ["status"],
+      where: { id: { in: ids } },
+      _count: true,
+    });
+    expect(statuses.every((g) => ["SENT", "HELD", "PAUSED"].includes(g.status))).toBe(true);
+  });
+
+  it("parked rows of one account never crowd out new work of another (sweep starvation)", async () => {
+    const { enqueue: blocked } = await setup("LIVE");
+    const { account: other, enqueue: fresh } = await setup("LIVE");
+    process.env.OUTBOX_PAUSED = "1";
+    for (let i = 0; i < 5; i++)
+      await processOutbound((await blocked(`park-${i}`)).request.id, fakeTransport().resolve);
+    delete process.env.OUTBOX_PAUSED;
+    const newOne = (await fresh("new-work")).request;
+    const picked = await sweepOutbox(new Date(), 1000, 2); // re-picks have their own small budget
+    expect(picked.map((d) => d.id)).toContain(newOne.id);
+    expect(picked.find((d) => d.id === newOne.id)?.accountId).toBe(other.id);
   });
 
   it("global pause: held rows are picked up again once the pause is lifted", async () => {
@@ -291,7 +331,7 @@ describe("outbox sender + liveMode gate", () => {
     expect(await processOutbound(request.id, fakeTransport().resolve)).toBe("SENT");
   });
 
-  it("a confirmed request parked by the daily cap is re-picked by the sweep", async () => {
+  it("a confirmed request parked by the daily cap is re-picked by the sweep the next UTC day", async () => {
     const { enqueue, owner } = await setup("CANARY", 1);
     const { resolve } = fakeTransport();
     const a = (await enqueue("sw-a")).request.id;
@@ -302,7 +342,9 @@ describe("outbox sender + liveMode gate", () => {
     }
     expect(await processOutbound(a, resolve)).toBe("SENT");
     expect(await processOutbound(b, resolve)).toBe("AWAITING_CONFIRMATION");
-    expect((await sweepOutbox()).map((d) => d.id)).toContain(b);
+    expect((await sweepOutbox()).map((d) => d.id)).not.toContain(b); // nothing can change today
+    const tomorrow = new Date(Date.now() + 24 * 3600_000);
+    expect((await sweepOutbox(tomorrow)).map((d) => d.id)).toContain(b);
   });
 
   it("concurrent enqueues of the same key are idempotent", async () => {

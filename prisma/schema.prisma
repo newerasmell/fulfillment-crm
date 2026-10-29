@@ -119,7 +119,8 @@ enum ReviewDecision {
 
 enum OutboundStatus {
   PENDING // queued, not yet processed by the sender
-  PAUSED // account kill switch active; stays queued, nothing dropped
+  PAUSED // account or global pause active; re-evaluated once the pause is lifted
+  HELD // parked by the kill switch; released only by an explicit OWNER action (then re-confirmed in CANARY)
   REFUSED // connection in READ_ONLY
   DRY_RUN_RECORDED // DRY_RUN: payload recorded, nothing sent
   AWAITING_CONFIRMATION // CANARY: needs an operator click (or daily cap reached)
@@ -172,7 +173,7 @@ model Account {
   settings        Json      @default("{}")
   /// Kill switch: pauses the outbox for this account (INTEGRATION_NOTES §6).
   outboxPaused    Boolean   @default(false)
-  /// Last kill switch. Requests queued before it are held (not refused) while their connection is READ_ONLY.
+  /// Last kill switch (informational; held requests carry status HELD).
   killSwitchAt    DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -230,21 +231,19 @@ model Membership {
 /// Single-use, expiring invitation to join an account. Admins never see anyone's password or 2FA key:
 /// a new person sets both when opening the link; an existing user must log in and accept.
 model Invitation {
-  id                   String    @id @default(cuid())
-  accountId            String
-  email                String
-  role                 Role
+  id          String    @id @default(cuid())
+  accountId   String
+  email       String
+  role        Role
   /// Suggested display name for a new user.
-  name                 String?
+  name        String?
   /// sha256 of the token; the token itself is shown once to the inviter.
-  tokenHash            String    @unique
-  /// TOTP secret generated for a new user's enrolment (encrypted), confirmed with a code before use.
-  pendingTotpSecretEnc String?
-  invitedById          String?
-  expiresAt            DateTime
-  acceptedAt           DateTime?
-  revokedAt            DateTime?
-  createdAt            DateTime  @default(now())
+  tokenHash   String    @unique
+  invitedById String?
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 

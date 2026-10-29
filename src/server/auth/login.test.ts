@@ -116,6 +116,33 @@ describe("verifyLogin", () => {
     ).toMatchObject({ ok: true });
   });
 
+  it("one source hammering an account cannot lock its owner out from elsewhere", async () => {
+    const victim = await createUser({
+      email: `lock-${Date.now()}@example.com`,
+      name: "L",
+      password: PASSWORD,
+    });
+    for (let i = 0; i < 40; i++) {
+      await verifyLogin({
+        email: victim.user.email,
+        password: "attacker guess!!",
+        code: "123456",
+        ip: "10.6.6.6",
+        userAgent: null,
+      });
+    }
+    const code = await generate({ secret: victim.totpSecret });
+    expect(
+      await verifyLogin({
+        email: victim.user.email,
+        password: PASSWORD,
+        code,
+        ip: "10.2.2.2",
+        userAgent: null,
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
   it("parallel guesses are all counted (attempt recorded before the check)", async () => {
     const victim = await createUser({
       email: `burst-${Date.now()}@example.com`,

@@ -1,7 +1,7 @@
-// Runs once when the web server starts (Next.js instrumentation hook): refuse to serve traffic with a
-// database role that would silently bypass row-level security.
+// Next.js instrumentation hook, runs once at server start. Node-only work lives in instrumentation-node.ts
+// so the Edge bundle never sees Node APIs.
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "nodejs" || !process.env.DATABASE_URL) return;
-  const { assertSafeDatabaseRole } = await import("@/server/db/client");
-  await assertSafeDatabaseRole();
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    await (await import("./instrumentation-node")).registerNode();
+  }
 }

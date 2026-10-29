@@ -21,24 +21,43 @@ const keysFor = (email: string, ip: string | null) => {
   };
 };
 
-/** Records the attempt as failed (until proven otherwise) and tells whether the caller is over a limit. */
+/**
+ * Records the attempt as failed (until settled) and tells whether the caller is over a limit. Two stages:
+ * the email+IP and IP rows first; only an attempt that passes those also counts towards the email-wide
+ * ceiling — so one source hammering an account cannot lock its owner out everywhere else.
+ */
 export async function beginLoginAttempt(email: string, ip: string | null, now = new Date()) {
   const db = systemDb();
   const k = keysFor(email, ip);
-  const keys = [k.emailIp, k.email, ...(k.ip ? [k.ip] : [])];
-  const rows = await db.loginAttempt.createManyAndReturn({
-    data: keys.map((key) => ({ key, success: false, createdAt: now })),
-    select: { id: true },
-  });
   const since = new Date(now.getTime() - LOGIN_WINDOW_MS);
   const count = (key: string) =>
     db.loginAttempt.count({ where: { key, success: false, createdAt: { gte: since } } });
+  const insert = (keys: string[]) =>
+    db.loginAttempt.createManyAndReturn({
+      data: keys.map((key) => ({ key, success: false, createdAt: now })),
+      select: { id: true },
+    });
+
+  const local = await insert([k.emailIp, ...(k.ip ? [k.ip] : [])]);
+  const ids = local.map((r) => r.id);
   // Counts include this attempt, hence ">".
-  const limited =
+  if (
     (await count(k.emailIp)) > MAX_FAILURES_PER_EMAIL_IP ||
-    (await count(k.email)) > MAX_FAILURES_PER_EMAIL ||
-    (k.ip ? (await count(k.ip)) > MAX_FAILURES_PER_IP : false);
-  return { ids: rows.map((r) => r.id), limited };
+    (k.ip && (await count(k.ip)) > MAX_FAILURES_PER_IP)
+  ) {
+    return { ids, limited: true };
+  }
+  const global = await insert([k.email]);
+  ids.push(...global.map((r) => r.id));
+  return { ids, limited: (await count(k.email)) > MAX_FAILURES_PER_EMAIL };
+}
+
+/** Housekeeping (worker cron): attempts older than a few windows are useless. */
+export async function purgeOldLoginAttempts(now = new Date()) {
+  const res = await systemDb().loginAttempt.deleteMany({
+    where: { createdAt: { lt: new Date(now.getTime() - 4 * LOGIN_WINDOW_MS) } },
+  });
+  return res.count;
 }
 
 /** The attempt does not count as a failure (successful login, or just a missing 2FA code). */

@@ -2,6 +2,7 @@ import NextAuth, { CredentialsSignin } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { z } from "zod";
 import { clientIp } from "@/lib/client-ip";
+import { logger } from "@/lib/logger";
 import { verifyLogin, type LoginFailure } from "@/server/auth/login";
 
 class LoginError extends CredentialsSignin {
@@ -36,6 +37,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const parsed = LoginForm.safeParse(raw);
         if (!parsed.success) throw new LoginError("invalid");
         const ip = clientIp((n) => request.headers.get(n));
+        // Count only (never the addresses): lets the owner check TRUSTED_PROXY_HOPS against Render's layout.
+        logger.info(
+          { xffEntries: (request.headers.get("x-forwarded-for") ?? "").split(",").filter(Boolean).length },
+          "login request",
+        );
         const result = await verifyLogin({
           ...parsed.data,
           ip,

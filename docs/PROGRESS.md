@@ -31,17 +31,25 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   and raw SQL; use `withAccountTransaction` (atomic, accountId injected) / `withSystemTransaction`.
 - 2026-10-29: Auth = Auth.js credentials provider, JWT session (12 h) re-validated against the DB on every request
   (`sessionVersion`, `disabled`). 2FA (TOTP) is mandatory for every user, with replay protection; login rate limit
-  5 failures / 15 min per email+IP, 30 per email, 20 per IP; attempts are recorded before the check. The client IP
+  5 failures / 15 min per email+IP, 20 per IP, 30 per email (only attempts that pass the per-IP limits count
+  towards the email-wide one, so one source cannot lock a user out elsewhere); attempts are recorded before the
+  check and purged hourly. The client IP
   is the right-most X-Forwarded-For entry (`TRUSTED_PROXY_HOPS`, default 1, for Render's proxy).
 - 2026-10-29 (phase audit): people join through single-use invitation links (72 h; OWNER bootstrap 24 h). An admin
   never sees anyone's password or 2FA key: a new person chooses both on the link, an existing user must sign in
-  and accept. The inviter cannot tell whether the email already had a profile.
+  and accept. The invitation page looks the same either way. The 2FA key for a new profile is generated on every
+  page view and only travels sealed inside the form (30 min), so previewing a link reveals nothing reusable.
+  Residual risk until links are emailed by the app: whoever holds a link (the inviter) could open it first and
+  create the profile for that email — invite only people you would also give a password to.
 - 2026-10-29: Outbox: `enqueueOutboundInTx` is idempotent per (connectionId, idempotencyKey); a DRY_RUN/REFUSED/FAILED
   row can be re-armed, a SENT/UNCERTAIN/in-flight one never. CANARY daily cap counts per UTC day. Global emergency
   pause: env `OUTBOX_PAUSED=1`; per-account kill switch = OWNER action (Складове и връзки → Аварийно спиране: all
-  connections → READ_ONLY + pause). Requests queued before a kill switch are held (PAUSED), never refused, until
-  their connection's mode is raised again. Evaluations lock the connection row, so the CANARY cap counts in-flight
-  and UNCERTAIN sends too.
+  connections → READ_ONLY + pause, and every request still waiting is HELD with its CANARY confirmation cleared).
+  Held requests never leave by themselves: an OWNER releases them explicitly and they are evaluated against the
+  current mode (READ_ONLY refuses, CANARY asks again). Lock order is connection row → request row everywhere, so
+  sender, kill switch and mode changes cannot deadlock; the CANARY cap counts in-flight and UNCERTAIN sends.
+  The sweep fetches new work first with its own limit; parked rows are re-picked only when their condition can
+  have changed (next UTC day for the cap, lifted pause).
 - 2026-10-29: Review.embedding is `vector(1024)` (Voyage voyage-3.5 default size); revisit before P8-01 if another
   embedding model is chosen (changing it later needs a migration on a populated table).
 - 2026-10-29: Sidebar per DESIGN.md plus four phase-0 admin entries under Настройки (Фирми и потребители, Ключове за
@@ -75,5 +83,6 @@ See SPEC.md §11.
 - GATE P0-G1 (owner): Render → New → Blueprint → this repo; set CREDENTIALS_KEY in the `crm-secrets` group; after the
   first deploy run `pnpm owner:create --email … --account "…"` in the web service **Shell** (not a One-Off Job),
   open the printed link, choose a password and scan the 2FA key; add the other companies in Настройки → Фирми и
-  потребители.
+  потребители. Then check one "login request" line in the web logs: `xffEntries` should be ≥ 1, and
+  TRUSTED_PROXY_HOPS (render.yaml, default 1) must equal the number of proxies Render puts in front of the app.
 - Then phase 1 (Shopify).

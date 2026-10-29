@@ -13,6 +13,7 @@ export async function enrolAction(token: string, _prev: { error?: string } | und
       password: String(form.get("password") ?? ""),
       passwordRepeat: String(form.get("passwordRepeat") ?? ""),
       code: String(form.get("code") ?? ""),
+      sealedSecret: String(form.get("sealedSecret") ?? ""),
     });
   } catch (err) {
     if (err instanceof DomainError) return { error: err.code };

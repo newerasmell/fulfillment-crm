@@ -4,7 +4,7 @@ const PORT = Number(process.env.E2E_PORT ?? 3100);
 
 export default defineConfig({
   testDir: "tests/e2e",
-  timeout: 60_000,
+  timeout: 120_000, // a cold dev server compiles each route on first use
   fullyParallel: false,
   workers: 1,
   reporter: [["list"]],

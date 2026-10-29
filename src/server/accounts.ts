@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Role } from "@/generated/prisma/client";
 import { recordAudit } from "@/server/audit";
-import { assertCan, ForbiddenError, ROLES } from "@/server/auth/rbac";
+import { assertCan, can, ForbiddenError, ROLES } from "@/server/auth/rbac";
 import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 
 /** Who is acting, in which account. Built from the session by the web layer. */
@@ -73,6 +73,13 @@ async function guardOwnerChange(actor: Actor, membershipId: string, nextRole: Ro
     if (target.role === "OWNER" && nextRole !== "OWNER") {
       const owners = await tx.membership.count({ where: { role: "OWNER" } });
       if (owners <= 1) throw new DomainError("last_owner");
+    }
+    // Someone who can no longer manage members (or leaves) must not keep invitation links alive.
+    if (!nextRole || !can(nextRole, "members.manage")) {
+      await tx.invitation.updateMany({
+        where: { invitedById: target.userId, acceptedAt: null, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
     }
     if (nextRole) {
       return {

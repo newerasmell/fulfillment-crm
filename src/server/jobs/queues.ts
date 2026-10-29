@@ -25,4 +25,10 @@ export const QUEUES = {
   outboxSend: { name: "outbox.send", options: { ...retry, expireInSeconds: 300 } },
   /** Every minute: picks due outbox rows, turns crashed sends into UNCERTAIN tasks. */
   outboxSweep: { name: "outbox.sweep", options: { retryLimit: 0, expireInSeconds: 120 }, cron: "* * * * *" },
+  /** Hourly housekeeping: old login attempts. */
+  housekeeping: {
+    name: "system.housekeeping",
+    options: { retryLimit: 2, expireInSeconds: 300 },
+    cron: "17 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

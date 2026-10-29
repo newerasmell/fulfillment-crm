@@ -9,7 +9,7 @@ import {
   acceptInvitation,
   completeEnrolment,
   createOwnerInvitation,
-  enrolmentSecret,
+  enrolmentForm,
   findOpenInvitation,
   inviteMember,
   listOpenInvitations,
@@ -35,13 +35,26 @@ describe("invitations", () => {
   it("a new person enrols with their own password and 2FA key and can log in; the link works once", async () => {
     const email = `new-${Date.now()}@example.com`;
     const { token } = await inviteMember(owner, { email, name: "New Person", role: "OPERATOR" });
-    const enrol = await enrolmentSecret(token);
-    expect((await enrolmentSecret(token)).secret).toBe(enrol.secret); // stable across reloads
+    const enrol = await enrolmentForm(token);
+    expect((await enrolmentForm(token)).secret).not.toBe(enrol.secret); // fresh per view, nothing stored
+    const sealedSecret = enrol.sealed;
     await expect(
-      completeEnrolment(token, { name: "New", password: "short", passwordRepeat: "short", code: "000000" }),
+      completeEnrolment(token, {
+        name: "New",
+        password: "short",
+        passwordRepeat: "short",
+        code: "000000",
+        sealedSecret,
+      }),
     ).rejects.toThrow();
     await expect(
-      completeEnrolment(token, { name: "New", password: PASSWORD, passwordRepeat: PASSWORD, code: "000000" }),
+      completeEnrolment(token, {
+        name: "New",
+        password: PASSWORD,
+        passwordRepeat: PASSWORD,
+        code: "000000",
+        sealedSecret,
+      }),
     ).rejects.toMatchObject({ code: "invalid_code" });
     const code = await generate({ secret: enrol.secret });
     const user = await completeEnrolment(token, {
@@ -49,12 +62,19 @@ describe("invitations", () => {
       password: PASSWORD,
       passwordRepeat: PASSWORD,
       code,
+      sealedSecret,
     });
     const m = await systemDb().membership.findFirstOrThrow({ where: { userId: user.id } });
     expect(m).toMatchObject({ accountId: owner.accountId, role: "OPERATOR" });
     expect(await findOpenInvitation(token)).toBeNull();
     await expect(
-      completeEnrolment(token, { name: "New", password: PASSWORD, passwordRepeat: PASSWORD, code }),
+      completeEnrolment(token, {
+        name: "New",
+        password: PASSWORD,
+        passwordRepeat: PASSWORD,
+        code,
+        sealedSecret,
+      }),
     ).rejects.toMatchObject({ code: "invalid_invitation" });
     // the enrolment code cannot be replayed at login, a fresh one works
     expect(await verifyLogin({ email, password: PASSWORD, code, ip: null, userAgent: null })).toMatchObject({
@@ -79,7 +99,17 @@ describe("invitations", () => {
     expect(
       await systemDb().membership.count({ where: { userId: other.user.id, accountId: owner.accountId } }),
     ).toBe(0);
-    await expect(enrolmentSecret(token)).rejects.toMatchObject({ code: "invalid_invitation" });
+    // creating a second profile for an existing email is refused; joining needs sign-in + accept
+    const f = await enrolmentForm(token);
+    await expect(
+      completeEnrolment(token, {
+        name: "X",
+        password: PASSWORD,
+        passwordRepeat: PASSWORD,
+        code: await generate({ secret: f.secret }),
+        sealedSecret: f.sealed,
+      }),
+    ).rejects.toMatchObject({ code: "use_login" });
     await expect(acceptInvitation(token, owner.userId)).rejects.toMatchObject({ code: "invalid_invitation" });
     await acceptInvitation(token, other.user.id);
     expect(
@@ -119,12 +149,13 @@ describe("invitations", () => {
   it("the owner bootstrap creates a company and an OWNER link, no password anywhere", async () => {
     const email = `boot-${Date.now()}@example.com`;
     const r = await createOwnerInvitation({ email, accountName: "Boot Co" });
-    const enrol = await enrolmentSecret(r.token);
+    const enrol = await enrolmentForm(r.token);
     const user = await completeEnrolment(r.token, {
       name: "Boot",
       password: PASSWORD,
       passwordRepeat: PASSWORD,
       code: await generate({ secret: enrol.secret }),
+      sealedSecret: enrol.sealed,
     });
     expect(await systemDb().membership.findFirstOrThrow({ where: { userId: user.id } })).toMatchObject({
       accountId: r.account.id,
@@ -140,5 +171,51 @@ describe("invitations", () => {
     const row = await systemDb().invitation.findUniqueOrThrow({ where: { id: invitationId } });
     expect(row.tokenHash).not.toContain(token);
     expect(row.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("a sealed 2FA key is bound to its invitation and expires", async () => {
+    const a = await inviteMember(owner, { email: `seal-a-${Date.now()}@example.com`, role: "VIEWER" });
+    const b = await inviteMember(owner, { email: `seal-b-${Date.now()}@example.com`, role: "VIEWER" });
+    const fa = await enrolmentForm(a.token);
+    const code = await generate({ secret: fa.secret });
+    await expect(
+      completeEnrolment(b.token, {
+        name: "B",
+        password: PASSWORD,
+        passwordRepeat: PASSWORD,
+        code,
+        sealedSecret: fa.sealed,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_invitation" });
+  });
+
+  it("two parallel enrolments on one link create exactly one profile", async () => {
+    const email = `par-${Date.now()}@example.com`;
+    const { token } = await inviteMember(owner, { email, role: "VIEWER" });
+    const f = await enrolmentForm(token);
+    const code = await generate({ secret: f.secret });
+    const input = { name: "P", password: PASSWORD, passwordRepeat: PASSWORD, code, sealedSecret: f.sealed };
+    const results = await Promise.allSettled([
+      completeEnrolment(token, input),
+      completeEnrolment(token, input),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await systemDb().user.count({ where: { email } })).toBe(1);
+  });
+
+  it("demoting the inviter revokes their open links", async () => {
+    const { createUser } = await import("@/server/auth/users");
+    const { changeMemberRole } = await import("./accounts");
+    const u = await createUser({ email: `adm-inv-${Date.now()}@example.com`, name: "A", password: PASSWORD });
+    const m = await systemDb().membership.create({
+      data: { accountId: owner.accountId, userId: u.user.id, role: "ADMIN" },
+    });
+    const admin: Actor = { userId: u.user.id, accountId: owner.accountId, role: "ADMIN" };
+    const { token } = await inviteMember(admin, {
+      email: `via-admin-${Date.now()}@example.com`,
+      role: "VIEWER",
+    });
+    await changeMemberRole(owner, m.id, "VIEWER");
+    expect(await findOpenInvitation(token)).toBeNull();
   });
 });

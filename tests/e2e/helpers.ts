@@ -37,5 +37,5 @@ export async function login(page: Page, who = OWNER) {
   await page.locator('input[name="password"]').fill(who.password);
   await page.locator('input[name="code"]').fill(await freshCode(who.totp));
   await page.getByRole("button", { name: /Вход|Sign in/ }).click();
-  await expect(page).toHaveURL("/");
+  await expect(page).toHaveURL("/", { timeout: 90_000 }); // first request compiles the page in dev
 }

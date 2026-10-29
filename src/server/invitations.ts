@@ -7,14 +7,23 @@ import { MIN_PASSWORD_LENGTH } from "@/server/auth/password";
 import { assertCan, canAssignRole, ForbiddenError, ROLES } from "@/server/auth/rbac";
 import { newTotpSecret, totpUri, verifyTotp } from "@/server/auth/totp";
 import { insertUserInTx } from "@/server/auth/users";
-import { accountDb, systemDb, withSystemTransaction } from "@/server/db/client";
+import {
+  isUniqueViolation,
+  systemDb,
+  withAccountTransaction,
+  withSystemTransaction,
+} from "@/server/db/client";
 import { openFromString, sealToString } from "@/server/security/vault";
 
 /**
  * Invitations replace handing out passwords. An admin gets a single-use link (shown once); the invitee
  * either enrols (chooses a password + scans a fresh 2FA key) or, if they already have a profile, logs in and
- * accepts. The inviter never learns whether the email already had a profile (no cross-company enumeration),
- * and an existing user is never added to a company without accepting.
+ * accepts. The invitation page looks the same whether or not the email already has a profile, and an
+ * existing user is never added to a company without accepting.
+ * The 2FA key for a new profile is generated fresh on every page view and travels only inside the form,
+ * sealed (AES-GCM, bound to the invitation, 30-minute expiry): someone who previews the link learns nothing
+ * the invitee will later use.
+ * Residual risk until links are delivered by email: whoever holds the link (the inviter) can open it first.
  */
 
 export const INVITE_TTL_MS = 72 * 3600_000;
@@ -22,7 +31,8 @@ export const OWNER_INVITE_TTL_MS = 24 * 3600_000;
 
 const hashToken = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");
 const newToken = () => randomBytes(32).toString("base64url");
-const pendingAad = (invitationId: string) => `invite:${invitationId}`;
+const enrolAad = (invitationId: string) => `enrol:${invitationId}`;
+export const ENROL_FORM_TTL_MS = 30 * 60_000;
 
 export const InviteInput = z.object({
   email: z.email().transform((e) => e.trim().toLowerCase()),
@@ -34,23 +44,25 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
   assertCan(actor.role, "members.manage");
   const input = InviteInput.parse(raw);
   if (!canAssignRole(actor.role, input.role)) throw new ForbiddenError("members.grantOwner");
-  const db = accountDb(actor.accountId);
-  // One open invitation per email and company: a new one replaces the old link.
-  await db.invitation.updateMany({
-    where: { email: input.email, acceptedAt: null, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
   const token = newToken();
-  const invitation = await db.invitation.create({
-    data: {
-      accountId: actor.accountId,
-      email: input.email,
-      name: input.name || null,
-      role: input.role,
-      tokenHash: hashToken(token),
-      invitedById: actor.userId,
-      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-    },
+  const invitation = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    // Serialises concurrent invites (one open invitation per email and company: a new link replaces the old).
+    await lockForUpdate("Membership");
+    await tx.invitation.updateMany({
+      where: { email: input.email, acceptedAt: null, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return tx.invitation.create({
+      data: {
+        accountId: actor.accountId,
+        email: input.email,
+        name: input.name || null,
+        role: input.role,
+        tokenHash: hashToken(token),
+        invitedById: actor.userId,
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+      },
+    });
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -67,19 +79,23 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
 
 export async function listOpenInvitations(actor: Actor) {
   assertCan(actor.role, "members.manage");
-  return accountDb(actor.accountId).invitation.findMany({
-    where: { acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
-    select: { id: true, email: true, role: true, expiresAt: true, createdAt: true },
-    orderBy: { createdAt: "desc" },
-  });
+  return withAccountTransaction(actor.accountId, (tx) =>
+    tx.invitation.findMany({
+      where: { acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true, email: true, role: true, expiresAt: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    }),
+  );
 }
 
 export async function revokeInvitation(actor: Actor, invitationId: string) {
   assertCan(actor.role, "members.manage");
-  const res = await accountDb(actor.accountId).invitation.updateMany({
-    where: { id: invitationId, acceptedAt: null, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
+  const res = await withAccountTransaction(actor.accountId, (tx) =>
+    tx.invitation.updateMany({
+      where: { id: invitationId, acceptedAt: null, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  );
   if (res.count !== 1) throw new DomainError("not_found");
   await recordAudit({
     accountId: actor.accountId,
@@ -130,29 +146,39 @@ export async function findOpenInvitation(token: string) {
   return { invitation: inv, accountName: inv.account.name, existingUserId: user?.id ?? null };
 }
 
-/** New user: the 2FA key to scan, generated once per invitation and kept encrypted until enrolment. */
-export async function enrolmentSecret(token: string) {
+/**
+ * The enrolment form's 2FA key: a NEW secret on every call, returned with a sealed copy for the form.
+ * Nothing is stored, so previewing the link reveals nothing that the invitee will use.
+ */
+export async function enrolmentForm(token: string) {
   const found = await findOpenInvitation(token);
-  if (!found || found.existingUserId) throw new DomainError("invalid_invitation");
-  const inv = found.invitation;
-  let secret: string;
-  if (inv.pendingTotpSecretEnc) {
-    secret = openFromString(inv.pendingTotpSecretEnc, pendingAad(inv.id));
-  } else {
-    secret = newTotpSecret();
-    const claimed = await systemDb().invitation.updateMany({
-      where: { id: inv.id, pendingTotpSecretEnc: null },
-      data: { pendingTotpSecretEnc: sealToString(secret, pendingAad(inv.id)) },
-    });
-    if (claimed.count !== 1) return enrolmentSecret(token); // another tab won the race: use its secret
-  }
+  if (!found) throw new DomainError("invalid_invitation");
+  const secret = newTotpSecret();
+  const sealed = sealToString(
+    JSON.stringify({ s: secret, exp: Date.now() + ENROL_FORM_TTL_MS }),
+    enrolAad(found.invitation.id),
+  );
   return {
     secret,
-    otpauthUri: totpUri(secret, inv.email),
-    email: inv.email,
-    name: inv.name,
+    sealed,
+    otpauthUri: totpUri(secret, found.invitation.email),
+    email: found.invitation.email,
+    name: found.invitation.name,
     accountName: found.accountName,
   };
+}
+
+function openSealedSecret(sealed: string, invitationId: string): string {
+  let parsed: { s?: unknown; exp?: unknown };
+  try {
+    parsed = JSON.parse(openFromString(sealed, enrolAad(invitationId)));
+  } catch {
+    throw new DomainError("invalid_invitation");
+  }
+  if (typeof parsed.s !== "string" || typeof parsed.exp !== "number")
+    throw new DomainError("invalid_invitation");
+  if (parsed.exp < Date.now()) throw new DomainError("form_expired");
+  return parsed.s;
 }
 
 export const EnrolInput = z
@@ -161,6 +187,7 @@ export const EnrolInput = z
     password: z.string().min(MIN_PASSWORD_LENGTH).max(1024),
     passwordRepeat: z.string(),
     code: z.string().trim(),
+    sealedSecret: z.string().min(1).max(2000),
   })
   .refine((v) => v.password === v.passwordRepeat, { message: "password_mismatch", path: ["passwordRepeat"] });
 
@@ -168,17 +195,17 @@ export const EnrolInput = z
 export async function completeEnrolment(token: string, raw: z.input<typeof EnrolInput>) {
   const input = EnrolInput.parse(raw);
   const found = await findOpenInvitation(token);
-  if (!found || found.existingUserId || !found.invitation.pendingTotpSecretEnc) {
-    throw new DomainError("invalid_invitation");
-  }
+  if (!found) throw new DomainError("invalid_invitation");
   const inv = found.invitation;
-  const secret = openFromString(inv.pendingTotpSecretEnc!, pendingAad(inv.id));
+  const secret = openSealedSecret(input.sealedSecret, inv.id);
   const step = await verifyTotp(secret, input.code);
   if (step === null) throw new DomainError("invalid_code");
+  // An existing profile joins by signing in and accepting, never by creating a second one.
+  if (found.existingUserId) throw new DomainError("use_login");
   const user = await withSystemTransaction(async (tx) => {
     const consumed = await tx.invitation.updateMany({
       where: { id: inv.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
-      data: { acceptedAt: new Date(), pendingTotpSecretEnc: null },
+      data: { acceptedAt: new Date() },
     });
     if (consumed.count !== 1) throw new DomainError("invalid_invitation");
     const user = await insertUserInTx(tx, {
@@ -190,6 +217,10 @@ export async function completeEnrolment(token: string, raw: z.input<typeof Enrol
     });
     await tx.membership.create({ data: { accountId: inv.accountId, userId: user.id, role: inv.role } });
     return user;
+  }).catch((err: unknown) => {
+    // The same email got a profile elsewhere a moment ago: it now has to sign in and accept instead.
+    if (isUniqueViolation(err)) throw new DomainError("use_login");
+    throw err;
   });
   await recordAudit({
     accountId: inv.accountId,

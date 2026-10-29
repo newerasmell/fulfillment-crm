@@ -1,5 +1,6 @@
 import type { Job, PgBoss } from "pg-boss";
 import { logger } from "@/lib/logger";
+import { purgeOldLoginAttempts } from "@/server/auth/rate-limit";
 import { processOutbound, sweepOutbox } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
 import { QUEUES } from "./queues";
@@ -45,6 +46,11 @@ export async function registerWorkers(deps: WorkerDeps) {
       const status = await processOutbound(job.data.requestId, resolveTransport);
       logger.info({ requestId: job.data.requestId, status }, "outbox processed");
     }
+  });
+
+  await boss.work(QUEUES.housekeeping.name, opts, async () => {
+    const purged = await purgeOldLoginAttempts();
+    if (purged) logger.info({ purged }, "old login attempts purged");
   });
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {

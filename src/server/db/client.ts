@@ -206,8 +206,13 @@ function scopeTransactionClient(tx: Prisma.TransactionClient, accountId: string)
 }
 
 /** Tables whose rows may be locked from an account transaction (row locks serialise racing changes). */
-const LOCKABLE = { Membership: '"Membership"', FulfillmentConnection: '"FulfillmentConnection"' } as const;
-export type LockableTable = keyof typeof LOCKABLE;
+const LOCKABLE: Readonly<Record<"Membership" | "FulfillmentConnection", string>> = Object.freeze(
+  Object.assign(Object.create(null) as object, {
+    Membership: '"Membership"',
+    FulfillmentConnection: '"FulfillmentConnection"',
+  }),
+);
+export type LockableTable = "Membership" | "FulfillmentConnection";
 
 export interface AccountTxHelpers {
   /** SELECT … FOR UPDATE on this account's rows of `table` (one row when `id` is given). */
@@ -227,18 +232,22 @@ export async function withAccountTransaction<T>(
     await tx.$executeRaw`SELECT set_config('app.account_id', ${accountId}, TRUE), set_config('app.bypass_rls', 'off', TRUE)`;
     const helpers: AccountTxHelpers = {
       async lockForUpdate(table, id) {
+        if (!Object.hasOwn(LOCKABLE, table))
+          throw new TenantScopeError(`not a lockable table: ${String(table)}`);
         const t = LOCKABLE[table];
-        if (id)
+        // NO KEY UPDATE: serialises writers of these rows without blocking inserts that reference them.
+        if (id) {
           await tx.$queryRawUnsafe(
-            `SELECT 1 FROM ${t} WHERE "accountId" = $1 AND id = $2 FOR UPDATE`,
+            `SELECT 1 FROM ${t} WHERE "accountId" = $1 AND id = $2 FOR NO KEY UPDATE`,
             accountId,
             id,
           );
-        else
+        } else {
           await tx.$queryRawUnsafe(
-            `SELECT 1 FROM ${t} WHERE "accountId" = $1 ORDER BY id FOR UPDATE`,
+            `SELECT 1 FROM ${t} WHERE "accountId" = $1 ORDER BY id FOR NO KEY UPDATE`,
             accountId,
           );
+        }
       },
     };
     return fn(scopeTransactionClient(tx, accountId), helpers);

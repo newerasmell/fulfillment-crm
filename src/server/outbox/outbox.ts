@@ -5,6 +5,7 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import {
+  accountDb,
   isUniqueViolation,
   systemDb,
   withAccountTransaction,
@@ -143,6 +144,14 @@ export async function processOutbound(
   now: Date = new Date(),
 ): Promise<OutboundStatus | "skipped"> {
   const plan: Plan = await withSystemTransaction(async (tx) => {
+    // Lock order everywhere: connection row, then request row (kill switch and mode changes lock the
+    // connection first too), so these transactions cannot deadlock each other.
+    const head = await tx.outboundRequest.findUnique({ where: { id }, select: { connectionId: true } });
+    if (!head) return { kind: "skip" };
+    // Serialises evaluations per connection: the CANARY cap below sees every concurrent claim, and a mode
+    // change or kill switch cannot interleave with an evaluation. NO KEY UPDATE lets inserts referencing
+    // the connection (new outbox rows) proceed.
+    await tx.$queryRaw`SELECT id FROM "FulfillmentConnection" WHERE id = ${head.connectionId} FOR NO KEY UPDATE`;
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT id FROM "OutboundRequest" WHERE id = ${id} FOR UPDATE SKIP LOCKED`;
     if (locked.length === 0) return { kind: "skip" };
@@ -150,16 +159,13 @@ export async function processOutbound(
     if (!PROCESSABLE.has(req.status)) return { kind: "skip" };
     if (req.nextAttemptAt && req.nextAttemptAt > now) return { kind: "skip" };
 
-    // Serialise evaluations per connection: the CANARY cap below must see every concurrent claim, and a
-    // mode change or kill switch (which lock the same row) cannot interleave with an evaluation.
-    await tx.$queryRaw`SELECT id FROM "FulfillmentConnection" WHERE id = ${req.connectionId} FOR UPDATE`;
     const connection = await tx.fulfillmentConnection.findUniqueOrThrow({
       where: { id: req.connectionId },
       select: { id: true, type: true, liveMode: true, enabled: true, canaryDailyCap: true },
     });
     const account = await tx.account.findUniqueOrThrow({
       where: { id: req.accountId },
-      select: { outboxPaused: true, killSwitchAt: true },
+      select: { outboxPaused: true },
     });
     const transport = resolveTransport(connection);
     const mode = connection.liveMode;
@@ -184,11 +190,17 @@ export async function processOutbound(
       canarySentToday,
       canaryDailyCap: connection.canaryDailyCap,
       supportsTestMode: transport?.supportsTestMode?.(req.operation) ?? false,
-      queuedBeforeKillSwitch: !!account.killSwitchAt && req.createdAt <= account.killSwitchAt,
     });
 
-    const finish = async (status: OutboundStatus, lastError: string | null = null) => {
-      await tx.outboundRequest.update({ where: { id }, data: { status, evaluatedMode: mode, lastError } });
+    const finish = async (
+      status: OutboundStatus,
+      lastError: string | null = null,
+      nextAttemptAt: Date | null = null,
+    ) => {
+      await tx.outboundRequest.update({
+        where: { id },
+        data: { status, evaluatedMode: mode, lastError, nextAttemptAt },
+      });
       return { kind: "done" as const, status };
     };
 
@@ -200,7 +212,14 @@ export async function processOutbound(
       case "record_dry_run":
         return finish("DRY_RUN_RECORDED");
       case "await_confirmation":
-        return finish("AWAITING_CONFIRMATION", decision.reason);
+        // Cap reached: nothing can change before the next UTC day, so the sweep leaves it alone until then.
+        return finish(
+          "AWAITING_CONFIRMATION",
+          decision.reason,
+          decision.reason === "daily_cap_reached"
+            ? new Date(startOfUtcDay(now).getTime() + 24 * 3600_000)
+            : null,
+        );
       case "send":
       case "send_test_mode": {
         if (!transport) {
@@ -280,6 +299,16 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
     if (res.count === 1) return status;
     const current = await db.outboundRequest.findUniqueOrThrow({ where: { id }, select: { status: true } });
     await audit("outbox.late_result", { wouldBe: status, lastError: data.lastError ?? null });
+    // Tell the operator working the UNCERTAIN task what the vendor finally answered.
+    await db.alert.updateMany({
+      where: {
+        entityType: "OutboundRequest",
+        entityId: id,
+        kind: "outbox_uncertain",
+        status: { not: "RESOLVED" },
+      },
+      data: { body: `Late vendor result after the request was marked uncertain: ${status}` },
+    });
     return current.status;
   };
 
@@ -325,13 +354,14 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
         },
         "SENT",
       );
-      await audit("outbox.sent", { recoveredByReadBack: true, response: found.response ?? null });
+      if (status === "SENT")
+        await audit("outbox.sent", { recoveredByReadBack: true, response: found.response ?? null });
       return status;
     }
     // Confirmed not created at the vendor: retry later, or give up visibly.
     if (plan.attempts >= MAX_ATTEMPTS) {
       const status = await finalize({ lastError: `max attempts: ${detail}` }, "FAILED");
-      await audit("outbox.failed", { error: detail });
+      if (status === "FAILED") await audit("outbox.failed", { error: detail });
       return status;
     }
     return finalize(
@@ -345,26 +375,30 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
       { lastResponse: json(result.response), ...(call.testMode ? {} : { sentAt: now }) },
       call.testMode ? "DRY_RUN_RECORDED" : "SENT",
     );
-    await audit(call.testMode ? "outbox.test_validated" : "outbox.sent", {
-      response: result.response ?? null,
-    });
+    if (status === "SENT" || status === "DRY_RUN_RECORDED") {
+      await audit(call.testMode ? "outbox.test_validated" : "outbox.sent", {
+        response: result.response ?? null,
+      });
+    }
     return status;
   }
   const error = scrubText(result.error ?? "rejected");
   const status = await finalize({ lastResponse: json(result.response), lastError: error }, "FAILED");
-  await audit("outbox.rejected", { error, response: result.response ?? null });
+  if (status === "FAILED") await audit("outbox.rejected", { error, response: result.response ?? null });
   return status;
 }
 
 /**
  * Requests the sweep should hand to the sender now; also turns crashed SENDING rows into UNCERTAIN tasks.
- * Besides PENDING, it re-picks rows the sender parked but may now be able to move: confirmed CANARY requests
- * held by the daily cap, and PAUSED rows once neither the global nor the account pause is on (those queued
- * before a kill switch are held again while their connection is still READ_ONLY — never refused).
+ * New work (PENDING) is fetched first with its own limit, so re-picked rows can never crowd it out. Re-picks:
+ * confirmed CANARY rows whose cap day has passed, and PAUSED rows once neither the global nor their account's
+ * pause is on (evaluated once, then they move on). HELD rows (kill switch) are never picked: an OWNER
+ * releases them explicitly.
  */
 export async function sweepOutbox(
   now: Date = new Date(),
   limit = 200,
+  repickLimit = 50,
 ): Promise<{ id: string; accountId: string }[]> {
   const db = systemDb();
   const stale = await db.outboundRequest.findMany({
@@ -379,21 +413,27 @@ export async function sweepOutbox(
     if (moved.count === 1)
       await createUncertainTask(s.accountId, s.id, s.operation, "worker stopped during the vendor call");
   }
-  const due = await db.outboundRequest.findMany({
+  const due = { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] };
+  const fresh = await db.outboundRequest.findMany({
+    where: { status: "PENDING", ...due },
+    select: { id: true, accountId: true },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+  });
+  const repicks = await db.outboundRequest.findMany({
     where: {
       OR: [
-        { status: "PENDING", OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
-        { status: "AWAITING_CONFIRMATION", confirmedAt: { not: null } },
+        { status: "AWAITING_CONFIRMATION", confirmedAt: { not: null }, nextAttemptAt: { lte: now } },
         ...(globalOutboxPaused()
           ? []
           : [{ status: "PAUSED" as const, connection: { account: { outboxPaused: false } } }]),
       ],
     },
     select: { id: true, accountId: true },
-    orderBy: { createdAt: "asc" },
-    take: limit,
+    orderBy: { updatedAt: "asc" },
+    take: repickLimit,
   });
-  return due;
+  return [...fresh, ...repicks];
 }
 
 /** CANARY: an operator confirms one exact request after seeing its payload. */
@@ -425,44 +465,67 @@ export async function confirmCanary(actor: Actor, requestId: string) {
   return updated;
 }
 
-/** Kill switch: every connection of the account back to READ_ONLY and the outbox paused. Nothing is dropped. */
+const OPEN_STATUSES: OutboundStatus[] = ["PENDING", "PAUSED", "AWAITING_CONFIRMATION"];
+
+const isDeadlock = (err: unknown) =>
+  (err instanceof Error && /40P01|deadlock/i.test(err.message)) ||
+  (typeof err === "object" && err !== null && (err as { code?: string }).code === "P2034");
+
+/**
+ * Kill switch: every connection of the account back to READ_ONLY, the outbox paused, and every request
+ * still waiting to go out is HELD (its CANARY confirmation cleared). Nothing is dropped and nothing leaves
+ * by itself afterwards: an OWNER releases held requests explicitly (`releaseHeldRequests`).
+ */
 export async function killSwitch(actor: Actor) {
   assertCan(actor.role, "outbox.killSwitch");
-  const before = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
-    await lockForUpdate("FulfillmentConnection");
-    const connections = await tx.fulfillmentConnection.findMany({ select: { id: true, liveMode: true } });
-    await tx.fulfillmentConnection.updateMany({ data: { liveMode: "READ_ONLY" } });
-    await tx.account.update({
-      where: { id: actor.accountId },
-      data: { outboxPaused: true, killSwitchAt: new Date() },
+  const run = () =>
+    withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+      await lockForUpdate("FulfillmentConnection");
+      const connections = await tx.fulfillmentConnection.findMany({ select: { id: true, liveMode: true } });
+      await tx.fulfillmentConnection.updateMany({ data: { liveMode: "READ_ONLY" } });
+      const held = await tx.outboundRequest.updateMany({
+        where: { status: { in: OPEN_STATUSES } },
+        data: {
+          status: "HELD",
+          lastError: "kill_switch",
+          confirmedAt: null,
+          confirmedById: null,
+          nextAttemptAt: null,
+        },
+      });
+      await tx.account.update({
+        where: { id: actor.accountId },
+        data: { outboxPaused: true, killSwitchAt: new Date() },
+      });
+      return { connections, held: held.count };
     });
-    return connections;
-  });
+  let result;
+  try {
+    result = await run();
+  } catch (err) {
+    if (!isDeadlock(err)) throw err;
+    result = await run(); // the emergency stop must not fail on a lock conflict
+  }
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
     action: "outbox.kill_switch",
     entityType: "Account",
     entityId: actor.accountId,
-    before: { connections: before },
-    after: { liveMode: "READ_ONLY", outboxPaused: true },
+    before: { connections: result.connections },
+    after: { liveMode: "READ_ONLY", outboxPaused: true, heldRequests: result.held },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
+  return { held: result.held };
 }
 
-/**
- * Lifts the pause. Paused requests are re-evaluated against each connection's current mode; those queued
- * before the kill switch stay held while their connection is still READ_ONLY.
- */
+/** Lifts the pause. HELD requests stay held; PAUSED ones are re-evaluated by the sweep. */
 export async function resumeOutbox(actor: Actor) {
   assertCan(actor.role, "outbox.killSwitch");
-  await withAccountTransaction(actor.accountId, async (tx) => {
-    await tx.account.update({ where: { id: actor.accountId }, data: { outboxPaused: false } });
-    await tx.outboundRequest.updateMany({
-      where: { status: "PAUSED" },
-      data: { status: "PENDING", nextAttemptAt: null },
-    });
+  await accountDb(actor.accountId).account.update({
+    where: { id: actor.accountId },
+    data: { outboxPaused: false },
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -473,6 +536,33 @@ export async function resumeOutbox(actor: Actor) {
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
+}
+
+export async function countHeldRequests(accountId: string) {
+  return accountDb(accountId).outboundRequest.count({ where: { status: "HELD" } });
+}
+
+/**
+ * OWNER decision after a kill switch: held requests go back to the queue and are evaluated against each
+ * connection's CURRENT mode (READ_ONLY refuses them, CANARY asks for a fresh confirmation, LIVE sends).
+ */
+export async function releaseHeldRequests(actor: Actor) {
+  assertCan(actor.role, "outbox.killSwitch");
+  const res = await accountDb(actor.accountId).outboundRequest.updateMany({
+    where: { status: "HELD" },
+    data: { status: "PENDING", lastError: null, nextAttemptAt: null },
+  });
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "outbox.release_held",
+    entityType: "Account",
+    entityId: actor.accountId,
+    after: { released: res.count },
+    ip: actor.ip,
+    userAgent: actor.userAgent,
+  });
+  return res.count;
 }
 
 const LiveModeSchema = z.enum(["READ_ONLY", "DRY_RUN", "CANARY", "LIVE"]);

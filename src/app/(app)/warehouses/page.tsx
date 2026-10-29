@@ -1,5 +1,7 @@
 import { getTranslations } from "next-intl/server";
-import { killSwitchAction, resumeOutboxAction } from "@/app/actions/outbox";
+import { killSwitchAction, releaseHeldAction, resumeOutboxAction } from "@/app/actions/outbox";
+import { ConfirmButton } from "@/components/ui/ConfirmButton";
+import { countHeldRequests } from "@/server/outbox/outbox";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
@@ -13,6 +15,7 @@ export default async function WarehousesPage() {
     where: { id: ctx.accountId },
     select: { outboxPaused: true },
   });
+  const held = await countHeldRequests(ctx.accountId);
   const connections = await db.fulfillmentConnection.findMany({
     select: { id: true, name: true, type: true, liveMode: true },
     orderBy: { name: "asc" },
@@ -43,27 +46,42 @@ export default async function WarehousesPage() {
               <p role="status" className="rounded-lg bg-block-bg px-3 py-2 text-block">
                 {t("warehouses.paused")}
               </p>
-              <form action={resumeOutboxAction}>
-                <button
-                  type="submit"
-                  className="min-h-11 rounded-[10px] border border-line px-4 font-semibold"
-                >
-                  {t("warehouses.resume")}
-                </button>
-              </form>
+              <ConfirmButton
+                key="resume" // own state per button: confirming "stop" must not pre-arm "resume"
+                action={resumeOutboxAction}
+                label={t("warehouses.resume")}
+                confirmLabel={t("warehouses.confirm")}
+                cancelLabel={t("warehouses.cancel")}
+                prompt={t("warehouses.resumePrompt")}
+                tone="neutral"
+              />
             </>
           ) : (
             <>
               <p className="text-muted">{t("warehouses.emergencyBody")}</p>
-              <form action={killSwitchAction}>
-                <button
-                  type="submit"
-                  className="min-h-11 rounded-[10px] bg-block px-4 font-semibold text-white"
-                >
-                  {t("warehouses.stop")}
-                </button>
-              </form>
+              <ConfirmButton
+                key="stop" // own state per button: confirming "stop" must not pre-arm "resume"
+                action={killSwitchAction}
+                label={t("warehouses.stop")}
+                confirmLabel={t("warehouses.confirm")}
+                cancelLabel={t("warehouses.cancel")}
+                prompt={t("warehouses.stopPrompt")}
+              />
             </>
+          )}
+          {held > 0 && (
+            <div className="mt-4 flex flex-col gap-2 border-t border-line pt-4">
+              <p className="m-0">{t("warehouses.held", { count: held })}</p>
+              <ConfirmButton
+                key="release"
+                action={releaseHeldAction}
+                label={t("warehouses.release")}
+                confirmLabel={t("warehouses.confirm")}
+                cancelLabel={t("warehouses.cancel")}
+                prompt={t("warehouses.releasePrompt")}
+                tone="neutral"
+              />
+            </div>
           )}
         </Card>
       )}
