@@ -1,0 +1,1938 @@
+{
+ "openapi": "3.0.0",
+ "info": {
+  "title": "Joy API",
+  "version": "1.0",
+  "description": "API for printing shipment labels.\n\nConverted from the original API Blueprint documentation (https://joylabel.docs.apiary.io)\nand consolidated against the live implementation.\n\n## Authentication\n\nEvery client has an `appId` and a `secret` (generated in the ZOE system,\nhttps://zoe2.fhb.sk/api). Use them with `POST /login` to obtain an access token.\nThe token must be **base64-encoded** and sent on every other request in the\n`X-Authentication-Simple` header. Tokens expire after 6 hours — re-login when they do.\n\n## Resource identifiers\n\nThe routing mask is `api/joy/<resource>` with no id path segment, so the `id`\n(and `order`, `parcelService`, `ids`) parameters are passed differently depending on the verb:\n\n- **Create (POST)** — pass `id` (and `order` for packing-list-item) in the **JSON body**.\n  Sending `?id=` on a create request yields `405 Method Not Allowed`.\n- **Read / Update / Delete (GET / PUT / DELETE)** — pass `id` (or `parcelService`, `ids`)\n  as a **query-string** parameter. Omitting it yields `405 Method Not Allowed`.\n\n## Errors\n\nError responses use the envelope `{ \"status\": \"error\", \"message\": <string>, \"id\": <field> }`,\nwhere `message` describes the failure and `id` (when present) names the offending field.\nCommon codes: `400` validation, `401` authentication, `404` not found, `405` wrong verb /\nmisplaced id, `409` state conflict.",
+  "contact": {
+   "name": "FHB",
+   "url": "https://www.fhb.sk"
+  }
+ },
+ "servers": [
+  {
+   "url": "https://system.fhb.sk/api/joy"
+  }
+ ],
+ "security": [
+  {
+   "AuthSimple": []
+  }
+ ],
+ "tags": [
+  {
+   "name": "Login",
+   "description": "Obtain an access token. Every client has an `appId` and `secret` (generated in the ZOE system, https://zoe2.fhb.sk/api)."
+  },
+  {
+   "name": "Shipments",
+   "description": "Create and print shipment labels (synchronous), reprint existing labels, reject shipments and read shipment details with tracking."
+  },
+  {
+   "name": "Labels",
+   "description": "Print labels for existing orders, individually or in bulk (up to 100)."
+  },
+  {
+   "name": "Packages",
+   "description": "Asynchronous order flow — create/update/read/delete packages; labels are fetched separately via the Labels endpoint."
+  },
+  {
+   "name": "Packing list",
+   "description": "Create, read and delete packing lists."
+  },
+  {
+   "name": "Packing list item",
+   "description": "Add or remove orders within a packing list."
+  },
+  {
+   "name": "Delivery points",
+   "description": "List carrier pick-up points."
+  },
+  {
+   "name": "Anonymization",
+   "description": "Internal / GDPR operation to irreversibly anonymize a closed order's personal data."
+  }
+ ],
+ "paths": {
+  "/login": {
+   "post": {
+    "tags": [
+     "Login"
+    ],
+    "summary": "Obtain an access token",
+    "operationId": "login",
+    "description": "Issues a temporary access token (valid 6 hours) for the given `appId`/`secret`.",
+    "security": [],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Credentials"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Authenticated. Returns the access token and its expiration.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AuthToken"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Missing or invalid `appId` / `secret`.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        },
+        "example": {
+         "status": "error",
+         "message": "AppId or secret not valid"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/shipments": {
+   "post": {
+    "tags": [
+     "Shipments"
+    ],
+    "summary": "Create and print a shipment label",
+    "operationId": "createShipment",
+    "description": "Creates a shipment and returns the carrier tracking codes together with the base64 PDF label. The `id` is supplied in the body.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ShipmentRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Label created.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ShipmentLabel"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Referenced product not found (`Product with id X not found, please create it via POST /products`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "A shipment with this `id` already exists — use the update flow instead (`Resource already exists, use PUT method`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "Shipments"
+    ],
+    "summary": "Print an existing label",
+    "operationId": "printShipmentLabel",
+    "description": "Reprints the label of an existing shipment. A label cannot be printed more than 5 days after creation.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     },
+     {
+      "name": "labelOrientation",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "L",
+        "P"
+       ]
+      },
+      "description": "Preferred label orientation — `P` (portrait) or `L` (landscape). Defaults to the carrier setting."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Returns the tracking codes and the base64 PDF label.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ShipmentLabel"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid label orientation, or the order is older than 5 days, or the printing service is unavailable.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Shipment not found (`Package not found.`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Shipments"
+    ],
+    "summary": "Reject a shipment",
+    "operationId": "rejectShipment",
+    "description": "Soft-rejects a shipment. Only shipments in the `printed` state can be rejected.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Shipment rejected (empty body)."
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Shipment not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Shipment is not in the `printed` state (`Order has not Printed status`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/shipment": {
+   "get": {
+    "tags": [
+     "Shipments"
+    ],
+    "summary": "Get shipment information",
+    "operationId": "getShipment",
+    "description": "Returns shipment details together with tracking numbers, tracking links, order items and tracking events.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Shipment detail.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ShipmentDetail"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Shipment not found (`Shipment not found.`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/labels": {
+   "get": {
+    "tags": [
+     "Labels"
+    ],
+    "summary": "Print labels (bulk or single)",
+    "operationId": "getLabels",
+    "description": "Returns a base64-encoded A6 PDF containing the requested labels.\n\nProvide **either** `ids` (comma-separated, up to 100 order codes) for a combined\nmulti-label PDF, **or** `id` for a single order's label.",
+    "parameters": [
+     {
+      "name": "ids",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated list of order identification codes (max 100). Used for the bulk variant.",
+      "example": "23012345,23012346"
+     },
+     {
+      "name": "id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Single order identification code. Used for the single-label variant."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Base64-encoded PDF of the requested label(s).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Labels"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "`ids` missing for the bulk variant, or more than 100 ids supplied (`Maximum number of labels is 100.`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Order not found (single-label variant, `Not found.`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/packages": {
+   "post": {
+    "tags": [
+     "Packages"
+    ],
+    "summary": "Create a package (asynchronous flow)",
+    "operationId": "createPackage",
+    "description": "Creates an order/package without immediately printing a label (the label is fetched later\nvia `GET /labels`). Returns a link to the created resource. The `id` is supplied in the body.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PackageRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Package created.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ResourceLink"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Referenced product not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "A package with this `id` already exists (`Resource already exists, use PUT method`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "Packages"
+    ],
+    "summary": "Update a package",
+    "operationId": "updatePackage",
+    "description": "Updates an existing package. Only packages in the `imported` (pending) state can be updated. The `id` is taken from the query parameter.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PackageBase"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Package updated.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ResourceLink"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Package not found (`Package not found. Create it via POST /packages`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Package is not in the pending state (`Package has not Pending status`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "Packages"
+    ],
+    "summary": "Get package information",
+    "operationId": "getPackage",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Package detail.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PackageDetail"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Package not found (`Package not found.`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Packages"
+    ],
+    "summary": "Delete a package",
+    "operationId": "deletePackage",
+    "description": "Deletes a package. Only packages in the `imported` (pending) state can be deleted.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Unique order identification code."
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Package deleted (empty body)."
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Package not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Package is not in the pending state (`Order has not Pending status`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/packing-list": {
+   "post": {
+    "tags": [
+     "Packing list"
+    ],
+    "summary": "Create a packing list",
+    "operationId": "createPackingList",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PackingListRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Packing list created.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PackingList"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "Packing list"
+    ],
+    "summary": "Get packing list detail",
+    "operationId": "getPackingList",
+    "description": "Returns a packing list and its base64 label. Optionally accepts `label_orientation` (`L`/`P`)\nin the JSON body to rotate the label. Note: an invalid `label_orientation` here is not handled\nas a clean `400` (unlike on create) and may surface as a server error.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Your internal packing list code (`external_code`)."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Packing list detail.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PackingList"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Packing list not found (`Packing list not found`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Packing list"
+    ],
+    "summary": "Delete a packing list",
+    "operationId": "deletePackingList",
+    "description": "Deletes a packing list. Only lists in the `created` state can be deleted.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Your internal packing list code (`external_code`)."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Packing list deleted.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StatusOk"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Packing list not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Packing list cannot be modified in its current state (`Packing list can not be modified`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/packing-list-item": {
+   "post": {
+    "tags": [
+     "Packing list item"
+    ],
+    "summary": "Add an order to a packing list",
+    "operationId": "addPackingListItem",
+    "description": "Adds an order to a packing list. Both `id` and `order` are supplied in the body.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "description": "Your internal packing list code (`external_code`)."
+         },
+         "order": {
+          "type": "string",
+          "description": "Order identification code (`api_id`)."
+         }
+        },
+        "required": [
+         "id",
+         "order"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Item added.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StatusOk"
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Packing list or order not found (`Packing list not found` / `Order not found`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "The order is already in a packing list.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "Packing list item"
+    ],
+    "summary": "Remove an order from a packing list",
+    "operationId": "deletePackingListItem",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Order identification code (`api_id`)."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Item removed.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StatusOk"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Packing list item not found (`Packing list item not found`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Parent packing list cannot be modified in its current state.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/delivery-point": {
+   "get": {
+    "tags": [
+     "Delivery points"
+    ],
+    "summary": "List available delivery points",
+    "operationId": "getDeliveryPoints",
+    "description": "Returns the active carrier pick-up points for the given parcel service.",
+    "parameters": [
+     {
+      "name": "parcelService",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Parcel service code (e.g. `dhl_parcel`, `pplcz`, `packeta`)."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "List of delivery points (empty array when none match).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/DeliveryPoint"
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Missing `parcelService` (`Missing field parcelService`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    }
+   }
+  },
+  "/anonymization": {
+   "put": {
+    "tags": [
+     "Anonymization"
+    ],
+    "summary": "Anonymize an order (internal / GDPR)",
+    "operationId": "anonymizeOrder",
+    "description": "**Internal / GDPR operation.** Irreversibly anonymizes the personal data of a *closed*\norder. Intended for data-protection purposes rather than routine integration; use with care.",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Order identification code (`api_id`)."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Order anonymized.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ResourceLink"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Order not found (`Package not found. Create it via POST /packages`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Order is not closed (`Package is not closed`).",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "AuthSimple": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "X-Authentication-Simple",
+    "description": "Base64-encoded access token. Obtain a token via `POST /login`, then send it on every request as `X-Authentication-Simple: base64(token)`. Tokens expire after 6 hours — re-login when they do."
+   }
+  },
+  "responses": {
+   "Unauthorized": {
+    "description": "Missing or invalid authentication token.",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      },
+      "example": {
+       "status": "error",
+       "message": "Token expired. Login via POST /login"
+      }
+     }
+    }
+   },
+   "BadRequest": {
+    "description": "Validation error. `message` describes the problem and `id` names the offending field.",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      },
+      "example": {
+       "status": "error",
+       "message": "Missing field: name",
+       "id": "name"
+      }
+     }
+    }
+   }
+  },
+  "schemas": {
+   "Error": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "example": "error"
+     },
+     "message": {
+      "type": "string",
+      "description": "Human-readable error description."
+     },
+     "id": {
+      "type": "string",
+      "description": "Name of the offending field (present on validation errors)."
+     }
+    },
+    "required": [
+     "status"
+    ]
+   },
+   "StatusOk": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "example": "ok"
+     }
+    },
+    "required": [
+     "status"
+    ]
+   },
+   "ResourceLink": {
+    "type": "object",
+    "description": "HAL response containing only a self link to the affected resource.",
+    "properties": {
+     "_links": {
+      "type": "object",
+      "properties": {
+       "self": {
+        "type": "object",
+        "properties": {
+         "href": {
+          "type": "string",
+          "description": "URL of the resource.",
+          "example": "/api/joy/packages?id=1003201"
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "Credentials": {
+    "type": "object",
+    "properties": {
+     "appId": {
+      "type": "string",
+      "description": "Application ID (32 characters).",
+      "example": "1234"
+     },
+     "secret": {
+      "type": "string",
+      "description": "Application secret (40 characters).",
+      "example": "1234"
+     }
+    },
+    "required": [
+     "appId",
+     "secret"
+    ]
+   },
+   "AuthToken": {
+    "type": "object",
+    "properties": {
+     "token": {
+      "type": "string",
+      "description": "Access token (max 80 characters).",
+      "example": "A98ophrkh67"
+     },
+     "expiration": {
+      "type": "string",
+      "description": "Date and time when the access token expires (6 hours after issue), formatted `Y-m-d H:i:s O`.",
+      "example": "2014-07-08 15:00:00 +0100"
+     }
+    },
+    "required": [
+     "token",
+     "expiration"
+    ]
+   },
+   "NotifyLink": {
+    "type": "object",
+    "description": "Webhook URLs called on shipment status changes.",
+    "properties": {
+     "confirmed": {
+      "type": "string",
+      "format": "uri",
+      "description": "Called when the package is confirmed.",
+      "maxLength": 255,
+      "example": "http://example.com/order/1003201/confirmed"
+     },
+     "sent": {
+      "type": "string",
+      "format": "uri",
+      "description": "Called when the package is sent.",
+      "maxLength": 255,
+      "example": "http://example.com/order/1003201/sent"
+     },
+     "delivered": {
+      "type": "string",
+      "format": "uri",
+      "description": "Called when the package is delivered.",
+      "maxLength": 255,
+      "example": "http://example.com/order/1003201/delivered"
+     },
+     "returned": {
+      "type": "string",
+      "format": "uri",
+      "description": "Called when the package is returned.",
+      "maxLength": 255,
+      "example": "http://example.com/order/1003201/returned"
+     }
+    }
+   },
+   "NotifyEmbedded": {
+    "type": "object",
+    "properties": {
+     "notifyLinks": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/NotifyLink"
+      }
+     }
+    }
+   },
+   "ShipmentRequest": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique order identification code.",
+      "example": "1003201"
+     },
+     "parcelService": {
+      "type": "string",
+      "description": "Preferred parcel service (must be a service enabled for Joy).",
+      "example": "pplcz"
+     },
+     "name": {
+      "type": "string",
+      "description": "Recipient name (min 3 characters).",
+      "example": "Oskar Šnajdr"
+     },
+     "street": {
+      "type": "string",
+      "description": "Recipient street (min 3 characters).",
+      "example": "Hlavná 23"
+     },
+     "city": {
+      "type": "string",
+      "description": "Recipient city (min 2 characters).",
+      "example": "Horní Jasenka"
+     },
+     "province": {
+      "type": "string",
+      "nullable": true,
+      "description": "Recipient province/region (optional)."
+     },
+     "zip": {
+      "type": "string",
+      "description": "Recipient ZIP code (3–12 characters).",
+      "example": "75501"
+     },
+     "country": {
+      "type": "string",
+      "description": "Recipient country code (ISO 3166-1 alpha-2; must be a known country).",
+      "example": "cz"
+     },
+     "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Recipient email.",
+      "example": "example@example.com",
+      "maxLength": 50
+     },
+     "phone": {
+      "type": "string",
+      "description": "Recipient phone in international format (6-20 characters).",
+      "minLength": 6,
+      "maxLength": 20,
+      "example": "+421901000000"
+     },
+     "variableSymbol": {
+      "type": "string",
+      "description": "Variable symbol. For `posta_expres` it must be numeric and at most 10 characters.",
+      "example": "12345"
+     },
+     "cod": {
+      "type": "number",
+      "description": "Cash on delivery (default 0). WARNING: must always be in the delivery country's local currency.",
+      "example": 250
+     },
+     "sender": {
+      "type": "string",
+      "description": "Custom sender reference. Must be one of the customer''s configured sender codes. Contact support to use multiple sender references.",
+      "example": "CUSTOMER_SENDER_CODE_1"
+     },
+     "senderName": {
+      "type": "string",
+      "description": "Custom sender name."
+     },
+     "note": {
+      "type": "string",
+      "description": "Order note (used by the fulfilment centre — not sent to the recipient).",
+      "example": "Note"
+     },
+     "numberOfPackages": {
+      "type": "integer",
+      "description": "Number of packages.",
+      "example": 1
+     },
+     "weight": {
+      "type": "array",
+      "description": "Weight of each package. If supplied, its length must equal `numberOfPackages`.",
+      "items": {
+       "type": "number"
+      },
+      "example": [
+       1.45
+      ]
+     },
+     "deliveryPoint": {
+      "type": "string",
+      "description": "Delivery point code. Required when the parcel service delivers only to pick-up points.",
+      "example": "12451"
+     },
+     "labelOrientation": {
+      "type": "string",
+      "enum": [
+       "L",
+       "P"
+      ],
+      "description": "Preferred label orientation — `P` (portrait) or `L` (landscape). Defaults to the carrier setting.",
+      "example": "P"
+     },
+     "_embedded": {
+      "$ref": "#/components/schemas/NotifyEmbedded"
+     },
+     "invoiceDetail": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/InvoiceDetail"
+       }
+      ],
+      "description": "Customs declaration data (\"colné údaje\"). Must be filled for all non-EU destinations and must match the attached invoice. Mirrors the v3 API `invoice_detail`, except products do not carry a product `code`."
+     }
+    },
+    "required": [
+     "id",
+     "parcelService",
+     "name",
+     "street",
+     "city",
+     "zip",
+     "country",
+     "email",
+     "phone",
+     "variableSymbol",
+     "numberOfPackages"
+    ]
+   },
+   "InvoiceDetail": {
+    "type": "object",
+    "description": "Customs declaration (\"colné údaje\") for a shipment.",
+    "properties": {
+     "number": {
+      "type": "string",
+      "description": "Invoice number.",
+      "example": "202201397"
+     },
+     "total": {
+      "type": "number",
+      "description": "Total invoice amount.",
+      "example": 353
+     },
+     "currency": {
+      "type": "string",
+      "description": "Invoice currency — uppercase ISO 4217 code (e.g. `USD`); must be a known currency.",
+      "example": "USD"
+     },
+     "dateOfIssue": {
+      "type": "string",
+      "format": "date",
+      "description": "Invoice issue date (YYYY-MM-DD).",
+      "example": "2022-11-30"
+     },
+     "products": {
+      "type": "array",
+      "description": "Invoice product lines with their customs data. Unlike the v3 API, no product `code` is required (we don't know the customer's code).",
+      "items": {
+       "type": "object",
+       "properties": {
+        "description": {
+         "type": "string",
+         "description": "Product description.",
+         "example": "basic product"
+        },
+        "hsCode": {
+         "type": "string",
+         "description": "HS (customs tariff) code.",
+         "example": "64039198"
+        },
+        "value": {
+         "type": "number",
+         "description": "Product value.",
+         "example": 169
+        },
+        "quantity": {
+         "type": "integer",
+         "description": "Product quantity.",
+         "example": 1
+        },
+        "countryOfOrigin": {
+         "type": "string",
+         "description": "Country of origin — lowercase ISO 3166-1 alpha-2 code (e.g. `cz`); must be a known country.",
+         "example": "cz"
+        }
+       },
+       "required": [
+        "description",
+        "hsCode",
+        "value",
+        "quantity",
+        "countryOfOrigin"
+       ]
+      }
+     },
+     "fees": {
+      "type": "array",
+      "description": "Additional invoice lines (shipping, discount, etc.).",
+      "items": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "shipping",
+          "discount",
+          "other"
+         ],
+         "description": "Fee type.",
+         "example": "shipping"
+        },
+        "description": {
+         "type": "string",
+         "description": "Fee description.",
+         "example": "Shipping cost"
+        },
+        "value": {
+         "type": "number",
+         "description": "Fee value.",
+         "example": 10
+        }
+       },
+       "required": [
+        "type",
+        "description",
+        "value"
+       ]
+      }
+     }
+    },
+    "required": [
+     "number",
+     "total",
+     "currency",
+     "dateOfIssue"
+    ]
+   },
+   "ShipmentLabel": {
+    "type": "object",
+    "properties": {
+     "packages": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "description": "Package unique identification code.",
+         "example": "1003201"
+        },
+        "tracking": {
+         "type": "string",
+         "nullable": true,
+         "description": "Package tracking code generated by the carrier.",
+         "example": "40050000000"
+        }
+       }
+      }
+     },
+     "label": {
+      "type": "string",
+      "description": "Base64-encoded PDF of the label.",
+      "example": "JVBERi0xLjQKJe..."
+     },
+     "_links": {
+      "type": "object",
+      "properties": {
+       "self": {
+        "type": "object",
+        "properties": {
+         "href": {
+          "type": "string",
+          "description": "URL of the resource.",
+          "example": "/api/joy/shipments?id=A1234EDQS11A1"
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "ShipmentDetail": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique order identification code.",
+      "example": "AB123456"
+     },
+     "status": {
+      "type": "string",
+      "description": "Order status code.",
+      "enum": [
+       "pending",
+       "confirmed",
+       "sent",
+       "delivered",
+       "returned",
+       "rejected",
+       "undefined"
+      ],
+      "example": "pending"
+     },
+     "parcelService": {
+      "type": "string",
+      "example": "pplcz"
+     },
+     "name": {
+      "type": "string",
+      "example": "Oskar Šnajdr"
+     },
+     "street": {
+      "type": "string",
+      "example": "Hlavná 23"
+     },
+     "city": {
+      "type": "string",
+      "example": "Horní Jasenka"
+     },
+     "zip": {
+      "type": "string",
+      "example": "75501"
+     },
+     "country": {
+      "type": "string",
+      "example": "cz"
+     },
+     "email": {
+      "type": "string",
+      "format": "email",
+      "example": "example@example.com"
+     },
+     "phone": {
+      "type": "string",
+      "example": "+421901000000"
+     },
+     "variableSymbol": {
+      "type": "string",
+      "example": "12345"
+     },
+     "cod": {
+      "type": "number",
+      "description": "Cash on delivery.",
+      "example": 250
+     },
+     "_embedded": {
+      "type": "object",
+      "description": "Present keys only when non-empty (an empty `_embedded` is serialized as `[]`).",
+      "properties": {
+       "trackingNumber": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "example": [
+         "40050587805"
+        ]
+       },
+       "trackingLink": {
+        "type": "array",
+        "description": "Carrier tracking links (present only when the carrier provides them).",
+        "items": {
+         "type": "string"
+        },
+        "example": [
+         "https://www.speedy.bg/en/track-shipment?shipmentNumber=61878361874"
+        ]
+       },
+       "items": {
+        "type": "array",
+        "description": "Order items.",
+        "items": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "string",
+           "description": "Stock item external code."
+          },
+          "qty": {
+           "type": "integer",
+           "description": "Ordered quantity."
+          }
+         }
+        }
+       },
+       "trackingEvents": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "date": {
+           "type": "string",
+           "example": "2018-09-01 12:45:15"
+          },
+          "message": {
+           "type": "string",
+           "example": "Package in transit"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "Labels": {
+    "type": "object",
+    "properties": {
+     "labels": {
+      "type": "string",
+      "description": "Base64-encoded A6 PDF containing the requested label(s).",
+      "example": "JVBERi0xLjQKJe..."
+     }
+    }
+   },
+   "PackageBase": {
+    "type": "object",
+    "description": "Common package fields for create/update. Note the ZIP field is named `psc` here (unlike `/shipments`, which uses `zip`).",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique order identification code. Required in the body on **create** (POST); on **update** (PUT) it is taken from the `id` query parameter and any body value is ignored.",
+      "maxLength": 30,
+      "example": "1003201"
+     },
+     "parcelService": {
+      "type": "string",
+      "description": "Preferred parcel service (default `joy`).",
+      "example": "joy"
+     },
+     "name": {
+      "type": "string",
+      "description": "Recipient name (3-100 characters).",
+      "minLength": 3,
+      "maxLength": 100,
+      "example": "Oskar Šnajdr"
+     },
+     "street": {
+      "type": "string",
+      "description": "Recipient street (3-255 characters).",
+      "minLength": 3,
+      "maxLength": 255,
+      "example": "Hlavná 23"
+     },
+     "city": {
+      "type": "string",
+      "description": "Recipient city (2-50 characters).",
+      "minLength": 2,
+      "maxLength": 50,
+      "example": "Horní Jasenka"
+     },
+     "psc": {
+      "type": "string",
+      "description": "Recipient ZIP code (3-10 characters).",
+      "minLength": 3,
+      "maxLength": 10,
+      "example": "75501"
+     },
+     "country": {
+      "type": "string",
+      "description": "Recipient country code (ISO 3166-1 alpha-2; must be a known country).",
+      "example": "cz"
+     },
+     "email": {
+      "type": "string",
+      "format": "email",
+      "example": "example@example.com",
+      "maxLength": 50
+     },
+     "phone": {
+      "type": "string",
+      "description": "Recipient phone in international format (6-20 characters).",
+      "minLength": 6,
+      "maxLength": 20,
+      "example": "+421901000000"
+     },
+     "variableSymbol": {
+      "type": "string",
+      "maxLength": 40,
+      "example": "12345"
+     },
+     "cod": {
+      "type": "number",
+      "description": "Cash on delivery (default 0).",
+      "example": 250
+     },
+     "note": {
+      "type": "string",
+      "description": "Order note.",
+      "maxLength": 250
+     },
+     "invoiceLink": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL of the order invoice.",
+      "maxLength": 255
+     },
+     "numberOfPackages": {
+      "type": "integer",
+      "description": "Number of packages (default 1).",
+      "example": 1
+     },
+     "deliveryPoint": {
+      "type": "string",
+      "description": "Delivery point code.",
+      "example": "12451"
+     },
+     "weight": {
+      "type": "array",
+      "description": "Weight of each package. If supplied, its length must equal `numberOfPackages`.",
+      "items": {
+       "type": "number"
+      },
+      "example": [
+       1.45
+      ]
+     },
+     "_embedded": {
+      "$ref": "#/components/schemas/NotifyEmbedded"
+     }
+    },
+    "required": [
+     "name",
+     "street",
+     "city",
+     "psc",
+     "country",
+     "email",
+     "phone",
+     "variableSymbol"
+    ]
+   },
+   "PackageRequest": {
+    "description": "Package create payload (POST). `id` is required in the body.",
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/PackageBase"
+     },
+     {
+      "type": "object",
+      "required": [
+       "id"
+      ]
+     }
+    ]
+   },
+   "PackageDetail": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "example": "AB123456"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "confirmed",
+       "sent",
+       "delivered",
+       "returned",
+       "rejected",
+       "undefined"
+      ],
+      "example": "pending"
+     },
+     "parcelService": {
+      "type": "string",
+      "example": "joy"
+     },
+     "name": {
+      "type": "string",
+      "example": "Oskar Šnajdr"
+     },
+     "street": {
+      "type": "string",
+      "example": "Hlavná 23"
+     },
+     "city": {
+      "type": "string",
+      "example": "Horní Jasenka"
+     },
+     "psc": {
+      "type": "string",
+      "example": "75501"
+     },
+     "country": {
+      "type": "string",
+      "example": "cz"
+     },
+     "email": {
+      "type": "string",
+      "format": "email",
+      "example": "example@example.com"
+     },
+     "phone": {
+      "type": "string",
+      "example": "+421901000000"
+     },
+     "variableSymbol": {
+      "type": "string",
+      "example": "12345"
+     },
+     "cod": {
+      "type": "number",
+      "example": 250
+     },
+     "barcode": {
+      "type": "string",
+      "description": "Order barcode (`uid`).",
+      "example": "A1234EDQS11A1"
+     },
+     "_embedded": {
+      "type": "object",
+      "description": "Present keys only when non-empty (an empty `_embedded` is serialized as `[]`).",
+      "properties": {
+       "trackingNumber": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "example": [
+         "40050587805"
+        ]
+       },
+       "items": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "id": {
+           "type": "string",
+           "description": "Stock item external code."
+          },
+          "qty": {
+           "type": "integer",
+           "description": "Ordered quantity."
+          }
+         }
+        }
+       },
+       "trackingEvents": {
+        "type": "array",
+        "description": "Up to 20 most recent tracking events.",
+        "items": {
+         "type": "object",
+         "properties": {
+          "date": {
+           "type": "string",
+           "example": "2018-09-01 12:45:15"
+          },
+          "message": {
+           "type": "string",
+           "example": "Package in transit"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "PackingListRequest": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string",
+      "description": "Your internal packing list identification code.",
+      "example": "1003201"
+     },
+     "expected_delivery_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Expected delivery date (`Y-m-d`).",
+      "example": "2023-01-15"
+     },
+     "items": {
+      "type": "array",
+      "description": "Non-empty list of order ids. Each order must exist and must not already belong to a packing list.",
+      "items": {
+       "type": "string"
+      },
+      "example": [
+       "23012345",
+       "23012346"
+      ]
+     },
+     "label_orientation": {
+      "type": "string",
+      "enum": [
+       "L",
+       "P"
+      ],
+      "description": "Preferred label orientation — `P` (portrait) or `L` (landscape)."
+     }
+    },
+    "required": [
+     "code",
+     "expected_delivery_date",
+     "items"
+    ]
+   },
+   "PackingList": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Packing list identification code, printed on the label (the internal code).",
+      "example": "J9VZIXSAL8"
+     },
+     "code": {
+      "type": "string",
+      "description": "Your internal packing list code (the one supplied as `code` on create).",
+      "example": "1003201"
+     },
+     "expected_delivery_date": {
+      "type": "string",
+      "format": "date",
+      "example": "2023-01-15"
+     },
+     "count": {
+      "type": "integer",
+      "description": "Packages count.",
+      "example": 2
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "example": [
+       "23012345",
+       "23012346"
+      ]
+     },
+     "label": {
+      "type": "string",
+      "description": "Base64-encoded PDF of the packing list label.",
+      "example": "JVBERi0xLjQKJeLjz.."
+     }
+    }
+   },
+   "DeliveryPoint": {
+    "type": "object",
+    "description": "Carrier pick-up point. Field types map directly to the `delivery_point` table; `latitude`/`longitude` are modeled as numbers (inferred — the table predates the in-repo migrations, so column types are not verified against a schema).",
+    "properties": {
+     "code": {
+      "type": "string",
+      "example": "KM10103842"
+     },
+     "name": {
+      "type": "string",
+      "example": "Potraviny Lipa"
+     },
+     "street": {
+      "type": "string",
+      "example": "Nám. M.R. Štefánika"
+     },
+     "city": {
+      "type": "string",
+      "example": "Brezno"
+     },
+     "zip": {
+      "type": "string",
+      "example": "97701"
+     },
+     "country": {
+      "type": "string",
+      "example": "sk"
+     },
+     "latitude": {
+      "type": "number",
+      "example": 48.656829
+     },
+     "longitude": {
+      "type": "number",
+      "example": 19.491561
+     }
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,4843 @@
+{
+ "openapi": "3.0.0",
+ "info": {
+  "title": "Kika Api 3",
+  "version": "3.0",
+  "description": "We have 2 API environments - production environment and sandbox for integration developmen\n\n| Environment | API URL                   |\n|-------------|---------------------------|\n| Production  | https://api.fhb.sk/v3     |\n| Sandbox     | https://api-dev.fhb.sk/v3 |\n\n### Change log\n\n#### 2026-07-29\n\n- Added new endpoint `GET /rma/list` returning shipments that came back from the carrier (undelivered, refused deliveries among them). Cancelled orders (storna) are not included. Items use the same structure as order responses.\n\n- Order responses (`GET /order`, `GET /order/history`, `GET /rma/list`) now include `returned_at` (the return date, `null` when the order has not been returned) and `return_type` (`return` | `claim` | `write_off`).\n\n- `GET /return/list` is unchanged and keeps returning \"local\" returns received at depots — it is an extra service that has to be activated by the sales department.\n\n#### 2026-05-28\n\n- Added multi-product (set/collection) support to product endpoints. `POST /product` and `PUT /product` now accept an optional `type` (`single`|`multi`) and an `items` array of components (each with `id` and `quantity`). Product responses (`GET /product`, `GET /product/all`, create/update) now include `type` and `items` (`null` for single products).\n\n- A single product can be promoted to a multi-product via `PUT /product`; demoting a multi-product back to single is not supported (`DEMOTE_NOT_SUPPORTED`). Components must be existing, active single products — see the multi-product validation error codes (`MULTI_ITEMS_EMPTY`, `MULTI_ITEMS_ON_SINGLE`, `MULTI_ITEMS_DUPLICATE`, `MULTI_ITEM_NOT_FOUND`, `MULTI_ITEM_NESTED_MULTI`, `MULTI_ITEM_SELF_REFERENCE`, `MULTI_ITEM_IGNORED`, `CANNOT_PROMOTE_REFERENCED_PRODUCT`).\n\n#### 2026-05-12\n\n- Added new endpoints `GET /return/list`, `GET /return/{uid}`, and `GET /return/{uid}/photo/{photoId}` for reading \"local\" return packages received at depots.\n\n#### 2026-04-29\n\n- Order responses now include `sscc` (string|null, 18-digit EAN-128 code) and `packing_packages` (array of `{number, sscc}` objects) when SSCC labels have been issued for the order.\n\n#### 2026-04-21\n\n- Added new endpoints `GET /cod` and `GET /cod/list` for querying cash-on-delivery payment status (`waiting`, `received`, `paid`).\n\n#### 2026-04-01\n\n- Added `print_sscc` flag to order create/update/read endpoints. The default value is `false` when missing.\n\n#### 2026-03-09\n\n- Added `created_at`, `shipped_at`, and `delivered_at` date fields to all order response endpoints.\n\n#### 2025-12-22\n\n- Added `package_dimension` object to order package responses, containing dimensions (length, width, height) and calculated volumetric weight.\n\n#### 2025-12-10\n\n- Added `print_delivery_note` flag to order create/update/read endpoints. The default value is `false` when missing.\n\n- Order responses now include `uid` alongside `id` for GET/POST/PUT order endpoints.\n\n- Added `volumetric_weight` field to single product response (`GET /product?id=...`).\n\n#### 2025-11-18\n\n- Added `volumetric_weight` field to product list response (`GET /product/all`).\n  The volumetric weight is now included in the product data for all API responses.\n\n#### 2025-09-12\n\n- Added new endpoint `PUT /order/invoice` for updating order invoice details (customs information).\n  Only orders in statuses `new`, `imported`, `b2b_new`, `packed` can have invoice data modified.\n\n#### 2025-09-29\n\n- Reading order endpoint: Added alternative parameter `tracking`.\n  Either `id` or `tracking` must be provided.\n\n#### 2024-12-12\n\n- Removed `note_delivery` from order",
+  "contact": {
+   "name": "FHB",
+   "url": "https://www.fhb.sk"
+  }
+ },
+ "servers": [
+  {
+   "url": "https://api.fhb.sk/v3"
+  }
+ ],
+ "security": [
+  {
+   "AuthSimple": []
+  }
+ ],
+ "tags": [
+  {
+   "name": "Authentication",
+   "description": "Obtain and use access tokens. Every client has an `app_id` and `secret` (generated in the ZOE system, https://zoe2.fhb.sk)."
+  },
+  {
+   "name": "Products",
+   "description": "Manage the product catalogue used by fulfillment services."
+  },
+  {
+   "name": "Orders",
+   "description": "## List of order statuses\n\n- pending\n\n- confirmed\n\n- sent\n\n- delivered\n\n- rejected"
+  },
+  {
+   "name": "Cash on delivery",
+   "description": "Endpoints returning COD payment status.\n\nStatus values:\n\n- `waiting` - order has COD set, payment has not yet been received from the courier\n\n- `received` - COD has been received from the courier, but not yet paid out to the seller\n\n- `paid` - COD has been paid out to the seller"
+  },
+  {
+   "name": "RMA",
+   "description": "Endpoints for reading returned shipments — orders that came back from the carrier.\n\n- Includes undelivered shipments, refused deliveries among them. The two are **not** distinguished: a refused shipment comes back and ends up in the same state as any other undelivered one.\n\n- Cancelled orders (storna) are **not** included.\n\n- Items use the same structure as order responses, with `returned_at` (the return date) and `return_type` filled in.\n\n- `returned_at` is `null` in the rare case where no return record was created for the order."
+  },
+  {
+   "name": "Returns",
+   "description": "Endpoints for reading \"local\" return packages — return shipments physically received and processed at depots.\n\n> **This is an extra service that has to be activated by the sales department.** Without it these endpoints return no data. Contact your sales representative to have it enabled.\n\nEach return has:\n\n- A unique `uid` (the scanned return code, e.g. `AB00001`)\n\n- One or more scanned package `barcodes`\n\n- A `type` of either `basic` (package-level tracking only) or `complex` (individual item tracking)\n\n- A `status` indicating its current stage in the return workflow\n\n- Zero or more `photos` (package exterior, package contents, accompanying documents)\n\n- Zero or more `items` (populated only when `type` is `complex`)"
+  },
+  {
+   "name": "Parcel services",
+   "description": "List available carriers and their delivery points."
+  },
+  {
+   "name": "Stock management",
+   "description": "Stock receipts, stock levels and stock movements."
+  },
+  {
+   "name": "Validations and error messages",
+   "description": "Every invalid create and update request returns 400 Bad Request response with list of invalid fields and values.\n\n#### Structure of 400 Bad Request response\n\n```\n{\n    \"message\": \"Invalid request\",\n    \"violations\": {\n        \"items\": [\n            {\n                \"code\": \"TOO_FEW_ERROR\",\n                \"message\": \"This collection should contain 1 element or more.\"\n            }\n        ],\n        \"variable_symbol\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"value\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.address.name\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.address.street\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.address.city\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.address.zip\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.address.country\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ],\n        \"recipient.contact\": [\n            {\n                \"code\": \"IS_BLANK_ERROR\",\n                \"message\": \"This value should not be blank.\"\n            }\n        ]\n    }\n}\n```"
+  },
+  {
+   "name": "Notifications",
+   "description": "<a name=\"stock-level-notifications\"></a>\n\n## Stock level notification\n\nStock level update notification is triggered every time when product stock level was changed.\n\nYou can set up stock level notification by defining `notify_url` in product request.\n\nNotification URL is called with POST method and request body is JSON with notification data.\n\n###### Notification data\n\n| Parameter         | Description                                 |\n|-------------------|---------------------------------------------|\n| `id`              | Product id                                  |\n| `type`            | Type of the movement in/out                 |\n| `qty`             | Quantity                                    |\n| `stockQuantity`   | Current stock balance                       |\n| `reason`          | Reason code, see list of reason codes below |\n| `serialNumbers[]` | Serial number list\n\n###### Reason codes\n\n| Reason code | Description    |\n|-------------|----------------|\n| `1`         | Manual change  |\n| `2`         | Sent order     |\n| `3`         | Receipt        |\n| `4`         | Returned order |\n| `5`         | Canceled order |"
+  }
+ ],
+ "paths": {
+  "/login": {
+   "post": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "token": {
+           "type": "string",
+           "description": "Access token"
+          },
+          "expiration": {
+           "type": "string",
+           "description": "Date and time of token expiration"
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "token": "f7165ad327942721750f6b113d7bea9017957671khd1nvx2uc233adt1298",
+           "expiration": "2018-10-17T14:47:40+0200"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "code": {
+               "type": "string"
+              },
+              "message": {
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         },
+         "required": [
+          "message"
+         ],
+         "example": {
+          "message": "Invalid AppId or secret"
+         }
+        },
+        "examples": {
+         "invalidCredentials": {
+          "value": {
+           "message": "Invalid AppId or secret"
+          }
+         },
+         "validationError": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "app_id": [
+             {
+              "code": "IS_BLANK_ERROR",
+              "message": "This value should not be blank."
+             }
+            ],
+            "secret": [
+             {
+              "code": "IS_BLANK_ERROR",
+              "message": "This value should not be blank."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "summary": "Login",
+    "operationId": "login",
+    "description": "",
+    "tags": [
+     "Autentication"
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "app_id": {
+          "type": "string"
+         },
+         "secret": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "app_id",
+         "secret"
+        ],
+        "example": {
+         "app_id": "c8ae18af42e300a76a7e9787c59be2b2",
+         "secret": "5Saa6ixZnxHAbGed7600858eaem0v4nllm41w1il"
+        }
+       }
+      }
+     }
+    },
+    "security": []
+   }
+  },
+  "/product": {
+   "post": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockItemView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "123",
+           "internal_code": "ABC1234",
+           "ean": "8580000001234",
+           "name": "Shampoo",
+           "photo": "http://example.com/image.png",
+           "weight": 0,
+           "volumetric_weight": 0.5,
+           "notify_url": "http://example.com/api/product/123/notify",
+           "archived": false,
+           "stock_quantity": 0,
+           "free_quantity": 0,
+           "serial_numbers": false,
+           "type": "single",
+           "items": [
+            {
+             "id": "ABC456",
+             "name": "Component name",
+             "quantity": 2
+            }
+           ],
+           "customs_information": {
+            "hs_code": "390110",
+            "country_of_origin": "SK",
+            "purchase_price": 12.34
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "properties": {
+            "items[0].id": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "properties": {
+               "code": {
+                "type": "string"
+               },
+               "message": {
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "example": {
+          "message": "Invalid request",
+          "violations": {
+           "items[0].id": [
+            {
+             "code": "MULTI_ITEM_NOT_FOUND",
+             "message": "Item \"MISSING\" does not exist."
+            }
+           ]
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "items[0].id": [
+             {
+              "code": "MULTI_ITEM_NOT_FOUND",
+              "message": "Item \"MISSING\" does not exist."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Product 123 not found"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Create new product",
+    "operationId": "createNewProduct",
+    "description": "Allows to create the new product. Returns information about new product.\n\nSupports both regular single products and multi-products (sets/collections). When `type` is `multi`, the\nnon-empty `items` array of components is required. Multi-products cannot contain other multi-products\nand cannot reference themselves.\n\nMulti-product validation errors (`400`):\n\n- `MULTI_ITEMS_EMPTY` — `type` is `multi` but `items` is empty.\n\n- `MULTI_ITEMS_ON_SINGLE` — `items` provided for a single product.\n\n- `MULTI_ITEMS_DUPLICATE` — the same component is listed more than once.\n\n- `MULTI_ITEM_NOT_FOUND` — a referenced component does not exist (archived products are treated as non-existent and also report this code).\n\n- `MULTI_ITEM_NESTED_MULTI` — a referenced component is itself a multi-product.\n\n- `MULTI_ITEM_SELF_REFERENCE` — a component refers to the product itself.\n\n- `MULTI_ITEM_IGNORED` — a referenced component is an ignored product (ignored products are skipped during order fulfillment and cannot be components).\n\n- `CANNOT_PROMOTE_REFERENCED_PRODUCT` — the product is already a component of another multi-product and cannot be promoted to `multi`.",
+    "tags": [
+     "Products"
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "description": "Unique product ID (products are paired on this value, it must be an unique ID for each product, and does not change over time) Beware of characters: #, &, %, etc."
+         },
+         "name": {
+          "type": "string",
+          "description": "Name of the product (maximum 150 characters)"
+         },
+         "ean": {
+          "type": "string",
+          "description": "EAN-13\n\nATTENTION! This value can be changed to fit the real EAN on the product. Please customize your integration so that you do not overwrite this value with invalid values from your system!"
+         },
+         "photo": {
+          "type": "string",
+          "description": "URL to an image of the product (maximum 255 characters)",
+          "maxLength": 255
+         },
+         "notify_url": {
+          "type": "string",
+          "description": "Callback URL which is called on stock movement of this product. [More info about product notifications](#stock-level-notifications)",
+          "maxLength": 255
+         },
+         "serial_numbers": {
+          "type": "boolean",
+          "description": "Serial number tracking. Allows to track which stock unit was packed and delivered to a particular customer."
+         },
+         "type": {
+          "type": "string",
+          "enum": [
+           "single",
+           "multi"
+          ],
+          "description": "Product type. Defaults to `single`. Use `multi` to create a product set."
+         },
+         "items": {
+          "type": "array",
+          "description": "Components for multi-products. Required and non-empty when `type` is `multi`. Each item must reference an existing, active single product (archived and ignored products cannot be components).",
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Component product ID"
+            },
+            "quantity": {
+             "type": "integer",
+             "description": "Number of component pieces in the multi-product"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         },
+         "customs_information": {
+          "type": "object",
+          "properties": {
+           "hs_code": {
+            "type": "string",
+            "description": "HS code",
+            "maxLength": 255
+           },
+           "country_of_origin": {
+            "type": "string",
+            "description": "ISO country code"
+           },
+           "purchase_price": {
+            "type": "number",
+            "description": "Purchase price"
+           }
+          }
+         }
+        },
+        "required": [
+         "id",
+         "name"
+        ],
+        "example": {
+         "id": "AB123",
+         "name": "Shampoo",
+         "ean": "8580000001234",
+         "photo": "http://example.com/image.png",
+         "notify_url": "http://example.com/api/product/123/notify",
+         "serial_numbers": false,
+         "type": "single",
+         "items": [
+          {
+           "id": "ABC456",
+           "quantity": 2
+          }
+         ],
+         "customs_information": {
+          "hs_code": "390110",
+          "country_of_origin": "SK",
+          "purchase_price": 12.34
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockItemView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "123",
+           "internal_code": "ABC1234",
+           "ean": "8580000001234",
+           "name": "Shampoo",
+           "photo": "http://example.com/image.png",
+           "weight": 0,
+           "volumetric_weight": 0.5,
+           "notify_url": "http://example.com/api/product/123/notify",
+           "archived": false,
+           "stock_quantity": 0,
+           "free_quantity": 0,
+           "serial_numbers": false,
+           "type": "single",
+           "items": [
+            {
+             "id": "ABC456",
+             "name": "Component name",
+             "quantity": 2
+            }
+           ],
+           "customs_information": {
+            "hs_code": "390110",
+            "country_of_origin": "SK",
+            "purchase_price": 12.34
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "code": {
+               "type": "string"
+              },
+              "message": {
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         },
+         "example": {
+          "message": "Invalid request",
+          "violations": {
+           "type": [
+            {
+             "code": "DEMOTE_NOT_SUPPORTED",
+             "message": "Demoting a multi-product to single is not supported."
+            }
+           ]
+          }
+         }
+        },
+        "examples": {
+         "demoteNotSupported": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "type": [
+             {
+              "code": "DEMOTE_NOT_SUPPORTED",
+              "message": "Demoting a multi-product to single is not supported."
+             }
+            ]
+           }
+          }
+         },
+         "notUniqueProduct": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "new_id": [
+             {
+              "code": "NOT_UNIQUE_PRODUCT_ERROR",
+              "message": "Product with this id already exists."
+             }
+            ]
+           }
+          }
+         },
+         "cannotPromoteReferenced": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "type": [
+             {
+              "code": "CANNOT_PROMOTE_REFERENCED_PRODUCT",
+              "message": "Product is already a component of another multi-product and cannot be promoted."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Product 123 not found"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Update existing product",
+    "operationId": "updateExistingProduct",
+    "description": "Allows to edit the product. Returns information about changed product. If you want to change product ID, add `new_id` property to request. Value of `new_id` must be unique.\n\nSupports multi-product operations:\n\n- Omitting `type` and `items` preserves the existing product type and components.\n\n- Sending `type=multi` with `items` on an existing single product promotes it to a multi-product (internal code, stock quantity, and stock movements are preserved).\n\n- Sending `items` on an existing multi-product replaces its components (replace-all semantics).\n\n- Demoting a multi-product to single (`type=single` on a multi-product) is **not supported** (`DEMOTE_NOT_SUPPORTED`).",
+    "tags": [
+     "Products"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the product.",
+      "required": true,
+      "example": "ABC123",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "new_id": {
+          "type": "string",
+          "description": "New product id. Use only when product id was changed."
+         },
+         "name": {
+          "type": "string",
+          "description": "Name of the product (maximum 150 characters)"
+         },
+         "ean": {
+          "type": "string",
+          "description": "EAN-13\n\n   ATTENTION! This value can be changed to fit the real EAN on the product. Please customize your integration so that you do not overwrite this value with invalid values from your system!"
+         },
+         "photo": {
+          "type": "string",
+          "description": "URL to an image of the product (maximum 255 characters)",
+          "maxLength": 255
+         },
+         "notify_url": {
+          "type": "string",
+          "description": "Callback URL which is called on stock movement of this product. [More info about product notifications](#stock-level-notifications)",
+          "maxLength": 255
+         },
+         "serial_numbers": {
+          "type": "boolean",
+          "description": "Serial number tracking. Allows to track which stock unit was packed and delivered to a particular customer."
+         },
+         "type": {
+          "type": "string",
+          "enum": [
+           "single",
+           "multi"
+          ],
+          "description": "Target product type. Omit to preserve current type. Use `multi` to create/keep a multi-product or promote a single product to multi. Demoting from `multi` to `single` is not supported."
+         },
+         "items": {
+          "type": "array",
+          "description": "Components for multi-products. Replace-all semantics. Required non-empty when promoting a single to multi.",
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Component product ID"
+            },
+            "quantity": {
+             "type": "integer",
+             "description": "Number of component pieces in the multi-product"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         },
+         "customs_information": {
+          "type": "object",
+          "properties": {
+           "hs_code": {
+            "type": "string",
+            "description": "HS code",
+            "maxLength": 255
+           },
+           "country_of_origin": {
+            "type": "string",
+            "description": "ISO country code"
+           },
+           "purchase_price": {
+            "type": "number",
+            "description": "Purchase price"
+           }
+          }
+         }
+        },
+        "required": [
+         "name"
+        ],
+        "example": {
+         "new_id": "ABC341",
+         "name": "Shampoo",
+         "ean": "8580000001234",
+         "photo": "http://example.com/image.png",
+         "notify_url": "http://example.com/api/product/123/notify",
+         "type": "multi",
+         "items": [
+          {
+           "id": "ABC456",
+           "quantity": 2
+          }
+         ],
+         "customs_information": {
+          "hs_code": "390110",
+          "country_of_origin": "SK",
+          "purchase_price": 12.34
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "responses": {
+     "200": {
+      "description": "Product detail.",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockItemView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "123",
+           "internal_code": "ABC1234",
+           "ean": "8580000001234",
+           "name": "Shampoo",
+           "photo": "http://example.com/image.png",
+           "weight": 0,
+           "volumetric_weight": 0.5,
+           "notify_url": "http://example.com/api/product/123/notify",
+           "archived": false,
+           "stock_quantity": 0,
+           "free_quantity": 0,
+           "serial_numbers": false,
+           "type": "single",
+           "items": [
+            {
+             "id": "ABC456",
+             "name": "Component name",
+             "quantity": 2
+            }
+           ],
+           "customs_information": {
+            "hs_code": "390110",
+            "country_of_origin": "SK",
+            "purchase_price": 12.34
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Product 123 not found"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Read product",
+    "operationId": "readProduct",
+    "description": "",
+    "tags": [
+     "Products"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the product.",
+      "required": true,
+      "example": "ABC123",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/product/all": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "number",
+           "description": "Page number"
+          },
+          "total": {
+           "type": "number",
+           "description": "Total product count"
+          },
+          "products": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/StockItemView"
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 245,
+           "products": [
+            {
+             "id": "123",
+             "internal_code": "ABC1234",
+             "ean": "8580000001234",
+             "name": "Shampoo",
+             "photo": "http://example.com/image.png",
+             "weight": 0.32,
+             "volumetric_weight": 0.5,
+             "notify_url": "http://example.com/api/product/123/notify",
+             "archived": false,
+             "stock_quantity": 0,
+             "free_quantity": 0,
+             "serial_numbers": false,
+             "type": "single",
+             "items": [
+              {
+               "id": "ABC456",
+               "name": "Component name",
+               "quantity": 2
+              }
+             ],
+             "customs_information": {
+              "hs_code": "390110",
+              "country_of_origin": "SK",
+              "purchase_price": 12.34
+             }
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Invalid request"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "List products",
+    "operationId": "listProducts",
+    "description": "Allows to show all products in the database, returns informations about the product and its balance in stock. Limit 250 products on the page.",
+    "tags": [
+     "Products"
+    ],
+    "parameters": [
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number",
+      "required": false,
+      "example": 10,
+      "schema": {
+       "type": "number"
+      }
+     }
+    ]
+   }
+  },
+  "/product/archive": {
+   "get": {
+    "responses": {
+     "204": {
+      "description": "No Content",
+      "headers": {}
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "code": {
+               "type": "string"
+              },
+              "message": {
+               "type": "string"
+              }
+             }
+            }
+           }
+          }
+         },
+         "example": {
+          "message": "Invalid request",
+          "violations": {
+           "id": [
+            {
+             "code": "NOT_EXISTING_PRODUCT_ERROR",
+             "message": "Product does not exist."
+            }
+           ]
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "id": [
+             {
+              "code": "NOT_EXISTING_PRODUCT_ERROR",
+              "message": "Product does not exist."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Archive",
+    "operationId": "archive",
+    "description": "",
+    "tags": [
+     "Products"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "Product identification code",
+      "required": true,
+      "example": "AB123",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/order": {
+   "post": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/OrderView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB12345",
+           "uid": "3c7ac0f0ab",
+           "variable_symbol": "12345",
+           "status": "imported",
+           "created_at": "2022-07-12T10:30:00+0100",
+           "shipped_at": "2022-07-13T14:00:00+0100",
+           "delivered_at": "2022-07-15T09:00:00+0100",
+           "parcel_service": "remax",
+           "delivery_point": "12345",
+           "cod": 0,
+           "value": 15.35,
+           "invoice": "http://example.com/order/inv123.pdf",
+           "invoice_number": "202207120001",
+           "invoice_date": "2022-07-12",
+           "note": "Order note",
+           "print_delivery_note": false,
+           "print_sscc": false,
+           "sscc": "085860288700000423",
+           "packing_packages": [
+            {
+             "number": 1,
+             "sscc": "085860288700000567"
+            }
+           ],
+           "sender": "SHOP_XY",
+           "recipient": {
+            "address": {
+             "name": "Martin Novák",
+             "street": "Hronská 35",
+             "city": "Zvolen",
+             "zip": "96001",
+             "province": "",
+             "country": "sk"
+            },
+            "contact": {
+             "email": "email@example.com",
+             "phone": "+421900123456"
+            }
+           },
+           "items": [
+            {
+             "id": "12345",
+             "quantity": 1
+            }
+           ],
+           "notification": {
+            "confirmed": "http://example.com/api/order/123/confirm",
+            "sent": "http://example.com/api/order/123/sent",
+            "delivered": "http://example.com/api/order/123/delivered",
+            "returned": "http://example.com/api/order/123/returned",
+            "ticket_created": "http://example.com/api/order/123/ticket/created",
+            "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+            "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+           },
+           "tracking_numbers": [],
+           "tracking_links": [],
+           "tracking_events": [],
+           "proof_of_delivery": {
+            "recipient": "Martin Novák",
+            "date": "2018-11-06T09:11:20+0100"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Creating order",
+    "operationId": "creatingOrder",
+    "description": "Creating new order that will be fulfilled.",
+    "tags": [
+     "Orders"
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "description": "Unique order identification code"
+         },
+         "variable_symbol": {
+          "type": "string",
+          "description": "Variable symbol, used for order identification. Must ne unique, number only value with max length of 10."
+         },
+         "parcel_service": {
+          "type": "string",
+          "description": "Preferred parcel service code"
+         },
+         "delivery_point": {
+          "type": "string",
+          "description": "Delivery point code, required for delivery to the delivery point",
+          "maxLength": 255
+         },
+         "delivery_point_parameters": {
+          "type": "object",
+          "nullable": true,
+          "additionalProperties": {
+           "type": "string"
+          },
+          "description": "Map of additional delivery point parameters. Conditionally required when the selected parcel service defines required delivery point parameters."
+         },
+         "cod": {
+          "type": "number",
+          "description": "Cash on delivery amount - if not cash on delivery, skip this parameter, or set to 0. <b>WARNING! It must always be in local currency! If delivery address is in Czech Republic, COD must be in Czech koruna, etc.</b>"
+         },
+         "value": {
+          "type": "number",
+          "description": "Order value, used for insurance in LOCAL CURRENCY"
+         },
+         "sender": {
+          "type": "string",
+          "description": "Preferred sender code"
+         },
+         "validate": {
+          "type": "boolean",
+          "description": "Order address validation: If this parameter is set to true, in case of unsuccessful validation, the order will not be imported."
+         },
+         "recipient": {
+          "type": "object",
+          "properties": {
+           "address": {
+            "type": "object",
+            "properties": {
+             "name": {
+              "type": "string",
+              "description": "Name and surname of the recipient"
+             },
+             "street": {
+              "type": "string",
+              "description": "Delivery address"
+             },
+             "city": {
+              "type": "string",
+              "description": "Delivery city"
+             },
+             "zip": {
+              "type": "string",
+              "description": "Delivery postal code"
+             },
+             "province": {
+              "type": "string",
+              "description": "Delivery province, if country has provinces"
+             },
+             "country": {
+              "type": "string",
+              "description": "Delivery country in `ISO 3166-1 alpha-2` format"
+             }
+            },
+            "required": [
+             "name",
+             "street",
+             "city",
+             "zip",
+             "country"
+            ]
+           },
+           "contact": {
+            "type": "object",
+            "properties": {
+             "email": {
+              "type": "string",
+              "description": "Recipient's email",
+              "maxLength": 50
+             },
+             "phone": {
+              "type": "string",
+              "description": "Recipient's phone in INTERNATIONAL format",
+              "maxLength": 20
+             }
+            },
+            "required": [
+             "email",
+             "phone"
+            ]
+           }
+          },
+          "required": [
+           "address",
+           "contact"
+          ]
+         },
+         "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Product ID"
+            },
+            "quantity": {
+             "type": "integer",
+             "minimum": 1,
+             "description": "Ordered quantity"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         },
+         "notification": {
+          "type": "object",
+          "properties": {
+           "confirmed": {
+            "type": "string",
+            "description": "URL is called when the order is confirmed and enters packing process",
+            "maxLength": 255
+           },
+           "sent": {
+            "type": "string",
+            "description": "URL is called when the order is sent",
+            "maxLength": 255
+           },
+           "delivered": {
+            "type": "string",
+            "description": "URL is called when the order is completed",
+            "maxLength": 255
+           },
+           "returned": {
+            "type": "string",
+            "description": "URL is called when order is delivered",
+            "maxLength": 255
+           },
+           "ticket_created": {
+            "type": "string",
+            "description": "URL is called when ticket is created",
+            "maxLength": 255
+           },
+           "ticket_updated": {
+            "type": "string",
+            "description": "URL is called when ticket is updated",
+            "maxLength": 255
+           },
+           "ticket_closed": {
+            "type": "string",
+            "description": "URL is called when ticket is closed",
+            "maxLength": 255
+           }
+          }
+         },
+         "invoice": {
+          "type": "string",
+          "description": "Link to the pdf invoice file",
+          "maxLength": 255
+         },
+         "invoice_number": {
+          "type": "string",
+          "description": "Invoice number",
+          "maxLength": 255
+         },
+         "invoice_date": {
+          "type": "string",
+          "description": "Invoice date"
+         },
+         "note": {
+          "type": "string",
+          "description": "Order note (used for fulfillment centrum - is not sent to recipient)",
+          "maxLength": 250
+         },
+         "print_delivery_note": {
+          "type": "boolean",
+          "description": "Set to true to request printing of the delivery note"
+         },
+         "print_sscc": {
+          "type": "boolean",
+          "description": "Set to true to request printing of the SSCC label"
+         },
+         "invoice_detail": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/InvoiceDetail"
+           }
+          ],
+          "description": "Invoice details for customs matters, must be filled for all non EU countries, and must match with attached invoice"
+         }
+        },
+        "required": [
+         "id",
+         "variable_symbol",
+         "recipient",
+         "items"
+        ],
+        "example": {
+         "id": "AB12345",
+         "variable_symbol": "12345",
+         "parcel_service": "remax",
+         "delivery_point": "12345",
+         "cod": 0,
+         "value": 15.35,
+         "sender": "SHOP_XY",
+         "validate": false,
+         "recipient": {
+          "address": {
+           "name": "Martin Novák",
+           "street": "Hronská 35",
+           "city": "Zvolen",
+           "zip": "96001",
+           "province": "",
+           "country": "sk"
+          },
+          "contact": {
+           "email": "email@example.com",
+           "phone": "+421900123456"
+          }
+         },
+         "items": [
+          {
+           "id": "12345",
+           "quantity": 1
+          }
+         ],
+         "notification": {
+          "confirmed": "http://example.com/api/order/123/confirm",
+          "sent": "http://example.com/api/order/123/sent",
+          "delivered": "http://example.com/api/order/123/delivered",
+          "returned": "http://example.com/api/order/123/returned",
+          "ticket_created": "http://example.com/api/order/123/ticket/created",
+          "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+          "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+         },
+         "invoice": "http://example.com/order/inv123.pdf",
+         "invoice_number": "202207120001",
+         "invoice_date": "2022-07-12",
+         "note": "Order note",
+         "print_delivery_note": false,
+         "print_sscc": false,
+         "invoice_detail": {
+          "number": "202201397",
+          "total": 353,
+          "currency": "USD",
+          "date_of_issue": "2022-11-30",
+          "products": [
+           {
+            "code": "44434",
+            "description": "\"some test basic product\"",
+            "hs_code": "64039198",
+            "value": 169,
+            "quantity": 1,
+            "country_of_origin": "CZ"
+           }
+          ],
+          "fees": [
+           {
+            "type": "shipping",
+            "description": "Shipping cost",
+            "value": 10
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/OrderView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB12345",
+           "uid": "3c7ac0f0ab",
+           "variable_symbol": "12345",
+           "status": "imported",
+           "created_at": "2022-07-12T10:30:00+0100",
+           "shipped_at": "2022-07-13T14:00:00+0100",
+           "delivered_at": "2022-07-15T09:00:00+0100",
+           "parcel_service": "remax",
+           "cod": 0,
+           "value": 15.35,
+           "invoice": "http://example.com/order/inv123.pdf",
+           "note": "Order note",
+           "print_delivery_note": false,
+           "print_sscc": false,
+           "sscc": "085860288700000423",
+           "packing_packages": [
+            {
+             "number": 1,
+             "sscc": "085860288700000567"
+            }
+           ],
+           "sender": "SHOP_XY",
+           "recipient": {
+            "address": {
+             "name": "Martin Novák",
+             "street": "Hronská 35",
+             "city": "Zvolen",
+             "zip": "96001",
+             "province": "",
+             "country": "sk"
+            },
+            "contact": {
+             "email": "email@example.com",
+             "phone": "+421900123456"
+            }
+           },
+           "items": [
+            {
+             "id": "12345",
+             "quantity": 1,
+             "serial_numbers": [
+              "ABCD-123-456-789"
+             ]
+            }
+           ],
+           "notification": {
+            "confirmed": "http://example.com/api/order/123/confirm",
+            "sent": "http://example.com/api/order/123/sent",
+            "delivered": "http://example.com/api/order/123/delivered",
+            "returned": "http://example.com/api/order/123/returned",
+            "ticket_created": "http://example.com/api/order/123/ticket/created",
+            "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+            "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+           },
+           "tracking_numbers": [],
+           "tracking_links": [],
+           "tracking_events": [],
+           "proof_of_delivery": {
+            "recipient": "Martin Novák",
+            "date": "2018-11-06T09:11:20+0100"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Editing order",
+    "operationId": "editingOrder",
+    "description": "Rewrites order with that ID, it can be only if the order has pending status. Parameters are the same as for the POST method. Lines are edited in place, i.e. a product that stays in the request keeps its order line (and its stock reservation), products left out are removed, new products are appended. Lines are returned in creation order, so a kept line keeps its position and added products follow it.",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the order.",
+      "required": true,
+      "example": "AB12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "variable_symbol": {
+          "type": "string",
+          "description": "Variable symbol"
+         },
+         "parcel_service": {
+          "type": "string",
+          "description": "Preferred parcel service code"
+         },
+         "delivery_point": {
+          "type": "string",
+          "description": "Delivery point code, required for delivery to the delivery point",
+          "maxLength": 255
+         },
+         "delivery_point_parameters": {
+          "type": "object",
+          "nullable": true,
+          "additionalProperties": {
+           "type": "string"
+          },
+          "description": "Map of additional delivery point parameters. Conditionally required when the selected parcel service defines required delivery point parameters."
+         },
+         "cod": {
+          "type": "number",
+          "description": "Cash on delivery amount - if not cash on delivery, skip this parameter, or set to 0"
+         },
+         "value": {
+          "type": "number",
+          "description": "Order value, used for insurance"
+         },
+         "sender": {
+          "type": "string",
+          "description": "Preferred sender code"
+         },
+         "recipient": {
+          "type": "object",
+          "properties": {
+           "address": {
+            "type": "object",
+            "properties": {
+             "name": {
+              "type": "string",
+              "description": "Name and surname of the recipient"
+             },
+             "street": {
+              "type": "string",
+              "description": "Delivery address"
+             },
+             "city": {
+              "type": "string",
+              "description": "Delivery city"
+             },
+             "zip": {
+              "type": "string",
+              "description": "Delivery postal code"
+             },
+             "province": {
+              "type": "string",
+              "description": "Delivery province, if country has provinces"
+             },
+             "country": {
+              "type": "string",
+              "description": "Delivery country in `ISO 3166-1 alpha-2` format"
+             }
+            },
+            "required": [
+             "name",
+             "street",
+             "city",
+             "zip",
+             "country"
+            ]
+           },
+           "contact": {
+            "type": "object",
+            "properties": {
+             "email": {
+              "type": "string",
+              "description": "Recipient's email",
+              "maxLength": 50
+             },
+             "phone": {
+              "type": "string",
+              "description": "Recipient's phone in INTERNATIONAL format",
+              "maxLength": 20
+             }
+            },
+            "required": [
+             "email",
+             "phone"
+            ]
+           }
+          },
+          "required": [
+           "address",
+           "contact"
+          ]
+         },
+         "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Product ID"
+            },
+            "quantity": {
+             "type": "integer",
+             "minimum": 1,
+             "description": "Ordered quantity"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         },
+         "notification": {
+          "type": "object",
+          "properties": {
+           "confirmed": {
+            "type": "string",
+            "description": "URL is called when the order is confirmed and enters packing process",
+            "maxLength": 255
+           },
+           "sent": {
+            "type": "string",
+            "description": "URL is called when the order is sent",
+            "maxLength": 255
+           },
+           "delivered": {
+            "type": "string",
+            "description": "URL is called when the order is completed",
+            "maxLength": 255
+           },
+           "returned": {
+            "type": "string",
+            "description": "URL is called when order is delivered",
+            "maxLength": 255
+           },
+           "ticket_created": {
+            "type": "string",
+            "description": "URL is called when ticket is created",
+            "maxLength": 255
+           },
+           "ticket_updated": {
+            "type": "string",
+            "description": "URL is called when ticket is updated",
+            "maxLength": 255
+           },
+           "ticket_closed": {
+            "type": "string",
+            "description": "URL is called when ticket is closed",
+            "maxLength": 255
+           }
+          }
+         },
+         "invoice": {
+          "type": "string",
+          "description": "Link to the pdf invoice file",
+          "maxLength": 255
+         },
+         "invoice_date": {
+          "type": "string",
+          "description": "Invoice date"
+         },
+         "note": {
+          "type": "string",
+          "description": "Order note (used for fulfillment centrum - is not sent to recipient)",
+          "maxLength": 250
+         },
+         "print_delivery_note": {
+          "type": "boolean",
+          "description": "Set to true to request printing of the delivery note"
+         },
+         "print_sscc": {
+          "type": "boolean",
+          "description": "Set to true to request printing of the SSCC label"
+         },
+         "invoice_detail": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/InvoiceDetail"
+           }
+          ],
+          "description": "Invoice details for customs matters, must be filled for all non EU countries, and must match with attached invoice"
+         }
+        },
+        "required": [
+         "recipient",
+         "items"
+        ],
+        "example": {
+         "variable_symbol": "12345",
+         "parcel_service": "remax",
+         "delivery_point": "12345",
+         "cod": 0,
+         "value": 15.35,
+         "sender": "SHOP_XY",
+         "recipient": {
+          "address": {
+           "name": "Martin Novák",
+           "street": "Hronská 35",
+           "city": "Zvolen",
+           "zip": "96001",
+           "province": "",
+           "country": "sk"
+          },
+          "contact": {
+           "email": "email@example.com",
+           "phone": "+421900123456"
+          }
+         },
+         "items": [
+          {
+           "id": "12345",
+           "quantity": 1
+          }
+         ],
+         "notification": {
+          "confirmed": "http://example.com/api/order/123/confirm",
+          "sent": "http://example.com/api/order/123/sent",
+          "delivered": "http://example.com/api/order/123/delivered",
+          "returned": "http://example.com/api/order/123/returned",
+          "ticket_created": "http://example.com/api/order/123/ticket/created",
+          "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+          "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+         },
+         "invoice": "http://example.com/order/inv123.pdf",
+         "note": "Order note",
+         "print_delivery_note": false,
+         "print_sscc": false,
+         "invoice_detail": {
+          "number": "202201397",
+          "total": 353,
+          "currency": "USD",
+          "date_of_issue": "2022-11-30",
+          "products": [
+           {
+            "code": "44434",
+            "description": "\"some test basic product\"",
+            "hs_code": "64039198",
+            "value": 169,
+            "quantity": 1,
+            "country_of_origin": "CZ"
+           }
+          ],
+          "fees": [
+           {
+            "type": "shipping",
+            "description": "Shipping cost",
+            "value": 10
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/OrderView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB12345",
+           "variable_symbol": "12345",
+           "status": "imported",
+           "created_at": "2022-07-12T10:30:00+0100",
+           "shipped_at": "2022-07-13T14:00:00+0100",
+           "delivered_at": "2022-07-15T09:00:00+0100",
+           "parcel_service": "remax",
+           "delivery_point": "12345",
+           "cod": 0,
+           "value": 15.35,
+           "invoice": "http://example.com/order/inv123.pdf",
+           "note": "Order note",
+           "print_delivery_note": false,
+           "print_sscc": false,
+           "sscc": "085860288700000423",
+           "packing_packages": [
+            {
+             "number": 1,
+             "sscc": "085860288700000567"
+            }
+           ],
+           "sender": "SHOP_XY",
+           "recipient": {
+            "address": {
+             "name": "Martin Novák",
+             "street": "Hronská 35",
+             "city": "Zvolen",
+             "zip": "96001",
+             "province": "",
+             "country": "sk"
+            },
+            "contact": {
+             "email": "email@example.com",
+             "phone": "+421900123456"
+            }
+           },
+           "items": [
+            {
+             "id": "12345",
+             "quantity": 1,
+             "serial_numbers": [
+              "ABCD-123-456-789"
+             ]
+            }
+           ],
+           "packages": [
+            {
+             "tracking_number": "VC23EWQD23",
+             "weight": 1.23,
+             "package_dimension": {
+              "length": 30.5,
+              "width": 20,
+              "height": 15.5,
+              "volumetric_weight": 0.189
+             }
+            }
+           ],
+           "notification": {
+            "confirmed": "http://example.com/api/order/123/confirm",
+            "sent": "http://example.com/api/order/123/sent",
+            "delivered": "http://example.com/api/order/123/delivered",
+            "returned": "http://example.com/api/order/123/returned",
+            "ticket_created": "http://example.com/api/order/123/ticket/created",
+            "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+            "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+           },
+           "tracking_numbers": [],
+           "tracking_links": [],
+           "tracking_events": [
+            {
+             "date": "2021-01-10T06:00:00+0200",
+             "message": "received data",
+             "event_code": "PRG",
+             "carrier_event_code": "1"
+            },
+            {
+             "date": "2021-01-10T18:00:00+0200",
+             "message": "arrived",
+             "event_code": "PRE",
+             "carrier_event_code": "3"
+            },
+            {
+             "date": "2021-01-11T08:00:00+0200",
+             "message": "prepared for departure",
+             "event_code": "IDP",
+             "carrier_event_code": "4"
+            },
+            {
+             "date": "2021-01-12T12:00:00+0200",
+             "message": "ready for pickup",
+             "event_code": "DPL",
+             "carrier_event_code": "5"
+            }
+           ],
+           "package_returns": [
+            {
+             "tracking": "PACKAGEXYZ",
+             "return_tracking": "RETURN123456"
+            }
+           ],
+           "proof_of_delivery": {
+            "recipient": "Martin Novák",
+            "date": "2018-11-06T09:11:20+0100"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Reading order",
+    "operationId": "readingOrder",
+    "description": "Returns order detail and status. Either `id` **or** `tracking` must be provided. Supplying both is allowed,\nbut at least one is required.",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the order. Either `id` or `tracking` must be provided",
+      "required": false,
+      "example": "AB12345",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "tracking",
+      "in": "query",
+      "description": "Package tracking number. Either `id` or `tracking` must be provided",
+      "required": false,
+      "example": "XYZ12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "responses": {
+     "204": {
+      "description": "No Content",
+      "headers": {}
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "properties": {
+               "code": {
+                "type": "string"
+               },
+               "message": {
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "id": [
+             {
+              "code": "NOT_UPDATABLE_ORDER_ERROR",
+              "message": "Order cannot be modified in current state."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Deleting order",
+    "operationId": "deletingOrder",
+    "description": "Deleting an order is only possible if it is in pending status.",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the order.",
+      "required": true,
+      "example": "AB12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/order/invoice": {
+   "put": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/OrderView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB12345",
+           "variable_symbol": "12345",
+           "status": "imported",
+           "created_at": "2022-07-12T10:30:00+0100",
+           "shipped_at": "2022-07-13T14:00:00+0100",
+           "delivered_at": "2022-07-15T09:00:00+0100",
+           "parcel_service": "remax",
+           "delivery_point": "12345",
+           "cod": 0,
+           "value": 15.35,
+           "invoice": "http://example.com/order/inv123.pdf",
+           "invoice_number": "202207120001",
+           "invoice_date": "2022-07-12",
+           "note": "Order note",
+           "sscc": "085860288700000423",
+           "packing_packages": [
+            {
+             "number": 1,
+             "sscc": "085860288700000567"
+            }
+           ],
+           "sender": "SHOP_XY",
+           "recipient": {
+            "address": {
+             "name": "Martin Novák",
+             "street": "Hronská 35",
+             "city": "Zvolen",
+             "zip": "96001",
+             "province": "",
+             "country": "sk"
+            },
+            "contact": {
+             "email": "email@example.com",
+             "phone": "+421900123456"
+            }
+           },
+           "items": [
+            {
+             "id": "12345",
+             "quantity": 1
+            }
+           ],
+           "invoice_detail": {
+            "number": "202201397",
+            "total": 353,
+            "currency": "USD",
+            "date_of_issue": "2022-11-30",
+            "products": [
+             {
+              "code": "44434",
+              "description": "\"Updated product description\"",
+              "hs_code": "64039198",
+              "value": 169,
+              "quantity": 1,
+              "country_of_origin": "CZ"
+             }
+            ],
+            "fees": [
+             {
+              "type": "shipping",
+              "description": "Shipping cost",
+              "value": 10
+             }
+            ]
+           },
+           "tracking_numbers": [],
+           "tracking_links": [],
+           "tracking_events": [],
+           "proof_of_delivery": {
+            "recipient": "Martin Novák",
+            "date": "2018-11-06T09:11:20+0100"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "array",
+             "items": {
+              "type": "object",
+              "properties": {
+               "code": {
+                "type": "string"
+               },
+               "message": {
+                "type": "string"
+               }
+              }
+             }
+            }
+           }
+          }
+         },
+         "example": {
+          "message": "Invalid request",
+          "violations": {
+           "id": [
+            {
+             "code": "NOT_UPDATABLE_ORDER_INVOICE_ERROR",
+             "message": "Order invoice data cannot be modified in current state."
+            }
+           ]
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "id": [
+             {
+              "code": "NOT_UPDATABLE_ORDER_INVOICE_ERROR",
+              "message": "Order invoice data cannot be modified in current state."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Updating order invoice details",
+    "operationId": "updatingOrderInvoiceDetails",
+    "description": "Updates only the invoice details (customs information) of an existing order. This operation is allowed only for orders in specific statuses: `new`, `imported`, `b2b_new`, `packed`.",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the order.",
+      "required": true,
+      "example": "AB12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "invoice_detail": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/InvoiceDetail"
+           }
+          ],
+          "description": "Invoice details for customs matters"
+         }
+        },
+        "required": [
+         "invoice_detail"
+        ],
+        "example": {
+         "invoice_detail": {
+          "number": "202201397",
+          "total": 353,
+          "currency": "USD",
+          "date_of_issue": "2022-11-30",
+          "products": [
+           {
+            "code": "44434",
+            "description": "\"Updated product description\"",
+            "hs_code": "64039198",
+            "value": 169,
+            "quantity": 1,
+            "country_of_origin": "CZ"
+           }
+          ],
+          "fees": [
+           {
+            "type": "shipping",
+            "description": "Shipping cost",
+            "value": 10
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/order/history": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "integer",
+           "description": "Page number"
+          },
+          "total": {
+           "type": "integer",
+           "description": "Total order count"
+          },
+          "orders": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/OrderView"
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 245,
+           "orders": [
+            {
+             "id": "AB12345",
+             "variable_symbol": "12345",
+             "status": "imported",
+             "created_at": "2022-07-12T10:30:00+0100",
+             "shipped_at": "2022-07-13T14:00:00+0100",
+             "delivered_at": "2022-07-15T09:00:00+0100",
+             "parcel_service": "remax",
+             "delivery_point": "12345",
+             "cod": 0,
+             "value": 15.35,
+             "invoice": "http://example.com/order/inv123.pdf",
+             "note": "Order note",
+             "sender": "SHOP_XY",
+             "recipient": {
+              "address": {
+               "name": "Martin Novák",
+               "street": "Hronská 35",
+               "city": "Zvolen",
+               "zip": "96001",
+               "province": "",
+               "country": "sk"
+              },
+              "contact": {
+               "email": "email@example.com",
+               "phone": "+421900123456"
+              }
+             },
+             "items": [
+              {
+               "id": "12345",
+               "quantity": 1,
+               "serial_numbers": [
+                "ABCD-123-456-789"
+               ]
+              }
+             ],
+             "packages": [
+              {
+               "tracking_number": "VC23EWQD23",
+               "weight": 1.23,
+               "package_dimension": {
+                "length": 30.5,
+                "width": 20,
+                "height": 15.5,
+                "volumetric_weight": 0.189
+               }
+              }
+             ],
+             "notification": {
+              "confirmed": "http://example.com/api/order/123/confirm",
+              "sent": "http://example.com/api/order/123/sent",
+              "delivered": "http://example.com/api/order/123/delivered",
+              "returned": "http://example.com/api/order/123/returned",
+              "ticket_created": "http://example.com/api/order/123/ticket/created",
+              "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+              "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+             },
+             "tracking_numbers": [],
+             "tracking_links": [],
+             "tracking_events": [
+              {
+               "date": "2021-01-10T06:00:00+0200",
+               "message": "received data",
+               "event_code": "PRG",
+               "carrier_event_code": "1"
+              },
+              {
+               "date": "2021-01-10T18:00:00+0200",
+               "message": "arrived",
+               "event_code": "PRE",
+               "carrier_event_code": "3"
+              },
+              {
+               "date": "2021-01-11T08:00:00+0200",
+               "message": "prepared for departure",
+               "event_code": "IDP",
+               "carrier_event_code": "4"
+              },
+              {
+               "date": "2021-01-12T12:00:00+0200",
+               "message": "ready for pickup",
+               "event_code": "DPL",
+               "carrier_event_code": "5"
+              }
+             ],
+             "proof_of_delivery": {
+              "recipient": "Martin Novák",
+              "date": "2018-11-06T09:11:20+0100"
+             }
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Reading order history",
+    "operationId": "readingOrderHistory",
+    "description": "Limit 100 orders per page.",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "description": "Orders created after the date",
+      "required": false,
+      "example": "2019-01-01T00:00:00.000Z",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "Orders created before the date",
+      "required": false,
+      "example": "2019-12-31T00:00:00.000Z",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "description": "Filter by order status (pending,confirmed,sent,returned,rejected,delivered)",
+      "required": false,
+      "example": "delivered",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number",
+      "required": false,
+      "example": 10,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/order/files": {
+   "post": {
+    "responses": {
+     "204": {
+      "description": "No Content",
+      "headers": {}
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Uploading order attachment",
+    "operationId": "uploadingOrderAttachment",
+    "description": "Uploading invoices and additional documents for printing and packing\n\n- Only PDF file type is allowed\n\n- Only A4 page format is supported\n\n- Only text pages are allowed (no A4 image instead of page)",
+    "tags": [
+     "Orders"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "Unique order identification code",
+      "required": true,
+      "example": "AB12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "type": {
+          "type": "string",
+          "example": "invoice",
+          "description": "Attachment type - allowed values `invoice` or `other`"
+         },
+         "name": {
+          "type": "string",
+          "example": "Invoice_AB12345.pdf",
+          "description": "File name"
+         },
+         "data": {
+          "type": "string",
+          "example": "VEVTVCBEQVRB...",
+          "description": "Base64 encoded file content"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/cod": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CodView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB12345",
+           "uid": "2026040001",
+           "variable_symbol": "12345",
+           "parcel_service": "remax",
+           "cod": 42.5,
+           "status": "waiting",
+           "received_at": "2026-04-20T10:15:00+0200",
+           "paid_at": "2026-04-21T09:00:00+0200",
+           "created_at": "2026-04-18T14:00:00+0200"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {}
+     }
+    },
+    "summary": "Reading COD info",
+    "operationId": "readingCodInfo",
+    "description": "Returns COD payment info for a single order identified by either `id` or `variable_symbol`.\nOnly orders with `cod > 0` are returned. Orders without COD return `404`.",
+    "tags": [
+     "Cash on delivery"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "Order external id",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "variable_symbol",
+      "in": "query",
+      "description": "Order variable symbol",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/cod/list": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "integer",
+           "description": "Current page"
+          },
+          "total": {
+           "type": "integer",
+           "description": "Total number of matching orders"
+          },
+          "items": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/CodView"
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 42,
+           "items": [
+            {
+             "id": "AB12345",
+             "uid": "2026040001",
+             "variable_symbol": "12345",
+             "parcel_service": "remax",
+             "cod": 42.5,
+             "status": "waiting",
+             "received_at": "2026-04-20T10:15:00+0200",
+             "paid_at": "2026-04-21T09:00:00+0200",
+             "created_at": "2026-04-18T14:00:00+0200"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "COD list",
+    "operationId": "codList",
+    "description": "Paginated list of orders with COD (100 items per page). If `status` is omitted, all orders with `cod > 0` are returned.\n\nThe `waiting` filter matches orders that are ready to collect COD from the courier (not yet delivered to the fulfillment centrum).",
+    "tags": [
+     "Cash on delivery"
+    ],
+    "parameters": [
+     {
+      "name": "status",
+      "in": "query",
+      "description": "Filter by COD status",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "enum": [
+        "waiting",
+        "received",
+        "paid"
+       ]
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "Include orders created on or after this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "Include orders created on or before this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number (default `1`)",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/rma/list": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "integer",
+           "description": "Current page"
+          },
+          "total": {
+           "type": "integer",
+           "description": "Total number of matching returned shipments"
+          },
+          "items": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/OrderView"
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 8,
+           "items": [
+            {
+             "id": "69e73ce4deec1",
+             "uid": "KIK00012345",
+             "status": "returned",
+             "created_at": "2026-04-02T09:12:00+0200",
+             "shipped_at": "2026-04-03T16:40:00+0200",
+             "delivered_at": null,
+             "returned_at": "2026-04-22T10:10:44+0200",
+             "return_type": "return",
+             "parcel_service": "gls",
+             "cod": 0,
+             "value": 49.9,
+             "recipient": {
+              "address": {
+               "name": "Jan Novak",
+               "street": "Hlavna 1",
+               "city": "Bratislava",
+               "zip": "81101",
+               "country": "SK"
+              },
+              "contact": {
+               "email": "jan.novak@example.com",
+               "phone": "+421900123456"
+              }
+             },
+             "tracking_numbers": [
+              "123456789"
+             ],
+             "items": [
+              {
+               "id": "SKU-001",
+               "quantity": 1
+              }
+             ]
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "List returned shipments (RMA)",
+    "operationId": "listRma",
+    "description": "Paginated list of shipments that came back from the carrier (100 items per page), sorted by order creation date, newest first. Every item uses the same structure as an order response, with `returned_at` and `return_type` filled in.\n\nCancelled orders (storna) are **not** included. Undelivered and refused shipments are not distinguished - a refused delivery comes back and ends up in the same state as any other undelivered one.\n\nNote that the `from` / `to` filter applies to the **return** date, while the sorting is by order creation date.",
+    "tags": [
+     "RMA"
+    ],
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "description": "Include shipments returned on or after this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "Include shipments returned on or before this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number (default `1`)",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/return/list": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "integer",
+           "description": "Current page"
+          },
+          "total": {
+           "type": "integer",
+           "description": "Total number of matching returns"
+          },
+          "items": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/LocalReturnView"
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 42,
+           "items": [
+            {
+             "id": 1024,
+             "uid": "AB00001",
+             "depot_id": 1,
+             "type": "basic",
+             "status": "stored",
+             "weight": 1.25,
+             "created_at": "2026-05-10T09:15:00+0200",
+             "barcodes": [
+              "CZ123456789",
+              "CZ987654321"
+             ],
+             "items": [
+              {
+               "id": 17,
+               "barcode": "8594000000000",
+               "description": "Returned product",
+               "condition": "Damaged box",
+               "quantity": 1,
+               "action": "stock_in"
+              }
+             ],
+             "photos": [
+              {
+               "id": 51,
+               "type": "package"
+              }
+             ]
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "List returns",
+    "operationId": "listReturns",
+    "description": "Paginated list of \"local\" returns (100 items per page). Sorted by creation date, newest first.\n\n**This is an extra service that has to be activated by the sales department.** If it is not active for your account, the list stays empty. For shipments returned by the carrier use `GET /rma/list` instead.",
+    "tags": [
+     "Returns"
+    ],
+    "parameters": [
+     {
+      "name": "from",
+      "in": "query",
+      "description": "Include returns created on or after this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "Include returns created on or before this date (ISO 8601 date)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "uid",
+      "in": "query",
+      "description": "Filter by exact return UID (e.g. `AB00001`)",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "barcode",
+      "in": "query",
+      "description": "Filter by an exact scanned package barcode",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number (default `1`)",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/return/{uid}": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/LocalReturnView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": 1024,
+           "uid": "AB00001",
+           "depot_id": 1,
+           "type": "complex",
+           "status": "stored",
+           "weight": 1.25,
+           "created_at": "2026-05-10T09:15:00+0200",
+           "barcodes": [],
+           "items": [],
+           "photos": []
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {}
+     }
+    },
+    "summary": "Read return detail",
+    "operationId": "readReturnDetail",
+    "description": "Returns full detail of a single return identified by its UID. Response shape matches a single list item.",
+    "tags": [
+     "Returns"
+    ],
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "description": "Return UID",
+      "required": true,
+      "example": "AB00001",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/return/{uid}/photo/{photoId}": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {
+       "Content-Disposition": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "content": {
+       "image/*": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {}
+     }
+    },
+    "summary": "Stream return photo",
+    "operationId": "streamReturnPhoto",
+    "description": "Streams the binary contents of a single return photo. The `Content-Type` header reflects the original upload type (typically `image/jpeg` or `image/png`).",
+    "tags": [
+     "Returns"
+    ],
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "description": "Return UID",
+      "required": true,
+      "example": "AB00001",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "photoId",
+      "in": "path",
+      "description": "Photo id from the return's `photos` array",
+      "required": true,
+      "example": 51,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/parcel-service": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "code": {
+            "type": "string",
+            "description": "Delivery service identification code"
+           },
+           "name": {
+            "type": "string",
+            "description": "Delivery service name"
+           }
+          }
+         }
+        },
+        "example": [
+         {
+          "code": "gls",
+          "name": "GLS"
+         },
+         {
+          "code": "intime",
+          "name": "intime"
+         }
+        ]
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Available parcel services",
+    "operationId": "availableParcelServices",
+    "description": "",
+    "tags": [
+     "Parcel services"
+    ]
+   }
+  },
+  "/delivery-point/{deliveryService}": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "id": {
+            "type": "integer"
+           },
+           "external_code": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "street": {
+            "type": "string"
+           },
+           "city": {
+            "type": "string"
+           },
+           "zip": {
+            "type": "string"
+           },
+           "country": {
+            "type": "string"
+           }
+          }
+         }
+        },
+        "example": [
+         {
+          "id": 3100000,
+          "external_code": "2285",
+          "name": "HUDECZEK SERVICE",
+          "street": "Stonavská 340",
+          "city": "Albrechtice u Českého Těšína",
+          "zip": "73543",
+          "country": "cz"
+         }
+        ]
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "array",
+            "items": {
+             "type": "string"
+            }
+           }
+          }
+         },
+         "required": [
+          "message"
+         ],
+         "example": {
+          "message": "Country parameter is required for \"dpd_eu_pudo\" delivery service"
+         }
+        },
+        "examples": {
+         "missingCountry": {
+          "value": {
+           "message": "Country parameter is required for \"dpd_eu_pudo\" delivery service"
+          }
+         },
+         "emptyCountry": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "request": [
+             "Query request parameter \"country\" should not be empty."
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "No delivery points available for \"invalid\" delivery service"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Available delivery points",
+    "operationId": "availableDeliveryPoints",
+    "description": "Returns the delivery points of the given parcel service.\n\nPan-European parcel services (`gls_eu_pudo`, `dpd_eu_pudo`) have too many delivery points to be listed at once, so the `country` query parameter is mandatory for them - the request fails with `400` when it is missing.\n\nWhen the parcel service has no delivery point in the requested country, the response is `404` - the same as for an unknown parcel service.",
+    "tags": [
+     "Parcel services"
+    ],
+    "parameters": [
+     {
+      "name": "deliveryService",
+      "in": "path",
+      "description": "Parcel service identification code",
+      "required": true,
+      "example": "zasielkovna_cz",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "country",
+      "in": "query",
+      "description": "Two-letter country code the delivery points are filtered by (case-insensitive). Required for `gls_eu_pudo` and `dpd_eu_pudo`, optional for all other parcel services.",
+      "required": false,
+      "example": "sk",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/stock-receipt": {
+   "post": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockReceiptResponse"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "S_12345",
+           "status": "created",
+           "name": "SHAMPOO_DELIVERY_1",
+           "delivery_service": "gls",
+           "tracking_code": "TR12345678",
+           "expected_date": "2018-10-01",
+           "is_bianco": false,
+           "created_date": "2018-10-17T13:24:02+0000",
+           "items": [
+            {
+             "id": "AB123",
+             "quantity": 10,
+             "received": 0
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object"
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "items[0].id": [
+             {
+              "code": "",
+              "message": "Product \"MULTI_PRODUCT_TEST\" is multi product"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Create stock receipt",
+    "operationId": "createStockReceipt",
+    "description": "",
+    "tags": [
+     "Stock management"
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "id": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Unique stock receipt identification code"
+         },
+         "name": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Stock receipt name / description"
+         },
+         "delivery_service": {
+          "type": "string",
+          "description": "Parcel service code of a shipment (must be a valid delivery service code)"
+         },
+         "tracking_code": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Shipment tracking code"
+         },
+         "expected_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Expected date of delivery"
+         },
+         "is_bianco": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bianco stock receipt flag"
+         },
+         "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Product identification code"
+            },
+            "quantity": {
+             "type": "integer",
+             "minimum": 1,
+             "description": "Expected quantity"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         }
+        },
+        "required": [
+         "id",
+         "name",
+         "items"
+        ],
+        "example": {
+         "id": "S_12345",
+         "name": "SHAMPOO_DELIVERY_1",
+         "delivery_service": "gls",
+         "tracking_code": "TR12345678",
+         "expected_date": "2018-10-01",
+         "is_bianco": false,
+         "items": [
+          {
+           "id": "AB123",
+           "quantity": 10
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockReceiptResponse"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "S_12345",
+           "status": "created",
+           "name": "SHAMPOO_DELIVERY_1",
+           "delivery_service": "gls",
+           "tracking_code": "TR123456789",
+           "expected_date": "2018-10-01",
+           "is_bianco": false,
+           "created_date": "2018-08-30T08:33:30+0000",
+           "items": [
+            {
+             "id": "AB123",
+             "quantity": 10,
+             "received": 0
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object"
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "message": "Invalid request",
+           "violations": {
+            "items[0].id": [
+             {
+              "code": "",
+              "message": "This value should not be blank."
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Modify stock receipt",
+    "operationId": "modifyStockReceipt",
+    "description": "Stock receipts in state `created` can be modified.",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the stock receipt.",
+      "required": true,
+      "example": "S_12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Stock receipt name / description"
+         },
+         "delivery_service": {
+          "type": "string",
+          "description": "Parcel service code of a shipment (must be a valid delivery service code)"
+         },
+         "tracking_code": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "Shipment tracking code"
+         },
+         "expected_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Expected date of delivery"
+         },
+         "is_bianco": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bianco stock receipt flag"
+         },
+         "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+           "type": "object",
+           "properties": {
+            "id": {
+             "type": "string",
+             "description": "Product identification code"
+            },
+            "quantity": {
+             "type": "integer",
+             "minimum": 1,
+             "description": "Expected quantity"
+            }
+           },
+           "required": [
+            "id",
+            "quantity"
+           ]
+          }
+         }
+        },
+        "required": [
+         "name",
+         "items"
+        ],
+        "example": {
+         "name": "SHAMPOO_DELIVERY_1",
+         "delivery_service": "gls",
+         "tracking_code": "TR123456789",
+         "expected_date": "2018-10-01",
+         "is_bianco": false,
+         "items": [
+          {
+           "id": "AB123",
+           "quantity": 10
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockReceiptResponse"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "S_12345",
+           "status": "created",
+           "name": "SHAMPOO_DELIVERY_1",
+           "delivery_service": "gls",
+           "tracking_code": "TR123456789",
+           "expected_date": "2018-10-01",
+           "is_bianco": false,
+           "created_date": "2018-08-30T08:33:30+0000",
+           "items": [
+            {
+             "id": "AB123",
+             "quantity": 10,
+             "received": 0
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Stock receipt S_12345 not found"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Read stock receipt",
+    "operationId": "readStockReceipt",
+    "description": "Returns stock receipt information",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the stock receipt.",
+      "required": true,
+      "example": "S_12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   },
+   "delete": {
+    "responses": {
+     "204": {
+      "description": "No Content",
+      "headers": {}
+     },
+     "400": {
+      "description": "Bad Request",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          },
+          "violations": {
+           "type": "object"
+          }
+         }
+        },
+        "example": {
+         "message": "Invalid request"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Delete stock receipt",
+    "operationId": "deleteStockReceipt",
+    "description": "Stock receipts in state `created` can be deleted.",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "An unique identifier of the stock receipt.",
+      "required": true,
+      "example": "S_12345",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/stock/all": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/StockView"
+         }
+        },
+        "examples": {
+         "response": {
+          "value": [
+           {
+            "id": "AB123",
+            "ean": "8580000001234",
+            "name": "Shampoo",
+            "quantity": 10
+           }
+          ]
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "List stock levels",
+    "operationId": "listStock",
+    "description": "Returns the current stock levels of all products.",
+    "tags": [
+     "Stock management"
+    ]
+   }
+  },
+  "/stock": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/StockView"
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "id": "AB123",
+           "ean": "8580000001234",
+           "name": "Shampoo",
+           "quantity": 10
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "404": {
+      "description": "Not Found",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "message": "Product AB123 not found"
+        }
+       }
+      }
+     }
+    },
+    "summary": "Read stock level",
+    "operationId": "readStock",
+    "description": "Returns the current stock level of a single product.",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "query",
+      "description": "Product identification code",
+      "required": true,
+      "example": "AB123",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/stock/history/{date}": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/StockView"
+         }
+        },
+        "examples": {
+         "response": {
+          "value": [
+           {
+            "id": "AB123",
+            "ean": "8580000001234",
+            "name": "Shampoo",
+            "quantity": 10
+           }
+          ]
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Get stock level at date",
+    "operationId": "getStockLevelAtDate",
+    "description": "",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "date",
+      "in": "path",
+      "description": "Requested date",
+      "required": true,
+      "example": "2018-09-01T00:00:00.000Z",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/stock/movements": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "OK",
+      "headers": {},
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "page": {
+           "type": "integer",
+           "description": "Page number"
+          },
+          "total": {
+           "type": "integer",
+           "description": "Total movement count"
+          },
+          "movements": {
+           "type": "array",
+           "items": {
+            "type": "object",
+            "properties": {
+             "id": {
+              "type": "integer",
+              "description": "Stock movement ID"
+             },
+             "product": {
+              "type": "string",
+              "description": "Product identification code"
+             },
+             "type": {
+              "type": "string",
+              "enum": [
+               "in",
+               "out"
+              ],
+              "description": "Movement direction"
+             },
+             "change": {
+              "type": "integer",
+              "description": "Quantity change (positive for in, negative for out)"
+             },
+             "quantity": {
+              "type": "integer",
+              "description": "Resulting stock quantity after the movement"
+             },
+             "date": {
+              "type": "string",
+              "description": "Date and time of the movement"
+             },
+             "reason": {
+              "type": "string",
+              "description": "Reason / note / special message related to the stock movement"
+             },
+             "order": {
+              "type": "string",
+              "nullable": true,
+              "description": "Related order identification code"
+             },
+             "stock_receipt": {
+              "type": "string",
+              "nullable": true,
+              "description": "Related stock receipt identification code"
+             }
+            }
+           }
+          }
+         }
+        },
+        "examples": {
+         "response": {
+          "value": {
+           "page": 1,
+           "total": 245,
+           "movements": [
+            {
+             "id": 123,
+             "product": "P53225",
+             "type": "out",
+             "change": -1,
+             "quantity": 27,
+             "date": "2014-06-26T06:07:53+0200",
+             "reason": "arrival",
+             "order": null,
+             "stock_receipt": "S123455"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     }
+    },
+    "summary": "Get stock movements",
+    "operationId": "getStockMovements",
+    "description": "Allow you to retreive the history of stock movements. Limit 500 entries per page.",
+    "tags": [
+     "Stock management"
+    ],
+    "parameters": [
+     {
+      "name": "product",
+      "in": "query",
+      "description": "Product identification code",
+      "required": false,
+      "example": "P53225",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "receipt",
+      "in": "query",
+      "description": "Stock receipt identification code",
+      "required": false,
+      "example": "S123455",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "reason",
+      "in": "query",
+      "description": "Reason / note / special message related to the stock movement",
+      "required": false,
+      "example": "arrival",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "from",
+      "in": "query",
+      "description": "Movements after the date",
+      "required": false,
+      "example": "2019-01-01T00:00:00.000Z",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "to",
+      "in": "query",
+      "description": "Movements before the date",
+      "required": false,
+      "example": "2019-12-31T00:00:00.000Z",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "page",
+      "in": "query",
+      "description": "Page number",
+      "required": false,
+      "example": 10,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "CodView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Order external id"
+     },
+     "uid": {
+      "type": "string",
+      "description": "Order uid assigned by the fulfillment centrum"
+     },
+     "variable_symbol": {
+      "type": "string",
+      "description": "Order variable symbol"
+     },
+     "parcel_service": {
+      "type": "string",
+      "description": "Parcel service code"
+     },
+     "cod": {
+      "type": "number",
+      "description": "Cash on delivery amount (local currency)"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "waiting",
+       "received",
+       "paid"
+      ],
+      "description": "COD payment status"
+     },
+     "received_at": {
+      "type": "string",
+      "nullable": true,
+      "description": "Date and time when COD was received from the courier"
+     },
+     "paid_at": {
+      "type": "string",
+      "nullable": true,
+      "description": "Date and time when COD was paid out to the seller"
+     },
+     "created_at": {
+      "type": "string",
+      "description": "Order creation date and time"
+     }
+    }
+   },
+   "LocalReturnItemView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "description": "Return item id"
+     },
+     "barcode": {
+      "type": "string",
+      "nullable": true,
+      "description": "Scanned product barcode"
+     },
+     "description": {
+      "type": "string",
+      "nullable": true,
+      "description": "Item description"
+     },
+     "condition": {
+      "type": "string",
+      "nullable": true,
+      "description": "Condition of the returned item"
+     },
+     "quantity": {
+      "type": "integer",
+      "description": "Returned quantity"
+     },
+     "action": {
+      "type": "string",
+      "nullable": true,
+      "description": "Action taken with the returned item"
+     }
+    }
+   },
+   "LocalReturnPhotoView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "description": "Photo id"
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "package",
+       "content",
+       "document"
+      ],
+      "description": "Photo type"
+     }
+    }
+   },
+   "LocalReturnView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "description": "Return id"
+     },
+     "uid": {
+      "type": "string",
+      "description": "Return UID"
+     },
+     "depot_id": {
+      "type": "integer",
+      "description": "Depot id"
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "basic",
+       "complex"
+      ],
+      "description": "Return type"
+     },
+     "status": {
+      "type": "string",
+      "description": "Return status"
+     },
+     "weight": {
+      "type": "number",
+      "nullable": true,
+      "description": "Return weight"
+     },
+     "created_at": {
+      "type": "string",
+      "description": "Return creation date and time"
+     },
+     "barcodes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Scanned package barcodes"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/LocalReturnItemView"
+      }
+     },
+     "photos": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/LocalReturnPhotoView"
+      }
+     }
+    }
+   },
+   "StockView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique product ID"
+     },
+     "ean": {
+      "type": "string",
+      "nullable": true,
+      "description": "EAN-13"
+     },
+     "name": {
+      "type": "string",
+      "description": "Name of the product"
+     },
+     "quantity": {
+      "type": "integer",
+      "description": "Stock quantity"
+     }
+    }
+   },
+   "StockReceiptResponse": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Stock receipt identification code"
+     },
+     "status": {
+      "type": "string",
+      "description": "Stock receipt status"
+     },
+     "name": {
+      "type": "string",
+      "description": "Stock receipt name / description"
+     },
+     "delivery_service": {
+      "type": "string",
+      "nullable": true,
+      "description": "Parcel service code of a shipment"
+     },
+     "tracking_code": {
+      "type": "string",
+      "nullable": true,
+      "description": "Shipment tracking code"
+     },
+     "expected_date": {
+      "type": "string",
+      "format": "date",
+      "nullable": true,
+      "description": "Expected date of delivery"
+     },
+     "is_bianco": {
+      "type": "boolean",
+      "description": "Bianco stock receipt flag"
+     },
+     "created_date": {
+      "type": "string",
+      "description": "Date and time of stock receipt creation"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "description": "Product identification code"
+        },
+        "quantity": {
+         "type": "integer",
+         "description": "Expected quantity"
+        },
+        "received": {
+         "type": "integer",
+         "description": "Received quantity"
+        }
+       },
+       "required": [
+        "id",
+        "quantity",
+        "received"
+       ]
+      }
+     }
+    }
+   },
+   "StockItemView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique product ID"
+     },
+     "internal_code": {
+      "type": "string",
+      "description": "Internal product code"
+     },
+     "ean": {
+      "type": "string",
+      "nullable": true,
+      "description": "EAN-13"
+     },
+     "name": {
+      "type": "string",
+      "nullable": true,
+      "description": "Name of the product"
+     },
+     "photo": {
+      "type": "string",
+      "nullable": true,
+      "description": "URL to an image of the product"
+     },
+     "weight": {
+      "type": "number",
+      "nullable": true,
+      "description": "Product weight"
+     },
+     "volumetric_weight": {
+      "type": "number",
+      "nullable": true,
+      "description": "Volumetric weight (type 2)"
+     },
+     "notify_url": {
+      "type": "string",
+      "nullable": true,
+      "description": "Callback URL which is called on stock movement of this product. [More info about product notifications](#stock-level-notifications)"
+     },
+     "archived": {
+      "type": "boolean"
+     },
+     "stock_quantity": {
+      "type": "integer",
+      "description": "Numer of pieces on the stock"
+     },
+     "free_quantity": {
+      "type": "integer",
+      "description": "Total number of pieces, which will remain on the stock after all orders are complete"
+     },
+     "serial_numbers": {
+      "type": "boolean",
+      "description": "Serial number tracking. Indicates whether stock units of this product are tracked by serial number."
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "single",
+       "multi"
+      ],
+      "description": "Product type (`single` or `multi`)"
+     },
+     "items": {
+      "description": "For multi-products: list of components. `null` for single products.",
+      "nullable": true,
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "description": "Component product ID"
+        },
+        "name": {
+         "type": "string",
+         "nullable": true,
+         "description": "Component product name"
+        },
+        "quantity": {
+         "type": "integer",
+         "description": "Number of component pieces in the multi-product"
+        }
+       },
+       "required": [
+        "id",
+        "quantity"
+       ]
+      }
+     },
+     "customs_information": {
+      "type": "object",
+      "properties": {
+       "hs_code": {
+        "type": "string",
+        "description": "HS code"
+       },
+       "country_of_origin": {
+        "type": "string",
+        "description": "ISO country code"
+       },
+       "purchase_price": {
+        "type": "number",
+        "description": "Purchase price"
+       }
+      }
+     }
+    }
+   },
+   "OrderView": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Unique order identification code"
+     },
+     "uid": {
+      "type": "string",
+      "description": "Internal order UID"
+     },
+     "variable_symbol": {
+      "type": "string",
+      "description": "Variable symbol"
+     },
+     "status": {
+      "type": "string",
+      "description": "Order status"
+     },
+     "created_at": {
+      "type": "string",
+      "description": "Order creation date"
+     },
+     "shipped_at": {
+      "description": "Date when order was shipped",
+      "nullable": true,
+      "type": "string"
+     },
+     "delivered_at": {
+      "description": "Date when order was delivered",
+      "nullable": true,
+      "type": "string"
+     },
+     "returned_at": {
+      "description": "Date when the shipment was returned (`null` if the order has not been returned). Independent of `status`: `status` describes the order, `returned_at` and `return_type` describe the return record itself.",
+      "nullable": true,
+      "type": "string"
+     },
+     "return_type": {
+      "description": "How the return was recorded - `return` (shipment came back from the carrier), `claim` (returned by the customer) or `write_off`. `null` if the order has not been returned. In practice almost always `return`.",
+      "nullable": true,
+      "type": "string",
+      "enum": [
+       "return",
+       "claim",
+       "write_off"
+      ]
+     },
+     "parcel_service": {
+      "type": "string",
+      "description": "Preferred parcel service code"
+     },
+     "delivery_point": {
+      "type": "string",
+      "nullable": true,
+      "description": "Delivery point code (only if delivery to the delivery point)"
+     },
+     "cod": {
+      "type": "number",
+      "description": "Cash on delivery amount"
+     },
+     "value": {
+      "type": "number",
+      "description": "Order value"
+     },
+     "invoice": {
+      "type": "string",
+      "description": "Link to the pdf invoice file"
+     },
+     "invoice_number": {
+      "type": "string",
+      "description": "Invoice number"
+     },
+     "invoice_date": {
+      "type": "string",
+      "nullable": true,
+      "description": "Invoice date"
+     },
+     "note": {
+      "type": "string",
+      "description": "Order note (used for fulfillment centrum - is not sent to recipient)"
+     },
+     "print_delivery_note": {
+      "type": "boolean",
+      "description": "Delivery note print preference (`false` when not provided)"
+     },
+     "print_sscc": {
+      "type": "boolean",
+      "description": "SSCC label print preference (`false` when not provided)"
+     },
+     "sscc": {
+      "description": "18-digit order-level SSCC code, `null` if not yet issued",
+      "nullable": true,
+      "type": "string"
+     },
+     "packing_packages": {
+      "type": "array",
+      "description": "Per packing-package SSCC codes, empty array if none",
+      "items": {
+       "type": "object",
+       "properties": {
+        "number": {
+         "type": "integer",
+         "description": "Packing package number"
+        },
+        "sscc": {
+         "type": "string",
+         "description": "18-digit packing-package SSCC code"
+        }
+       }
+      }
+     },
+     "sender": {
+      "type": "string",
+      "nullable": true,
+      "description": "Preferred sender code"
+     },
+     "recipient": {
+      "type": "object",
+      "properties": {
+       "address": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "Name and surname of the recipient"
+         },
+         "street": {
+          "type": "string",
+          "description": "Delivery address"
+         },
+         "city": {
+          "type": "string",
+          "description": "Delivery city"
+         },
+         "zip": {
+          "type": "string",
+          "description": "Delivery postal code"
+         },
+         "province": {
+          "type": "string",
+          "description": "Delivery province, if country has provinces"
+         },
+         "country": {
+          "type": "string",
+          "description": "Delivery country in `ISO 3166-1 alpha-2` format"
+         }
+        }
+       },
+       "contact": {
+        "type": "object",
+        "properties": {
+         "email": {
+          "type": "string",
+          "description": "Recipient's email",
+          "maxLength": 50
+         },
+         "phone": {
+          "type": "string",
+          "description": "Recipient's phone in INTERNATIONAL format",
+          "maxLength": 20
+         }
+        }
+       }
+      },
+      "required": [
+       "contact"
+      ]
+     },
+     "notification": {
+      "type": "object",
+      "properties": {
+       "confirmed": {
+        "type": "string",
+        "description": "URL is called when the order is confirmed and enters packing process"
+       },
+       "sent": {
+        "type": "string",
+        "description": "URL is called when the order is sent"
+       },
+       "delivered": {
+        "type": "string",
+        "description": "URL is called when the order is completed"
+       },
+       "returned": {
+        "type": "string",
+        "description": "URL is called when order is delivered"
+       },
+       "ticket_created": {
+        "type": "string",
+        "description": "URL is called when ticket is created"
+       },
+       "ticket_updated": {
+        "type": "string",
+        "description": "URL is called when ticket is updated"
+       },
+       "ticket_closed": {
+        "type": "string",
+        "description": "URL is called when ticket is closed"
+       }
+      }
+     },
+     "tracking_numbers": {
+      "type": "array",
+      "description": "List of assigned tracking numbers",
+      "items": {
+       "type": "string"
+      }
+     },
+     "tracking_links": {
+      "type": "array",
+      "description": "List of tracking url (if available for selected delivery service)",
+      "items": {
+       "type": "string"
+      }
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "description": "Product ID"
+        },
+        "quantity": {
+         "type": "integer",
+         "description": "Ordered quantity"
+        },
+        "serial_numbers": {
+         "type": "array",
+         "description": "Serial numbers assigned to the ordered units",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "id",
+        "quantity"
+       ]
+      }
+     },
+     "packages": {
+      "type": "array",
+      "description": "List of shipped packages",
+      "items": {
+       "type": "object",
+       "properties": {
+        "tracking_number": {
+         "type": "string",
+         "nullable": true,
+         "description": "Package tracking number"
+        },
+        "weight": {
+         "type": "number",
+         "description": "Package weight"
+        },
+        "package_dimension": {
+         "type": "object",
+         "nullable": true,
+         "description": "Package dimensions and volumetric weight",
+         "properties": {
+          "length": {
+           "type": "number",
+           "nullable": true
+          },
+          "width": {
+           "type": "number",
+           "nullable": true
+          },
+          "height": {
+           "type": "number",
+           "nullable": true
+          },
+          "volumetric_weight": {
+           "type": "number",
+           "nullable": true
+          }
+         }
+        }
+       }
+      }
+     },
+     "attributes": {
+      "type": "array",
+      "description": "Order attributes exposed to the API",
+      "items": {
+       "type": "object",
+       "properties": {
+        "key": {
+         "type": "string",
+         "description": "Attribute key"
+        },
+        "value": {
+         "type": "string",
+         "description": "Attribute value"
+        }
+       },
+       "required": [
+        "key",
+        "value"
+       ]
+      }
+     },
+     "tracking_events": {
+      "type": "array",
+      "description": "List of tracking events",
+      "items": {
+       "type": "object",
+       "properties": {
+        "date": {
+         "type": "string",
+         "description": "Event date"
+        },
+        "message": {
+         "type": "string",
+         "description": "Event message"
+        },
+        "event_code": {
+         "type": "string",
+         "nullable": true,
+         "description": "Internal event code"
+        },
+        "carrier_event_code": {
+         "type": "string",
+         "nullable": true,
+         "description": "Carrier event code"
+        }
+       }
+      }
+     },
+     "package_returns": {
+      "type": "array",
+      "description": "List of return tracking numbers",
+      "items": {
+       "type": "object",
+       "properties": {
+        "tracking": {
+         "type": "string",
+         "description": "Original package tracking number"
+        },
+        "return_tracking": {
+         "type": "string",
+         "description": "Return tracking number"
+        }
+       }
+      }
+     },
+     "proof_of_delivery": {
+      "type": "object",
+      "properties": {
+       "recipient": {
+        "type": "string",
+        "description": "Name of the package recipient"
+       },
+       "date": {
+        "type": "string",
+        "description": "Date of receipt"
+       }
+      },
+      "description": "Name of the package recipient and the date of receipt. Only if parcel service provide these information"
+     },
+     "invoice_detail": {
+      "type": "object",
+      "nullable": true,
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/InvoiceDetail"
+       }
+      ],
+      "description": "Invoice details for customs matters, returned when the order has invoice data"
+     }
+    },
+    "required": [
+     "items"
+    ]
+   },
+   "InvoiceDetail": {
+    "type": "object",
+    "properties": {
+     "number": {
+      "type": "string",
+      "description": "Invoice number",
+      "maxLength": 40
+     },
+     "total": {
+      "type": "number",
+      "description": "Total invoice amount"
+     },
+     "currency": {
+      "type": "string",
+      "description": "Invoice currency",
+      "maxLength": 3
+     },
+     "date_of_issue": {
+      "type": "string",
+      "format": "date",
+      "description": "Invoice date in YYYY-MM-DD format"
+     },
+     "products": {
+      "type": "array",
+      "description": "Products on the invoice",
+      "items": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "description": "Product code",
+         "maxLength": 255
+        },
+        "description": {
+         "type": "string",
+         "description": "Product description"
+        },
+        "hs_code": {
+         "type": "string",
+         "description": "HS (customs tariff) code",
+         "maxLength": 255
+        },
+        "value": {
+         "type": "number",
+         "description": "Product value"
+        },
+        "quantity": {
+         "type": "integer",
+         "description": "Product quantity"
+        },
+        "country_of_origin": {
+         "type": "string",
+         "description": "Country of origin in `ISO 3166-1 alpha-2` format"
+        }
+       },
+       "required": [
+        "code",
+        "description",
+        "hs_code",
+        "value",
+        "quantity",
+        "country_of_origin"
+       ]
+      }
+     },
+     "fees": {
+      "type": "array",
+      "description": "Additional invoice lines (shipping, discounts, etc.)",
+      "items": {
+       "type": "object",
+       "properties": {
+        "type": {
+         "type": "string",
+         "enum": [
+          "shipping",
+          "other",
+          "discount"
+         ],
+         "description": "Fee type"
+        },
+        "description": {
+         "type": "string",
+         "description": "Fee description"
+        },
+        "value": {
+         "type": "number",
+         "description": "Fee value"
+        }
+       },
+       "required": [
+        "type",
+        "description",
+        "value"
+       ]
+      }
+     }
+    },
+    "required": [
+     "number",
+     "total",
+     "currency",
+     "date_of_issue"
+    ]
+   }
+  },
+  "securitySchemes": {
+   "AuthSimple": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "X-Authentication-Simple",
+    "description": "Base64-encoded access token. Obtain a token via `POST /login`, then send it on every request as `X-Authentication-Simple: base64(token)`. Tokens expire — re-login when they do."
+   }
+  },
+  "responses": {
+   "Unauthorized": {
+    "description": "Missing or invalid authentication token.",
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "properties": {
+        "message": {
+         "type": "string"
+        }
+       }
+      },
+      "example": {
+       "message": "Unauthorized. Login via POST /login, or use valid token in header"
+      }
+     }
+    }
+   }
+  }
+ }
+}

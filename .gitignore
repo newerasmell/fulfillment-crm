@@ -1,0 +1,11 @@
+autopilot/autopilot.env
+autopilot/logs/
+.claude/.state/
+.claude/settings.local.json
+.env
+.env.*
+!.env.example
+node_modules/
+
+# Real vendor-panel screenshots (contain real business data) stay local
+docs/reference-screens/**/*.png
