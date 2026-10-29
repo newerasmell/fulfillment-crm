@@ -17,18 +17,21 @@
     "db:generate": "prisma generate",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "tsx tools/e2e.ts",
     "typecheck": "prisma generate >/dev/null 2>&1 && tsc --noEmit",
     "lint": "eslint . --max-warnings=0 && prettier --check .",
     "format": "prettier --write .",
     "check:live": "tsx tools/check-live.ts",
     "docs:refresh": "bash tools/fetch_specs.sh",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "owner:create": "tsx tools/create-owner.ts",
+    "render:validate": "tsx tools/validate-render.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "2.2.2",
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
+    "dotenv": "^18.0.9",
     "next": "16.4.3",
     "next-auth": "5.0.0-beta.32",
     "next-intl": "4.14.9",
@@ -36,8 +39,11 @@
     "pg": "^8.23.1",
     "pg-boss": "12.38.0",
     "pino": "10.4.0",
+    "prisma": "7.10.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "server-only": "^0.0.1",
+    "tsx": "^4.23.15",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -48,17 +54,16 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "dotenv": "^18.0.9",
+    "ajv": "^8.20.0",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.3",
     "pino-pretty": "^13.2.0",
     "prettier": "3.9.10",
-    "prisma": "7.10.1",
     "tailwindcss": "4.3.3",
-    "tsx": "^4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "^8.72.1",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "yaml": "^2.9.1"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

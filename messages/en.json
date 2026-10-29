@@ -1,1 +1,170 @@
-{ "app": { "name": "Fulfillment CRM" } }
+{
+  "app": { "name": "Fulfillment CRM" },
+  "nav": {
+    "label": "Main navigation",
+    "account": "Company",
+    "home": "Home",
+    "groups": { "work": "Work", "warehouse": "Warehouse", "money": "Money", "settings": "Settings" },
+    "orders": "Orders",
+    "shipments": "Shipments",
+    "returns": "Returns",
+    "tickets": "Warehouse tickets",
+    "products": "Products and stock",
+    "inbound": "Stock receipts",
+    "manualShipments": "Manual shipments and labels",
+    "cod": "Cash on delivery",
+    "invoices": "Invoices",
+    "reports": "Reports",
+    "warehouses": "Warehouses and connections",
+    "stores": "Stores",
+    "routing": "Routing rules",
+    "ai": "AI assistant",
+    "directory": "Offices, PUDO, users",
+    "members": "Companies and users",
+    "credentials": "Access keys",
+    "audit": "Audit log",
+    "jobs": "System jobs",
+    "modeCard": "Warehouse mode",
+    "noConnections": "No warehouses connected"
+  },
+  "mode": { "READ_ONLY": "Read only", "DRY_RUN": "Dry run", "CANARY": "Canary", "LIVE": "Live" },
+  "header": {
+    "search": "Search",
+    "searchPlaceholder": "Order, AWB, customer, phone, SKU, EAN…",
+    "scope": "Warehouse",
+    "scopeAll": "All warehouses",
+    "create": "Create",
+    "createManualShipment": "Manual shipment",
+    "createStockReceipt": "Stock receipt",
+    "createProduct": "Product",
+    "comingSoon": "soon",
+    "notifications": "Notifications",
+    "notificationsCount": "Notifications, {count} new",
+    "profile": "Profile and language",
+    "language": "Language",
+    "logout": "Log out"
+  },
+  "search": {
+    "title": "Search",
+    "hint": "Search across orders, shipments and products arrives with the data from phases 1–3.",
+    "close": "Close"
+  },
+  "login": {
+    "title": "Sign in",
+    "email": "Email",
+    "password": "Password",
+    "code": "Authenticator app code",
+    "codeHint": "6 digits from Google Authenticator, 1Password, etc.",
+    "submit": "Sign in",
+    "errors": {
+      "invalid": "Wrong email, password or code.",
+      "rate_limited": "Too many failed attempts. Try again in 15 minutes.",
+      "totp_required": "Enter the code from your authenticator app."
+    }
+  },
+  "noAccess": {
+    "title": "No company access",
+    "body": "Your profile has not been added to any company. Ask the owner to add you."
+  },
+  "pages": {
+    "home": {
+      "title": "Home",
+      "attention": "Needs attention",
+      "empty": "No data yet. Orders arrive once stores are connected (phase 1)."
+    },
+    "placeholder": "This screen is built in phase {phase}.",
+    "orders": "Orders",
+    "shipments": "Shipments",
+    "returns": "Returns",
+    "tickets": "Warehouse tickets",
+    "products": "Products and stock",
+    "inbound": "Stock receipts",
+    "manualShipments": "Manual shipments and labels",
+    "cod": "Cash on delivery",
+    "invoices": "Invoices",
+    "reports": "Reports",
+    "warehouses": "Warehouses and connections",
+    "stores": "Stores",
+    "routing": "Routing rules",
+    "ai": "AI assistant",
+    "directory": "Offices, PUDO, users"
+  },
+  "attention": {
+    "review": "To review",
+    "blocked": "Blocked",
+    "errors": "With errors",
+    "returns": "Returned, ready to refund",
+    "tickets": "Tickets",
+    "stockouts": "Running out"
+  },
+  "members": {
+    "title": "Companies and users",
+    "accounts": "My companies",
+    "newAccount": "New company",
+    "accountName": "Company name",
+    "createAccount": "Create company",
+    "people": "Users in {account}",
+    "name": "Name",
+    "email": "Email",
+    "role": "Role",
+    "since": "Since",
+    "add": "Add user",
+    "addSubmit": "Add",
+    "remove": "Remove",
+    "save": "Save",
+    "current": "current",
+    "switch": "Enter",
+    "onboardingTitle": "Sign-in details — shown only once",
+    "onboardingBody": "Hand them over through a secure channel. After you close this, the password and the 2FA key cannot be shown again.",
+    "password": "Temporary password",
+    "totpUri": "Authenticator app key (otpauth)",
+    "existingUser": "This person already has a profile — added to the company.",
+    "errors": {
+      "already_member": "This user is already in the company.",
+      "last_owner": "A company needs at least one owner.",
+      "forbidden": "You are not allowed to do this.",
+      "not_found": "Not found.",
+      "invalid": "Check the fields."
+    }
+  },
+  "roles": {
+    "OWNER": "Owner",
+    "ADMIN": "Admin",
+    "OPERATOR": "Operator",
+    "WAREHOUSE": "Warehouse",
+    "VIEWER": "Viewer"
+  },
+  "credentials": {
+    "title": "Access keys",
+    "intro": "Keys are stored encrypted (AES-256-GCM). After saving they are never shown again — only the last 4 characters.",
+    "label": "Name",
+    "secret": "Key / password",
+    "secretHint": "Write-only. The field is empty when editing — enter a new key to replace it.",
+    "save": "Save key",
+    "rotate": "Replace",
+    "empty": "No keys saved yet.",
+    "saved": "Saved: {hint}"
+  },
+  "audit": {
+    "title": "Audit log",
+    "when": "When",
+    "who": "Who",
+    "action": "Action",
+    "entity": "Object",
+    "details": "Details",
+    "empty": "No entries.",
+    "more": "Older"
+  },
+  "jobs": {
+    "title": "System jobs",
+    "intro": "Background worker queues. Jobs that used up their retries go to the dead-letter queue and wait for a person.",
+    "queue": "Queue",
+    "state": "State",
+    "attempts": "Attempts",
+    "created": "Created",
+    "error": "Error",
+    "deadLetters": "Dead letters",
+    "empty": "No jobs in the dead-letter queue.",
+    "retry": "Retry"
+  }
+}

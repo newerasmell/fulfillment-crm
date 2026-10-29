@@ -10,14 +10,14 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [x] P0-02 docker-compose for local dev/test Postgres 16 + pgvector; `.env.example` (no real secrets); test DB reset helper. Acceptance: `pnpm test` creates and migrates a throwaway DB.
 - [x] P0-03 Prisma schema for the full domain model of SPEC §3 (all tables, enums incl. liveMode, CRM statuses). Acceptance: migration applies; ERD comment in schema.
 - [x] P0-04 Repository layer with mandatory accountId scoping + Postgres RLS policies. Acceptance: isolation test proves account A cannot read/write account B data through any repository.
-- [ ] P0-05 Auth.js email+password, TOTP 2FA, sessions, rate-limited login. Acceptance: e2e login with 2FA.
-- [ ] P0-06 Accounts, memberships, roles (OWNER/ADMIN/OPERATOR/WAREHOUSE/VIEWER), account switcher, RBAC guard helpers. Acceptance: role matrix tests.
-- [ ] P0-07 Credentials vault (AES-256-GCM, key from env), write-only UI fields, masking in logs. Acceptance: secrets never appear in API responses or logs (test).
-- [ ] P0-08 Audit log service + UI list. Acceptance: every mutation in later code can call it; tested.
-- [ ] P0-09 pg-boss worker with queues, cron registration, retry/backoff, dead-letter view. Acceptance: sample job runs, retries, dead-letters.
-- [ ] P0-10 Outbox (`OutboundRequest`) + sender skeleton with the **liveMode gate** (READ_ONLY/DRY_RUN/CANARY/LIVE) and global kill switch. Acceptance: tests prove writes are refused in READ_ONLY, recorded-not-sent in DRY_RUN, require confirmation + daily cap in CANARY.
-- [ ] P0-11 i18n (bg default, en), base layout, navigation and design tokens exactly per docs/DESIGN.md (grouped sidebar per DESIGN.md Navigation, account switcher, header with Ctrl K search, warehouse scope control, "+ Създай" menu, alerts); Orders/Products/Stock/Warehouses/Settings empty pages. Acceptance: Playwright smoke + screenshots committed to docs/screens/.
-- [ ] P0-12 `render.yaml` (web, worker, Postgres) + health endpoints. Acceptance: config validates; no deploy performed.
+- [x] P0-05 Auth.js email+password, TOTP 2FA, sessions, rate-limited login. Acceptance: e2e login with 2FA.
+- [x] P0-06 Accounts, memberships, roles (OWNER/ADMIN/OPERATOR/WAREHOUSE/VIEWER), account switcher, RBAC guard helpers. Acceptance: role matrix tests.
+- [x] P0-07 Credentials vault (AES-256-GCM, key from env), write-only UI fields, masking in logs. Acceptance: secrets never appear in API responses or logs (test).
+- [x] P0-08 Audit log service + UI list. Acceptance: every mutation in later code can call it; tested.
+- [x] P0-09 pg-boss worker with queues, cron registration, retry/backoff, dead-letter view. Acceptance: sample job runs, retries, dead-letters.
+- [x] P0-10 Outbox (`OutboundRequest`) + sender skeleton with the **liveMode gate** (READ_ONLY/DRY_RUN/CANARY/LIVE) and global kill switch. Acceptance: tests prove writes are refused in READ_ONLY, recorded-not-sent in DRY_RUN, require confirmation + daily cap in CANARY.
+- [x] P0-11 i18n (bg default, en), base layout, navigation and design tokens exactly per docs/DESIGN.md (grouped sidebar per DESIGN.md Navigation, account switcher, header with Ctrl K search, warehouse scope control, "+ Създай" menu, alerts); Orders/Products/Stock/Warehouses/Settings empty pages. Acceptance: Playwright smoke + screenshots committed to docs/screens/.
+- [x] P0-12 `render.yaml` (web, worker, Postgres) + health endpoints. Acceptance: config validates; no deploy performed.
 - [ ] GATE P0-G1 Owner: in the existing Render account create NEW services from render.yaml (Blueprint; do not touch any existing service), set env vars and CREDENTIALS_KEY, create the first OWNER user, add accounts (companies).
 
 ## Phase 1 — Shopify
