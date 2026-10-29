@@ -61,8 +61,10 @@ export async function enqueueOutboundInTx(tx: Prisma.TransactionClient, input: E
   });
   if (existing && !REARMABLE.has(existing.status)) return { request: existing, created: false };
   if (existing) {
-    const request = await tx.outboundRequest.update({
-      where: { id: existing.id },
+    // Conditional on the status AT WRITE TIME: Postgres re-checks the WHERE on the latest row version, so if
+    // a concurrent re-arm already moved the row on (and the sender may be sending it), this updates nothing.
+    const rearmed = await tx.outboundRequest.updateMany({
+      where: { id: existing.id, status: { in: [...REARMABLE] } },
       data: {
         payload: input.payload,
         status: "PENDING",
@@ -77,7 +79,8 @@ export async function enqueueOutboundInTx(tx: Prisma.TransactionClient, input: E
         createdById: input.createdById ?? existing.createdById,
       },
     });
-    return { request, created: true };
+    const request = await tx.outboundRequest.findUniqueOrThrow({ where: { id: existing.id } });
+    return { request, created: rearmed.count === 1 };
   }
   const request = await tx.outboundRequest.create({
     data: {
@@ -146,6 +149,7 @@ export async function processOutbound(
   const plan: Plan = await withSystemTransaction(async (tx) => {
     // Lock order everywhere: connection row, then request row (kill switch and mode changes lock the
     // connection first too), so these transactions cannot deadlock each other.
+    // Unlocked read is safe: OutboundRequest.connectionId is never updated (checked again below).
     const head = await tx.outboundRequest.findUnique({ where: { id }, select: { connectionId: true } });
     if (!head) return { kind: "skip" };
     // Serialises evaluations per connection: the CANARY cap below sees every concurrent claim, and a mode
@@ -156,6 +160,7 @@ export async function processOutbound(
       SELECT id FROM "OutboundRequest" WHERE id = ${id} FOR UPDATE SKIP LOCKED`;
     if (locked.length === 0) return { kind: "skip" };
     const req = await tx.outboundRequest.findUniqueOrThrow({ where: { id } });
+    if (req.connectionId !== head.connectionId) return { kind: "skip" };
     if (!PROCESSABLE.has(req.status)) return { kind: "skip" };
     if (req.nextAttemptAt && req.nextAttemptAt > now) return { kind: "skip" };
 
@@ -439,19 +444,28 @@ export async function sweepOutbox(
 /** CANARY: an operator confirms one exact request after seeing its payload. */
 export async function confirmCanary(actor: Actor, requestId: string) {
   assertCan(actor.role, "outbox.confirmCanary");
-  const updated = await withAccountTransaction(actor.accountId, async (tx) => {
-    const req = await tx.outboundRequest.findUnique({
+  const updated = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    const head = await tx.outboundRequest.findUnique({
+      where: { id: requestId },
+      select: { connectionId: true },
+    });
+    if (!head) throw new DomainError("not_found");
+    // Same lock order as the sender and the kill switch (connection, then request): a kill switch either
+    // finished before this (the row is HELD → not confirmable) or waits until this commits (and then holds it).
+    await lockForUpdate("FulfillmentConnection", head.connectionId);
+    const req = await tx.outboundRequest.findUniqueOrThrow({
       where: { id: requestId },
       include: { connection: { select: { liveMode: true } } },
     });
-    if (!req) throw new DomainError("not_found");
     if (req.status !== "AWAITING_CONFIRMATION" || req.connection.liveMode !== "CANARY") {
       throw new DomainError("not_confirmable");
     }
-    return tx.outboundRequest.update({
-      where: { id: requestId },
+    const res = await tx.outboundRequest.updateMany({
+      where: { id: requestId, status: "AWAITING_CONFIRMATION" },
       data: { confirmedAt: new Date(), confirmedById: actor.userId, status: "PENDING", nextAttemptAt: null },
     });
+    if (res.count !== 1) throw new DomainError("not_confirmable");
+    return tx.outboundRequest.findUniqueOrThrow({ where: { id: requestId } });
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -467,9 +481,12 @@ export async function confirmCanary(actor: Actor, requestId: string) {
 
 const OPEN_STATUSES: OutboundStatus[] = ["PENDING", "PAUSED", "AWAITING_CONFIRMATION"];
 
-const isDeadlock = (err: unknown) =>
+/** Lock conflicts worth one retry: deadlock (40P01 / P2034) or an interactive transaction that timed out (P2028). */
+const isRetryableLockError = (err: unknown) =>
   (err instanceof Error && /40P01|deadlock/i.test(err.message)) ||
-  (typeof err === "object" && err !== null && (err as { code?: string }).code === "P2034");
+  (typeof err === "object" &&
+    err !== null &&
+    ["P2034", "P2028"].includes((err as { code?: string }).code ?? ""));
 
 /**
  * Kill switch: every connection of the account back to READ_ONLY, the outbox paused, and every request
@@ -479,31 +496,35 @@ const isDeadlock = (err: unknown) =>
 export async function killSwitch(actor: Actor) {
   assertCan(actor.role, "outbox.killSwitch");
   const run = () =>
-    withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
-      await lockForUpdate("FulfillmentConnection");
-      const connections = await tx.fulfillmentConnection.findMany({ select: { id: true, liveMode: true } });
-      await tx.fulfillmentConnection.updateMany({ data: { liveMode: "READ_ONLY" } });
-      const held = await tx.outboundRequest.updateMany({
-        where: { status: { in: OPEN_STATUSES } },
-        data: {
-          status: "HELD",
-          lastError: "kill_switch",
-          confirmedAt: null,
-          confirmedById: null,
-          nextAttemptAt: null,
-        },
-      });
-      await tx.account.update({
-        where: { id: actor.accountId },
-        data: { outboxPaused: true, killSwitchAt: new Date() },
-      });
-      return { connections, held: held.count };
-    });
+    withAccountTransaction(
+      actor.accountId,
+      async (tx, { lockForUpdate }) => {
+        await lockForUpdate("FulfillmentConnection");
+        const connections = await tx.fulfillmentConnection.findMany({ select: { id: true, liveMode: true } });
+        await tx.fulfillmentConnection.updateMany({ data: { liveMode: "READ_ONLY" } });
+        const held = await tx.outboundRequest.updateMany({
+          where: { status: { in: OPEN_STATUSES } },
+          data: {
+            status: "HELD",
+            lastError: "kill_switch",
+            confirmedAt: null,
+            confirmedById: null,
+            nextAttemptAt: null,
+          },
+        });
+        await tx.account.update({
+          where: { id: actor.accountId },
+          data: { outboxPaused: true, killSwitchAt: new Date() },
+        });
+        return { connections, held: held.count };
+      },
+      { timeout: 15_000, maxWait: 10_000 },
+    ); // may wait behind running evaluations
   let result;
   try {
     result = await run();
   } catch (err) {
-    if (!isDeadlock(err)) throw err;
+    if (!isRetryableLockError(err)) throw err;
     result = await run(); // the emergency stop must not fail on a lock conflict
   }
   await recordAudit({
@@ -581,6 +602,20 @@ export async function setConnectionMode(actor: Actor, connectionId: string, rawM
       where: { id: connectionId },
       data: { liveMode: mode },
     });
+    if (c.liveMode === "CANARY" && mode !== "CANARY") {
+      // Requests waiting for a CANARY click (or for tomorrow's cap) would otherwise wait forever: they go
+      // back to the queue and are evaluated under the new mode. Confirmations do not carry over.
+      await tx.outboundRequest.updateMany({
+        where: { connectionId, status: "AWAITING_CONFIRMATION" },
+        data: {
+          status: "PENDING",
+          nextAttemptAt: null,
+          confirmedAt: null,
+          confirmedById: null,
+          lastError: null,
+        },
+      });
+    }
     return { before: c.liveMode, after: updated.liveMode };
   });
   await recordAudit({

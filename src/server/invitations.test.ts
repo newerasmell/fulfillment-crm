@@ -109,7 +109,7 @@ describe("invitations", () => {
         code: await generate({ secret: f.secret }),
         sealedSecret: f.sealed,
       }),
-    ).rejects.toMatchObject({ code: "use_login" });
+    ).rejects.toMatchObject({ code: "invalid_invitation" }); // generic: no profile oracle
     await expect(acceptInvitation(token, owner.userId)).rejects.toMatchObject({ code: "invalid_invitation" });
     await acceptInvitation(token, other.user.id);
     expect(

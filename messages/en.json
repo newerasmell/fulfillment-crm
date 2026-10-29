@@ -202,7 +202,7 @@
       "invalid_code": "Wrong code. Check the phone's clock and try a new code.",
       "password_mismatch": "The passwords do not match.",
       "invalid": "Check the fields (the password needs at least 12 characters).",
-      "invalid_invitation": "This invitation is no longer valid.",
+      "invalid_invitation": "This invitation cannot be used like that. If you already have a profile with this email, use “Sign in” above.",
       "use_login": "If you already have a profile with this email, use “Sign in” above to accept the invitation.",
       "form_expired": "The form was open too long. Reload the page and add the new key."
     }
@@ -220,6 +220,6 @@
     "resumePrompt": "The queue restarts. Held requests stay held. Continue?",
     "held": "Held by the emergency stop: {count}. They do not go out by themselves.",
     "release": "Release held requests",
-    "releasePrompt": "Held requests are evaluated against each connection's current mode (Canary asks for a fresh confirmation). Release them?"
+    "releasePrompt": "Held requests are evaluated against each connection's current mode: Read only refuses them, Canary asks for a fresh confirmation. Raise the connections' modes first. Release them?"
   }
 }

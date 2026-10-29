@@ -226,6 +226,7 @@ export interface AccountTxHelpers {
 export async function withAccountTransaction<T>(
   accountId: string,
   fn: (tx: Prisma.TransactionClient, helpers: AccountTxHelpers) => Promise<T>,
+  options?: { timeout?: number; maxWait?: number },
 ): Promise<T> {
   if (!accountId) throw new TenantScopeError("accountId is required");
   return basePrisma().$transaction(async (tx) => {
@@ -251,7 +252,7 @@ export async function withAccountTransaction<T>(
       },
     };
     return fn(scopeTransactionClient(tx, accountId), helpers);
-  });
+  }, options);
 }
 
 /** True for Prisma's unique-constraint violation (P2002). */

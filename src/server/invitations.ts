@@ -201,7 +201,7 @@ export async function completeEnrolment(token: string, raw: z.input<typeof Enrol
   const step = await verifyTotp(secret, input.code);
   if (step === null) throw new DomainError("invalid_code");
   // An existing profile joins by signing in and accepting, never by creating a second one.
-  if (found.existingUserId) throw new DomainError("use_login");
+  if (found.existingUserId) throw new DomainError("invalid_invitation");
   const user = await withSystemTransaction(async (tx) => {
     const consumed = await tx.invitation.updateMany({
       where: { id: inv.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
@@ -219,7 +219,7 @@ export async function completeEnrolment(token: string, raw: z.input<typeof Enrol
     return user;
   }).catch((err: unknown) => {
     // The same email got a profile elsewhere a moment ago: it now has to sign in and accept instead.
-    if (isUniqueViolation(err)) throw new DomainError("use_login");
+    if (isUniqueViolation(err)) throw new DomainError("invalid_invitation");
     throw err;
   });
   await recordAudit({

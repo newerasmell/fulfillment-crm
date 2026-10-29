@@ -50,6 +50,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   sender, kill switch and mode changes cannot deadlock; the CANARY cap counts in-flight and UNCERTAIN sends.
   The sweep fetches new work first with its own limit; parked rows are re-picked only when their condition can
   have changed (next UTC day for the cap, lifted pause).
+- 2026-10-29: Re-arming a request and confirming a CANARY request are both conditional writes (status checked at
+  write time, connection locked first), so a stale read can never resurrect an in-flight or held request. Leaving
+  CANARY re-queues requests that were waiting for a click or for the next day's cap. Phase audit: docs/audits/phase-0.md.
 - 2026-10-29: Review.embedding is `vector(1024)` (Voyage voyage-3.5 default size); revisit before P8-01 if another
   embedding model is chosen (changing it later needs a migration on a populated table).
 - 2026-10-29: Sidebar per DESIGN.md plus four phase-0 admin entries under Настройки (Фирми и потребители, Ключове за
