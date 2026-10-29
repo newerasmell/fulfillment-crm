@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { login } from "./helpers";
+import { freshCode, login } from "./helpers";
 
 test("an owner creates a second company and switches between the two", async ({ page }) => {
   await login(page);
@@ -25,22 +25,46 @@ test("an owner creates a second company and switches between the two", async ({ 
   await expect(page.getByText(/· Тест фирма А$/)).toBeVisible();
 });
 
-test("adding a person shows the one-time sign-in details", async ({ page }) => {
+test("invitation: the admin gets a link, the new person chooses their own password and 2FA, then signs in", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(150_000); // two logins + enrolment each need a fresh 30-second TOTP step
   await login(page);
   await page.goto("/settings/members");
-  const form = page
-    .locator("form")
-    .filter({ has: page.getByRole("button", { name: "Добави", exact: true }) });
+  const email = `op-${Date.now()}@example.com`;
+  const form = page.locator("form").filter({ has: page.getByRole("button", { name: "Създай покана" }) });
   await form.getByLabel("Име", { exact: true }).fill("Оператор Тест");
-  await form.getByLabel("Имейл").fill(`op-${Date.now()}@example.com`);
+  await form.getByLabel("Имейл").fill(email);
   await form.getByLabel("Роля").selectOption("OPERATOR");
-  await form.getByRole("button", { name: "Добави", exact: true }).click();
-  const details = page.getByRole("status");
-  await expect(details).toContainText("Временна парола");
-  await expect(details).toContainText("otpauth://totp/");
+  await form.getByRole("button", { name: "Създай покана" }).click();
+  const link = (await page.getByTestId("invite-link").textContent())!.trim();
+  expect(link).toMatch(/\/invite\/[A-Za-z0-9_-]{40,}$/);
+  await expect(page.getByText(/Временна парола|otpauth/)).toHaveCount(0); // the admin never sees credentials
   await page.reload();
-  await expect(page.getByRole("status")).toHaveCount(0); // gone after reload: shown once
-  await expect(page.getByRole("cell", { name: "Оператор Тест" })).toBeVisible();
+  await expect(page.getByTestId("invite-link")).toHaveCount(0); // shown once
+  await expect(page.getByText(email)).toBeVisible(); // listed as pending
+
+  const ctx = await browser.newContext();
+  const invitee = await ctx.newPage();
+  await invitee.goto(link);
+  await expect(invitee.getByRole("heading", { level: 1 })).toHaveText("Покана за Тест фирма А");
+  const secret = (await invitee.getByTestId("totp-secret").textContent())!.trim();
+  const password = "invitee-own-password-123";
+  await invitee.getByLabel("Име").fill("Оператор Тест");
+  await invitee.getByLabel("Парола (поне 12 знака)").fill(password);
+  await invitee.getByLabel("Повтори паролата").fill(password);
+  await invitee.getByLabel(/Код от приложението/).fill(await freshCode(secret));
+  await invitee.getByRole("button", { name: "Създай профила" }).click();
+  await expect(invitee).toHaveURL(/\/login\?joined=1/);
+  await login(invitee, { email, password, totp: secret });
+  await expect(invitee.getByText(/· Тест фирма А$/)).toBeVisible();
+  await expect(invitee.getByRole("link", { name: "Ключове за достъп" })).toHaveCount(0); // operator: no admin menu
+  await invitee.goto(link);
+  await expect(
+    invitee.getByText("Поканата е невалидна, изтекла или вече използвана. Помоли за нова."),
+  ).toBeVisible();
+  await ctx.close();
 });
 
 test("credentials are write-only", async ({ page }) => {

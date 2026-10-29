@@ -1,8 +1,7 @@
 import { z } from "zod";
 import type { Role } from "@/generated/prisma/client";
 import { recordAudit } from "@/server/audit";
-import { assertCan, canAssignRole, ForbiddenError, ROLES } from "@/server/auth/rbac";
-import { createUser } from "@/server/auth/users";
+import { assertCan, ForbiddenError, ROLES } from "@/server/auth/rbac";
 import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 
 /** Who is acting, in which account. Built from the session by the web layer. */
@@ -61,57 +60,11 @@ export async function listMembers(actor: Actor) {
   });
 }
 
-export const AddMemberInput = z.object({
-  email: z.email().transform((e) => e.trim().toLowerCase()),
-  name: z.string().trim().min(1).max(200),
-  role: RoleSchema,
-});
-
-/**
- * Adds a person to the account. A new user gets a generated password and a TOTP secret, returned ONCE so
- * the admin can hand them over; an existing user (member of another account) is just linked.
- */
-export async function addMember(actor: Actor, raw: z.input<typeof AddMemberInput>) {
-  assertCan(actor.role, "members.manage");
-  const input = AddMemberInput.parse(raw);
-  if (!canAssignRole(actor.role, input.role)) throw new ForbiddenError("members.grantOwner");
-
-  const existing = await systemDb().user.findUnique({ where: { email: input.email }, select: { id: true } });
-  let onboarding: { password?: string; otpauthUri: string; totpSecret: string } | undefined;
-  let userId = existing?.id;
-  if (!userId) {
-    const created = await createUser(
-      { email: input.email, name: input.name },
-      { userId: actor.userId, accountId: actor.accountId },
-    );
-    userId = created.user.id;
-    onboarding = {
-      password: created.password,
-      otpauthUri: created.otpauthUri,
-      totpSecret: created.totpSecret,
-    };
-  }
-  const already = await accountDb(actor.accountId).membership.findFirst({ where: { userId } });
-  if (already) throw new DomainError("already_member");
-  const membership = await accountDb(actor.accountId).membership.create({
-    data: { accountId: actor.accountId, userId, role: input.role },
-  });
-  await recordAudit({
-    accountId: actor.accountId,
-    userId: actor.userId,
-    action: "member.add",
-    entityType: "Membership",
-    entityId: membership.id,
-    after: { email: input.email, role: input.role, newUser: !existing },
-    ip: actor.ip,
-    userAgent: actor.userAgent,
-  });
-  return { membership, onboarding };
-}
-
 /** Changing or removing members must never leave the account without an OWNER. */
 async function guardOwnerChange(actor: Actor, membershipId: string, nextRole: Role | null) {
-  return withAccountTransaction(actor.accountId, async (tx) => {
+  return withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    // Lock the account's memberships so two concurrent demotions cannot both see "2 owners".
+    await lockForUpdate("Membership");
     const target = await tx.membership.findUnique({ where: { id: membershipId } });
     if (!target) throw new DomainError("not_found");
     if ((target.role === "OWNER" || nextRole === "OWNER") && actor.role !== "OWNER") {

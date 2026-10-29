@@ -73,7 +73,7 @@ describe("outbox sender + liveMode gate", () => {
     const { transport, resolve } = fakeTransport();
     const ids = [];
     for (const k of ["c1", "c2", "c3"]) ids.push((await enqueue(k)).request.id);
-    expect(await processOutbound(ids[0]!, resolve)).toBe("AWAITING_CONFIRMATION");
+    for (const id of ids) expect(await processOutbound(id, resolve)).toBe("AWAITING_CONFIRMATION");
     expect(transport.send).not.toHaveBeenCalled();
 
     await expect(confirmCanary({ ...owner, role: "VIEWER" }, ids[0]!)).rejects.toBeInstanceOf(ForbiddenError);
@@ -234,5 +234,116 @@ describe("outbox sender + liveMode gate", () => {
     expect((await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: request.id } })).status).toBe(
       "UNCERTAIN",
     );
+  });
+
+  it("CANARY cap holds for concurrent sends on different requests (in-flight calls count)", async () => {
+    const { enqueue, owner } = await setup("CANARY", 1);
+    let release!: () => void;
+    const blocked = new Promise<void>((r) => (release = r));
+    const send = vi.fn(async () => {
+      await blocked;
+      return { outcome: "accepted" as const, response: {} };
+    });
+    const resolve = () => ({ send });
+    const a = (await enqueue("cap-a")).request.id;
+    const b = (await enqueue("cap-b")).request.id;
+    for (const id of [a, b]) {
+      await processOutbound(id, resolve);
+      await confirmCanary(owner, id);
+    }
+    const first = processOutbound(a, resolve); // claims and blocks inside the vendor call
+    await new Promise((r) => setTimeout(r, 100));
+    const second = await processOutbound(b, resolve); // must see A in flight
+    release();
+    expect(await first).toBe("SENT");
+    expect(second).toBe("AWAITING_CONFIRMATION");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("kill switch → resume without raising the mode → requests stay held, then go out once the mode is raised", async () => {
+    const { enqueue, owner, connection } = await setup("LIVE");
+    const { transport, resolve } = fakeTransport();
+    const { request } = await enqueue("hold");
+    await killSwitch(owner);
+    await resumeOutbox(owner); // natural order: un-pause first
+    expect(await processOutbound(request.id, resolve)).toBe("PAUSED"); // held, not REFUSED
+    expect(
+      (await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: request.id } })).lastError,
+    ).toBe("kill_switch_hold");
+    expect((await sweepOutbox()).map((d) => d.id)).toContain(request.id);
+    await setConnectionMode(owner, connection.id, "LIVE");
+    expect(await processOutbound(request.id, resolve)).toBe("SENT");
+    expect(transport.send).toHaveBeenCalledTimes(1);
+    // a request queued AFTER the kill switch while READ_ONLY is refused as usual
+    await setConnectionMode(owner, connection.id, "READ_ONLY");
+    const later = (await enqueue("after-ks")).request;
+    expect(await processOutbound(later.id, resolve)).toBe("REFUSED");
+  });
+
+  it("global pause: held rows are picked up again once the pause is lifted", async () => {
+    const { enqueue } = await setup("LIVE");
+    process.env.OUTBOX_PAUSED = "1";
+    const { request } = await enqueue("gp2");
+    expect(await processOutbound(request.id, fakeTransport().resolve)).toBe("PAUSED");
+    expect((await sweepOutbox()).map((d) => d.id)).not.toContain(request.id);
+    delete process.env.OUTBOX_PAUSED;
+    expect((await sweepOutbox()).map((d) => d.id)).toContain(request.id);
+    expect(await processOutbound(request.id, fakeTransport().resolve)).toBe("SENT");
+  });
+
+  it("a confirmed request parked by the daily cap is re-picked by the sweep", async () => {
+    const { enqueue, owner } = await setup("CANARY", 1);
+    const { resolve } = fakeTransport();
+    const a = (await enqueue("sw-a")).request.id;
+    const b = (await enqueue("sw-b")).request.id;
+    for (const id of [a, b]) {
+      await processOutbound(id, resolve);
+      await confirmCanary(owner, id);
+    }
+    expect(await processOutbound(a, resolve)).toBe("SENT");
+    expect(await processOutbound(b, resolve)).toBe("AWAITING_CONFIRMATION");
+    expect((await sweepOutbox()).map((d) => d.id)).toContain(b);
+  });
+
+  it("concurrent enqueues of the same key are idempotent", async () => {
+    const { enqueue } = await setup("LIVE");
+    const results = await Promise.all([enqueue("same"), enqueue("same"), enqueue("same")]);
+    expect(new Set(results.map((r) => r.request.id)).size).toBe(1);
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+  });
+
+  it("CANARY confirmation only for requests awaiting it on a CANARY connection", async () => {
+    const { enqueue, owner } = await setup("LIVE");
+    const { request } = await enqueue("not-canary");
+    await expect(confirmCanary(owner, request.id)).rejects.toMatchObject({ code: "not_confirmable" });
+  });
+
+  it("a late vendor result does not overwrite an UNCERTAIN decision", async () => {
+    const { enqueue } = await setup("LIVE");
+    const { request } = await enqueue("late");
+    let release!: () => void;
+    const blocked = new Promise<void>((r) => (release = r));
+    const send = vi.fn(async () => {
+      await blocked;
+      return { outcome: "accepted" as const, response: {} };
+    });
+    const p = processOutbound(request.id, () => ({ send }));
+    await new Promise((r) => setTimeout(r, 100));
+    await sweepOutbox(new Date(Date.now() + STALE_SENDING_MS + 1000)); // declares it UNCERTAIN
+    release();
+    expect(await p).toBe("UNCERTAIN");
+    const late = await systemDb().auditLog.findFirst({
+      where: { entityId: request.id, action: "outbox.late_result" },
+    });
+    expect(late?.after).toMatchObject({ wouldBe: "SENT" });
+  });
+
+  it("re-arming a failed request resets its attempts", async () => {
+    const { enqueue } = await setup("LIVE");
+    const send = vi.fn(async () => ({ outcome: "rejected" as const, response: {}, error: "bad" }));
+    const { request } = await enqueue("reset");
+    await processOutbound(request.id, () => ({ send }));
+    const rearmed = await enqueue("reset");
+    expect(rearmed.request).toMatchObject({ status: "PENDING", attempts: 0, evaluatedMode: null });
   });
 });

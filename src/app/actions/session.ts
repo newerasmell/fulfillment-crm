@@ -9,6 +9,7 @@ import { recordAudit } from "@/server/audit";
 import { ACCOUNT_COOKIE, getAccountContext, requireUser } from "@/server/auth/session";
 import { systemDb } from "@/server/db/client";
 import { isScope, SCOPE_COOKIE } from "@/components/shell/scope";
+import { safeNext } from "@/lib/safe-next";
 
 const COOKIE = {
   httpOnly: true,
@@ -23,7 +24,7 @@ export async function loginAction(_prev: { error?: string } | undefined, form: F
       email: String(form.get("email") ?? ""),
       password: String(form.get("password") ?? ""),
       code: String(form.get("code") ?? ""),
-      redirectTo: "/",
+      redirectTo: safeNext(form.get("next")),
     });
   } catch (err) {
     if (err instanceof CredentialsSignin) return { error: err.code };

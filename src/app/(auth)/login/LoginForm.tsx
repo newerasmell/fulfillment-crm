@@ -7,12 +7,13 @@ import { loginAction } from "@/app/actions/session";
 const input =
   "min-h-11 w-full rounded-[10px] border border-line bg-surface px-3 outline-none focus:border-accent";
 
-export function LoginForm() {
+export function LoginForm({ next }: { next: string }) {
   const t = useTranslations("login");
   const [state, action, pending] = useActionState(loginAction, undefined);
   const known = ["invalid", "rate_limited", "totp_required"];
   return (
     <form action={action} className="flex flex-col gap-3">
+      <input type="hidden" name="next" value={next} />
       <label className="flex flex-col gap-1">
         <span className="text-[13px] font-medium">{t("email")}</span>
         <input name="email" type="email" autoComplete="username" required className={input} />

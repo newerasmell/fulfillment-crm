@@ -93,21 +93,21 @@ describe("worker queues (pg-boss)", () => {
 });
 
 describe("dead-letter view", () => {
-  it("shows an account only its own and account-less jobs, and can redrive them", async () => {
+  it("shows an account only its own jobs; system jobs and other accounts' jobs are hidden and not redrivable", async () => {
     const { listDeadLetters, redriveDeadLetter } = await import("./dead-letters");
     const boss = createBoss({ worker: true });
     boss.on("error", () => undefined);
     await boss.start();
     await ensureQueues(boss, []);
-    await boss.send(DEAD_LETTER_QUEUE, { accountId: "acc-A", requestId: "x" });
-    await boss.send(DEAD_LETTER_QUEUE, { accountId: "acc-B", requestId: "y" });
-    await boss.send(DEAD_LETTER_QUEUE, { fail: true });
-    const forA = await listDeadLetters(boss, "acc-A");
-    const all = await boss.findJobs(DEAD_LETTER_QUEUE);
-    const bJob = all.find((j) => (j.data as { accountId?: string }).accountId === "acc-B")!;
-    expect(forA.map((j) => j.id)).not.toContain(bJob.id);
-    expect(forA.length).toBeGreaterThanOrEqual(2);
-    expect(await redriveDeadLetter(boss, "acc-A", bJob.id)).toBe(false);
+    const own = await boss.send(DEAD_LETTER_QUEUE, { accountId: "acc-A", requestId: "x" });
+    const foreign = await boss.send(DEAD_LETTER_QUEUE, { accountId: "acc-B", requestId: "y" });
+    const system = await boss.send(DEAD_LETTER_QUEUE, { fail: true });
+    const forA = (await listDeadLetters(boss, "acc-A")).map((j) => j.id);
+    expect(forA).toContain(own);
+    expect(forA).not.toContain(foreign);
+    expect(forA).not.toContain(system);
+    expect(await redriveDeadLetter(boss, "acc-A", foreign!)).toBe(false);
+    expect(await redriveDeadLetter(boss, "acc-A", system!)).toBe(false);
     await boss.stop({ graceful: false });
   });
 });

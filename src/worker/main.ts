@@ -3,9 +3,11 @@ import { logger } from "@/lib/logger";
 import { assertSafeDatabaseRole, basePrisma } from "@/server/db/client";
 import { createBoss, ensureQueues } from "@/server/jobs/boss";
 import { registerWorkers } from "@/server/jobs/handlers";
+import { assertSchemaUpToDate } from "./migrations";
 
 async function main() {
   await assertSafeDatabaseRole();
+  await assertSchemaUpToDate();
   const boss = createBoss({ worker: true });
   boss.on("error", (err) => logger.error({ err }, "pg-boss error"));
   await boss.start();

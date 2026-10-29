@@ -43,6 +43,9 @@ services:
     plan: starter
     branch: main
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm db:generate
+    # Also migrates (idempotent, guarded by Prisma's advisory lock) so the worker never starts on an old
+    # schema; the worker additionally refuses to start if any migration is missing.
+    preDeployCommand: pnpm db:deploy
     startCommand: pnpm worker
     envVars:
       - key: NODE_VERSION

@@ -1,10 +1,17 @@
 {
-  "app": { "name": "Fulfillment CRM" },
+  "app": {
+    "name": "Fulfillment CRM"
+  },
   "nav": {
     "label": "Main navigation",
     "account": "Company",
     "home": "Home",
-    "groups": { "work": "Work", "warehouse": "Warehouse", "money": "Money", "settings": "Settings" },
+    "groups": {
+      "work": "Work",
+      "warehouse": "Warehouse",
+      "money": "Money",
+      "settings": "Settings"
+    },
     "orders": "Orders",
     "shipments": "Shipments",
     "returns": "Returns",
@@ -27,7 +34,12 @@
     "modeCard": "Warehouse mode",
     "noConnections": "No warehouses connected"
   },
-  "mode": { "READ_ONLY": "Read only", "DRY_RUN": "Dry run", "CANARY": "Canary", "LIVE": "Live" },
+  "mode": {
+    "READ_ONLY": "Read only",
+    "DRY_RUN": "Dry run",
+    "CANARY": "Canary",
+    "LIVE": "Live"
+  },
   "header": {
     "search": "Search",
     "searchPlaceholder": "Order, AWB, customer, phone, SKU, EAN…",
@@ -60,7 +72,8 @@
       "invalid": "Wrong email, password or code.",
       "rate_limited": "Too many failed attempts. Try again in 15 minutes.",
       "totp_required": "Enter the code from your authenticator app."
-    }
+    },
+    "joined": "Your profile is ready. Sign in with your new password and an app code."
   },
   "noAccess": {
     "title": "No company access",
@@ -108,24 +121,24 @@
     "email": "Email",
     "role": "Role",
     "since": "Since",
-    "add": "Add user",
-    "addSubmit": "Add",
+    "add": "Invite a user",
+    "addSubmit": "Create invitation",
     "remove": "Remove",
     "save": "Save",
     "current": "current",
     "switch": "Enter",
-    "onboardingTitle": "Sign-in details — shown only once",
-    "onboardingBody": "Hand them over through a secure channel. After you close this, the password and the 2FA key cannot be shown again.",
-    "password": "Temporary password",
-    "totpUri": "Authenticator app key (otpauth)",
-    "existingUser": "This person already has a profile — added to the company.",
     "errors": {
       "already_member": "This user is already in the company.",
       "last_owner": "A company needs at least one owner.",
       "forbidden": "You are not allowed to do this.",
       "not_found": "Not found.",
       "invalid": "Check the fields."
-    }
+    },
+    "inviteTitle": "Invitation link for {email} — shown only once",
+    "inviteBody": "Send the link to the person. It is valid for 72 hours and works once. If they already have a profile they log in and accept; if they are new they choose a password and add 2FA themselves.",
+    "openInvitations": "Pending invitations",
+    "expires": "valid until {date}",
+    "revoke": "Revoke"
   },
   "roles": {
     "OWNER": "Owner",
@@ -166,5 +179,38 @@
     "deadLetters": "Dead letters",
     "empty": "No jobs in the dead-letter queue.",
     "retry": "Retry"
+  },
+  "invite": {
+    "title": "Invitation to {account}",
+    "invalid": "This invitation is invalid, expired or already used. Ask for a new one.",
+    "newIntro": "Create your profile for {email}. Only you know the password and the 2FA key.",
+    "step2fa": "1. Add the key to your authenticator app (Google Authenticator, 1Password…)",
+    "openApp": "Open in the app",
+    "secret": "or enter the key manually",
+    "step2": "2. Choose a name and a password",
+    "name": "Name",
+    "password": "Password (at least 12 characters)",
+    "passwordRepeat": "Repeat the password",
+    "code": "3. Code from the app",
+    "submit": "Create profile",
+    "existingIntro": "You are invited to {account} as {role}.",
+    "loginFirst": "Sign in as {email} to accept.",
+    "login": "Sign in",
+    "accept": "Accept invitation",
+    "wrongUser": "You are signed in with another profile. Sign out and sign in as {email}.",
+    "errors": {
+      "invalid_code": "Wrong code. Check the phone's clock and try a new code.",
+      "password_mismatch": "The passwords do not match.",
+      "invalid": "Check the fields (the password needs at least 12 characters).",
+      "invalid_invitation": "This invitation is no longer valid."
+    }
+  },
+  "warehouses": {
+    "empty": "No warehouses connected yet. FHB and euShipments connections arrive in phases 2–3.",
+    "emergencyTitle": "Emergency stop",
+    "emergencyBody": "Sets every warehouse connection of this company to Read only and pauses the outbound queue. Nothing queued is lost.",
+    "stop": "Stop everything",
+    "paused": "The outbound queue is paused. Queued requests stay held until the connections' modes are raised again.",
+    "resume": "Resume the queue"
   }
 }

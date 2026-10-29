@@ -31,17 +31,25 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   and raw SQL; use `withAccountTransaction` (atomic, accountId injected) / `withSystemTransaction`.
 - 2026-10-29: Auth = Auth.js credentials provider, JWT session (12 h) re-validated against the DB on every request
   (`sessionVersion`, `disabled`). 2FA (TOTP) is mandatory for every user, with replay protection; login rate limit
-  5 failures / 15 min per email, 20 per IP. New users get a generated password + TOTP key shown once.
+  5 failures / 15 min per email+IP, 30 per email, 20 per IP; attempts are recorded before the check. The client IP
+  is the right-most X-Forwarded-For entry (`TRUSTED_PROXY_HOPS`, default 1, for Render's proxy).
+- 2026-10-29 (phase audit): people join through single-use invitation links (72 h; OWNER bootstrap 24 h). An admin
+  never sees anyone's password or 2FA key: a new person chooses both on the link, an existing user must sign in
+  and accept. The inviter cannot tell whether the email already had a profile.
 - 2026-10-29: Outbox: `enqueueOutboundInTx` is idempotent per (connectionId, idempotencyKey); a DRY_RUN/REFUSED/FAILED
   row can be re-armed, a SENT/UNCERTAIN/in-flight one never. CANARY daily cap counts per UTC day. Global emergency
-  pause: env `OUTBOX_PAUSED=1`; per-account kill switch = OWNER action (all connections → READ_ONLY + pause).
+  pause: env `OUTBOX_PAUSED=1`; per-account kill switch = OWNER action (Складове и връзки → Аварийно спиране: all
+  connections → READ_ONLY + pause). Requests queued before a kill switch are held (PAUSED), never refused, until
+  their connection's mode is raised again. Evaluations lock the connection row, so the CANARY cap counts in-flight
+  and UNCERTAIN sends too.
 - 2026-10-29: Review.embedding is `vector(1024)` (Voyage voyage-3.5 default size); revisit before P8-01 if another
   embedding model is chosen (changing it later needs a migration on a populated table).
 - 2026-10-29: Sidebar per DESIGN.md plus four phase-0 admin entries under Настройки (Фирми и потребители, Ключове за
   достъп, Одит лог, Системни задачи). shadcn/ui components are added when the first complex widget needs one
   (dialogs/tables in phase 1); the phase-0 shell uses Tailwind with the DESIGN.md tokens.
 - 2026-10-29: Render Blueprint in region `frankfurt`, plans starter/starter/basic-256mb; migrations run as
-  `preDeployCommand` (a failed migration stops the deploy instead of crash-looping the service).
+  `preDeployCommand` on web AND worker (a failed migration stops the deploy instead of crash-looping); the worker
+  also refuses to start if a migration is missing, and the web app refuses to start on an RLS-bypassing DB role.
 
 ## Open questions
 See SPEC.md §11.
@@ -65,6 +73,7 @@ See SPEC.md §11.
 
 ## Next
 - GATE P0-G1 (owner): Render → New → Blueprint → this repo; set CREDENTIALS_KEY in the `crm-secrets` group; after the
-  first deploy run `pnpm owner:create --email … --name … --account "…"` in the web service Shell, add the other
-  companies in Настройки → Фирми и потребители.
+  first deploy run `pnpm owner:create --email … --account "…"` in the web service **Shell** (not a One-Off Job),
+  open the printed link, choose a password and scan the 2FA key; add the other companies in Настройки → Фирми и
+  потребители.
 - Then phase 1 (Shopify).

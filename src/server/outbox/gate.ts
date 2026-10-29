@@ -5,7 +5,7 @@ import type { LiveMode } from "@/generated/prisma/client";
  * decide what may happen. Enforced in the outbox sender, never in the UI.
  */
 export type GateDecision =
-  | { action: "pause"; reason: "account_paused" | "global_paused" }
+  | { action: "pause"; reason: "account_paused" | "global_paused" | "kill_switch_hold" }
   | { action: "refuse"; reason: "read_only" | "connection_disabled" }
   | { action: "record_dry_run" }
   | { action: "send_test_mode" } // DRY_RUN where the vendor validates without persisting (euShipments testMode)
@@ -24,6 +24,11 @@ export interface GateInput {
   canaryDailyCap: number;
   /** The operation can be sent to the vendor in a validate-only test mode. */
   supportsTestMode: boolean;
+  /**
+   * The request was queued before the account's last kill switch. While its connection is READ_ONLY it is
+   * held (stays queued) instead of refused, so a kill switch never drops queued work.
+   */
+  queuedBeforeKillSwitch: boolean;
 }
 
 export function evaluateGate(i: GateInput): GateDecision {
@@ -32,7 +37,9 @@ export function evaluateGate(i: GateInput): GateDecision {
   if (!i.connectionEnabled) return { action: "refuse", reason: "connection_disabled" };
   switch (i.mode) {
     case "READ_ONLY":
-      return { action: "refuse", reason: "read_only" };
+      return i.queuedBeforeKillSwitch
+        ? { action: "pause", reason: "kill_switch_hold" }
+        : { action: "refuse", reason: "read_only" };
     case "DRY_RUN":
       return i.supportsTestMode ? { action: "send_test_mode" } : { action: "record_dry_run" };
     case "CANARY":

@@ -1,18 +1,22 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { bootstrapOwner } from "@/server/auth/users";
+import type { Role } from "@/generated/prisma/client";
+import { bootstrapOwner, createUser } from "@/server/auth/users";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { systemDb } from "@/server/db/client";
-import {
-  addMember,
-  changeMemberRole,
-  createAccount,
-  DomainError,
-  listMembers,
-  removeMember,
-  type Actor,
-} from "./accounts";
+import { changeMemberRole, createAccount, listMembers, removeMember, type Actor } from "./accounts";
 
 const PASSWORD = "correct horse battery staple";
+let n = 0;
+
+async function addUser(accountId: string, role: Role) {
+  const u = await createUser({
+    email: `m-${Date.now()}-${++n}@example.com`,
+    name: `U${n}`,
+    password: PASSWORD,
+  });
+  const m = await systemDb().membership.create({ data: { accountId, userId: u.user.id, role } });
+  return { userId: u.user.id, membershipId: m.id };
+}
 
 describe("accounts and memberships", () => {
   let owner: Actor;
@@ -26,7 +30,7 @@ describe("accounts and memberships", () => {
     owner = { userId: r.user.id, accountId: r.account.id, role: "OWNER" };
   });
 
-  it("an owner can create a second account and switch between them (two memberships)", async () => {
+  it("an owner can create a second account (two memberships to switch between)", async () => {
     const second = await createAccount(owner, { name: "Company Two" });
     const ms = await systemDb().membership.findMany({
       where: { userId: owner.userId },
@@ -44,45 +48,22 @@ describe("accounts and memberships", () => {
     );
   });
 
-  it("adds a new user with one-time onboarding secrets, then links an existing user elsewhere", async () => {
-    const email = `op-${Date.now()}@example.com`;
-    const r = await addMember(owner, { email, name: "Operator", role: "OPERATOR" });
-    expect(r.onboarding?.password).toHaveLength(24);
-    expect(r.onboarding?.otpauthUri).toMatch(/^otpauth:/);
-    await expect(addMember(owner, { email, name: "Operator", role: "VIEWER" })).rejects.toThrow(DomainError);
-
-    const other = await createAccount(owner, { name: "Company Three" });
-    const linked = await addMember(
-      { ...owner, accountId: other.id },
-      { email, name: "Operator", role: "VIEWER" },
-    );
-    expect(linked.onboarding).toBeUndefined();
-  });
-
   it("admins manage members but cannot touch owners", async () => {
-    const admin = await addMember(owner, {
-      email: `adm-${Date.now()}@example.com`,
-      name: "Admin",
-      role: "ADMIN",
-    });
-    const asAdmin: Actor = { userId: admin.membership.userId, accountId: owner.accountId, role: "ADMIN" };
-    await expect(
-      addMember(asAdmin, { email: `x-${Date.now()}@example.com`, name: "X", role: "OWNER" }),
-    ).rejects.toBeInstanceOf(ForbiddenError);
-    const viewer = await addMember(asAdmin, {
-      email: `v-${Date.now()}@example.com`,
-      name: "V",
-      role: "VIEWER",
-    });
-    await changeMemberRole(asAdmin, viewer.membership.id, "WAREHOUSE");
+    const admin = await addUser(owner.accountId, "ADMIN");
+    const asAdmin: Actor = { userId: admin.userId, accountId: owner.accountId, role: "ADMIN" };
+    const viewer = await addUser(owner.accountId, "VIEWER");
+    await changeMemberRole(asAdmin, viewer.membershipId, "WAREHOUSE");
+    await expect(changeMemberRole(asAdmin, viewer.membershipId, "OWNER")).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
     const ownerMembership = (await listMembers(owner)).find((m) => m.role === "OWNER")!;
     await expect(changeMemberRole(asAdmin, ownerMembership.id, "VIEWER")).rejects.toBeInstanceOf(
       ForbiddenError,
     );
     await expect(removeMember(asAdmin, ownerMembership.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await removeMember(asAdmin, viewer.membership.id);
+    await removeMember(asAdmin, viewer.membershipId);
     await expect(
-      addMember({ ...owner, role: "OPERATOR" }, { email: "y@example.com", name: "Y", role: "VIEWER" }),
+      changeMemberRole({ ...owner, role: "OPERATOR" }, admin.membershipId, "VIEWER"),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
@@ -94,7 +75,23 @@ describe("accounts and memberships", () => {
     await expect(removeMember(owner, ownerMembership.id)).rejects.toMatchObject({ code: "last_owner" });
   });
 
-  it("members of another account are not visible", async () => {
+  it("two owners demoting each other at the same time leave at least one owner", async () => {
+    const acc = await createAccount(owner, { name: "Race Co" });
+    const a = await systemDb().membership.findFirstOrThrow({
+      where: { accountId: acc.id, userId: owner.userId },
+    });
+    const b = await addUser(acc.id, "OWNER");
+    const actorA: Actor = { userId: owner.userId, accountId: acc.id, role: "OWNER" };
+    const actorB: Actor = { userId: b.userId, accountId: acc.id, role: "OWNER" };
+    const results = await Promise.allSettled([
+      changeMemberRole(actorA, b.membershipId, "ADMIN"),
+      changeMemberRole(actorB, a.id, "ADMIN"),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await systemDb().membership.count({ where: { accountId: acc.id, role: "OWNER" } })).toBe(1);
+  });
+
+  it("members of another account are not visible or changeable", async () => {
     const other = await bootstrapOwner({
       email: `iso-${Date.now()}@example.com`,
       name: "I",
@@ -111,8 +108,6 @@ describe("accounts and memberships", () => {
     const actions = (await systemDb().auditLog.findMany({ where: { accountId: owner.accountId } })).map(
       (a) => a.action,
     );
-    expect(actions).toEqual(
-      expect.arrayContaining(["account.create", "member.add", "member.role_change", "member.remove"]),
-    );
+    expect(actions).toEqual(expect.arrayContaining(["member.role_change", "member.remove"]));
   });
 });

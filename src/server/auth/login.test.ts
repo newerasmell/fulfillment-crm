@@ -2,7 +2,7 @@ import { generate } from "otplib";
 import { beforeAll, describe, expect, it } from "vitest";
 import { systemDb } from "@/server/db/client";
 import { verifyLogin } from "./login";
-import { MAX_FAILURES_PER_EMAIL } from "./rate-limit";
+import { MAX_FAILURES_PER_EMAIL_IP } from "./rate-limit";
 import { verifyTotp } from "./totp";
 import { bootstrapOwner, createUser, revokeSessions } from "./users";
 
@@ -34,7 +34,6 @@ describe("verifyLogin", () => {
     secret = r.totpSecret;
     userId = r.user.id;
     expect(r.otpauthUri).toMatch(/^otpauth:\/\/totp\//);
-    expect(r.password).toBeUndefined(); // given, not generated
   });
 
   const login = (over: Partial<{ email: string; password: string; code: string; ip: string }> = {}) =>
@@ -84,9 +83,9 @@ describe("verifyLogin", () => {
     });
   });
 
-  it("rate-limits after repeated failures, even with correct credentials", async () => {
+  it("rate-limits repeated failures from the same place, without locking the user out elsewhere", async () => {
     const victim = await createUser({ email: `rl-${Date.now()}@example.com`, name: "R", password: PASSWORD });
-    for (let i = 0; i < MAX_FAILURES_PER_EMAIL; i++) {
+    for (let i = 0; i < MAX_FAILURES_PER_EMAIL_IP; i++) {
       await verifyLogin({
         email: victim.user.email,
         password: "bad password!!",
@@ -101,10 +100,42 @@ describe("verifyLogin", () => {
         email: victim.user.email,
         password: PASSWORD,
         code,
-        ip: "10.9.9.10",
+        ip: "10.9.9.9",
         userAgent: null,
       }),
     ).toEqual({ ok: false, reason: "rate_limited" });
+    // the real user, somewhere else, can still sign in
+    expect(
+      await verifyLogin({
+        email: victim.user.email,
+        password: PASSWORD,
+        code,
+        ip: "10.1.1.1",
+        userAgent: null,
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("parallel guesses are all counted (attempt recorded before the check)", async () => {
+    const victim = await createUser({
+      email: `burst-${Date.now()}@example.com`,
+      name: "B",
+      password: PASSWORD,
+    });
+    const results = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        verifyLogin({
+          email: victim.user.email,
+          password: "guess guess guess",
+          code: "123456",
+          ip: "10.7.7.7",
+          userAgent: null,
+        }),
+      ),
+    );
+    expect(results.filter((r) => !r.ok && r.reason === "rate_limited").length).toBeGreaterThanOrEqual(
+      12 - MAX_FAILURES_PER_EMAIL_IP,
+    );
   });
 
   it("revokeSessions bumps the session version", async () => {

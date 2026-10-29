@@ -1,6 +1,7 @@
 import NextAuth, { CredentialsSignin } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import { z } from "zod";
+import { clientIp } from "@/lib/client-ip";
 import { verifyLogin, type LoginFailure } from "@/server/auth/login";
 
 class LoginError extends CredentialsSignin {
@@ -34,8 +35,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       async authorize(raw, request) {
         const parsed = LoginForm.safeParse(raw);
         if (!parsed.success) throw new LoginError("invalid");
-        const forwarded = request.headers.get("x-forwarded-for");
-        const ip = forwarded?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || null;
+        const ip = clientIp((n) => request.headers.get(n));
         const result = await verifyLogin({
           ...parsed.data,
           ip,

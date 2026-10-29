@@ -1,12 +1,19 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { getCurrentUser } from "@/server/auth/session";
+import { safeNext } from "@/lib/safe-next";
 import { LoginForm } from "./LoginForm";
 
 export const dynamic = "force-dynamic";
 
-export default async function LoginPage() {
-  if (await getCurrentUser()) redirect("/");
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; joined?: string }>;
+}) {
+  const { next: rawNext, joined } = await searchParams;
+  const next = safeNext(rawNext);
+  if (await getCurrentUser()) redirect(next);
   const t = await getTranslations("login");
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
@@ -21,7 +28,12 @@ export default async function LoginPage() {
           <span className="font-bold">Fulfillment CRM</span>
         </div>
         <h1 className="mt-0 mb-4 text-xl font-bold">{t("title")}</h1>
-        <LoginForm />
+        {joined && (
+          <p role="status" className="mt-0 rounded-lg bg-ok-bg px-3 py-2 text-ok">
+            {t("joined")}
+          </p>
+        )}
+        <LoginForm next={next} />
       </div>
     </main>
   );

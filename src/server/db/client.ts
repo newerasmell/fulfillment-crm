@@ -205,19 +205,59 @@ function scopeTransactionClient(tx: Prisma.TransactionClient, accountId: string)
   });
 }
 
+/** Tables whose rows may be locked from an account transaction (row locks serialise racing changes). */
+const LOCKABLE = { Membership: '"Membership"', FulfillmentConnection: '"FulfillmentConnection"' } as const;
+export type LockableTable = keyof typeof LOCKABLE;
+
+export interface AccountTxHelpers {
+  /** SELECT … FOR UPDATE on this account's rows of `table` (one row when `id` is given). */
+  lockForUpdate(table: LockableTable, id?: string): Promise<void>;
+}
+
 /**
  * Interactive (real, atomic) transaction scoped to one account: accountId is injected like accountDb()
- * and RLS applies to everything inside. Raw SQL is disabled inside.
+ * and RLS applies to everything inside. Raw SQL is disabled inside; use `helpers.lockForUpdate` for locks.
  */
 export async function withAccountTransaction<T>(
   accountId: string,
-  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  fn: (tx: Prisma.TransactionClient, helpers: AccountTxHelpers) => Promise<T>,
 ): Promise<T> {
   if (!accountId) throw new TenantScopeError("accountId is required");
   return basePrisma().$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.account_id', ${accountId}, TRUE), set_config('app.bypass_rls', 'off', TRUE)`;
-    return fn(scopeTransactionClient(tx, accountId));
+    const helpers: AccountTxHelpers = {
+      async lockForUpdate(table, id) {
+        const t = LOCKABLE[table];
+        if (id)
+          await tx.$queryRawUnsafe(
+            `SELECT 1 FROM ${t} WHERE "accountId" = $1 AND id = $2 FOR UPDATE`,
+            accountId,
+            id,
+          );
+        else
+          await tx.$queryRawUnsafe(
+            `SELECT 1 FROM ${t} WHERE "accountId" = $1 ORDER BY id FOR UPDATE`,
+            accountId,
+          );
+      },
+    };
+    return fn(scopeTransactionClient(tx, accountId), helpers);
   });
+}
+
+/** True for Prisma's unique-constraint violation (P2002). */
+export function isUniqueViolation(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
+
+/**
+ * Applied migration names; the worker refuses to start on a schema older than its code (render.yaml runs
+ * migrations as the web service's pre-deploy step, the worker may start first).
+ */
+export async function appliedMigrations(): Promise<Set<string>> {
+  const rows = await basePrisma().$queryRaw<{ migration_name: string }[]>`
+    SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+  return new Set(rows.map((r) => r.migration_name));
 }
 
 /**

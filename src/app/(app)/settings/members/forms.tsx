@@ -4,7 +4,7 @@ import { useActionState } from "react";
 import { useTranslations } from "next-intl";
 import type { Role } from "@/generated/prisma/client";
 import {
-  addMemberAction,
+  inviteMemberAction,
   changeRoleAction,
   createAccountAction,
   removeMemberAction,
@@ -86,7 +86,7 @@ export function MemberRow({
   );
 }
 
-export function AddMemberForm({
+export function InviteForm({
   assignable,
   roleLabels,
 }: {
@@ -94,14 +94,18 @@ export function AddMemberForm({
   roleLabels: Record<string, string>;
 }) {
   const t = useTranslations("members");
-  const [state, action, pending] = useActionState(addMemberAction, undefined);
+  const [state, action, pending] = useActionState(inviteMemberAction, undefined);
+  const link =
+    state?.invitePath && typeof window !== "undefined"
+      ? `${window.location.origin}${state.invitePath}`
+      : undefined;
   return (
     <div className="mt-5 flex flex-col gap-3">
       <h3 className="m-0 text-sm font-semibold">{t("add")}</h3>
       <form action={action} className="flex flex-wrap items-end gap-3">
         <label className={labelCls}>
           {t("name")}
-          <input name="name" required className={`${inputCls} w-56`} />
+          <input name="name" className={`${inputCls} w-56`} />
         </label>
         <label className={labelCls}>
           {t("email")}
@@ -122,23 +126,15 @@ export function AddMemberForm({
         </button>
       </form>
       <ErrorText code={state?.error} />
-      {state?.existingUser && <p className="m-0 text-ok">{t("existingUser")}</p>}
-      {state?.onboarding && (
+      {link && (
         <div role="status" className="rounded-xl border border-warn bg-warn-bg p-4">
-          <p className="mt-0 font-semibold text-warn">{t("onboardingTitle")}</p>
-          <p className="text-[13px]">{t("onboardingBody")}</p>
-          <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2">
-            <dt className="text-muted">{t("email")}</dt>
-            <dd className="m-0 font-mono">{state.onboarding.email}</dd>
-            {state.onboarding.password && (
-              <>
-                <dt className="text-muted">{t("password")}</dt>
-                <dd className="m-0 font-mono select-all">{state.onboarding.password}</dd>
-              </>
-            )}
-            <dt className="text-muted">{t("totpUri")}</dt>
-            <dd className="m-0 font-mono text-xs break-all select-all">{state.onboarding.otpauthUri}</dd>
-          </dl>
+          <p className="mt-0 font-semibold text-warn">
+            {t("inviteTitle", { email: state?.inviteEmail ?? "" })}
+          </p>
+          <p className="text-[13px]">{t("inviteBody")}</p>
+          <p className="m-0 font-mono text-xs break-all select-all" data-testid="invite-link">
+            {link}
+          </p>
         </div>
       )}
     </div>

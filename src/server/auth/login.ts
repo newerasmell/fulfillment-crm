@@ -2,7 +2,7 @@ import { recordAudit } from "@/server/audit";
 import { systemDb } from "@/server/db/client";
 import { openFromString } from "@/server/security/vault";
 import { dummyPasswordHash, verifyPassword } from "./password";
-import { isLoginRateLimited, recordLoginAttempt } from "./rate-limit";
+import { beginLoginAttempt, settleLoginAttempt } from "./rate-limit";
 import { verifyTotp } from "./totp";
 
 export type LoginFailure = "invalid" | "rate_limited" | "totp_required";
@@ -32,7 +32,8 @@ export async function verifyLogin(
   input: LoginInput,
 ): Promise<{ ok: true; user: SessionUser } | { ok: false; reason: LoginFailure }> {
   const email = input.email.trim().toLowerCase();
-  if (await isLoginRateLimited(email, input.ip)) {
+  const attempt = await beginLoginAttempt(email, input.ip);
+  if (attempt.limited) {
     await recordAudit({
       action: "auth.login_rate_limited",
       after: { email },
@@ -41,7 +42,10 @@ export async function verifyLogin(
     });
     return { ok: false, reason: "rate_limited" };
   }
-  if (!input.code.trim()) return { ok: false, reason: "totp_required" };
+  if (!input.code.trim()) {
+    await settleLoginAttempt(attempt.ids);
+    return { ok: false, reason: "totp_required" };
+  }
 
   const db = systemDb();
   const user = await db.user.findUnique({ where: { email } });
@@ -54,7 +58,6 @@ export async function verifyLogin(
   }
 
   if (!user || step === null) {
-    await recordLoginAttempt(email, input.ip, false);
     await recordAudit({
       userId: user?.id ?? null,
       action: "auth.login_failed",
@@ -70,11 +73,8 @@ export async function verifyLogin(
     where: { id: user.id, OR: [{ totpLastStep: null }, { totpLastStep: { lt: step } }] },
     data: { totpLastStep: step, lastLoginAt: new Date() },
   });
-  if (claimed.count !== 1) {
-    await recordLoginAttempt(email, input.ip, false);
-    return { ok: false, reason: "invalid" };
-  }
-  await recordLoginAttempt(email, input.ip, true);
+  if (claimed.count !== 1) return { ok: false, reason: "invalid" };
+  await settleLoginAttempt(attempt.ids);
   await recordAudit({ userId: user.id, action: "auth.login", ip: input.ip, userAgent: input.userAgent });
   return {
     ok: true,

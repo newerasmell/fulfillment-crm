@@ -10,6 +10,7 @@ const base: GateInput = {
   canarySentToday: 0,
   canaryDailyCap: 10,
   supportsTestMode: false,
+  queuedBeforeKillSwitch: false,
 };
 
 describe("liveMode gate", () => {
@@ -47,6 +48,12 @@ describe("liveMode gate", () => {
         reason: "global_paused",
       });
     }
+  });
+  it("READ_ONLY after a kill switch holds requests queued before it instead of refusing them", () => {
+    expect(evaluateGate({ ...base, mode: "READ_ONLY", queuedBeforeKillSwitch: true })).toEqual({
+      action: "pause",
+      reason: "kill_switch_hold",
+    });
   });
   it("a disabled connection refuses", () => {
     expect(evaluateGate({ ...base, connectionEnabled: false })).toEqual({

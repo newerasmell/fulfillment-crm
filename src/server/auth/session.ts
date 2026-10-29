@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import { auth } from "@/auth";
 import type { Role } from "@/generated/prisma/client";
+import { clientIp } from "@/lib/client-ip";
 import { systemDb } from "@/server/db/client";
 import type { Actor } from "@/server/accounts";
 import { can, type Permission } from "./rbac";
@@ -78,7 +79,7 @@ export const getAccountContext = cache(async (): Promise<AccountContext | null> 
     accountName: active.accountName,
     role: active.role,
     memberships,
-    ip: h.get("x-forwarded-for")?.split(",")[0]?.trim() || null,
+    ip: clientIp((n) => h.get(n)),
     userAgent: h.get("user-agent"),
   };
 });

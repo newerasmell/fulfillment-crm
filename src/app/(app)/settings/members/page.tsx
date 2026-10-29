@@ -5,7 +5,9 @@ import { listMembers } from "@/server/accounts";
 import { can, canAssignRole, ROLES } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { switchAccountAction } from "@/app/actions/session";
-import { AddMemberForm, MemberRow, NewAccountForm } from "./forms";
+import { InviteForm, MemberRow, NewAccountForm } from "./forms";
+import { listOpenInvitations } from "@/server/invitations";
+import { revokeInvitationAction } from "@/app/actions/members";
 
 export default async function MembersPage() {
   const ctx = await requireAccountContext();
@@ -15,6 +17,7 @@ export default async function MembersPage() {
   const manage = can(ctx.role, "members.manage");
   const assignable = ROLES.filter((r) => canAssignRole(ctx.role, r));
   const roleLabels = Object.fromEntries(ROLES.map((r) => [r, t(`roles.${r}`)]));
+  const invitations = manage ? await listOpenInvitations(actorFrom(ctx)) : [];
 
   return (
     <>
@@ -83,7 +86,33 @@ export default async function MembersPage() {
             </tbody>
           </table>
         </div>
-        {manage && <AddMemberForm assignable={assignable} roleLabels={roleLabels} />}
+        {invitations.length > 0 && (
+          <div className="mt-5">
+            <h3 className="mt-0 mb-2 text-sm font-semibold">{t("members.openInvitations")}</h3>
+            <ul className="m-0 flex list-none flex-col p-0">
+              {invitations.map((i) => (
+                <li
+                  key={i.id}
+                  className="flex min-h-11 flex-wrap items-center gap-3 border-b border-line-soft"
+                >
+                  <span className="font-mono text-[13px]">{i.email}</span>
+                  <span className="text-muted">{t(`roles.${i.role}`)}</span>
+                  <span className="text-xs text-muted">
+                    {t("members.expires", {
+                      date: format.dateTime(i.expiresAt, { dateStyle: "medium", timeStyle: "short" }),
+                    })}
+                  </span>
+                  <form action={revokeInvitationAction.bind(null, i.id)} className="ml-auto">
+                    <button type="submit" className="min-h-9 rounded-lg border border-line px-3 text-block">
+                      {t("members.revoke")}
+                    </button>
+                  </form>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {manage && <InviteForm assignable={assignable} roleLabels={roleLabels} />}
       </Card>
     </>
   );

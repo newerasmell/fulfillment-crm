@@ -3,15 +3,17 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { Role } from "@/generated/prisma/client";
-import { addMember, changeMemberRole, createAccount, DomainError, removeMember } from "@/server/accounts";
+import { changeMemberRole, createAccount, DomainError, removeMember } from "@/server/accounts";
+import { inviteMember, revokeInvitation } from "@/server/invitations";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 
 export interface ActionResult {
   ok?: boolean;
   error?: string;
-  onboarding?: { email: string; password?: string; otpauthUri: string };
-  existingUser?: boolean;
+  /** Invitation link path, shown once to the inviter. */
+  invitePath?: string;
+  inviteEmail?: string;
 }
 
 function toError(err: unknown): ActionResult {
@@ -35,29 +37,33 @@ export async function createAccountAction(
   return { ok: true };
 }
 
-export async function addMemberAction(
+export async function inviteMemberAction(
   _prev: ActionResult | undefined,
   form: FormData,
 ): Promise<ActionResult> {
   const ctx = await requireAccountContext();
   const email = String(form.get("email") ?? "");
   try {
-    const r = await addMember(actorFrom(ctx), {
+    const r = await inviteMember(actorFrom(ctx), {
       email,
       name: String(form.get("name") ?? ""),
       role: String(form.get("role") ?? "VIEWER") as Role,
     });
     revalidatePath("/settings/members");
-    if (r.onboarding) {
-      return {
-        ok: true,
-        onboarding: { email, password: r.onboarding.password, otpauthUri: r.onboarding.otpauthUri },
-      };
-    }
-    return { ok: true, existingUser: true };
+    return { ok: true, invitePath: `/invite/${r.token}`, inviteEmail: email };
   } catch (err) {
     return toError(err);
   }
+}
+
+export async function revokeInvitationAction(invitationId: string) {
+  const ctx = await requireAccountContext();
+  try {
+    await revokeInvitation(actorFrom(ctx), invitationId);
+  } catch (err) {
+    toError(err);
+  }
+  revalidatePath("/settings/members");
 }
 
 export async function changeRoleAction(
