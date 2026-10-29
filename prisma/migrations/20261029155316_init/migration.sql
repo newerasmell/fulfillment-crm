@@ -72,6 +72,7 @@ CREATE TABLE "User" (
     "passwordHash" TEXT NOT NULL,
     "totpSecretEnc" TEXT,
     "totpEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "totpLastStep" INTEGER,
     "sessionVersion" INTEGER NOT NULL DEFAULT 0,
     "locale" TEXT NOT NULL DEFAULT 'bg',
     "disabled" BOOLEAN NOT NULL DEFAULT false,
@@ -420,6 +421,17 @@ CREATE TABLE "FulfillmentEvent" (
 );
 
 -- CreateTable
+CREATE TABLE "FulfillmentLine" (
+    "id" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "fulfillmentId" TEXT NOT NULL,
+    "orderLineId" TEXT NOT NULL,
+    "quantity" INTEGER NOT NULL,
+
+    CONSTRAINT "FulfillmentLine_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "Review" (
     "id" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
@@ -433,7 +445,7 @@ CREATE TABLE "Review" (
     "reasonText" TEXT,
     "reviewerId" TEXT,
     "timeSpentMs" INTEGER,
-    "embedding" vector,
+    "embedding" vector(1024),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "decidedAt" TIMESTAMP(3),
 
@@ -453,6 +465,9 @@ CREATE TABLE "OutboundRequest" (
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "lastResponse" JSONB,
     "lastError" TEXT,
+    "fulfillmentId" TEXT,
+    "lockedAt" TIMESTAMP(3),
+    "nextAttemptAt" TIMESTAMP(3),
     "confirmedById" TEXT,
     "confirmedAt" TIMESTAMP(3),
     "sentAt" TIMESTAMP(3),
@@ -560,6 +575,12 @@ CREATE INDEX "LoginAttempt_key_createdAt_idx" ON "LoginAttempt"("key", "createdA
 CREATE INDEX "Credential_accountId_idx" ON "Credential"("accountId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Credential_accountId_id_key" ON "Credential"("accountId", "id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Store_accountId_id_key" ON "Store"("accountId", "id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Store_accountId_code_key" ON "Store"("accountId", "code");
 
 -- CreateIndex
@@ -569,10 +590,16 @@ CREATE UNIQUE INDEX "Store_accountId_domain_key" ON "Store"("accountId", "domain
 CREATE INDEX "FulfillmentConnection_accountId_idx" ON "FulfillmentConnection"("accountId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "FulfillmentConnection_accountId_id_key" ON "FulfillmentConnection"("accountId", "id");
+
+-- CreateIndex
 CREATE INDEX "RoutingRule_accountId_priority_idx" ON "RoutingRule"("accountId", "priority");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "CountrySetting_accountId_country_key" ON "CountrySetting"("accountId", "country");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Product_accountId_id_key" ON "Product"("accountId", "id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Product_accountId_sku_key" ON "Product"("accountId", "sku");
@@ -584,10 +611,16 @@ CREATE INDEX "ProductEan_accountId_ean_idx" ON "ProductEan"("accountId", "ean");
 CREATE INDEX "StoreVariantLink_accountId_productId_idx" ON "StoreVariantLink"("accountId", "productId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "StoreVariantLink_accountId_id_key" ON "StoreVariantLink"("accountId", "id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "StoreVariantLink_storeId_shopifyVariantGid_key" ON "StoreVariantLink"("storeId", "shopifyVariantGid");
 
 -- CreateIndex
 CREATE INDEX "VendorProduct_accountId_productId_idx" ON "VendorProduct"("accountId", "productId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "VendorProduct_accountId_id_key" ON "VendorProduct"("accountId", "id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "VendorProduct_connectionId_vendorId_key" ON "VendorProduct"("connectionId", "vendorId");
@@ -599,6 +632,9 @@ CREATE UNIQUE INDEX "StockLevel_vendorProductId_key" ON "StockLevel"("vendorProd
 CREATE INDEX "StockLevel_accountId_idx" ON "StockLevel"("accountId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "StockLevel_accountId_vendorProductId_key" ON "StockLevel"("accountId", "vendorProductId");
+
+-- CreateIndex
 CREATE INDEX "StockMovement_accountId_occurredAt_idx" ON "StockMovement"("accountId", "occurredAt");
 
 -- CreateIndex
@@ -606,6 +642,9 @@ CREATE UNIQUE INDEX "StockMovement_connectionId_externalId_key" ON "StockMovemen
 
 -- CreateIndex
 CREATE INDEX "InboundShipment_accountId_idx" ON "InboundShipment"("accountId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "InboundShipment_accountId_id_key" ON "InboundShipment"("accountId", "id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "InboundShipment_connectionId_externalRef_key" ON "InboundShipment"("connectionId", "externalRef");
@@ -617,19 +656,37 @@ CREATE INDEX "InboundLine_accountId_idx" ON "InboundLine"("accountId");
 CREATE INDEX "Order_accountId_status_placedAt_idx" ON "Order"("accountId", "status", "placedAt");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Order_accountId_id_key" ON "Order"("accountId", "id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Order_accountId_storeId_shopifyOrderGid_key" ON "Order"("accountId", "storeId", "shopifyOrderGid");
 
 -- CreateIndex
 CREATE INDEX "OrderLine_accountId_orderId_idx" ON "OrderLine"("accountId", "orderId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "OrderLine_accountId_id_key" ON "OrderLine"("accountId", "id");
+
+-- CreateIndex
 CREATE INDEX "Fulfillment_accountId_status_idx" ON "Fulfillment"("accountId", "status");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Fulfillment_accountId_id_key" ON "Fulfillment"("accountId", "id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Fulfillment_connectionId_externalId_key" ON "Fulfillment"("connectionId", "externalId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Fulfillment_connectionId_variableSymbol_key" ON "Fulfillment"("connectionId", "variableSymbol");
+
+-- CreateIndex
 CREATE INDEX "FulfillmentEvent_accountId_fulfillmentId_occurredAt_idx" ON "FulfillmentEvent"("accountId", "fulfillmentId", "occurredAt");
+
+-- CreateIndex
+CREATE INDEX "FulfillmentLine_accountId_idx" ON "FulfillmentLine"("accountId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "FulfillmentLine_fulfillmentId_orderLineId_key" ON "FulfillmentLine"("fulfillmentId", "orderLineId");
 
 -- CreateIndex
 CREATE INDEX "Review_accountId_createdAt_idx" ON "Review"("accountId", "createdAt");
@@ -671,19 +728,19 @@ ALTER TABLE "Credential" ADD CONSTRAINT "Credential_accountId_fkey" FOREIGN KEY 
 ALTER TABLE "Store" ADD CONSTRAINT "Store_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Store" ADD CONSTRAINT "Store_credentialId_fkey" FOREIGN KEY ("credentialId") REFERENCES "Credential"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Store" ADD CONSTRAINT "Store_accountId_credentialId_fkey" FOREIGN KEY ("accountId", "credentialId") REFERENCES "Credential"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "FulfillmentConnection" ADD CONSTRAINT "FulfillmentConnection_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "FulfillmentConnection" ADD CONSTRAINT "FulfillmentConnection_credentialId_fkey" FOREIGN KEY ("credentialId") REFERENCES "Credential"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "FulfillmentConnection" ADD CONSTRAINT "FulfillmentConnection_accountId_credentialId_fkey" FOREIGN KEY ("accountId", "credentialId") REFERENCES "Credential"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "RoutingRule" ADD CONSTRAINT "RoutingRule_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "RoutingRule" ADD CONSTRAINT "RoutingRule_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "RoutingRule" ADD CONSTRAINT "RoutingRule_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "CountrySetting" ADD CONSTRAINT "CountrySetting_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -692,76 +749,88 @@ ALTER TABLE "CountrySetting" ADD CONSTRAINT "CountrySetting_accountId_fkey" FORE
 ALTER TABLE "Product" ADD CONSTRAINT "Product_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Product" ADD CONSTRAINT "Product_parentProductId_fkey" FOREIGN KEY ("parentProductId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Product" ADD CONSTRAINT "Product_accountId_parentProductId_fkey" FOREIGN KEY ("accountId", "parentProductId") REFERENCES "Product"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "ProductEan" ADD CONSTRAINT "ProductEan_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ProductEan" ADD CONSTRAINT "ProductEan_accountId_productId_fkey" FOREIGN KEY ("accountId", "productId") REFERENCES "Product"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "StoreVariantLink" ADD CONSTRAINT "StoreVariantLink_storeId_fkey" FOREIGN KEY ("storeId") REFERENCES "Store"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "StoreVariantLink" ADD CONSTRAINT "StoreVariantLink_accountId_storeId_fkey" FOREIGN KEY ("accountId", "storeId") REFERENCES "Store"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "StoreVariantLink" ADD CONSTRAINT "StoreVariantLink_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "StoreVariantLink" ADD CONSTRAINT "StoreVariantLink_accountId_productId_fkey" FOREIGN KEY ("accountId", "productId") REFERENCES "Product"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "VendorProduct" ADD CONSTRAINT "VendorProduct_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "VendorProduct" ADD CONSTRAINT "VendorProduct_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "VendorProduct" ADD CONSTRAINT "VendorProduct_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "VendorProduct" ADD CONSTRAINT "VendorProduct_accountId_productId_fkey" FOREIGN KEY ("accountId", "productId") REFERENCES "Product"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "StockLevel" ADD CONSTRAINT "StockLevel_vendorProductId_fkey" FOREIGN KEY ("vendorProductId") REFERENCES "VendorProduct"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "StockLevel" ADD CONSTRAINT "StockLevel_accountId_vendorProductId_fkey" FOREIGN KEY ("accountId", "vendorProductId") REFERENCES "VendorProduct"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_vendorProductId_fkey" FOREIGN KEY ("vendorProductId") REFERENCES "VendorProduct"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_accountId_vendorProductId_fkey" FOREIGN KEY ("accountId", "vendorProductId") REFERENCES "VendorProduct"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InboundShipment" ADD CONSTRAINT "InboundShipment_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "InboundShipment" ADD CONSTRAINT "InboundShipment_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InboundLine" ADD CONSTRAINT "InboundLine_inboundId_fkey" FOREIGN KEY ("inboundId") REFERENCES "InboundShipment"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "InboundLine" ADD CONSTRAINT "InboundLine_accountId_inboundId_fkey" FOREIGN KEY ("accountId", "inboundId") REFERENCES "InboundShipment"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "InboundLine" ADD CONSTRAINT "InboundLine_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "InboundLine" ADD CONSTRAINT "InboundLine_accountId_productId_fkey" FOREIGN KEY ("accountId", "productId") REFERENCES "Product"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Order" ADD CONSTRAINT "Order_storeId_fkey" FOREIGN KEY ("storeId") REFERENCES "Store"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Order" ADD CONSTRAINT "Order_accountId_storeId_fkey" FOREIGN KEY ("accountId", "storeId") REFERENCES "Store"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_accountId_orderId_fkey" FOREIGN KEY ("accountId", "orderId") REFERENCES "Order"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_variantLinkId_fkey" FOREIGN KEY ("variantLinkId") REFERENCES "StoreVariantLink"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_accountId_variantLinkId_fkey" FOREIGN KEY ("accountId", "variantLinkId") REFERENCES "StoreVariantLink"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_accountId_productId_fkey" FOREIGN KEY ("accountId", "productId") REFERENCES "Product"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Fulfillment" ADD CONSTRAINT "Fulfillment_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Fulfillment" ADD CONSTRAINT "Fulfillment_accountId_orderId_fkey" FOREIGN KEY ("accountId", "orderId") REFERENCES "Order"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Fulfillment" ADD CONSTRAINT "Fulfillment_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Fulfillment" ADD CONSTRAINT "Fulfillment_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "FulfillmentEvent" ADD CONSTRAINT "FulfillmentEvent_fulfillmentId_fkey" FOREIGN KEY ("fulfillmentId") REFERENCES "Fulfillment"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "FulfillmentEvent" ADD CONSTRAINT "FulfillmentEvent_accountId_fulfillmentId_fkey" FOREIGN KEY ("accountId", "fulfillmentId") REFERENCES "Fulfillment"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Review" ADD CONSTRAINT "Review_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "FulfillmentLine" ADD CONSTRAINT "FulfillmentLine_accountId_fulfillmentId_fkey" FOREIGN KEY ("accountId", "fulfillmentId") REFERENCES "Fulfillment"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "OutboundRequest" ADD CONSTRAINT "OutboundRequest_connectionId_fkey" FOREIGN KEY ("connectionId") REFERENCES "FulfillmentConnection"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "FulfillmentLine" ADD CONSTRAINT "FulfillmentLine_accountId_orderLineId_fkey" FOREIGN KEY ("accountId", "orderLineId") REFERENCES "OrderLine"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Review" ADD CONSTRAINT "Review_accountId_orderId_fkey" FOREIGN KEY ("accountId", "orderId") REFERENCES "Order"("accountId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OutboundRequest" ADD CONSTRAINT "OutboundRequest_accountId_connectionId_fkey" FOREIGN KEY ("accountId", "connectionId") REFERENCES "FulfillmentConnection"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OutboundRequest" ADD CONSTRAINT "OutboundRequest_accountId_fulfillmentId_fkey" FOREIGN KEY ("accountId", "fulfillmentId") REFERENCES "Fulfillment"("accountId", "id") ON DELETE NO ACTION ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "WebhookEvent" ADD CONSTRAINT "WebhookEvent_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Alert" ADD CONSTRAINT "Alert_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "AuditLog" ADD CONSTRAINT "AuditLog_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE NO ACTION ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "AiPolicy" ADD CONSTRAINT "AiPolicy_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;

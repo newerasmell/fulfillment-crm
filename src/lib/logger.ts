@@ -4,32 +4,28 @@ import pino from "pino";
  * Paths that may hold secrets. pino replaces them with "[REDACTED]" before anything is written.
  * Credentials are never logged on purpose either; this is the safety net (CLAUDE.md).
  */
-export const REDACT_PATHS = [
+const SECRET_KEYS = [
   "password",
-  "*.password",
+  "passwordHash",
   "secret",
-  "*.secret",
-  "token",
-  "*.token",
-  "accessToken",
-  "*.accessToken",
-  "apiKey",
-  "*.apiKey",
   "app_secret",
-  "*.app_secret",
+  "appSecret",
+  "token",
+  "accessToken",
+  "refreshToken",
+  "apiKey",
   "authorization",
-  "*.authorization",
-  "headers.authorization",
-  "*.headers.authorization",
-  "headers.cookie",
-  "*.headers.cookie",
+  "cookie",
   "credentials",
-  "*.credentials",
+  "ciphertext",
+  "authTag",
   "totp",
-  "*.totp",
   "totpSecret",
-  "*.totpSecret",
+  "totpSecretEnc",
 ];
+
+/** Redacted at the top level and up to three levels deep (pino paths do not support recursion). */
+export const REDACT_PATHS = SECRET_KEYS.flatMap((k) => [k, `*.${k}`, `*.*.${k}`, `*.*.*.${k}`]);
 
 export function createLogger(options: pino.LoggerOptions = {}, stream?: pino.DestinationStream) {
   return pino(

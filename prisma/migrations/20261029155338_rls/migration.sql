@@ -1,8 +1,9 @@
 -- Row-level security: second line of defence behind the repository layer (src/server/db).
--- Every request runs inside a transaction that sets `app.account_id` (SET LOCAL via set_config).
--- System jobs that legitimately work across accounts set `app.bypass_rls = 'on'` instead.
--- Without either setting no rows are visible and no rows can be written.
+-- Every operation runs inside a transaction that sets `app.account_id` (set_config(..., TRUE) = local).
+-- System jobs that legitimately work across accounts set `app.bypass_rls = 'on'` instead (systemDb()).
+-- Without either setting no rows are visible and no rows can be written (default deny).
 -- FORCE makes the policies apply to the table owner too (the app role owns the tables).
+-- The app must connect as a role that is neither SUPERUSER nor BYPASSRLS (checked at startup).
 
 CREATE OR REPLACE FUNCTION crm_rls_allows(row_account_id text) RETURNS boolean
 LANGUAGE sql STABLE AS $$
@@ -21,10 +22,6 @@ CREATE POLICY account_isolation ON "AiPolicy" USING (crm_rls_allows("accountId")
 ALTER TABLE "Alert" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Alert" FORCE ROW LEVEL SECURITY;
 CREATE POLICY account_isolation ON "Alert" USING (crm_rls_allows("accountId")) WITH CHECK (crm_rls_allows("accountId"));
-
-ALTER TABLE "AuditLog" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "AuditLog" FORCE ROW LEVEL SECURITY;
-CREATE POLICY account_isolation ON "AuditLog" USING (crm_rls_allows("accountId")) WITH CHECK (crm_rls_allows("accountId"));
 
 ALTER TABLE "CountrySetting" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "CountrySetting" FORCE ROW LEVEL SECURITY;
@@ -45,6 +42,10 @@ CREATE POLICY account_isolation ON "FulfillmentConnection" USING (crm_rls_allows
 ALTER TABLE "FulfillmentEvent" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "FulfillmentEvent" FORCE ROW LEVEL SECURITY;
 CREATE POLICY account_isolation ON "FulfillmentEvent" USING (crm_rls_allows("accountId")) WITH CHECK (crm_rls_allows("accountId"));
+
+ALTER TABLE "FulfillmentLine" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "FulfillmentLine" FORCE ROW LEVEL SECURITY;
+CREATE POLICY account_isolation ON "FulfillmentLine" USING (crm_rls_allows("accountId")) WITH CHECK (crm_rls_allows("accountId"));
 
 ALTER TABLE "InboundLine" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "InboundLine" FORCE ROW LEVEL SECURITY;
@@ -110,3 +111,20 @@ ALTER TABLE "WebhookEvent" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "WebhookEvent" FORCE ROW LEVEL SECURITY;
 CREATE POLICY account_isolation ON "WebhookEvent" USING (crm_rls_allows("accountId")) WITH CHECK (crm_rls_allows("accountId"));
 
+-- Audit log is append-only: read + insert policies only, and a trigger that rejects UPDATE/DELETE
+-- (including FK actions) so not even the table owner can rewrite history.
+ALTER TABLE "AuditLog" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "AuditLog" FORCE ROW LEVEL SECURITY;
+CREATE POLICY audit_read ON "AuditLog" FOR SELECT USING (crm_rls_allows("accountId"));
+CREATE POLICY audit_insert ON "AuditLog" FOR INSERT WITH CHECK (crm_rls_allows("accountId"));
+
+CREATE OR REPLACE FUNCTION crm_audit_log_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'AuditLog is append-only (% rejected)', TG_OP USING ERRCODE = 'insufficient_privilege';
+END
+$$;
+CREATE TRIGGER audit_log_immutable BEFORE UPDATE OR DELETE ON "AuditLog"
+  FOR EACH ROW EXECUTE FUNCTION crm_audit_log_immutable();
+CREATE TRIGGER audit_log_no_truncate BEFORE TRUNCATE ON "AuditLog"
+  FOR EACH STATEMENT EXECUTE FUNCTION crm_audit_log_immutable();

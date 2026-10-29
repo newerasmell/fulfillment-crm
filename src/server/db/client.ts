@@ -7,8 +7,14 @@ import { Prisma, PrismaClient } from "@/generated/prisma/client";
  *     accountId), so repository code cannot forget the scope.
  *  2. Postgres row-level security (prisma/migrations/*_rls): every operation runs in a transaction that
  *     sets `app.account_id`; rows of other accounts are invisible and cannot be written.
+ *  3. Composite foreign keys (accountId, xId) → (accountId, id) in the schema: a row can never point at a
+ *     parent of another account, even though FK checks ignore RLS.
  * `systemDb()` is the explicit, greppable escape hatch for jobs that must work across accounts
  * (login, membership lookup, worker sweeps). Use it only where an account is not known yet.
+ *
+ * Every operation of these clients runs in its own short transaction (that is how the RLS setting is
+ * applied), so `$transaction` and raw SQL are disabled on them: use `withAccountTransaction` /
+ * `withSystemTransaction` for multi-statement atomic work.
  */
 
 const GLOBAL_MODELS = new Set<string>(["User", "LoginAttempt", "ApiSpecVersion"]);
@@ -61,29 +67,44 @@ function assertSameAccount(value: unknown, accountId: string, where: string) {
   }
 }
 
+/**
+ * Walks nested write payloads (create / connectOrCreate / upsert / createMany inside relation fields) and
+ * rejects any accountId other than the scope, or an attempt to (re)connect the `account` relation.
+ * Nested children get their accountId from the composite FK of the parent, so nothing is injected here.
+ */
+function assertNested(value: unknown, accountId: string, path: string, depth = 0): void {
+  if (!value || typeof value !== "object" || depth > 12) return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNested(v, accountId, `${path}[${i}]`, depth + 1));
+    return;
+  }
+  if (value instanceof Date || Buffer.isBuffer(value)) return;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === "account") throw new TenantScopeError(`${path}.account: the account relation cannot be set`);
+    if (k === "accountId" && typeof v !== "object") assertSameAccount(v, accountId, `${path}.accountId`);
+    else assertNested(v, accountId, `${path}.${k}`, depth + 1);
+  }
+}
+
 function scopeData(data: unknown, accountId: string, model: string): unknown {
   if (Array.isArray(data)) return data.map((d) => scopeData(d, accountId, model));
   if (!data || typeof data !== "object") return data;
   const d = data as Record<string, unknown>;
-  if ("account" in d) {
-    throw new TenantScopeError(`${model}: use the scalar accountId, not the account relation`);
-  }
-  assertSameAccount(d.accountId, accountId, `${model}.data`);
+  assertNested(d, accountId, `${model}.data`);
   return { ...d, accountId };
 }
 
 function guardUpdateData(data: unknown, accountId: string, model: string) {
-  if (data && typeof data === "object") {
-    const d = data as Record<string, unknown>;
-    if ("account" in d) throw new TenantScopeError(`${model}: account relation cannot be changed`);
-    assertSameAccount(d.accountId, accountId, `${model}.update`);
-  }
+  assertNested(data, accountId, `${model}.update`);
 }
 
 /** Pure: returns args with the tenant scope applied. Exported for unit tests. */
 export function scopeArgs(model: string, operation: string, rawArgs: unknown, accountId: string): Args {
   const args: Args = { ...((rawArgs as Args | undefined) ?? {}) };
-  if (GLOBAL_MODELS.has(model)) return args;
+  if (GLOBAL_MODELS.has(model)) {
+    // Users, login attempts and spec versions belong to no account: only systemDb() may touch them.
+    throw new TenantScopeError(`${model} is not account-scoped; use systemDb()`);
+  }
 
   const key = model === "Account" ? "id" : "accountId";
 
@@ -101,7 +122,7 @@ export function scopeArgs(model: string, operation: string, rawArgs: unknown, ac
     guardUpdateData(args.data, accountId, model);
   }
   if (CREATE_OPS.has(operation)) {
-    args.data = scopeData(args.data, accountId, model);
+    args.data = model === "Account" ? args.data : scopeData(args.data, accountId, model);
   }
   if (operation === "upsert") {
     args.create = scopeData(args.create, accountId, model);
@@ -110,9 +131,22 @@ export function scopeArgs(model: string, operation: string, rawArgs: unknown, ac
   return args;
 }
 
+function disabled(name: string): never {
+  throw new TenantScopeError(
+    `${name} is disabled on scoped clients; use withAccountTransaction()/withSystemTransaction()`,
+  );
+}
+
 function withRls(client: PrismaClient, settings: { accountId: string | null; bypass: boolean }) {
   return client.$extends({
     name: settings.bypass ? "system-scope" : "account-scope",
+    client: {
+      $transaction: (..._args: unknown[]): never => disabled("$transaction"),
+      $queryRaw: (..._args: unknown[]): never => disabled("$queryRaw"),
+      $executeRaw: (..._args: unknown[]): never => disabled("$executeRaw"),
+      $queryRawUnsafe: (..._args: unknown[]): never => disabled("$queryRawUnsafe"),
+      $executeRawUnsafe: (..._args: unknown[]): never => disabled("$executeRawUnsafe"),
+    },
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
@@ -140,9 +174,40 @@ export function systemDb() {
   return withRls(basePrisma(), { accountId: null, bypass: true });
 }
 
+const MODEL_BY_DELEGATE = new Map(
+  Object.values(Prisma.ModelName).map((m) => [m.charAt(0).toLowerCase() + m.slice(1), m as string]),
+);
+const BLOCKED_TX_KEYS = new Set(["$queryRaw", "$executeRaw", "$queryRawUnsafe", "$executeRawUnsafe"]);
+
+/** Wraps an interactive transaction client so every model call gets the same accountId injection. */
+function scopeTransactionClient(tx: Prisma.TransactionClient, accountId: string): Prisma.TransactionClient {
+  return new Proxy(tx, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && BLOCKED_TX_KEYS.has(prop))
+        return () => disabled(`${prop} (account tx)`);
+      const value = Reflect.get(target, prop, receiver);
+      const model = typeof prop === "string" ? MODEL_BY_DELEGATE.get(prop) : undefined;
+      if (!model || !value || typeof value !== "object") return value;
+      return new Proxy(value as object, {
+        get(delegate, op, r) {
+          const fn = Reflect.get(delegate, op, r);
+          if (typeof fn !== "function" || typeof op !== "string") return fn;
+          return (args?: unknown) => {
+            try {
+              return fn.call(delegate, scopeArgs(model, op, args, accountId));
+            } catch (err) {
+              return Promise.reject(err);
+            }
+          };
+        },
+      });
+    },
+  });
+}
+
 /**
- * Interactive transaction scoped to one account. RLS applies to everything inside; `accountId` is NOT
- * injected automatically here, so pass it explicitly in where/data (RLS rejects mistakes).
+ * Interactive (real, atomic) transaction scoped to one account: accountId is injected like accountDb()
+ * and RLS applies to everything inside. Raw SQL is disabled inside.
  */
 export async function withAccountTransaction<T>(
   accountId: string,
@@ -151,11 +216,26 @@ export async function withAccountTransaction<T>(
   if (!accountId) throw new TenantScopeError("accountId is required");
   return basePrisma().$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.account_id', ${accountId}, TRUE), set_config('app.bypass_rls', 'off', TRUE)`;
-    return fn(tx);
+    return fn(scopeTransactionClient(tx, accountId));
   });
 }
 
-/** Interactive transaction across accounts (worker sweeps). */
+/**
+ * Refuses to run as a role that bypasses RLS (SUPERUSER or BYPASSRLS) — the policies would silently
+ * not apply. Called at web and worker startup. Escape hatch for emergencies: ALLOW_PRIVILEGED_DB_ROLE=1.
+ */
+export async function assertSafeDatabaseRole() {
+  const rows = await basePrisma().$queryRaw<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
+    SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+  const role = rows[0];
+  if (role && (role.rolsuper || role.rolbypassrls) && process.env.ALLOW_PRIVILEGED_DB_ROLE !== "1") {
+    throw new Error(
+      "Database role bypasses row-level security (superuser/BYPASSRLS); connect as the app role",
+    );
+  }
+}
+
+/** Interactive transaction across accounts (worker sweeps, e.g. SELECT … FOR UPDATE SKIP LOCKED). */
 export async function withSystemTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
   return basePrisma().$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.bypass_rls', 'on', TRUE)`;

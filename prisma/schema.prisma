@@ -1,7 +1,13 @@
 // Fulfillment CRM domain model (docs/SPEC.md §3).
 //
-// ERD (main relations; every business table carries accountId and is protected by RLS, see
-// prisma/migrations/*_rls):
+// Tenant integrity: every business table carries accountId and is protected by RLS (see the init
+// migration). Every relation between business tables is a COMPOSITE foreign key (accountId, xId) →
+// (accountId, id), so a row can never point at a parent of another account (FK checks ignore RLS).
+// Optional/secondary relations use onDelete: NoAction (checked at end of statement), so deleting a parent
+// that is still referenced fails, while an account-wide cascade still works. Accounts are never hard-deleted
+// in production (audit log is append-only).
+//
+// ERD (main relations):
 //
 //   Account ─┬─< Membership >── User
 //            ├─< Credential            (encrypted secrets; referenced by Store / FulfillmentConnection)
@@ -13,7 +19,8 @@
 //            │                         └─< OutboundRequest (outbox)
 //            ├─< CountrySetting
 //            ├─< Order ─┬─< OrderLine >── Product
-//            │          ├─< Fulfillment ─< FulfillmentEvent
+//            │          ├─< Fulfillment ─┬─< FulfillmentEvent
+//            │          │                └─< FulfillmentLine >── OrderLine
 //            │          └─< Review
 //            ├─< Alert, AuditLog, WebhookEvent, AiPolicy
 //   ApiSpecVersion (global, not per account)
@@ -178,6 +185,7 @@ model Account {
   orders          Order[]
   alerts          Alert[]
   auditLogs       AuditLog[]
+  webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
 }
 
@@ -189,6 +197,8 @@ model User {
   /// TOTP secret, encrypted with the credentials vault key (never stored in clear).
   totpSecretEnc  String?
   totpEnabled    Boolean   @default(false)
+  /// Last accepted TOTP time step (replay protection).
+  totpLastStep   Int?
   /// Bumped to invalidate all sessions of the user.
   sessionVersion Int       @default(0)
   locale         String    @default("bg")
@@ -243,6 +253,7 @@ model Credential {
   stores      Store[]
   connections FulfillmentConnection[]
 
+  @@unique([accountId, id])
   @@index([accountId])
 }
 
@@ -268,10 +279,11 @@ model Store {
   updatedAt         DateTime          @updatedAt
 
   account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  credential   Credential?        @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   variantLinks StoreVariantLink[]
   orders       Order[]
 
+  @@unique([accountId, id])
   @@unique([accountId, code])
   @@unique([accountId, domain])
 }
@@ -298,7 +310,7 @@ model FulfillmentConnection {
   updatedAt          DateTime       @updatedAt
 
   account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  credential       Credential?       @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  credential       Credential?       @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   vendorProducts   VendorProduct[]
   stockMovements   StockMovement[]
   inbounds         InboundShipment[]
@@ -306,6 +318,7 @@ model FulfillmentConnection {
   fulfillments     Fulfillment[]
   outboundRequests OutboundRequest[]
 
+  @@unique([accountId, id])
   @@index([accountId])
 }
 
@@ -326,7 +339,7 @@ model RoutingRule {
   updatedAt           DateTime @updatedAt
 
   account    Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  connection FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, priority])
 }
@@ -370,7 +383,7 @@ model Product {
   updatedAt       DateTime @updatedAt
 
   account        Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  parent         Product?           @relation("TesterOf", fields: [parentProductId], references: [id], onDelete: SetNull)
+  parent         Product?           @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
   testers        Product[]          @relation("TesterOf")
   eans           ProductEan[]
   variantLinks   StoreVariantLink[]
@@ -378,6 +391,7 @@ model Product {
   orderLines     OrderLine[]
   inboundLines   InboundLine[]
 
+  @@unique([accountId, id])
   @@unique([accountId, sku])
 }
 
@@ -391,7 +405,7 @@ model ProductEan {
   source    String?
   createdAt DateTime @default(now())
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [accountId, productId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, ean])
 }
@@ -410,10 +424,11 @@ model StoreVariantLink {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  store      Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  product    Product?    @relation(fields: [productId], references: [id], onDelete: SetNull)
+  store      Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  product    Product?    @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   orderLines OrderLine[]
 
+  @@unique([accountId, id])
   @@unique([storeId, shopifyVariantGid])
   @@index([accountId, productId])
 }
@@ -432,11 +447,12 @@ model VendorProduct {
   lastSyncAt   DateTime?
   raw          Json?
 
-  connection FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  product    Product?              @relation(fields: [productId], references: [id], onDelete: SetNull)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  product    Product?              @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   stockLevel StockLevel?
   movements  StockMovement[]
 
+  @@unique([accountId, id])
   @@unique([connectionId, vendorId])
   @@index([accountId, productId])
 }
@@ -452,8 +468,9 @@ model StockLevel {
   snapshotAt      DateTime
   source          StockSource
 
-  vendorProduct VendorProduct @relation(fields: [vendorProductId], references: [id], onDelete: Cascade)
+  vendorProduct VendorProduct @relation(fields: [accountId, vendorProductId], references: [accountId, id], onDelete: Cascade)
 
+  @@unique([accountId, vendorProductId])
   @@index([accountId])
 }
 
@@ -469,8 +486,8 @@ model StockMovement {
   occurredAt      DateTime
   raw             Json?
 
-  connection    FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  vendorProduct VendorProduct?        @relation(fields: [vendorProductId], references: [id], onDelete: SetNull)
+  connection    FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  vendorProduct VendorProduct?        @relation(fields: [accountId, vendorProductId], references: [accountId, id], onDelete: NoAction)
 
   @@unique([connectionId, externalId])
   @@index([accountId, occurredAt])
@@ -491,9 +508,10 @@ model InboundShipment {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  connection FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
   lines      InboundLine[]
 
+  @@unique([accountId, id])
   @@unique([connectionId, externalRef])
   @@index([accountId])
 }
@@ -507,8 +525,8 @@ model InboundLine {
   receivedQty Int?
   comment     String?
 
-  inbound InboundShipment @relation(fields: [inboundId], references: [id], onDelete: Cascade)
-  product Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  inbound InboundShipment @relation(fields: [accountId, inboundId], references: [accountId, id], onDelete: Cascade)
+  product Product         @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
 
   @@index([accountId])
 }
@@ -549,11 +567,12 @@ model Order {
   updatedAt               DateTime       @updatedAt
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  store        Store?        @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  store        Store?        @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
   lines        OrderLine[]
   fulfillments Fulfillment[]
   reviews      Review[]
 
+  @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
   @@index([accountId, status, placedAt])
 }
@@ -570,10 +589,12 @@ model OrderLine {
   /// Unit price after discounts, order currency.
   unitPrice     Decimal @db.Decimal(12, 2)
 
-  order       Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  variantLink StoreVariantLink? @relation(fields: [variantLinkId], references: [id], onDelete: SetNull)
-  product     Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
+  order            Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  variantLink      StoreVariantLink? @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: NoAction)
+  product          Product?          @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  fulfillmentLines FulfillmentLine[]
 
+  @@unique([accountId, id])
   @@index([accountId, orderId])
 }
 
@@ -603,11 +624,15 @@ model Fulfillment {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  order      Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  connection FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
-  events     FulfillmentEvent[]
+  order            Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection       FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  events           FulfillmentEvent[]
+  lines            FulfillmentLine[]
+  outboundRequests OutboundRequest[]
 
+  @@unique([accountId, id])
   @@unique([connectionId, externalId])
+  @@unique([connectionId, variableSymbol])
   @@index([accountId, status])
 }
 
@@ -621,17 +646,32 @@ model FulfillmentEvent {
   status        CrmOrderStatus?
   payload       Json?
 
-  fulfillment Fulfillment @relation(fields: [fulfillmentId], references: [id], onDelete: Cascade)
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, fulfillmentId, occurredAt])
 }
 
+/// Which order lines (and how many) a fulfillment ships — needed for split shipments and reships.
+model FulfillmentLine {
+  id            String @id @default(cuid())
+  accountId     String
+  fulfillmentId String
+  orderLineId   String
+  quantity      Int
+
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+  orderLine   OrderLine   @relation(fields: [accountId, orderLineId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([fulfillmentId, orderLineId])
+  @@index([accountId])
+}
+
 /// Pre-flight results + the human (or AI) decision. This is the AI training data.
 model Review {
-  id           String                 @id @default(cuid())
+  id           String                       @id @default(cuid())
   accountId    String
   orderId      String
-  findings     Json                   @default("[]")
+  findings     Json                         @default("[]")
   aiSuggestion Json?
   aiConfidence Float?
   decision     ReviewDecision?
@@ -641,11 +681,12 @@ model Review {
   reasonText   String?
   reviewerId   String?
   timeSpentMs  Int?
-  embedding    Unsupported("vector")?
-  createdAt    DateTime               @default(now())
+  /// 1024 dimensions (Voyage voyage-3.5 default size); decided in PROGRESS.md before P8-01.
+  embedding    Unsupported("vector(1024)")?
+  createdAt    DateTime                     @default(now())
   decidedAt    DateTime?
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
 }
@@ -667,6 +708,11 @@ model OutboundRequest {
   attempts       Int            @default(0)
   lastResponse   Json?
   lastError      String?
+  /// The shipment this request is for (if any).
+  fulfillmentId  String?
+  /// Sender lease: a request is processed by one worker at a time.
+  lockedAt       DateTime?
+  nextAttemptAt  DateTime?
   confirmedById  String?
   confirmedAt    DateTime?
   sentAt         DateTime?
@@ -674,7 +720,8 @@ model OutboundRequest {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  connection FulfillmentConnection @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
 
   @@unique([connectionId, idempotencyKey])
   @@index([accountId, status])
@@ -695,6 +742,8 @@ model WebhookEvent {
   error       String?
   receivedAt  DateTime      @default(now())
   processedAt DateTime?
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([source, dedupeKey])
   @@index([accountId, receivedAt])
@@ -722,6 +771,7 @@ model Alert {
   @@index([accountId, status, createdAt])
 }
 
+/// Append-only: UPDATE and DELETE are rejected by a trigger (see the init migration).
 model AuditLog {
   id         String   @id @default(cuid())
   /// Null for system-level events (e.g. login of a user without an active account).
@@ -736,7 +786,7 @@ model AuditLog {
   userAgent  String?
   createdAt  DateTime @default(now())
 
-  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: NoAction)
 
   @@index([accountId, createdAt])
 }
