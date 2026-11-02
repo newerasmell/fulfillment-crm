@@ -38,6 +38,8 @@ export const PERMISSIONS = {
   "eushipments.sync": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   "apiWatch.read": ["OWNER", "ADMIN"],
   "apiWatch.manage": ["OWNER", "ADMIN"],
+  /** Routing rules (Настройки → Правила за маршрут): view, create, edit, reorder, delete. */
+  "routing.manage": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
