@@ -197,6 +197,7 @@ model Account {
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
+  fulfillBatches            FulfillBatch[]
 }
 
 model User {
@@ -699,6 +700,7 @@ model Order {
   reviews      Review[]
   events       OrderEvent[]
   check        OrderCheck?
+  fulfillBatchItems FulfillBatchItem[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -1462,4 +1464,52 @@ model OrderCheck {
 
   @@unique([accountId, orderId])
   @@index([accountId, checkedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Wave 2 · track "fulfill" (P4-06 Fulfill, P4-07 Shopify write-back, P4-08 alerts/tasks)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One Fulfill action (a single order or a bulk selection). Every order gets a visible result row, so nothing
+/// is partial-silent (SPEC §6.1); the batch page can be reopened and resumed.
+model FulfillBatch {
+  id          String    @id @default(cuid())
+  accountId   String
+  createdById String
+  total       Int
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  account Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  items   FulfillBatchItem[]
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+/// Result of one order in a FulfillBatch. status: PENDING | RUNNING | QUEUED | BLOCKED | NEEDS_ACK | SKIPPED | FAILED.
+model FulfillBatchItem {
+  id           String    @id @default(cuid())
+  accountId    String
+  batchId      String
+  orderId      String
+  position     Int
+  status       String    @default("PENDING")
+  /// Machine-readable reason (e.g. not_approved, check_stale, fhb_already_submitted).
+  code         String?
+  /// Findings that blocked it or need acknowledging (validator engine shape).
+  findings     Json?
+  connectionId String?
+  liveMode     LiveMode?
+  /// The outbox request created (or re-armed) for this order.
+  requestId    String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  batch FulfillBatch @relation(fields: [accountId, batchId], references: [accountId, id], onDelete: Cascade)
+  order Order        @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([batchId, orderId])
+  @@index([accountId, orderId])
 }

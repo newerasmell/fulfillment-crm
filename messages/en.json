@@ -1030,5 +1030,93 @@
       "routing_out_of_scope": "A neighbouring rule belongs to another company: it cannot be moved past it.",
       "generic": "Could not save."
     }
+  },
+  "fulfill": {
+    "title": "Fulfil orders",
+    "subtitle": "Every order goes through the outbox to its warehouse; the connection's mode decides what is sent.",
+    "back": "← Orders",
+    "selectAll": "Select all on this page",
+    "selectOrder": "Select order {number}",
+    "bulkBar": "Actions on selected",
+    "selected": "Selected: {count}",
+    "starting": "Starting…",
+    "fulfillSelected": "Fulfil ({count})",
+    "fulfillOne": "Fulfil",
+    "clear": "Clear",
+    "progress": "Progress",
+    "doneOf": "{done} of {total} processed",
+    "results": "Result per order",
+    "ackAndSend": "I saw the warnings — send",
+    "retry": "Try again",
+    "col": {
+      "order": "Order",
+      "customer": "Customer",
+      "warehouse": "Warehouse",
+      "result": "Result",
+      "details": "Details",
+      "actions": "Actions"
+    },
+    "status": {
+      "PENDING": "Waiting",
+      "RUNNING": "Processing",
+      "QUEUED": "Queued",
+      "NEEDS_ACK": "Needs acknowledgement",
+      "BLOCKED": "Blocked",
+      "FAILED": "Error",
+      "SKIPPED": "Skipped"
+    },
+    "mode": {
+      "READ_ONLY": "Read only",
+      "DRY_RUN": "Dry run",
+      "CANARY": "Canary",
+      "LIVE": "Live"
+    },
+    "request": {
+      "PENDING": "waiting to send",
+      "PAUSED": "paused",
+      "HELD": "held",
+      "REFUSED": "refused (read only)",
+      "DRY_RUN_RECORDED": "recorded (dry run)",
+      "AWAITING_CONFIRMATION": "awaiting confirmation",
+      "SENDING": "sending",
+      "SENT": "sent",
+      "FAILED": "rejected",
+      "UNCERTAIN": "unknown outcome"
+    },
+    "canary": {
+      "review": "Review and confirm",
+      "title": "Canary confirmation",
+      "explain": "This is a real send to the warehouse. Check the exact data below.",
+      "cap": "{remaining} of {cap} left today ({used} sent)",
+      "payload": "Data to send",
+      "cancel": "Cancel",
+      "confirm": "Confirm the send"
+    },
+    "error": {
+      "forbidden": "You may not do this.",
+      "invalid": "Invalid data.",
+      "not_found": "Not found.",
+      "empty_selection": "No orders selected.",
+      "too_many": "At most 200 orders at once.",
+      "not_retryable": "This order cannot be retried.",
+      "not_confirmable": "The request no longer waits for confirmation.",
+      "already_submitted": "Already queued at a warehouse (no duplicate).",
+      "no_connection": "No warehouse from the check — check the order again.",
+      "check_stale": "The order changed after approval — check it again.",
+      "connection_disabled": "The warehouse connection is disabled.",
+      "connection_read_only": "The connection is read-only — nothing is sent.",
+      "hard_findings": "There are blocking problems.",
+      "new_warnings": "New warnings since the review.",
+      "connection_type_unsupported": "This warehouse does not fulfil orders.",
+      "fhb_preflight_failed": "The FHB pre-flight blocked the order.",
+      "fhb_preflight_needs_ack": "FHB warnings need acknowledging.",
+      "eushipments_blocked": "The euShipments pre-flight blocked the order.",
+      "eushipments_needs_ack": "euShipments warnings need acknowledging.",
+      "fhb_no_store_code": "The store has no code.",
+      "no_company_id": "The connection has no euShipments company.",
+      "fhb_variable_symbol_exhausted": "Variable symbols are exhausted.",
+      "error": "Unexpected error.",
+      "notFulfillable": "The order is not approved (status {status})."
+    }
   }
 }

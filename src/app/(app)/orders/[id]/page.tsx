@@ -4,10 +4,12 @@ import { getFormatter, getTranslations } from "next-intl/server";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { ghostButtonCls, tdCls, thCls } from "@/components/ui/form";
 import { DomainError } from "@/server/accounts";
+import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { jsonEqual } from "@/lib/json-equal";
 import { getOrder } from "@/server/orders";
 import { normaliseAddress } from "@/server/shopify/orders";
+import { FulfillButton } from "../selection";
 import { StatusChip } from "../status";
 
 type Addr = Record<string, string | null> | null;
@@ -61,9 +63,15 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           },
         )}`}
         actions={
-          <Link href="/orders" className={ghostButtonCls + " inline-flex items-center"}>
-            {t("back")}
-          </Link>
+          <span className="flex flex-wrap items-center gap-3">
+            {can(ctx.role, "orders.fulfill") &&
+              ["APPROVED", "SUBMIT_FAILED", "QUEUED"].includes(order.status) && (
+                <FulfillButton orderId={order.id} />
+              )}
+            <Link href="/orders" className={ghostButtonCls + " inline-flex items-center"}>
+              {t("back")}
+            </Link>
+          </span>
         }
       />
       <div className="flex flex-wrap items-center gap-3">

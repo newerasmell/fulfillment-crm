@@ -45,6 +45,9 @@ try {
     { userId: owner.user.id, accountId: owner.account.id, role: "OWNER", companyScope: null },
     company.id,
   );
+  // Synthetic Fulfill / write-back / alerts data (wave 2, fulfill track): tests/e2e/fulfill.spec.ts.
+  const { seedFulfill } = await import("./e2e-fulfill");
+  await seedFulfill({ userId: owner.user.id, accountId: owner.account.id }, company.id);
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
