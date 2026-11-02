@@ -27,6 +27,7 @@ export const PERMISSIONS = {
   "audit.read": ["OWNER", "ADMIN"],
   "jobs.admin": ["OWNER", "ADMIN"],
   "apiWatch.read": ["OWNER", "ADMIN"],
+  "apiWatch.manage": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

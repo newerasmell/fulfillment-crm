@@ -40,6 +40,24 @@ export const ApiVersionsResponse = z.object({
 
 const Raw = z.unknown();
 
+/**
+ * GraphQL validation errors that mean our query no longer fits the schema (graphql-ruby static validation, which
+ * Shopify's Admin API returns, e.g. code undefinedField with "Field 'x' doesn't exist on type 'Y'").
+ */
+const SCHEMA_ERROR_CODES = new Set([
+  "undefinedField",
+  "argumentNotAccepted",
+  "undefinedType",
+  "missingRequiredArguments",
+]);
+const SCHEMA_ERROR_MESSAGE = /doesn't exist on type|doesn't accept argument|No such type/i;
+
+export function isSchemaError(err: ShopifyError): boolean {
+  if (err.graphqlCodes.some((c) => SCHEMA_ERROR_CODES.has(c))) return true;
+  // Some responses carry no extensions.code: fall back to the message, but never for a known non-schema code.
+  return err.graphqlCodes.length === 0 && SCHEMA_ERROR_MESSAGE.test(err.message);
+}
+
 async function probe<S extends z.ZodType>(
   client: ShopifyClient,
   name: string,
@@ -52,8 +70,10 @@ async function probe<S extends z.ZodType>(
   try {
     raw = await client.query(document, variables, Raw);
   } catch (err) {
-    // Shopify rejects a query whose fields no longer exist: that is a schema change, not an outage.
-    if (err instanceof ShopifyError && err.code === "graphql_error") {
+    // Shopify rejects a query whose fields/arguments no longer exist: that is a schema change, not an outage.
+    // Any other GraphQL-level error (ACCESS_DENIED after a scope was removed, INTERNAL_SERVER_ERROR,
+    // MAX_COST_EXCEEDED, ...) is rethrown: the check "could not run" (WARNING, no mode change).
+    if (err instanceof ShopifyError && err.code === "graphql_error" && isSchemaError(err)) {
       issues.push({
         breaking: true,
         probe: name,

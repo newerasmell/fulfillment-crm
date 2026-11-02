@@ -456,11 +456,11 @@
       "CRITICAL": "Критично"
     },
     "kinds": {
-      "api.spec_change": "Промяна в спецификацията",
-      "api.spec_fetch_failed": "Спецификацията не се изтегля",
-      "api.shopify_version": "Версия на Shopify API",
-      "api.live_check": "Проверка на живо",
-      "api.live_check_failed": "Проверката не можа да се изпълни"
+      "spec_change": "Промяна в спецификацията",
+      "spec_fetch_failed": "Спецификацията не се изтегля",
+      "shopify_version": "Версия на Shopify API",
+      "live_check": "Проверка на живо",
+      "live_check_failed": "Проверката не можа да се изпълни"
     }
   }
 }

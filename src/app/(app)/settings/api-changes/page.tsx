@@ -3,6 +3,7 @@ import { resolveApiAlertAction } from "@/app/actions/api-watcher";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { ghostButtonCls, tdCls, thCls } from "@/components/ui/form";
 import { apiWatchOverview } from "@/server/api-watcher/view";
+import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
 
 const SEVERITY_CLS: Record<string, string> = {
@@ -16,6 +17,11 @@ export default async function ApiChangesPage() {
   const t = await getTranslations("apiWatch");
   const format = await getFormatter();
   const { sources, versions, alerts } = await apiWatchOverview(ctx.accountId, ctx.companyScope);
+  // Message keys cannot contain ".": "api.spec_change" → kinds.spec_change.
+  const kindLabel = (kind: string) => {
+    const key = `kinds.${kind.replace(/^api\./, "")}`;
+    return t.has(key) ? t(key) : kind;
+  };
   const when = (d: Date) => format.dateTime(d, { dateStyle: "short", timeStyle: "short" });
 
   return (
@@ -35,13 +41,15 @@ export default async function ApiChangesPage() {
                     {t.has(`severities.${a.severity}`) ? t(`severities.${a.severity}`) : a.severity}
                   </span>
                   <span className="text-xs text-label">
-                    {t.has(`kinds.${a.kind}`) ? t(`kinds.${a.kind}`) : a.kind} · {when(a.createdAt)}
+                    {kindLabel(a.kind)} · {when(a.createdAt)}
                   </span>
-                  <form action={resolveApiAlertAction.bind(null, a.id)} className="ml-auto">
-                    <button type="submit" className={ghostButtonCls}>
-                      {t("resolve")}
-                    </button>
-                  </form>
+                  {can(ctx.role, "apiWatch.manage") && (
+                    <form action={resolveApiAlertAction.bind(null, a.id)} className="ml-auto">
+                      <button type="submit" className={ghostButtonCls}>
+                        {t("resolve")}
+                      </button>
+                    </form>
+                  )}
                 </div>
                 <p className="mt-2 mb-0 font-medium">{a.title}</p>
                 {a.body && (

@@ -141,10 +141,29 @@ export async function resolveApiAlert(
   actor: { accountId: string; userId: string; role: Role; companyScope: CompanyScope },
   alertId: string,
 ) {
-  assertCan(actor.role, "apiWatch.read");
-  const { alerts } = await apiWatchOverview(actor.accountId, actor.companyScope, 1);
-  if (!alerts.some((a) => a.id === alertId)) throw new DomainError("not_found");
-  await accountDb(actor.accountId).alert.update({
+  assertCan(actor.role, "apiWatch.manage");
+  const db = accountDb(actor.accountId);
+  // This one alert, directly (not through the overview's newest-50 page).
+  const alert = await db.alert.findFirst({
+    where: { id: alertId, kind: { startsWith: "api." }, status: { not: "RESOLVED" } },
+    select: { id: true, entityType: true, entityId: true },
+  });
+  if (!alert) throw new DomainError("not_found");
+  if (actor.companyScope && alert.entityId) {
+    const scope = actor.companyScope;
+    const owner =
+      alert.entityType === "Store"
+        ? await db.store.findUnique({ where: { id: alert.entityId }, select: { companyId: true } })
+        : alert.entityType === "FulfillmentConnection"
+          ? await db.fulfillmentConnection.findUnique({
+              where: { id: alert.entityId },
+              select: { companyId: true },
+            })
+          : undefined;
+    if (owner !== undefined && !(owner?.companyId && scope.includes(owner.companyId)))
+      throw new DomainError("not_found");
+  }
+  await db.alert.update({
     where: { id: alertId },
     data: { status: "RESOLVED", resolvedAt: new Date() },
   });

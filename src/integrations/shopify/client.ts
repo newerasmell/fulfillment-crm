@@ -136,7 +136,12 @@ export class ShopifyClient {
         continue;
       }
       if (body.errors?.length) {
-        throw new ShopifyError("graphql_error", scrubText(body.errors.map((e) => e.message).join("; ")));
+        throw new ShopifyError(
+          "graphql_error",
+          scrubText(body.errors.map((e) => e.message).join("; ")),
+          undefined,
+          body.errors.flatMap((e) => (typeof e.extensions?.code === "string" ? [e.extensions.code] : [])),
+        );
       }
       const parsed = schema.safeParse(body.data);
       if (!parsed.success) {

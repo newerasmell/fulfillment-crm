@@ -28,7 +28,13 @@ export interface AlertInput {
 
 const BODY_MAX = 20_000;
 
-/** Creates the alert unless one of the same kind for the same entity is still open. Returns true if created. */
+const SEVERITY_RANK: Record<AlertSeverity, number> = { INFO: 0, WARNING: 1, CRITICAL: 2 };
+
+/**
+ * Creates the alert unless one of the same kind for the same entity is still open. A more severe alert for an
+ * entity with an open, less severe one escalates that alert in place (severity, title, body; back to OPEN), so a
+ * CRITICAL is never swallowed by an earlier WARNING. Returns true if an alert was created or escalated.
+ */
 export async function raiseAlert(accountId: string, a: AlertInput): Promise<boolean> {
   const db = accountDb(accountId);
   const open = await db.alert.findFirst({
@@ -38,9 +44,22 @@ export async function raiseAlert(accountId: string, a: AlertInput): Promise<bool
       entityId: a.entityId ?? null,
       status: { not: "RESOLVED" },
     },
-    select: { id: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, severity: true },
   });
-  if (open) return false;
+  if (open) {
+    if (SEVERITY_RANK[a.severity] <= SEVERITY_RANK[open.severity]) return false;
+    await db.alert.update({
+      where: { id: open.id },
+      data: {
+        severity: a.severity,
+        title: a.title.slice(0, 300),
+        body: a.body?.slice(0, BODY_MAX) ?? null,
+        status: "OPEN",
+      },
+    });
+    return true;
+  }
   await db.alert.create({
     data: {
       accountId,

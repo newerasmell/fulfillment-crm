@@ -3,12 +3,33 @@ import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { saveCredential } from "@/server/security/credentials";
 import { syntheticOpenApi, syntheticPostman } from "./__fixtures__/specs";
-import { ALERT_KINDS } from "./safety";
+import { ALERT_KINDS, demoteVendorConnections, raiseAlertEverywhere } from "./safety";
 import { runShopifyVersionWatch } from "./shopify-version";
 import { SPEC_SOURCES, type SpecSource } from "./sources";
-import { FAILURE_ALERT_AFTER, runSpecWatch, type StoredDiff } from "./watcher";
+import {
+  FAILURE_ALERT_AFTER,
+  readCommittedSpec,
+  runSpecWatch as runSpecWatchReal,
+  type StoredDiff,
+} from "./watcher";
 
 // P9-01 with a mocked fetch: the build environment never fetches a real spec.
+
+// Real safety functions, wrapped so one test can make a step fail once (crash between storing and acting).
+vi.mock("./safety", async (importOriginal) => {
+  const m = await importOriginal<typeof import("./safety")>();
+  return {
+    ...m,
+    demoteVendorConnections: vi.fn(m.demoteVendorConnections),
+    raiseAlertEverywhere: vi.fn(m.raiseAlertEverywhere),
+  };
+});
+
+// The committed raw copy is replaced by the synthetic spec: first runs then match it (a plain baseline).
+const syntheticCommitted = async (s: SpecSource) =>
+  s.format === "openapi" ? syntheticOpenApi() : syntheticPostman();
+const runSpecWatch = (o: Parameters<typeof runSpecWatchReal>[0] = {}) =>
+  runSpecWatchReal({ baseline: syntheticCommitted, ...o });
 
 const FHB = SPEC_SOURCES.find((s) => s.vendor === "FHB_V3")!;
 const EU = SPEC_SOURCES.find((s) => s.vendor === "EUSHIPMENTS")!;
@@ -170,6 +191,88 @@ describe("spec watcher (DB)", () => {
     );
   });
 
+  it("a failure after the version is stored is finished by the next run (demotion + alerts)", async () => {
+    // FHB is at the "changed" spec now: go back to the original first, then change again.
+    const back = await runSpecWatch({
+      fetchImpl: fakeFetch({ [FHB.url]: syntheticOpenApi() }),
+      sources: [FHB],
+    });
+    expect(back[0]!.outcome).toBe("changed");
+    await accountDb(accountA).fulfillmentConnection.update({
+      where: { id: liveConn },
+      data: { liveMode: "LIVE" },
+    });
+
+    const fetchImpl = fakeFetch({ [FHB.url]: syntheticOpenApi({ changed: true }) });
+    vi.mocked(demoteVendorConnections).mockRejectedValueOnce(new Error("lock timeout"));
+    const [failed] = await runSpecWatch({ fetchImpl, sources: [FHB] });
+    expect(failed).toMatchObject({ outcome: "failed", error: "internal" });
+    const stored = await systemDb().apiSpecVersion.findFirstOrThrow({
+      where: { vendor: "FHB_V3" },
+      orderBy: [{ fetchedAt: "desc" }, { id: "desc" }],
+    });
+    expect((stored.diff as unknown as StoredDiff).applied).toBe(false);
+    expect(
+      (await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: liveConn } })).liveMode,
+    ).toBe("LIVE");
+
+    // Retry with the same spec: the hash is unchanged, but the unfinished side effects are completed.
+    vi.mocked(raiseAlertEverywhere).mockRejectedValueOnce(new Error("db blip"));
+    expect((await runSpecWatch({ fetchImpl, sources: [FHB] }))[0]!.outcome).toBe("failed");
+    expect(
+      (await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: liveConn } })).liveMode,
+    ).toBe("DRY_RUN"); // demoted before the alert step failed
+    const [again] = await runSpecWatch({ fetchImpl, sources: [FHB] });
+    expect(again).toMatchObject({ outcome: "unchanged", versionId: stored.id });
+    const after = await systemDb().apiSpecVersion.findUniqueOrThrow({ where: { id: stored.id } });
+    expect((after.diff as unknown as StoredDiff).applied).toBe(true);
+    for (const acc of [accountA, accountB]) {
+      const list = (await alerts(acc, ALERT_KINDS.specChange)).filter((a) => a.entityId === stored.id);
+      expect(list).toHaveLength(1);
+      expect(list[0]!.severity).toBe("CRITICAL");
+    }
+  });
+
+  it("first run diffs the live spec against the committed raw copy, not just takes it as baseline", async () => {
+    const seeded: SpecSource = {
+      ...EU,
+      vendor: "SEED_TEST" as SpecSource["vendor"],
+      url: "https://x.test/seed",
+    };
+    await systemDb().apiSpecVersion.deleteMany({ where: { vendor: seeded.vendor } });
+    const [out] = await runSpecWatch({
+      fetchImpl: fakeFetch({ [seeded.url]: syntheticPostman({ extraField: true }) }),
+      sources: [seeded],
+      baseline: async () => syntheticPostman(),
+    });
+    expect(out).toMatchObject({ outcome: "changed" });
+    if (out?.outcome !== "changed") throw new Error("expected change");
+    expect(out.diff.counts.additive).toBe(1);
+    const versions = await systemDb().apiSpecVersion.findMany({
+      where: { vendor: seeded.vendor },
+      orderBy: [{ fetchedAt: "asc" }, { id: "asc" }],
+    });
+    expect(versions.map((v) => v.sourceUrl)).toEqual([`repo:${EU.rawFile}`, seeded.url]);
+    expect(versions[0]!.diff).toBeNull();
+    const [a] = (await alerts(accountA, ALERT_KINDS.specChange)).filter((x) => x.entityId === out.versionId);
+    expect(a?.severity).toBe("WARNING");
+
+    // Committed copy unreadable: the first live fetch is the baseline (old behaviour).
+    const fallback: SpecSource = { ...seeded, vendor: "SEED_TEST2" as SpecSource["vendor"] };
+    await systemDb().apiSpecVersion.deleteMany({ where: { vendor: fallback.vendor } });
+    const [b] = await runSpecWatch({
+      fetchImpl: fakeFetch({ [seeded.url]: syntheticPostman() }),
+      sources: [fallback],
+      baseline: async () => null,
+    });
+    expect(b!.outcome).toBe("baseline");
+  });
+
+  it("the committed raw copies of every source load and pass the envelope check", async () => {
+    for (const s of SPEC_SOURCES) expect(await readCommittedSpec(s), s.vendor).not.toBeNull();
+    expect(await readCommittedSpec({ ...EU, rawFile: "docs/integrations/raw/missing.json" })).toBeNull();
+  });
+
   it("Shopify version watch alerts admins as the pinned version's support ends", async () => {
     expect((await runShopifyVersionWatch(new Date("2026-11-02T00:00:00Z"))).level).toBe("ok");
     expect(await alerts(accountA, ALERT_KINDS.shopifyVersion)).toHaveLength(0);
@@ -178,5 +281,14 @@ describe("spec watcher (DB)", () => {
     const list = await alerts(accountB, ALERT_KINDS.shopifyVersion);
     expect(list).toHaveLength(1); // deduplicated while open
     expect(list[0]!.severity).toBe("WARNING");
+
+    // 30 days before the end: the open WARNING is escalated to CRITICAL, not swallowed.
+    expect((await runShopifyVersionWatch(new Date("2027-09-15T00:00:00Z"))).level).toBe("critical");
+    const escalated = await alerts(accountB, ALERT_KINDS.shopifyVersion);
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0]).toMatchObject({ severity: "CRITICAL", status: "OPEN" });
+    // A later WARNING never lowers it.
+    await runShopifyVersionWatch(new Date("2027-08-03T00:00:00Z"));
+    expect((await alerts(accountB, ALERT_KINDS.shopifyVersion))[0]!.severity).toBe("CRITICAL");
   });
 });

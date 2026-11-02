@@ -58,7 +58,10 @@ const versions = (pinnedSupported = true) => [
   { handle: "2027-01", displayName: "2027-01 (Release candidate)", supported: false },
 ];
 
-type Routes = Record<string, () => { data?: unknown; errors?: { message: string }[] } | Response>;
+type Routes = Record<
+  string,
+  () => { data?: unknown; errors?: { message: string; extensions?: { code: string } }[] } | Response
+>;
 
 function fakeShopify(routes: Routes) {
   const ops: string[] = [];
@@ -250,12 +253,77 @@ describe("live check (DB)", () => {
     await accountDb(accountId).store.update({ where: { id: storeId }, data: { writeBackMode: "LIVE" } });
   });
 
+  it("an open WARNING for the store is escalated by a later CRITICAL (the demotion is never silent)", async () => {
+    const extra = fakeShopify({
+      ...healthy,
+      Shop: () => ({
+        data: { shop: { name: "Demo", myshopifyDomain: DOMAIN, currencyCode: "EUR", brandNewField: 1 } },
+      }),
+    });
+    await runLiveCheck(target, extra.ctx);
+    const rejected = fakeShopify({
+      ...healthy,
+      VariantsPage: () => ({
+        errors: [
+          {
+            message: "Field 'barcodes' doesn't exist on type 'ProductVariant'",
+            extensions: { code: "undefinedField" },
+          },
+        ],
+      }),
+    });
+    expect(await runLiveCheck(target, rejected.ctx)).toMatchObject({ breaking: true, demoted: true });
+    const open = await alerts(ALERT_KINDS.liveCheck).then((r) => r.filter((x) => x.status === "OPEN"));
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ severity: "CRITICAL" });
+    expect(open[0]!.title).toContain("dropped to DRY_RUN");
+    await resolveAll();
+    await accountDb(accountId).store.update({ where: { id: storeId }, data: { writeBackMode: "LIVE" } });
+  });
+
+  it("GraphQL errors that are not schema changes (access denied, internal) do not demote", async () => {
+    for (const err of [
+      { message: "Access denied for orders field.", extensions: { code: "ACCESS_DENIED" } },
+      {
+        message: "Internal error. Looks like something went wrong on our end.",
+        extensions: { code: "INTERNAL_SERVER_ERROR" },
+      },
+      {
+        message: "Query cost is 2000, which exceeds the single query max cost limit (1000).",
+        extensions: { code: "MAX_COST_EXCEEDED" },
+      },
+    ]) {
+      const f = fakeShopify({ ...healthy, OrdersPage: () => ({ errors: [err] }) });
+      expect(await runLiveCheck(target, f.ctx)).toEqual({ status: "failed", error: "graphql_error" });
+      expect((await store()).writeBackMode).toBe("LIVE");
+    }
+    expect(
+      await alerts(ALERT_KINDS.liveCheck).then((r) => r.filter((x) => x.status !== "RESOLVED")),
+    ).toHaveLength(0);
+    const failed = await alerts(ALERT_KINDS.liveCheckFailed).then((r) =>
+      r.filter((x) => x.status === "OPEN"),
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.severity).toBe("WARNING");
+    await resolveAll();
+  });
+
+  it("a single target is re-read by id, account and kind with the same filters", async () => {
+    expect(await liveCheckTargets({ accountId, kind: "store", id: storeId })).toEqual([target]);
+    expect(await liveCheckTargets({ accountId, kind: "connection", id: storeId })).toEqual([]);
+    expect(await liveCheckTargets({ accountId: "other-account", kind: "store", id: storeId })).toEqual([]);
+    const [c] = await liveCheckTargets({ accountId, kind: "connection", id: connId });
+    expect(c).toMatchObject({ id: connId, type: "EUSHIPMENTS" });
+  });
+
   it("a probe that cannot run (auth) alerts but changes no mode", async () => {
     const f = fakeShopify({ ...healthy, Shop: () => new Response("unauthorised", { status: 403 }) });
     const out = await runLiveCheck(target, f.ctx);
     expect(out).toEqual({ status: "failed", error: "auth_failed" });
     expect((await store()).writeBackMode).toBe("LIVE");
-    expect(await alerts(ALERT_KINDS.liveCheckFailed)).toHaveLength(1);
+    expect(
+      await alerts(ALERT_KINDS.liveCheckFailed).then((r) => r.filter((x) => x.status === "OPEN")),
+    ).toHaveLength(1);
     await resolveAll();
   });
 

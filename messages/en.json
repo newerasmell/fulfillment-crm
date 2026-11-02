@@ -456,11 +456,11 @@
       "CRITICAL": "Critical"
     },
     "kinds": {
-      "api.spec_change": "Spec change",
-      "api.spec_fetch_failed": "Spec cannot be fetched",
-      "api.shopify_version": "Shopify API version",
-      "api.live_check": "Live check",
-      "api.live_check_failed": "Live check could not run"
+      "spec_change": "Spec change",
+      "spec_fetch_failed": "Spec cannot be fetched",
+      "shopify_version": "Shopify API version",
+      "live_check": "Live check",
+      "live_check_failed": "Live check could not run"
     }
   }
 }

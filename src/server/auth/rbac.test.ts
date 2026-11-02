@@ -26,6 +26,7 @@ const EXPECTED: Record<Permission, string> = {
   "audit.read": "11000",
   "jobs.admin": "11000",
   "apiWatch.read": "11000",
+  "apiWatch.manage": "11000",
 };
 
 describe("role matrix", () => {

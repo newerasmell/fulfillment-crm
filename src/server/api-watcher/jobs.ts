@@ -41,12 +41,9 @@ export async function registerApiWatcherWorkers(boss: PgBoss, opts: { pollingInt
   });
 
   await boss.work<LiveCheckJob>(QUEUES.apiLiveCheckTarget.name, opts, async (jobs) => {
-    const targets = await liveCheckTargets();
     for (const { data } of jobs) {
       // Re-read the target: credentials, connection status or enablement may have changed since queuing.
-      const t = targets.find(
-        (x) => x.id === data.id && x.kind === data.kind && x.accountId === data.accountId,
-      );
+      const [t] = await liveCheckTargets({ accountId: data.accountId, kind: data.kind, id: data.id });
       if (!t) continue;
       const outcome = await runLiveCheck(t);
       logger.info({ target: t.id, type: t.type, status: outcome.status }, "live check done");

@@ -151,18 +151,31 @@ export function checkEnum(
 
 // ───────────────────────── runner ─────────────────────────
 
-export async function liveCheckTargets(): Promise<LiveCheckTarget[]> {
+/**
+ * All live-check targets, or — with `only` — that single one (re-read by id + account + kind with the same
+ * filters, so one target's job does not load every store and connection).
+ */
+export async function liveCheckTargets(
+  only?: Pick<LiveCheckTarget, "accountId" | "kind" | "id">,
+): Promise<LiveCheckTarget[]> {
   const db = systemDb();
-  const stores = await db.store.findMany({
-    where: { credentialId: { not: null } },
-    select: { id: true, accountId: true, name: true, connectionStatus: true },
-    orderBy: { id: "asc" },
-  });
-  const conns = await db.fulfillmentConnection.findMany({
-    where: { credentialId: { not: null }, enabled: true },
-    select: { id: true, accountId: true, name: true, type: true },
-    orderBy: { id: "asc" },
-  });
+  const one = only ? { id: only.id, accountId: only.accountId } : {};
+  const stores =
+    only?.kind === "connection"
+      ? []
+      : await db.store.findMany({
+          where: { credentialId: { not: null }, ...one },
+          select: { id: true, accountId: true, name: true, connectionStatus: true },
+          orderBy: { id: "asc" },
+        });
+  const conns =
+    only?.kind === "store"
+      ? []
+      : await db.fulfillmentConnection.findMany({
+          where: { credentialId: { not: null }, enabled: true, ...one },
+          select: { id: true, accountId: true, name: true, type: true },
+          orderBy: { id: "asc" },
+        });
   return [
     // A store whose connection test fails is the connection test's problem (its own status + UI), not ours.
     ...stores

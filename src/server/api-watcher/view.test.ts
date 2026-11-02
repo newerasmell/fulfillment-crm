@@ -93,4 +93,37 @@ describe("API changes read model (DB)", () => {
     });
     expect(audit?.userId).toBe(a.userId);
   });
+
+  it("resolves an alert older than the overview's newest 50, and respects the company scope", async () => {
+    const old = await accountDb(a.accountId).alert.create({
+      data: {
+        accountId: a.accountId,
+        kind: "api.spec_change",
+        title: "Old",
+        createdAt: new Date("2020-01-01T00:00:00Z"),
+      },
+    });
+    await accountDb(a.accountId).alert.createMany({
+      data: Array.from({ length: 55 }, (_, i) => ({
+        accountId: a.accountId,
+        kind: "api.spec_change",
+        title: `Newer ${i}`,
+        entityId: `n-${i}`,
+      })),
+    });
+    const actor = { ...a, role: "ADMIN" as const, companyScope: null };
+    await resolveApiAlert(actor, old.id);
+    expect((await accountDb(a.accountId).alert.findUniqueOrThrow({ where: { id: old.id } })).status).toBe(
+      "RESOLVED",
+    );
+    await expect(resolveApiAlert(actor, old.id)).rejects.toThrow("not_found"); // already resolved
+
+    const [storeAlert] = await accountDb(a.accountId).alert.findMany({
+      where: { entityType: "Store", entityId: storeY },
+    });
+    await expect(resolveApiAlert({ ...actor, companyScope: [companyX] }, storeAlert!.id)).rejects.toThrow(
+      "not_found",
+    );
+    await resolveApiAlert({ ...actor, companyScope: [companyY] }, storeAlert!.id);
+  });
 });

@@ -83,6 +83,7 @@ test("settings: API changes shows spec versions, source state, the brief, and al
   const alerts = page.getByRole("list", { name: "Отворени сигнали" });
   await expect(alerts.getByText("FHB Kika API v3 API changed: 2 breaking, 1 additive")).toBeVisible();
   await expect(alerts.getByText("Критично")).toBeVisible();
+  await expect(alerts.getByText(/Промяна в спецификацията/)).toBeVisible(); // kind label (dot-free key)
 
   // Sources: FHB fine, euShipments failing, the rest not checked yet.
   const fhbRow = page.getByRole("row", { name: /FHB Kika API v3/ }).first();

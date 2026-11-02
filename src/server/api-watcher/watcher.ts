@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { logger } from "@/lib/logger";
@@ -13,8 +15,17 @@ import { SPEC_SOURCES, type SpecSource } from "./sources";
  * P9-01: the daily vendor spec watcher (SPEC §8). Per source: fetch → Zod-check the envelope → normalise →
  * hash → compare with the last ApiSpecVersion. A new hash stores a new version with its structured diff and
  * upgrade brief, alerts every account's admins, and — on a breaking change — drops that vendor's CANARY/LIVE
- * connections to DRY_RUN. The first fetch only records a baseline. Fetch failures are counted per source and
- * alerted once after FAILURE_ALERT_AFTER days in a row. Spec documents are public; no credentials are used.
+ * connections to DRY_RUN. Fetch failures are counted per source and alerted once after FAILURE_ALERT_AFTER days
+ * in a row. Spec documents are public; no credentials are used.
+ *
+ * Baseline: the first run seeds it from the committed raw copy our adapters were written against
+ * (source.rawFile, part of the deployed build) and diffs the first live fetch against it, so a change made
+ * between the last `pnpm docs:refresh` and the first deploy is still alerted. Only when the raw copy is missing
+ * or unreadable does the first live fetch become the baseline.
+ *
+ * Crash safety: a changed version is stored with `diff.applied = false`, then connections are demoted and
+ * alerts raised, then `applied` is set to true. Every run first finishes any unapplied latest version (both steps
+ * are idempotent), so a failure midway is completed by the pg-boss retry or the next day's run.
  */
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -37,7 +48,28 @@ const PostmanEnvelope = z.looseObject({
 export interface StoredDiff extends SpecDiff {
   previousId: string;
   brief: string;
+  /** false until demotion and alerts are done; rows written before this flag existed count as applied. */
+  applied?: boolean;
 }
+
+/** Loads the committed raw spec of a source (null when absent/unreadable). Test seam. */
+export type BaselineLoader = (source: SpecSource) => Promise<Record<string, unknown> | null>;
+
+function envelopeFor(source: SpecSource) {
+  return source.format === "openapi" ? OpenApiEnvelope : PostmanEnvelope;
+}
+
+export const readCommittedSpec: BaselineLoader = async (source) => {
+  try {
+    const text = await readFile(path.join(process.cwd(), source.rawFile), "utf8");
+    const parsed = envelopeFor(source).safeParse(JSON.parse(text));
+    if (parsed.success) return parsed.data as Record<string, unknown>;
+    logger.warn({ vendor: source.vendor }, "committed raw spec has an unexpected shape");
+  } catch (err) {
+    logger.warn({ vendor: source.vendor, err: (err as Error).message }, "committed raw spec not readable");
+  }
+  return null;
+};
 
 export class SpecFetchError extends Error {
   constructor(message: string) {
@@ -65,7 +97,7 @@ export async function fetchSpec(source: SpecSource, fetchImpl: FetchLike): Promi
   } catch {
     throw new SpecFetchError("not_json");
   }
-  const parsed = (source.format === "openapi" ? OpenApiEnvelope : PostmanEnvelope).safeParse(json);
+  const parsed = envelopeFor(source).safeParse(json);
   if (!parsed.success) throw new SpecFetchError("unexpected_shape");
   return parsed.data as Record<string, unknown>;
 }
@@ -90,11 +122,51 @@ async function markSource(id: string, ok: boolean, error?: string) {
   return row;
 }
 
+/** Demotion + alert for a stored change; idempotent, then marks the version applied. */
+async function applyVersion(source: SpecSource, versionId: string, stored: StoredDiff): Promise<number> {
+  const { breaking, additive, info } = stored.counts;
+  let demoted = 0;
+  if (breaking > 0) {
+    demoted = (
+      await demoteVendorConnections(source.vendor, `${source.label} API spec changed (${breaking} breaking)`)
+    ).length;
+  }
+  await raiseAlertEverywhere({
+    kind: ALERT_KINDS.specChange,
+    severity: breaking ? "CRITICAL" : additive ? "WARNING" : "INFO",
+    title: `${source.label} API changed: ${breaking} breaking, ${additive} additive, ${info} informational`,
+    body: stored.brief,
+    entityType: "ApiSpecVersion",
+    entityId: versionId,
+  });
+  await systemDb().apiSpecVersion.update({
+    where: { id: versionId },
+    data: { diff: { ...stored, applied: true } as unknown as Prisma.InputJsonValue },
+  });
+  return demoted;
+}
+
+const latestVersion = (vendor: string) =>
+  systemDb().apiSpecVersion.findFirst({
+    where: { vendor },
+    orderBy: [{ fetchedAt: "desc" }, { id: "desc" }],
+  });
+
+/** Finishes the latest version's side effects if an earlier run stored it but failed before they were done. */
+async function finishUnapplied(source: SpecSource) {
+  const last = await latestVersion(source.vendor);
+  const stored = last?.diff as unknown as StoredDiff | null | undefined;
+  if (!last || !stored || stored.applied !== false) return;
+  logger.warn({ vendor: source.vendor, versionId: last.id }, "finishing an unapplied spec change");
+  await applyVersion(source, last.id, stored);
+}
+
 export async function watchSource(
   source: SpecSource,
-  opts: { fetchImpl: FetchLike; now?: () => Date },
+  opts: { fetchImpl: FetchLike; now?: () => Date; baseline?: BaselineLoader },
 ): Promise<SpecOutcome> {
   const now = opts.now ?? (() => new Date());
+  await finishUnapplied(source);
   let doc: Record<string, unknown>;
   try {
     doc = await fetchSpec(source, opts.fetchImpl);
@@ -117,26 +189,28 @@ export async function watchSource(
 
   const { hash, spec } = normaliseDocument(source.format, doc);
   const db = systemDb();
-  const last = await db.apiSpecVersion.findFirst({
-    where: { vendor: source.vendor },
-    orderBy: [{ fetchedAt: "desc" }, { id: "desc" }],
-  });
+  let last = await latestVersion(source.vendor);
   await markSource(source.vendor, true);
   if (last?.hash === hash) return { vendor: source.vendor, outcome: "unchanged", versionId: last.id };
 
   const fetchedAt = now();
   if (!last) {
+    const committed = await (opts.baseline ?? readCommittedSpec)(source);
+    const seed = committed ? normaliseDocument(source.format, committed) : null;
+    const fromLive = !seed || seed.hash === hash;
     const v = await db.apiSpecVersion.create({
       data: {
         vendor: source.vendor,
-        sourceUrl: source.url,
-        fetchedAt,
-        hash,
-        normalised: spec as unknown as Prisma.InputJsonValue,
+        sourceUrl: fromLive ? source.url : `repo:${source.rawFile}`,
+        // The committed baseline sorts before the live version that is diffed against it.
+        fetchedAt: fromLive ? fetchedAt : new Date(fetchedAt.getTime() - 1000),
+        hash: fromLive ? hash : seed.hash,
+        normalised: (fromLive ? spec : seed.spec) as unknown as Prisma.InputJsonValue,
       },
     });
-    logger.info({ vendor: source.vendor, hash }, "spec baseline recorded");
-    return { vendor: source.vendor, outcome: "baseline", versionId: v.id };
+    logger.info({ vendor: source.vendor, hash: v.hash, fromLive }, "spec baseline recorded");
+    if (fromLive) return { vendor: source.vendor, outcome: "baseline", versionId: v.id };
+    last = v;
   }
 
   const diff = diffSpecs(last.normalised as unknown as NormalisedSpec, spec);
@@ -146,7 +220,7 @@ export async function watchSource(
     previous: { hash: last.hash, fetchedAt: last.fetchedAt },
     current: { hash, fetchedAt },
   });
-  const stored: StoredDiff = { ...diff, previousId: last.id, brief };
+  const stored: StoredDiff = { ...diff, previousId: last.id, brief, applied: false };
   const v = await db.apiSpecVersion.create({
     data: {
       vendor: source.vendor,
@@ -159,33 +233,30 @@ export async function watchSource(
   });
   const { breaking, additive, info } = diff.counts;
   logger.warn({ vendor: source.vendor, breaking, additive, info }, "vendor API spec changed");
-
-  let demoted = 0;
-  if (breaking > 0) {
-    demoted = (
-      await demoteVendorConnections(source.vendor, `${source.label} API spec changed (${breaking} breaking)`)
-    ).length;
-  }
-  await raiseAlertEverywhere({
-    kind: ALERT_KINDS.specChange,
-    severity: breaking ? "CRITICAL" : additive ? "WARNING" : "INFO",
-    title: `${source.label} API changed: ${breaking} breaking, ${additive} additive, ${info} informational`,
-    body: brief,
-    entityType: "ApiSpecVersion",
-    entityId: v.id,
-  });
-  return { vendor: source.vendor, outcome: "changed", versionId: v.id, diff: stored, demoted };
+  const demoted = await applyVersion(source, v.id, stored);
+  return {
+    vendor: source.vendor,
+    outcome: "changed",
+    versionId: v.id,
+    diff: { ...stored, applied: true },
+    demoted,
+  };
 }
 
 /** The daily job: every source, each isolated (one vendor's outage never hides another vendor's change). */
 export async function runSpecWatch(
-  opts: { fetchImpl?: FetchLike; now?: () => Date; sources?: readonly SpecSource[] } = {},
+  opts: {
+    fetchImpl?: FetchLike;
+    now?: () => Date;
+    sources?: readonly SpecSource[];
+    baseline?: BaselineLoader;
+  } = {},
 ): Promise<SpecOutcome[]> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const out: SpecOutcome[] = [];
   for (const source of opts.sources ?? SPEC_SOURCES) {
     try {
-      out.push(await watchSource(source, { fetchImpl, now: opts.now }));
+      out.push(await watchSource(source, { fetchImpl, now: opts.now, baseline: opts.baseline }));
     } catch (err) {
       logger.error({ vendor: source.vendor, err: (err as Error).message }, "spec watch failed");
       out.push({ vendor: source.vendor, outcome: "failed", error: "internal" });
