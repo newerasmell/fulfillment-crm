@@ -285,11 +285,18 @@ export const FhbOrderView = z.looseObject({
 });
 export type FhbOrderView = z.infer<typeof FhbOrderView>;
 
+/**
+ * An order as the LIST endpoints return it (order/history, rma/list). Production sends `id: null` for orders
+ * created outside an integration (e.g. by hand in ZOE); they always carry `uid` (observed 2026-11-02).
+ */
+export const FhbOrderListItem = FhbOrderView.extend({ id: Id.nullish() });
+export type FhbOrderListItem = z.infer<typeof FhbOrderListItem>;
+
 /** GET /order/history (100 per page). */
 export const FhbOrderPage = z.looseObject({
   page: z.coerce.number(),
   total: z.coerce.number(),
-  orders: z.array(FhbOrderView),
+  orders: z.array(FhbOrderListItem),
 });
 export type FhbOrderPage = z.infer<typeof FhbOrderPage>;
 
@@ -336,7 +343,7 @@ export type FhbStockMovementPage = z.infer<typeof FhbStockMovementPage>;
 export const FhbRmaPage = z.looseObject({
   page: z.coerce.number(),
   total: z.coerce.number(),
-  items: z.array(FhbOrderView),
+  items: z.array(FhbOrderListItem),
 });
 export type FhbRmaPage = z.infer<typeof FhbRmaPage>;
 
@@ -379,7 +386,8 @@ export const FHB_COD_STATUSES = ["waiting", "received", "paid"] as const;
 
 /** GET /cod?id= and GET /cod/list items. `cod` is in the destination's local currency. */
 export const FhbCod = z.looseObject({
-  id: Id,
+  /** null for orders created outside an integration (production, 2026-11-02); `uid` is always there. */
+  id: Id.nullish(),
   uid: str,
   variable_symbol: Id.nullish(),
   parcel_service: str,

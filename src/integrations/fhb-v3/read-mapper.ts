@@ -2,9 +2,9 @@ import { parseFhbDate } from "./client";
 import {
   FHB_COD_STATUSES,
   type FhbCod,
-  type FhbOrderView,
   type FhbReturn,
   type FhbStockMovement,
+  type FhbOrderListItem,
 } from "./schemas";
 import { mapFhbOrderStatus } from "./status-map";
 
@@ -36,11 +36,21 @@ export function crmSkuFromFhbId(vendorId: string, skuPrefixRule: unknown): strin
 const amount = (v: number | null | undefined) =>
   typeof v === "number" && Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
 
-/** One order of order/history, GET /order or rma/list as a mirror row. */
-export function mapFhbOrderMirror(v: FhbOrderView, opts: { fromRma?: boolean } = {}) {
+/**
+ * Mirror key of an FHB order: its id, or `uid:{uid}` for orders FHB lists without an id (created outside an
+ * integration). Ours always have an id ({STORECODE}-{number}), so the two can never collide.
+ */
+export function fhbMirrorKey(v: { id?: string | null; uid?: string | null }) {
+  return v.id ?? (v.uid ? `uid:${v.uid}` : null);
+}
+
+/** One order of order/history, GET /order or rma/list as a mirror row (null when it has neither id nor uid). */
+export function mapFhbOrderMirror(v: FhbOrderListItem, opts: { fromRma?: boolean } = {}) {
+  const externalId = fhbMirrorKey(v);
+  if (!externalId) return null;
   const mapping = mapFhbOrderStatus(v.status, { returnedAt: v.returned_at });
   return {
-    externalId: v.id,
+    externalId,
     uid: v.uid ?? null,
     variableSymbol: v.variable_symbol ?? null,
     rawStatus: mapping.raw,
@@ -61,7 +71,7 @@ export function mapFhbOrderMirror(v: FhbOrderView, opts: { fromRma?: boolean } =
     inRma: opts.fromRma === true,
   };
 }
-export type FhbOrderMirrorRow = ReturnType<typeof mapFhbOrderMirror>;
+export type FhbOrderMirrorRow = NonNullable<ReturnType<typeof mapFhbOrderMirror>>;
 
 /** COD status: the documented three, anything else kept raw and flagged. */
 export function mapFhbCodStatus(raw: string | null | undefined) {
@@ -71,9 +81,11 @@ export function mapFhbCodStatus(raw: string | null | undefined) {
 }
 
 export function mapFhbCod(v: FhbCod) {
+  const externalId = fhbMirrorKey(v);
+  if (!externalId) return null;
   const status = mapFhbCodStatus(v.status);
   return {
-    externalId: v.id,
+    externalId,
     uid: v.uid ?? null,
     variableSymbol: v.variable_symbol ?? null,
     parcelService: v.parcel_service ?? null,

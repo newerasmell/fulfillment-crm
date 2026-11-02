@@ -252,6 +252,41 @@ describe("FHB read side: orders, RMA, COD", () => {
     expect(await db.alert.count({ where: { kind: "fhb_unknown_status" } })).toBe(1);
   });
 
+  it("production shape: orders, RMA and COD listed with id: null are mirrored by uid (observed 2026-11-02)", async () => {
+    const s = await setup();
+    const routes = {
+      "/order/history": () =>
+        json({
+          page: "1",
+          total: "2",
+          orders: [
+            { ...base(), id: null, uid: "u-100", status: "sent" },
+            { ...base(), id: "TST-7", uid: "u-101", status: "sent" },
+          ],
+        }),
+      "/rma/list": () =>
+        json({
+          page: 1,
+          total: 1,
+          items: [{ ...base(), id: null, uid: "u-100", returned_at: "2026-10-30T10:00:00+0100" }],
+        }),
+      "/cod/list": () =>
+        json({ page: 1, total: 1, items: [{ id: null, uid: "u-100", cod: 15, status: "received" }] }),
+    };
+    expect(await run(s, { resource: "orders" }, routes).result).toMatchObject({ count: 2 });
+    expect(await run(s, { resource: "rma" }, routes).result).toMatchObject({ count: 1 });
+    expect(await run(s, { resource: "cod" }, routes).result).toMatchObject({ count: 1 });
+    const db = accountDb(s.account.id);
+    const byUid = await db.fhbOrderMirror.findUniqueOrThrow({
+      where: { connectionId_externalId: { connectionId: s.connection.id, externalId: "uid:u-100" } },
+    });
+    expect(byUid).toMatchObject({ uid: "u-100", inRma: true });
+    expect(await db.fhbOrderMirror.count({ where: { connectionId: s.connection.id } })).toBe(2);
+    expect(
+      await db.fhbCodMirror.count({ where: { connectionId: s.connection.id, externalId: "uid:u-100" } }),
+    ).toBe(1);
+  });
+
   it("COD: stores the raw status, updates the shipment's codStatus, alerts unknown values", async () => {
     const s = await setup();
     const routes = {
