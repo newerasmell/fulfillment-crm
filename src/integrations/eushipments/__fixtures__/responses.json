@@ -1,0 +1,71 @@
+{
+  "createOrderOk": { "orderId": 745770, "error": false, "code": 200 },
+  "createProductOk": { "productId": 85, "error": false },
+  "createProductBarcodeTaken": {
+    "productId": null,
+    "error": "This barcode is not unique for our system: ()"
+  },
+  "createProductRefExists": {
+    "productId": null,
+    "error": "The product with reference number  already exists. The reference number must be a unique value."
+  },
+  "createRequestOk": { "requestId": 137 },
+  "attachPdfOk": [
+    {
+      "error": false,
+      "orderId": 745770,
+      "referenceNumber": "TST-1001",
+      "pdfId": 1024,
+      "pdfCode": "5420122-333-1",
+      "code": 200
+    }
+  ],
+  "attachPdfNotFound": [
+    {
+      "error": "Not found order with the specified number!",
+      "orderId": 123,
+      "referenceNumber": "TST-1001",
+      "pdfId": null,
+      "pdfCode": null,
+      "code": 422
+    }
+  ],
+  "transferOk": {
+    "protocolId": 98765,
+    "isConfirmed": null,
+    "protocolType": 1,
+    "itemsCreated": 1,
+    "items": [{ "refNumber": "ref-test-54202", "quantity": 1, "batchId": null }],
+    "error": false
+  },
+  "transferTestMode": {
+    "protocolId": null,
+    "isConfirmed": null,
+    "protocolType": 1,
+    "itemsCreated": 0,
+    "items": [],
+    "error": false
+  },
+  "transferDuplicate": {
+    "error": "DUPLICATE_EXTERNAL_REF",
+    "protocolId": 98765,
+    "isConfirmed": null,
+    "protocolType": 1,
+    "externalRef": "CRM-TRF-x1",
+    "isDeleted": false
+  },
+  "transferValidation": {
+    "error": "VALIDATION_FAILED",
+    "messages": ["destination warehouse must differ from source"],
+    "itemErrors": [
+      {
+        "index": 0,
+        "refNumber": "ref-test-54202",
+        "error": "INSUFFICIENT_QUANTITY",
+        "available": 8,
+        "requested": 12
+      }
+    ]
+  },
+  "deleteOk": { "error": false, "message": "The order was deleted successfully.", "code": 200 }
+}

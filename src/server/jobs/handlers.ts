@@ -4,6 +4,9 @@ import { purgeOldLoginAttempts } from "@/server/auth/rate-limit";
 import { processOutbound, sweepOutbox } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
 import { registerShopifyWorkers } from "@/server/shopify/jobs";
+import { registerFhbWorkers } from "@/server/fhb/jobs";
+import { registerEushipmentsWorkers } from "@/server/eushipments/jobs";
+import { registerApiWatcherWorkers } from "@/server/api-watcher/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -55,6 +58,9 @@ export async function registerWorkers(deps: WorkerDeps) {
   });
 
   await registerShopifyWorkers(boss, opts);
+  await registerFhbWorkers(boss, opts);
+  await registerEushipmentsWorkers(boss, opts);
+  await registerApiWatcherWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

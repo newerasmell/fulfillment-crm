@@ -11,6 +11,8 @@ export class ShopifyError extends Error {
     public readonly code: ShopifyErrorCode,
     message: string,
     public readonly status?: number,
+    /** GraphQL `errors[].extensions.code` values (e.g. ACCESS_DENIED, undefinedField), when Shopify sent any. */
+    public readonly graphqlCodes: readonly string[] = [],
   ) {
     super(message);
     this.name = "ShopifyError";

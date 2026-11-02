@@ -1,0 +1,27 @@
+{
+  "endpoint": "get-products",
+  "scrubberVersion": 1,
+  "recordedAt": "synthetic-sample",
+  "response": [
+    {
+      "ID": 800585061,
+      "NAME": "SYN-98b241",
+      "DESCRIPTION": "SYN-06e319",
+      "LENGTH_ITEM": "20.50",
+      "WIDTH": "20.50",
+      "HEIGHT": "20.50",
+      "WEIGHT": "2.20",
+      "REFERENCE_NUMBER": "SYN-REF-bf5dc6"
+    },
+    {
+      "ID": 800897040,
+      "NAME": "SYN-09d550",
+      "DESCRIPTION": null,
+      "LENGTH_ITEM": "10.00",
+      "WIDTH": "15.00",
+      "HEIGHT": "5.00",
+      "WEIGHT": "0.50",
+      "REFERENCE_NUMBER": "SYN-REF-18b383"
+    }
+  ]
+}

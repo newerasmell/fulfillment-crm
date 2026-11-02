@@ -25,6 +25,13 @@ const EXPECTED: Record<Permission, string> = {
   "inbound.manage": "11010",
   "audit.read": "11000",
   "jobs.admin": "11000",
+  "vendorProducts.write": "11000",
+  "orders.cancelAtWarehouse": "11100",
+  "connections.sync": "11100",
+  "outbox.payloads": "11000",
+  "eushipments.sync": "11110",
+  "apiWatch.read": "11000",
+  "apiWatch.manage": "11000",
 };
 
 describe("role matrix", () => {

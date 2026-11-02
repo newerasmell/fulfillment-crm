@@ -31,24 +31,24 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [ ] GATE P1-G1 Owner: create the Dev Dashboard app, install on stores, enter client id/secret per store in the CRM, confirm stores are in the same Shopify organisation.
 
 ## Phase 2 — FHB v3 (production, READ_ONLY → DRY_RUN)
-- [ ] P2-01 Zod schemas generated from `docs/integrations/raw/fhb-kika-v3.openapi.json`; FHB client (login, base64 token header, token cache, 401 re-login, backoff). Unit tests with doc examples as fixtures.
-- [ ] P2-02 Read side: products (paged 250), stock/all, stock/movements, order/history, order read, rma/list, return/list, cod/list, parcel-service, delivery-point. Mirror tables + sync jobs.
-- [ ] P2-03 `pnpm fixtures:record` command: runs the read side against a configured connection and saves responses to `__fixtures__/` with PII **and business data** replaced by synthetic values (names, addresses, phones, emails, product names, SKUs, EANs, quantities, amounts, account/company ids); a test fails if a fixture contains a value not produced by the scrubber. (Built here, run by the owner at the gate.)
-- [ ] P2-04 Status map (INTEGRATION_NOTES §2.4) with raw storage, UNKNOWN + alert.
-- [ ] P2-05 Write side behind the outbox: product create/update (never overwrite EAN), multi-products, order create (ids, variable-symbol sequence, local-currency COD, `validate: true`, signed notification URLs), order update/delete only in `pending`, stock receipts. Duplicate-submit test with mocked timeout.
-- [ ] P2-06 Callback endpoints (order events, stock notify_url) with secret-path tokens, re-read on every event.
-- [ ] P2-07 FHB validators (INTEGRATION_NOTES §5) with bg/en messages.
-- [ ] P2-08 Mirror screens for FHB (SPEC §6.7, docs/DESIGN.md screen 4) + DRY_RUN payload preview. If docs/reference-screens/fhb/ has screenshots, every field/action shown there must be covered; list gaps in PROGRESS.md.
+- [x] P2-01 Zod schemas generated from `docs/integrations/raw/fhb-kika-v3.openapi.json`; FHB client (login, base64 token header, token cache, 401 re-login, backoff). Unit tests with doc examples as fixtures.
+- [x] P2-02 Read side: products (paged 250), stock/all, stock/movements, order/history, order read, rma/list, return/list, cod/list, parcel-service, delivery-point. Mirror tables + sync jobs.
+- [x] P2-03 `pnpm fixtures:record` command: runs the read side against a configured connection and saves responses to `__fixtures__/` with PII **and business data** replaced by synthetic values (names, addresses, phones, emails, product names, SKUs, EANs, quantities, amounts, account/company ids); a test fails if a fixture contains a value not produced by the scrubber. (Built here, run by the owner at the gate.)
+- [x] P2-04 Status map (INTEGRATION_NOTES §2.4) with raw storage, UNKNOWN + alert.
+- [x] P2-05 Write side behind the outbox: product create/update (never overwrite EAN), multi-products, order create (ids, variable-symbol sequence, local-currency COD, `validate: true`, signed notification URLs), order update/delete only in `pending`, stock receipts. Duplicate-submit test with mocked timeout.
+- [x] P2-06 Callback endpoints (order events, stock notify_url) with secret-path tokens, re-read on every event.
+- [x] P2-07 FHB validators (INTEGRATION_NOTES §5) with bg/en messages.
+- [x] P2-08 Mirror screens for FHB (SPEC §6.7, docs/DESIGN.md screen 4) + DRY_RUN payload preview. If docs/reference-screens/fhb/ has screenshots, every field/action shown there must be covered; list gaps in PROGRESS.md.
 - [ ] GATE P2-G1 Owner: enter FHB + Joy production credentials (connection stays READ_ONLY), run `pnpm fixtures:record` once, check the scrubbed fixtures, then commit them.
 - [ ] P2-09 Update schemas/mappers to the recorded real responses; any difference from the docs logged in INTEGRATION_NOTES.
 
 ## Phase 3 — euShipments (production, READ_ONLY → DRY_RUN with testMode)
-- [ ] P3-01 Client (Bearer, explicit testMode), Zod schemas from the reference; per-item error handling inside HTTP 200.
-- [ ] P3-02 Read side: companies, couriers, warehouses, countries/cities/offices, get-products, get-prod-avails, orders-history (batches of 100), booking status, COD by reference. Mirror tables + pollers.
-- [ ] P3-03 Status map by STATUS text with normalisation (Cyrillic look-alikes, dashes) seeded from INTEGRATION_NOTES §4.5; BLOCKED / RETURN_RECEIVED alerts; time threshold for "Information received".
-- [ ] P3-04 Phone normaliser per country (§4.4) with full test table; address truncation warnings; Σ(price×qty)=COD rule.
-- [ ] P3-05 Write side behind the outbox: create-product (barcode-collision handling), create-order (DB-unique referenceNumber + orders-history read-back), delete, attach PDF right after create, booking request (no auto-retry → UNCERTAIN task), transfers with deterministic externalRef.
-- [ ] P3-06 Mirror screens for euShipments (docs/DESIGN.md) + DRY_RUN using `testMode: true`; same screenshot coverage check with docs/reference-screens/eushipments/.
+- [x] P3-01 Client (Bearer, explicit testMode), Zod schemas from the reference; per-item error handling inside HTTP 200.
+- [x] P3-02 Read side: companies, couriers, warehouses, countries/cities/offices, get-products, get-prod-avails, orders-history (batches of 100), booking status, COD by reference. Mirror tables + pollers.
+- [x] P3-03 Status map by STATUS text with normalisation (Cyrillic look-alikes, dashes) seeded from INTEGRATION_NOTES §4.5; BLOCKED / RETURN_RECEIVED alerts; time threshold for "Information received".
+- [x] P3-04 Phone normaliser per country (§4.4) with full test table; address truncation warnings; Σ(price×qty)=COD rule.
+- [x] P3-05 Write side behind the outbox: create-product (barcode-collision handling), create-order (DB-unique referenceNumber + orders-history read-back), delete, attach PDF right after create, booking request (no auto-retry → UNCERTAIN task), transfers with deterministic externalRef.
+- [x] P3-06 Mirror screens for euShipments (docs/DESIGN.md) + DRY_RUN using `testMode: true`; same screenshot coverage check with docs/reference-screens/eushipments/.
 - [ ] GATE P3-G1 Owner: enter euShipments token, map companies to accounts, confirm with euShipments that `testMode: true` on production creates nothing visible, run `pnpm fixtures:record`.
 - [ ] P3-07 Update schemas/mappers to recorded responses.
 
@@ -85,5 +85,5 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [ ] GATE P8-G1 Owner: set ANTHROPIC_API_KEY for the app, decide which accounts start in shadow mode.
 
 ## Phase 9 — API change watcher
-- [ ] P9-01 Daily spec fetch + normalise + hash + diff + ApiSpecVersion history + alert + upgrade brief.
-- [ ] P9-02 Daily read-only live schema check in the deployed app; affected connections drop to DRY_RUN on breaking change.
+- [x] P9-01 Daily spec fetch + normalise + hash + diff + ApiSpecVersion history + alert + upgrade brief.
+- [x] P9-02 Daily read-only live schema check in the deployed app; affected connections drop to DRY_RUN on breaking change.

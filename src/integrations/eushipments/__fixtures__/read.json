@@ -1,0 +1,205 @@
+{
+  "userCompanies": [
+    {
+      "ID": 333,
+      "NAME": "Example Company Ltd.",
+      "BULSTAT": "000000000",
+      "ADDRESS": "Sample address 1",
+      "MOL": "Sample Person"
+    },
+    {
+      "ID": 334,
+      "NAME": "Second Example Ltd.",
+      "BULSTAT": "000000001",
+      "ADDRESS": "Sample address 2",
+      "MOL": "Sample Person"
+    }
+  ],
+  "couriers": [
+    {
+      "ID": 738,
+      "NAME": "Hungary GLS New",
+      "TO_OFFICE": false,
+      "TO_ADDRESS": true,
+      "COUNTRY": "Hungary",
+      "CURRENCY": "HUF"
+    },
+    {
+      "ID": 15,
+      "NAME": "Bulgaria Sample Courier",
+      "TO_OFFICE": true,
+      "TO_ADDRESS": true,
+      "COUNTRY": "Bulgaria",
+      "CURRENCY": null
+    }
+  ],
+  "warehouses": {
+    "data": [{ "id": 1, "name": "Warehouse Ruse", "country": { "id": 2, "iso": "BG", "name": "Bulgaria" } }]
+  },
+  "countries": [
+    { "ID": 1, "NAME": "Romania", "CYRILLIC_NAME": "Румъния", "ISO_CODE": "RO" },
+    { "ID": 2, "NAME": "Bulgaria", "CYRILLIC_NAME": "България", "ISO_CODE": "BG" }
+  ],
+  "cities": [
+    {
+      "ID": 24370,
+      "POSTAL_CODE": "1528",
+      "CITY_NAME_LOCAL": "Абдовица",
+      "CITY_NAME_EN": null,
+      "COUNTY": "София",
+      "COUNTY_ID": null,
+      "COUNTY_EN": null,
+      "MUNICIPALITY": "Столична",
+      "STATE": null,
+      "STATE_EN": null,
+      "MANUAL_EDIT": null,
+      "RAPIDO_SITEID": null
+    },
+    {
+      "ID": 24372,
+      "POSTAL_CODE": "2932",
+      "CITY_NAME_LOCAL": "Абланица",
+      "CITY_NAME_EN": "Ablanitsa",
+      "COUNTY": "Благоевград",
+      "COUNTY_ID": null,
+      "COUNTY_EN": "Blagoevgrad",
+      "MUNICIPALITY": "Хаджидимово",
+      "STATE": null,
+      "STATE_EN": null,
+      "MANUAL_EDIT": null,
+      "RAPIDO_SITEID": null
+    }
+  ],
+  "officesPage1": {
+    "offices": [
+      {
+        "ID": 1297,
+        "CITY_ID": 24392,
+        "COURIER_ID": 15,
+        "COURIER_OFFICE_ID": 1053,
+        "OFFICE_NAME": "Sample Office One",
+        "COURIER_OFFICE_CODE": "7538",
+        "CITY_NAME": "Sample Town",
+        "ADDRESS": "Sample Street 7",
+        "LATITUDE": "44.1009192550187000",
+        "LONGITUDE": "27.1950400265455000",
+        "WORK_BEGIN": "09:00:00",
+        "WORK_END": "18:00:00",
+        "WORK_BEGIN_SATURDAY": "09:00:00",
+        "WORK_END_SATURDAY": "15:00:00",
+        "GROUP_CITY_ID": 24392,
+        "POST_CODE": "7538",
+        "REGION": "Sample Region",
+        "IS_STATION": false,
+        "COD_SUPPORT": true
+      }
+    ],
+    "pagination": {
+      "current_page": 1,
+      "per_page": 1,
+      "total": 2,
+      "last_page": 2,
+      "from": 1,
+      "to": 1,
+      "has_more_pages": true
+    }
+  },
+  "officesPage2": {
+    "offices": [
+      {
+        "ID": 1298,
+        "CITY_ID": 24396,
+        "COURIER_ID": 15,
+        "COURIER_OFFICE_ID": 133,
+        "OFFICE_NAME": "Sample Locker Two",
+        "COURIER_OFFICE_CODE": "8501",
+        "CITY_NAME": "Sample City",
+        "ADDRESS": "Sample Street 31",
+        "LATITUDE": "42.7066729507548500",
+        "LONGITUDE": "27.2505099280334600",
+        "WORK_BEGIN": "09:00:00",
+        "WORK_END": "18:00:00",
+        "WORK_BEGIN_SATURDAY": null,
+        "WORK_END_SATURDAY": null,
+        "GROUP_CITY_ID": 24396,
+        "POST_CODE": "8500",
+        "REGION": null,
+        "IS_STATION": true,
+        "COD_SUPPORT": false
+      }
+    ],
+    "pagination": {
+      "current_page": 2,
+      "per_page": 1,
+      "total": 2,
+      "last_page": 2,
+      "from": 2,
+      "to": 2,
+      "has_more_pages": false
+    }
+  },
+  "prodAvails": [
+    {
+      "AVAIL_DATE": "2026-11-02 06:00:00",
+      "STORE_NAME": "Warehouse Ruse",
+      "ART_NAME": "test product",
+      "ART_LNG_DESC": "test product long description",
+      "ART_SH_DESC": "test product",
+      "CUST_NAME": "Example Company Ltd.",
+      "REFERENCE_NUMBER": "ref-test-54202",
+      "COURIER_ITEM_CODE": "12345",
+      "AVAIL_QTY": 87
+    }
+  ],
+  "requestStatusAccepted": {
+    "accepted": true,
+    "date": "2026-07-01 10:15:33",
+    "clientReference": "PO-2026-0042",
+    "ref1": null,
+    "ref2": null,
+    "ref3": null
+  },
+  "bookingStatusClosed": {
+    "bookingId": 137,
+    "clientReference": "PO-2026-0042",
+    "ref1": null,
+    "ref2": null,
+    "ref3": null,
+    "statuses": {
+      "created": "2026-06-25 09:41:12",
+      "received": "2026-06-27 14:02:55",
+      "closed": "2026-06-28 10:15:33",
+      "deleted": null
+    },
+    "products": [
+      {
+        "name": "test product",
+        "referenceNumber": "ref-test-54202",
+        "booked": 10,
+        "accepted": 10,
+        "comment": null
+      },
+      {
+        "name": "test product 2",
+        "referenceNumber": "ref-test-54201",
+        "booked": 100,
+        "accepted": 98,
+        "comment": "2 damaged items"
+      }
+    ]
+  },
+  "codPaid": {
+    "awbNumber": "40695693257",
+    "referenceNumber": "TST-1001",
+    "COD": "40.00",
+    "payedNumber": 10793,
+    "payedDate": "2026-11-01 13:40:51"
+  },
+  "codNotPaid": {
+    "awbNumber": "40695693258",
+    "referenceNumber": "TST-1002",
+    "COD": "25.50",
+    "payedNumber": null,
+    "payedDate": null
+  }
+}

@@ -97,8 +97,20 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   shows the time of the last run. Decision with the owner: master products are created from the warehouse catalogues
   (phases 2–3), not from Shopify variants — until then store variants stay unmatched.
 
+- 2026-11-02 (wave 1, parallel agents): FHB v3 adapter (P2-01…P2-08), euShipments adapter (P3-01…P3-06) and the API
+  change watcher (P9-01, P9-02) built in separate worktrees, each audited and fixed — docs/audits/wave-1.md; decisions and
+  spec findings verbatim in docs/wave-1-notes.md (INTEGRATION_NOTES updated where the code deviates). Nothing calls a vendor
+  yet: new connections start READ_ONLY; FHB has no test flag (DRY_RUN only records), euShipments DRY_RUN uses testMode:true.
+
 ## Open questions
 See SPEC.md §11.
+- For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —
+  until then the sent barcode is kept in VendorProduct.raw.barcodeSent; (2) what create-order returns with
+  `testMode: true` (we treat 2xx without error text as a pass); (3) time zone of orders-history DATE values (read as
+  Europe/Sofia); (4) is get-prod-avails CUST_NAME exactly the get-user-companies NAME (used to attribute stock rows
+  when one token sees several companies).
+- Owner: put vendor cabinet screenshots in docs/reference-screens/{fhb,eushipments}/ (local only, git-ignored) so the
+  mirror screens can be checked field by field (P2-08 / P3-06 coverage check not done).
 
 ## Done
 - P0-01 scaffold (pnpm, Next.js App Router, worker entry, ESLint+Prettier, Vitest, Playwright, pino, scripts).

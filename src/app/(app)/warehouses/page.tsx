@@ -7,6 +7,8 @@ import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
+import { FhbConnectionsSection } from "./fhb/section";
+import { EuShipmentsWarehousesLink } from "./eushipments/entry-links";
 
 export default async function WarehousesPage() {
   const ctx = await requireAccountContext();
@@ -40,6 +42,8 @@ export default async function WarehousesPage() {
           </ul>
         )}
       </Card>
+      <FhbConnectionsSection ctx={ctx} />
+      <EuShipmentsWarehousesLink />
       {can(ctx.role, "outbox.killSwitch") && (
         <Card className={account.outboxPaused ? "border-block" : ""}>
           <h2 className="mt-0 text-base font-semibold">{t("warehouses.emergencyTitle")}</h2>

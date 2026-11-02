@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFormatter, getTranslations } from "next-intl/server";
-import { runStoreJobAction } from "@/app/actions/stores";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { ghostButtonCls } from "@/components/ui/form";
 import { DomainError } from "@/server/accounts";
@@ -11,6 +10,7 @@ import { accountDb } from "@/server/db/client";
 import { getStore } from "@/server/stores";
 import { BackfillForm, ReplaceCredentialsForm, StoreSettingsForm } from "../forms";
 import { ConnectionBadge } from "../status";
+import { JobButton } from "../JobButton";
 
 export default async function StorePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -39,11 +39,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
   const manage = can(ctx.role, "stores.manage");
   const sync = can(ctx.role, "stores.sync");
   const job = (kind: "test" | "orders" | "products" | "webhooks", label: string) => (
-    <form action={runStoreJobAction.bind(null, id, kind)}>
-      <button type="submit" className={ghostButtonCls}>
-        {label}
-      </button>
-    </form>
+    <JobButton storeId={id} kind={kind} label={label} />
   );
   const fmt = (iso?: string) =>
     iso ? format.dateTime(new Date(iso), { dateStyle: "medium", timeStyle: "short" }) : "—";
@@ -78,7 +74,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
             )}
             {webhook.errors?.map((e) => (
               <div key={e} className="text-xs text-block">
-                {e}
+                {t.has(`errors.${e}`) ? t(`errors.${e}`) : e}
               </div>
             ))}
           </dd>

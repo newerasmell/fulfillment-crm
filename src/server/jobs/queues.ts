@@ -63,10 +63,94 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 600 },
     cron: "*/15 * * * *",
   },
+  /** euShipments read side (data: { accountId, connectionId[, countryId] }); every call is a GET/list. */
+  eushipmentsTestConnection: {
+    name: "eushipments.testConnection",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 120 },
+  },
+  eushipmentsSyncReference: {
+    name: "eushipments.syncReference",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncCities: {
+    name: "eushipments.syncCities",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncProducts: {
+    name: "eushipments.syncProducts",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncStock: {
+    name: "eushipments.syncStock",
+    options: { ...retry, policy: "stately", expireInSeconds: 900 },
+  },
+  eushipmentsPollOrders: {
+    name: "eushipments.pollOrders",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsPollBookings: {
+    name: "eushipments.pollBookings",
+    options: { ...retry, policy: "stately", expireInSeconds: 900 },
+  },
+  eushipmentsPollCod: {
+    name: "eushipments.pollCod",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  /** Every 15 min: products, stock, open shipments and bookings of every usable euShipments connection. */
+  eushipmentsTick: {
+    name: "eushipments.tick",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/15 * * * *",
+  },
+  /** Daily: couriers / warehouses / countries / offices and COD payouts. */
+  eushipmentsDaily: {
+    name: "eushipments.daily",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "41 3 * * *",
+  },
+  /** API change watcher (P9-01): daily vendor spec fetch + diff + Shopify version deprecation check. */
+  apiSpecWatch: {
+    name: "apiwatch.specs",
+    options: { retryLimit: 1, retryDelay: 600, policy: "stately", expireInSeconds: 900 },
+    cron: "23 2 * * *",
+  },
+  /** API change watcher (P9-02): daily, queues one read-only live check per store/connection. */
+  apiLiveCheck: {
+    name: "apiwatch.liveCheck",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 300 },
+    cron: "47 3 * * *",
+  },
+  /** One read-only live check (data: { accountId, kind, id }). */
+  apiLiveCheckTarget: {
+    name: "apiwatch.liveCheckTarget",
+    options: { ...retry, retryLimit: 1, policy: "stately", expireInSeconds: 600 },
+  },
   /** Hourly housekeeping: old login attempts. */
   housekeeping: {
     name: "system.housekeeping",
     options: { retryLimit: 2, expireInSeconds: 300 },
     cron: "17 * * * *",
+  },
+  /** FHB: re-read the order/product one stored callback points at (data: { accountId, eventId }). */
+  fhbCallback: {
+    name: "fhb.callback",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
+  /** Every 5 min: re-queue FHB callbacks whose job was lost or failed (bounded attempts). */
+  fhbCallbackSweep: {
+    name: "fhb.callbackSweep",
+    options: { retryLimit: 0, expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** FHB: one read resource of one connection (data: { accountId, connectionId, resource, service?, country? }). */
+  fhbSync: {
+    name: "fhb.sync",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
+  },
+  /** Every 30 min: queue the read sync of every FHB connection (SPEC §6.3 reconcile). */
+  fhbReconcile: {
+    name: "fhb.reconcile",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/30 * * * *",
   },
 } satisfies Record<string, QueueDef>;

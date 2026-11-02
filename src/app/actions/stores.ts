@@ -106,21 +106,29 @@ export async function replaceStoreCredentialsAction(
 type StoreJobKind = "test" | "orders" | "products" | "webhooks";
 
 /** Queues a read-only Shopify job for one store (nothing here writes to Shopify except webhook subscriptions). */
-export async function runStoreJobAction(storeId: string, kind: StoreJobKind) {
+export async function runStoreJobAction(
+  storeId: string,
+  kind: StoreJobKind,
+  _prev: (Result & { already?: boolean }) | undefined,
+  _form: FormData,
+): Promise<Result & { already?: boolean }> {
   const ctx = await requireAccountContext();
+  let id: string | null;
   try {
     assertCan(ctx.role, kind === "webhooks" ? "stores.manage" : "stores.sync");
     await getStore(actorFrom(ctx), storeId);
     const boss = await webBoss();
     const data = { accountId: ctx.accountId, storeId, callbackUrl: webhookCallbackUrl() };
-    if (kind === "test") await enqueueShopify.testConnection(boss, data);
-    else if (kind === "orders") await enqueueShopify.syncOrders(boss, { ...data, mode: "reconcile" });
-    else if (kind === "products") await enqueueShopify.syncProducts(boss, data);
-    else await enqueueShopify.registerWebhooks(boss, data);
+    if (kind === "test") id = await enqueueShopify.testConnection(boss, data);
+    else if (kind === "orders") id = await enqueueShopify.syncOrders(boss, { ...data, mode: "reconcile" });
+    else if (kind === "products") id = await enqueueShopify.syncProducts(boss, data);
+    else id = await enqueueShopify.registerWebhooks(boss, data);
   } catch (err) {
-    toError(err);
+    return toError(err) ?? {};
   }
   revalidatePath(`/stores/${storeId}`);
+  // null: the same job for this store is already waiting (one at a time per store).
+  return { ok: true, already: id === null };
 }
 
 export async function backfillOrdersAction(storeId: string, _prev: Result, form: FormData): Promise<Result> {

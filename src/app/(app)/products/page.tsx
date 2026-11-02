@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { tdCls, thCls } from "@/components/ui/form";
@@ -6,6 +7,7 @@ import { requireAccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
 import { listUnmatchedVariants, stripSkuPrefix } from "@/server/shopify/products";
 import { MatchVariant } from "./forms";
+import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
 
 export default async function ProductsPage() {
   const ctx = await requireAccountContext();
@@ -25,7 +27,18 @@ export default async function ProductsPage() {
   const match = can(ctx.role, "products.match");
   return (
     <>
-      <PageHeader title={t("title")} subtitle={t("intro")} />
+      <PageHeader
+        title={t("title")}
+        subtitle={t("intro")}
+        actions={
+          <Link
+            href="/products/stock"
+            className="inline-flex min-h-10 items-center rounded-[10px] border border-line bg-surface px-3 hover:bg-hover"
+          >
+            {(await getTranslations("fhb"))("stock.title")}
+          </Link>
+        }
+      />
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("unmatchedTitle", { count: unmatched.length })}</h2>
         {products.length === 0 && unmatched.length > 0 && (
@@ -95,6 +108,7 @@ export default async function ProductsPage() {
           </table>
         )}
       </Card>
+      <EuShipmentsProductsLink ctx={ctx} />
     </>
   );
 }
