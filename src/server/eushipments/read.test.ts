@@ -159,6 +159,35 @@ describe("euShipments read side (DB)", () => {
     expect(await g.db.eushipmentsCourier.count({ where: { connectionId: g.connection.id } })).toBe(2);
   });
 
+  it("thousands of offices are replaced in batches; offices that disappeared are removed", async () => {
+    const base = RD.officesPage1.offices[0]!;
+    const many = (n: number, skip = -1) =>
+      Array.from({ length: n }, (_, i) => ({ ...base, ID: 100_000 + i, OFFICE_NAME: `Office ${i}` })).filter(
+        (_, i) => i !== skip,
+      );
+    const pageOf = (offices: unknown[]) => ({
+      offices,
+      pagination: { current_page: 1, per_page: offices.length, total: offices.length, last_page: 1 },
+    });
+    const big = { ...routes, "/offices-by-courier/15": () => json(pageOf(many(1_234))) };
+    const t1 = new Date(Date.now() + 60_000); // later than the previous tests' runs
+    expect(
+      (await syncEuReference(g.accountId, g.connection.id, { ...vendor(big).deps, now: t1 })).offices,
+    ).toBe(1_234);
+    expect(await g.db.eushipmentsOffice.count({ where: { connectionId: g.connection.id } })).toBe(1_234);
+    // Next run: office #7 is gone at the vendor; the rest are refreshed, nothing is duplicated.
+    const fewer = { ...routes, "/offices-by-courier/15": () => json(pageOf(many(1_234, 7))) };
+    const t2 = new Date(Date.now() + 120_000);
+    await syncEuReference(g.accountId, g.connection.id, { ...vendor(fewer).deps, now: t2 });
+    expect(await g.db.eushipmentsOffice.count({ where: { connectionId: g.connection.id } })).toBe(1_233);
+    expect(
+      await g.db.eushipmentsOffice.count({ where: { connectionId: g.connection.id, officeId: 100_007 } }),
+    ).toBe(0);
+    expect(
+      await g.db.eushipmentsOffice.count({ where: { connectionId: g.connection.id, syncedAt: { lt: t2 } } }),
+    ).toBe(0);
+  });
+
   it("cities per country (paged); Great Britain is refused before any call", async () => {
     const v = vendor(routes);
     expect(await syncEuCities(g.accountId, g.connection.id, 2, v.deps)).toEqual({ countryId: 2, cities: 2 });

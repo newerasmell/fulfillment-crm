@@ -101,65 +101,81 @@ export interface SyncContext {
 // ───────────── products and stock ─────────────
 
 /** Upserts one page of products in one transaction and links unlinked ones to the master by SKU. */
+/** Interactive transactions of the read sync: a slow database must not turn a good sync into a failure. */
+const SYNC_TX = { timeout: 30_000, maxWait: 15_000 };
+
+/** Products per transaction: a 250-product page in one transaction outlived the timeout in production. */
+const PRODUCT_TX_BATCH = 50;
+
 async function upsertProducts(ctx: SyncContext, views: FhbProductView[], skuPrefixRule: unknown) {
+  for (let i = 0; i < views.length; i += PRODUCT_TX_BATCH) {
+    await upsertProductBatch(ctx, views.slice(i, i + PRODUCT_TX_BATCH), skuPrefixRule);
+  }
+}
+
+async function upsertProductBatch(ctx: SyncContext, views: FhbProductView[], skuPrefixRule: unknown) {
   const { accountId, connectionId, now } = ctx;
-  await withAccountTransaction(accountId, async (tx) => {
-    const skus = [
-      ...new Set(views.map((v) => crmSkuFromFhbId(v.id, skuPrefixRule)).filter((s): s is string => !!s)),
-    ];
-    const masters = await tx.product.findMany({
-      where: { accountId, sku: { in: skus }, archived: false },
-      select: { id: true, sku: true },
-    });
-    const productBySku = new Map(masters.map((p) => [p.sku, p.id]));
-    for (const view of views) {
-      const p = mapFhbProductView(view);
-      const sku = crmSkuFromFhbId(p.vendorId, skuPrefixRule);
-      const match = sku ? (productBySku.get(sku) ?? null) : null;
-      const existing = await tx.vendorProduct.findUnique({
-        where: { connectionId_vendorId: { connectionId, vendorId: p.vendorId } },
-        select: { id: true, productId: true },
+  await withAccountTransaction(
+    accountId,
+    async (tx) => {
+      const skus = [
+        ...new Set(views.map((v) => crmSkuFromFhbId(v.id, skuPrefixRule)).filter((s): s is string => !!s)),
+      ];
+      const masters = await tx.product.findMany({
+        where: { accountId, sku: { in: skus }, archived: false },
+        select: { id: true, sku: true },
       });
-      const data = {
-        vendorCode: p.vendorCode,
-        // Read-only mirror of FHB's EAN; never sent back, never a key.
-        vendorEan: p.vendorEan,
-        archived: p.archived,
-        lastSyncAt: now,
-        raw: json(view),
-      };
-      const vp = existing
-        ? await tx.vendorProduct.update({
-            where: { id: existing.id },
-            data: { ...data, ...(!existing.productId && match ? { productId: match } : {}) },
-            select: { id: true },
-          })
-        : await tx.vendorProduct.create({
-            data: { accountId, connectionId, vendorId: p.vendorId, productId: match, ...data },
-            select: { id: true },
-          });
-      if (p.physical === null && p.free === null) continue;
-      const level = await tx.stockLevel.findUnique({ where: { vendorProductId: vp.id } });
-      const physical = p.physical ?? level?.physical ?? 0;
-      const free = p.free ?? level?.free ?? 0;
-      const reserved = level?.reserved ?? 0;
-      const sellable = Math.max(0, Math.min(free, physical - reserved));
-      await tx.stockLevel.upsert({
-        where: { vendorProductId: vp.id },
-        create: {
-          accountId,
-          vendorProductId: vp.id,
-          physical,
-          free,
-          reserved,
-          sellable,
-          snapshotAt: now,
-          source: "POLL",
-        },
-        update: { physical, free, sellable, snapshotAt: now, source: "POLL" },
-      });
-    }
-  });
+      const productBySku = new Map(masters.map((p) => [p.sku, p.id]));
+      for (const view of views) {
+        const p = mapFhbProductView(view);
+        const sku = crmSkuFromFhbId(p.vendorId, skuPrefixRule);
+        const match = sku ? (productBySku.get(sku) ?? null) : null;
+        const existing = await tx.vendorProduct.findUnique({
+          where: { connectionId_vendorId: { connectionId, vendorId: p.vendorId } },
+          select: { id: true, productId: true },
+        });
+        const data = {
+          vendorCode: p.vendorCode,
+          // Read-only mirror of FHB's EAN; never sent back, never a key.
+          vendorEan: p.vendorEan,
+          archived: p.archived,
+          lastSyncAt: now,
+          raw: json(view),
+        };
+        const vp = existing
+          ? await tx.vendorProduct.update({
+              where: { id: existing.id },
+              data: { ...data, ...(!existing.productId && match ? { productId: match } : {}) },
+              select: { id: true },
+            })
+          : await tx.vendorProduct.create({
+              data: { accountId, connectionId, vendorId: p.vendorId, productId: match, ...data },
+              select: { id: true },
+            });
+        if (p.physical === null && p.free === null) continue;
+        const level = await tx.stockLevel.findUnique({ where: { vendorProductId: vp.id } });
+        const physical = p.physical ?? level?.physical ?? 0;
+        const free = p.free ?? level?.free ?? 0;
+        const reserved = level?.reserved ?? 0;
+        const sellable = Math.max(0, Math.min(free, physical - reserved));
+        await tx.stockLevel.upsert({
+          where: { vendorProductId: vp.id },
+          create: {
+            accountId,
+            vendorProductId: vp.id,
+            physical,
+            free,
+            reserved,
+            sellable,
+            snapshotAt: now,
+            source: "POLL",
+          },
+          update: { physical, free, sellable, snapshotAt: now, source: "POLL" },
+        });
+      }
+    },
+    SYNC_TX,
+  );
 }
 
 export async function syncFhbProducts(ctx: SyncContext) {
@@ -183,41 +199,45 @@ export async function syncFhbStock(ctx: SyncContext) {
   const { accountId, connectionId, now } = ctx;
   const levels = await ctx.client.stockAll();
   let count = 0;
-  for (let i = 0; i < levels.length; i += 250) {
-    const chunk = levels.slice(i, i + 250);
-    count += await withAccountTransaction(accountId, async (tx) => {
-      const vps = await tx.vendorProduct.findMany({
-        where: { accountId, connectionId, vendorId: { in: chunk.map((l) => l.id) } },
-        select: { id: true, vendorId: true, stockLevel: true },
-      });
-      const byId = new Map(vps.map((v) => [v.vendorId, v]));
-      let n = 0;
-      for (const l of chunk) {
-        const vp = byId.get(l.id);
-        // Products not mirrored yet arrive with the next product sync (it carries free stock too).
-        if (!vp || typeof l.quantity !== "number") continue;
-        const physical = Math.trunc(l.quantity);
-        const free = vp.stockLevel?.free ?? 0;
-        const reserved = vp.stockLevel?.reserved ?? 0;
-        const sellable = Math.max(0, Math.min(free, physical - reserved));
-        await tx.stockLevel.upsert({
-          where: { vendorProductId: vp.id },
-          create: {
-            accountId,
-            vendorProductId: vp.id,
-            physical,
-            free,
-            reserved,
-            sellable,
-            snapshotAt: now,
-            source: "POLL",
-          },
-          update: { physical, sellable, snapshotAt: now, source: "POLL" },
+  for (let i = 0; i < levels.length; i += 100) {
+    const chunk = levels.slice(i, i + 100);
+    count += await withAccountTransaction(
+      accountId,
+      async (tx) => {
+        const vps = await tx.vendorProduct.findMany({
+          where: { accountId, connectionId, vendorId: { in: chunk.map((l) => l.id) } },
+          select: { id: true, vendorId: true, stockLevel: true },
         });
-        n++;
-      }
-      return n;
-    });
+        const byId = new Map(vps.map((v) => [v.vendorId, v]));
+        let n = 0;
+        for (const l of chunk) {
+          const vp = byId.get(l.id);
+          // Products not mirrored yet arrive with the next product sync (it carries free stock too).
+          if (!vp || typeof l.quantity !== "number") continue;
+          const physical = Math.trunc(l.quantity);
+          const free = vp.stockLevel?.free ?? 0;
+          const reserved = vp.stockLevel?.reserved ?? 0;
+          const sellable = Math.max(0, Math.min(free, physical - reserved));
+          await tx.stockLevel.upsert({
+            where: { vendorProductId: vp.id },
+            create: {
+              accountId,
+              vendorProductId: vp.id,
+              physical,
+              free,
+              reserved,
+              sellable,
+              snapshotAt: now,
+              source: "POLL",
+            },
+            update: { physical, sellable, snapshotAt: now, source: "POLL" },
+          });
+          n++;
+        }
+        return n;
+      },
+      SYNC_TX,
+    );
   }
   return { count };
 }
@@ -617,8 +637,19 @@ export async function runFhbSync(
     });
     return { skipped: false as const, count };
   } catch (err) {
+    // Database errors carry internals that mean nothing on the screen: log them, show a code.
+    const dbError = /^PrismaClient/.test((err as Error)?.constructor?.name ?? "");
+    if (dbError)
+      logger.error(
+        { connectionId, resource: req.resource, err: (err as Error).message },
+        "fhb sync: database error",
+      );
     const message =
-      err instanceof FhbError ? `${err.code}: ${err.message}` : scrubText((err as Error).message ?? "error");
+      err instanceof FhbError
+        ? `${err.code}: ${err.message}`
+        : dbError
+          ? "db_error"
+          : scrubText((err as Error).message ?? "error");
     await db.fhbSyncState.update({ where: stateKey, data: { lastError: scrubText(message) } });
     logger.warn({ connectionId, resource: req.resource, code: (err as FhbError).code }, "fhb sync failed");
     throw err;
