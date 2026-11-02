@@ -53,17 +53,19 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [ ] P3-07 Update schemas/mappers to recorded responses.
 
 ## Phase 4 — Review queue and Fulfill
-- [ ] P4-01 Validator engine (hard/soft, suggested fixes) combining vendor validators.
-- [ ] P4-02 Routing rules engine + admin UI (store, country, payment, tags, stock) with explanation per order.
-- [ ] P4-03 Pipeline state machine (SPEC §6.1) with tests for every transition.
-- [ ] P4-04 Order detail per docs/DESIGN.md screen 2: editable normalised address with live validation, findings, timeline, raw payloads (admin).
-- [ ] P4-05 Review records: decision, field-level diff, reason codes, time spent (this is the AI training data).
-- [ ] P4-06 Single + bulk Fulfill through the outbox with progress UI; CANARY confirmation dialog + daily cap.
-- [ ] P4-07 Shopify fulfillment write-back with tracking (respects store write-back mode).
-- [ ] P4-08 Alerts/tasks UI: BLOCKED, UNKNOWN, stuck in status, submit failures; email/Telegram notifications.
+- [x] P4-01 Validator engine (hard/soft, suggested fixes) combining vendor validators.
+- [x] P4-02 Routing rules engine + admin UI (store, country, payment, tags, stock) with explanation per order.
+- [x] P4-03 Pipeline state machine (SPEC §6.1) with tests for every transition.
+- [x] P4-04 Order detail per docs/DESIGN.md screen 2: editable normalised address with live validation, findings, timeline, raw payloads (admin).
+- [x] P4-05 Review records: decision, field-level diff, reason codes, time spent (this is the AI training data).
+- [x] P4-06 Single + bulk Fulfill through the outbox with progress UI; CANARY confirmation dialog + daily cap.
+- [x] P4-07 Shopify fulfillment write-back with tracking (respects store write-back mode).
+- [x] P4-08 Alerts/tasks UI: BLOCKED, UNKNOWN, stuck in status, submit failures; email/Telegram notifications.
+- [ ] P4-09 Manual warehouse choice: before sending, "Изпрати от" with stock per warehouse of the same product line, reason required, checks re-run for the chosen connection, approval bound to it; after sending, "Пренасочи" only once the old warehouse confirmed the cancellation (never two shipments). Audited.
 - [ ] GATE P4-G1 Owner: review DRY_RUN results on real orders, switch one connection to CANARY, run canary orders, then LIVE.
 
 ## Phase 5 — Stock and inbound
+- [ ] P5-00 Product lines + master catalogue: each company in exactly one line (owner decision 2026-11-02); create master products from a chosen warehouse catalogue; match suggestions only within the line (SKU after prefix; barcode and name as hints only); Excel export/import of the mapping per line; coverage report (≥ 99% before LIVE); line filter on every screen; fallback warehouses only from the same line.
 - [ ] P5-01 Stock board (physical/free/reserved/sellable/Shopify qty, snapshot age) + discrepancy alerts.
 - [ ] P5-02 Inbound creation (product picker + XLSX/CSV upload) for FHB receipts and euShipments bookings; expected vs received; discrepancy tasks.
 - [ ] P5-03 Shopify inventory push with buffer and dry-run preview (disabled by default).

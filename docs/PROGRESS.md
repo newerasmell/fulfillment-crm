@@ -102,6 +102,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   spec findings verbatim in docs/wave-1-notes.md (INTEGRATION_NOTES updated where the code deviates). Nothing calls a vendor
   yet: new connections start READ_ONLY; FHB has no test flag (DRY_RUN only records), euShipments DRY_RUN uses testMode:true.
 
+- 2026-11-02 (wave 2, phase 4): order pipeline state machine (every Order.status change goes through
+  src/server/pipeline with an OrderEvent), validator engine (OrderCheck, hard/soft findings, suggested fixes),
+  routing rules + admin page, order review screen with editable address, decisions and review records, single/bulk
+  Fulfill through the outbox (CANARY confirmation bound to the payload), Shopify fulfillment write-back (store mode
+  gate in the sender), alerts/tasks list with email/Telegram providers (off until configured). Audit:
+  docs/audits/wave-2.md; notes: docs/wave-2-notes.md.
+  Behaviour change on deploy: the check sweep picks up existing IMPORTED orders and moves them to CHECKING, then
+  READY or NEEDS_REVIEW (they are only checked, nothing is sent).
+- 2026-11-02 decisions with the owner: operators can choose the warehouse by hand (P4-09); companies are grouped
+  into product lines, one line per company (P5-00); master products come from the warehouse catalogues.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —
