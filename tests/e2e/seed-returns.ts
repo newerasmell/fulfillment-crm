@@ -265,6 +265,10 @@ export async function seedReturns() {
     sys.fhbCodMirror.create({
       data: { accountId, connectionId: fhb.id, externalId, cod, status, raw: {}, lastSyncAt: new Date() },
     });
+  // The FHB cod/list sync has run (only then can a COD be "missing" at FHB).
+  await sys.fhbSyncState.create({
+    data: { accountId, connectionId: fhb.id, resource: "cod", lastRunAt: new Date(), lastOkAt: new Date() },
+  });
   await fhbCod(cd1.externalId, 25.5, "waiting");
   await fhbCod(cd2.externalId, 3, "received");
   await sys.eushipmentsTracking.create({

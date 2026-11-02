@@ -19,6 +19,8 @@ type Env = Record<string, string | undefined>;
  */
 
 export const AUTO_WINDOW_DAYS = 3;
+/** A claim (SENDING) older than this was interrupted (worker crash, job expiry): it becomes FAILED, retryable. */
+export const STALE_SENDING_MS = 10 * 60_000;
 
 export function supportProviders(env: Env = process.env): NotificationProvider[] {
   const e = {
@@ -44,6 +46,11 @@ export async function notifySupportForAccount(
   const enabled = providers.filter((p) => !p.disabledReason);
   result.disabled = providers.length - enabled.length;
   const db = accountDb(accountId);
+  // Claims are stamped with the wall clock (createdAt), so staleness is measured on the wall clock too.
+  await db.returnNotification.updateMany({
+    where: { status: "SENDING", createdAt: { lt: new Date(Date.now() - STALE_SENDING_MS) } },
+    data: { status: "FAILED", error: "interrupted while sending" },
+  });
   const { notifySupport } = await getReturnsCodSettings(accountId);
   const since = new Date(now.getTime() - AUTO_WINDOW_DAYS * 86_400_000);
   const due = await db.returnCase.findMany({
@@ -89,7 +96,8 @@ export async function notifySupportForAccount(
         ? (
             await db.returnNotification.updateMany({
               where: { returnCaseId: c.id, channel: p.channel, status: "FAILED" },
-              data: { status: "SENDING", error: null },
+              // createdAt doubles as the claim time (see the stale-claim sweep above).
+              data: { status: "SENDING", error: null, createdAt: new Date() },
             })
           ).count
         : (

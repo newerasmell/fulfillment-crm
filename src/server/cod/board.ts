@@ -4,6 +4,7 @@ import { assertCan } from "@/server/auth/rbac";
 import { companyFilter } from "@/server/companies";
 import { accountDb, systemDb } from "@/server/db/client";
 import { raiseAlertOnce } from "@/server/fhb/apply";
+import { WINDOWS as FHB_WINDOWS } from "@/server/fhb/sync";
 import { getReturnsCodSettings } from "@/server/returns/settings";
 import type { BoardCtx } from "@/server/returns/board";
 import {
@@ -62,6 +63,7 @@ async function loadRows(
       trackingNumbers: true,
       shippedAt: true,
       deliveredAt: true,
+      createdAt: true,
       connection: { select: { name: true, type: true } },
       order: {
         select: {
@@ -118,9 +120,26 @@ async function loadRows(
           codPaidAt: true,
           codPaidNumber: true,
           codCheckedAt: true,
+          lastError: true,
         },
       })),
     );
+  // FHB cod/list reads only orders created within WINDOWS.codDays of each run: a shipment is covered by the
+  // last good run when it was created inside that run's window.
+  const fhbCodOk = new Map(
+    (byConn.size
+      ? await db.fhbSyncState.findMany({
+          where: { connectionId: { in: [...byConn.keys()] }, resource: "cod", lastOkAt: { not: null } },
+          select: { connectionId: true, lastOkAt: true },
+        })
+      : []
+    ).map((r) => [r.connectionId, r.lastOkAt!]),
+  );
+  const fhbCheckedAt = (connectionId: string, createdAt: Date) => {
+    const ok = fhbCodOk.get(connectionId);
+    if (!ok) return null;
+    return createdAt.getTime() >= ok.getTime() - FHB_WINDOWS.codDays * 86_400_000 ? ok : null;
+  };
   const fhbOf = new Map(fhbRows.map((r) => [`${r.connectionId}:${r.externalId}`, r]));
   const euOf = new Map(euRows.map((r) => [r.fulfillmentId, r]));
   return shipments.map((s) => {
@@ -142,6 +161,7 @@ async function loadRows(
         fhb: fhb
           ? { cod: num(fhb.cod), status: fhb.status, receivedAt: fhb.receivedAt, paidAt: fhb.paidAt }
           : null,
+        fhbCodCheckedAt: s.connection.type === "FHB_V3" ? fhbCheckedAt(s.connectionId, s.createdAt) : null,
         eu: euOf.get(s.id) ?? null,
       },
       { now, missingDays },
@@ -348,19 +368,41 @@ const TASK_TITLE: Record<CodMismatch, (ref: string, v: CodRow) => string> = {
  */
 export async function sweepCodMismatches(accountId: string, now = new Date()) {
   const { codMissingDays } = await getReturnsCodSettings(accountId);
+  const db = accountDb(accountId);
+  const openTasks = await db.alert.findMany({
+    where: { kind: { in: Object.values(COD_TASK_KINDS) }, status: { not: "RESOLVED" } },
+    select: { id: true, kind: true, entityId: true },
+  });
   const rows = [
     ...(await loadRows(accountId, codWhere({}), now, codMissingDays)),
     ...(await loadRows(accountId, await unexpectedWhere(accountId), now, codMissingDays)).filter(
       (r) => r.row.mismatch === "unexpected",
     ),
   ];
-  const db = accountDb(accountId);
+  // Every shipment this sweep actually looked at; open tasks of other shipments are re-checked by id (e.g. a
+  // prepaid one whose warehouse COD went back to 0). Whatever is still not evaluated (outside the board window,
+  // past the row cap, status changed) keeps its task open: only a re-checked shipment can "match now".
+  const evaluated = new Set(rows.map((r) => r.shipment.id));
+  const recheck = [
+    ...new Set(openTasks.map((a) => a.entityId).filter((id): id is string => !!id && !evaluated.has(id))),
+  ];
+  for (let i = 0; i < recheck.length; i += 1000)
+    for (const r of await loadRows(
+      accountId,
+      { id: { in: recheck.slice(i, i + 1000) } },
+      now,
+      codMissingDays,
+    )) {
+      evaluated.add(r.shipment.id);
+      rows.push(r);
+    }
   const active = new Set<string>();
   let raised = 0;
   for (const { shipment, row } of rows) {
     if (!row.mismatch) continue;
     const kind = COD_TASK_KINDS[row.mismatch];
     active.add(`${kind}:${shipment.id}`);
+    if (openTasks.some((a) => a.kind === kind && a.entityId === shipment.id)) continue;
     const open = await db.alert.findFirst({
       where: { kind, entityType: "Fulfillment", entityId: shipment.id, status: { not: "RESOLVED" } },
       select: { id: true },
@@ -377,11 +419,8 @@ export async function sweepCodMismatches(accountId: string, now = new Date()) {
     raised++;
   }
   let resolved = 0;
-  const open = await db.alert.findMany({
-    where: { kind: { in: Object.values(COD_TASK_KINDS) }, status: { not: "RESOLVED" } },
-    select: { id: true, kind: true, entityId: true },
-  });
-  for (const a of open) {
+  for (const a of openTasks) {
+    if (!a.entityId || !evaluated.has(a.entityId)) continue;
     if (active.has(`${a.kind}:${a.entityId}`)) continue;
     const r = await db.alert.updateMany({
       where: { id: a.id, status: { not: "RESOLVED" } },

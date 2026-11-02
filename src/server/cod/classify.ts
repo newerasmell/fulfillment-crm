@@ -6,7 +6,8 @@
  * Ageing counts days since delivery for delivered shipments whose COD is not paid out yet.
  */
 
-export const COD_STATES = ["none", "waiting", "received", "paid", "unknown"] as const;
+/** not_covered: the warehouse COD data was never read for this shipment (sync not run yet, or outside its window). */
+export const COD_STATES = ["none", "not_covered", "waiting", "received", "paid", "unknown"] as const;
 export type CodVendorState = (typeof COD_STATES)[number];
 export const COD_BUCKETS = ["in_transit", "d0_7", "d8_14", "d15_30", "d30_plus", "paid"] as const;
 export type CodBucket = (typeof COD_BUCKETS)[number];
@@ -27,11 +28,18 @@ export interface CodShipmentIn {
     codLocalCurrency: string | null;
   };
   fhb: { cod: number | null; status: string | null; receivedAt: Date | null; paidAt: Date | null } | null;
+  /**
+   * FHB: when the last good cod/list run covered this shipment (its window includes the shipment's creation);
+   * null when the cod sync never succeeded for the connection or the shipment is outside that window.
+   */
+  fhbCodCheckedAt?: Date | null;
   eu: {
     codAmount: string | null;
     codPaidAt: Date | null;
     codPaidNumber: string | null;
     codCheckedAt: Date | null;
+    /** Last read error on the tracking row (a failed check-cod-by-order stores its error here). */
+    lastError?: string | null;
   } | null;
 }
 
@@ -73,7 +81,8 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
     checkedAt: null,
   };
   if (s.connectionType === "FHB_V3") {
-    if (!s.fhb) return none;
+    const checkedAt = s.fhbCodCheckedAt ?? null;
+    if (!s.fhb) return { ...none, state: checkedAt ? "none" : "not_covered", checkedAt };
     const raw = s.fhb.status?.trim() || null;
     const v = raw?.toLowerCase();
     const state: CodVendorState =
@@ -85,6 +94,7 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
       amount: s.fhb.cod,
       receivedAt: s.fhb.receivedAt,
       paidAt: s.fhb.paidAt,
+      checkedAt,
     };
   }
   if (s.connectionType === "EUSHIPMENTS") {
@@ -92,6 +102,8 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
     const amount = t?.codAmount != null && t.codAmount.trim() !== "" ? Number(t.codAmount) : null;
     const paid = !!t?.codPaidAt || s.codStatus === "PAID" || s.status === "COD_PAID";
     const registered = amount != null && Number.isFinite(amount);
+    // A failed check-cod-by-order also stamps codCheckedAt (with lastError): that is not an answer.
+    const answered = !!t?.codCheckedAt && (registered || !t.lastError);
     return {
       ...none,
       state: paid ? "paid" : registered ? "received" : "none",
@@ -99,7 +111,7 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
       amount: registered ? amount : null,
       paidAt: t?.codPaidAt ?? null,
       protocol: t?.codPaidNumber ?? null,
-      checkedAt: t?.codCheckedAt ?? null,
+      checkedAt: answered ? (t?.codCheckedAt ?? null) : null,
     };
   }
   return none;
@@ -128,9 +140,18 @@ export function classifyCod(s: CodShipmentIn, opts: { now: Date; missingDays: nu
     if (vendor.amount != null && cents(vendor.amount) > 0) mismatch = "unexpected";
   } else if (expected && vendor.amount != null && cents(vendor.amount) !== cents(expected.amount)) {
     mismatch = "amount";
-  } else if (vendor.state === "none" && delivered && ageDays != null && ageDays >= opts.missingDays) {
-    // euShipments: only once check-cod-by-order has actually been asked (it runs for delivered COD shipments).
-    if (s.connectionType === "FHB_V3" || vendor.checkedAt) mismatch = "missing";
+  } else if (
+    vendor.state === "none" &&
+    delivered &&
+    s.deliveredAt &&
+    ageDays != null &&
+    ageDays >= opts.missingDays &&
+    vendor.checkedAt &&
+    vendor.checkedAt.getTime() >= s.deliveredAt.getTime() + opts.missingDays * DAY
+  ) {
+    // Only when the warehouse was actually asked successfully (FHB cod/list covering this shipment,
+    // euShipments check-cod-by-order) at least missingDays after delivery and still had nothing.
+    mismatch = "missing";
   }
   return { expected, vendor, delivered, ageDays, bucket, mismatch };
 }

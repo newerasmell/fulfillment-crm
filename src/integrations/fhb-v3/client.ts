@@ -346,12 +346,30 @@ export class FhbClient {
               `${method} ${path}: file larger than ${opts.binary.maxBytes} bytes`,
             );
           }
-          const bytes = new Uint8Array(await res.arrayBuffer());
-          if (bytes.byteLength > opts.binary.maxBytes)
-            throw new FhbError(
-              "http_error",
-              `${method} ${path}: file larger than ${opts.binary.maxBytes} bytes`,
-            );
+          // Streamed with a running total: a chunked (or endless) body is cut off at the cap, never buffered.
+          const tooLarge = () =>
+            new FhbError("http_error", `${method} ${path}: file larger than ${opts.binary!.maxBytes} bytes`);
+          const chunks: Uint8Array[] = [];
+          let total = 0;
+          const reader = res.body?.getReader();
+          if (reader) {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              total += value.byteLength;
+              if (total > opts.binary.maxBytes) {
+                await reader.cancel().catch(() => undefined);
+                throw tooLarge();
+              }
+              chunks.push(value);
+            }
+          }
+          const bytes = new Uint8Array(total);
+          let at = 0;
+          for (const c of chunks) {
+            bytes.set(c, at);
+            at += c.byteLength;
+          }
           return { contentType: res.headers.get("content-type") ?? "", bytes } as never;
         }
         if (res.status === 204 || !opts.schema) {

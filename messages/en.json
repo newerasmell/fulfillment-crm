@@ -1693,6 +1693,7 @@
     },
     "state": {
       "none": "no record",
+      "not_covered": "not read from the warehouse",
       "waiting": "waiting for carrier",
       "received": "received from carrier",
       "paid": "paid out",

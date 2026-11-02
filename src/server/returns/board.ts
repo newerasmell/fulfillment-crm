@@ -287,9 +287,15 @@ export async function readReturnPhoto(ctx: ScopedActor, photoFileId: string) {
 }
 
 /** Начало → "Върнати за възстановяване": received at the warehouse, not processed yet (same scope as the board). */
-export async function countReturnsToProcess(ctx: BoardCtx) {
+export async function countReturnsToProcess(ctx: BoardCtx, f: { connectionTypes?: readonly string[] } = {}) {
   assertCan(ctx.role, "account.read");
   return accountDb(ctx.accountId).returnCase.count({
-    where: { AND: [scopeWhere(ctx), { state: "RECEIVED", processedAt: null }] },
+    where: {
+      AND: [
+        scopeWhere(ctx),
+        { state: "RECEIVED", processedAt: null },
+        ...(f.connectionTypes ? [{ connection: { type: { in: f.connectionTypes as never } } }] : []),
+      ],
+    },
   });
 }

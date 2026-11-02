@@ -1,5 +1,7 @@
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { getFormatter, getTranslations } from "next-intl/server";
+import { isScope, SCOPE_COOKIE, SCOPE_TYPES } from "@/components/shell/scope";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { alertCounts } from "@/server/alerts";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
@@ -29,10 +31,13 @@ export default async function HomePage() {
     activeCompanyId: ctx.activeCompanyId,
     lineCompanyIds: ctx.lineCompanyIds,
   };
+  // Same header warehouse scope as the /returns board the card links to.
+  const rawScope = (await cookies()).get(SCOPE_COOKIE)?.value;
+  const scope = isScope(rawScope) ? rawScope : "all";
   const [summary, alerts, returnsToProcess] = await Promise.all([
     dashboardSummary(ctx),
     alertCounts(scoped),
-    countReturnsToProcess(scoped),
+    countReturnsToProcess(scoped, { connectionTypes: scope === "all" ? undefined : SCOPE_TYPES[scope] }),
   ]);
   const value = (k: string) =>
     k === "alerts"

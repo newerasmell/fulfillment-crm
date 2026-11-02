@@ -7,6 +7,7 @@ import { createFhbConnection, fhbClientForConnection } from "@/server/fhb/connec
 import type { NotificationProvider } from "@/server/alerts/notify";
 import { buildCases, isOverdue, localItems, returnTrackingOf } from "./build";
 import {
+  countReturnsToProcess,
   listReturns,
   markReturnProcessed,
   readReturnPhoto,
@@ -357,6 +358,10 @@ describe("returns sweep + board", () => {
     const all = await listReturns(s.owner, { tab: "all" }, NOW);
     expect(all.rows).toHaveLength(2);
     expect(all.counts).toMatchObject({ todo: 1, returning: 1, overdue: 0, processed: 0, all: 2 });
+    // Начало's count follows the header warehouse scope, like the board it links to.
+    expect(await countReturnsToProcess(s.owner)).toBe(1);
+    expect(await countReturnsToProcess(s.owner, { connectionTypes: ["FHB_V3", "FHB_JOY"] })).toBe(1);
+    expect(await countReturnsToProcess(s.owner, { connectionTypes: ["EUSHIPMENTS"] })).toBe(0);
     expect((await listReturns(s.owner, { tab: "all", source: "EUSHIPMENTS" }, NOW)).rows).toHaveLength(1);
     expect(
       (await listReturns(s.owner, { tab: "all", connectionTypes: ["FHB_V3", "FHB_JOY"] }, NOW)).rows,
@@ -515,6 +520,44 @@ describe("support notification", () => {
     ).toBeNull();
   });
 
+  it("a claim left SENDING by a crashed run becomes FAILED and can be retried on request", async () => {
+    const s = await setup();
+    const a = s.account.id;
+    const ship = await s.shipment(s.eu.id, s.coB.id, "RETURN_RECEIVED");
+    await event(a, ship.f.id, "RETURN_RECEIVED", ago(1));
+    await syncReturnCases(a, NOW);
+    const db = accountDb(a);
+    const c = await db.returnCase.findFirstOrThrow({ where: { fulfillmentId: ship.f.id } });
+    // Crashed between the claim and the SENT/FAILED update, long ago.
+    await db.returnNotification.create({
+      data: {
+        accountId: a,
+        returnCaseId: c.id,
+        channel: "email",
+        createdAt: new Date(Date.now() - 3600_000),
+      },
+    });
+    // A fresh claim of another run in progress is left alone.
+    await db.returnNotification.create({ data: { accountId: a, returnCaseId: c.id, channel: "telegram" } });
+    const email = provider("email");
+    const tg = provider("telegram");
+    const env = { APP_URL: "https://crm.example.com" };
+    expect(await notifySupportForAccount(a, [email, tg], { now: NOW, env })).toMatchObject({ sent: 0 });
+    const rows = async () =>
+      Object.fromEntries(
+        (await db.returnNotification.findMany({ where: { returnCaseId: c.id } })).map((r) => [
+          r.channel,
+          r.status,
+        ]),
+      );
+    expect(await rows()).toEqual({ email: "FAILED", telegram: "SENDING" });
+    await requestSupportNotify(s.owner, c.id);
+    expect(await notifySupportForAccount(a, [email, tg], { now: NOW, env })).toMatchObject({ sent: 1 });
+    expect(email.send).toHaveBeenCalledTimes(1);
+    expect(tg.send).not.toHaveBeenCalled();
+    expect(await rows()).toEqual({ email: "SENT", telegram: "SENDING" });
+  });
+
   it("off when the setting is off or no channel is configured; never for returns still on their way", async () => {
     const s = await setup();
     const a = s.account.id;
@@ -621,6 +664,33 @@ describe("FHB local return photos", () => {
       random: () => 0,
     });
     await expect(client.returnPhoto("AB00001", "51", 2)).rejects.toThrow(/larger than 2 bytes/);
+    // A chunked body without Content-Length that never ends is cut off at the cap, not buffered.
+    let pulled = 0;
+    let cancelled = false;
+    const endless = await fhbClientForConnection(a, s.fhb.id, {
+      fetchImpl: async (u) =>
+        new URL(u).pathname.endsWith("/login")
+          ? new Response(JSON.stringify({ token: "t", expiration: "2099-01-01T00:00:00+0000" }), {
+              status: 200,
+            })
+          : new Response(
+              new ReadableStream<Uint8Array>({
+                pull(c) {
+                  pulled++;
+                  c.enqueue(new Uint8Array(1024));
+                },
+                cancel() {
+                  cancelled = true;
+                },
+              }),
+              { status: 200, headers: { "content-type": "image/jpeg" } },
+            ),
+      sleep: async () => {},
+      random: () => 0,
+    });
+    await expect(endless.returnPhoto("AB00001", "52", 4096)).rejects.toThrow(/larger than 4096 bytes/);
+    expect(pulled).toBeLessThan(10);
+    expect(cancelled).toBe(true);
     const notFound = await fhbClientForConnection(a, s.fhb.id, {
       fetchImpl: async (u) =>
         new URL(u).pathname.endsWith("/login")

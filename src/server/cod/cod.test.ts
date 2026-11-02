@@ -27,6 +27,7 @@ const base = (over: Partial<CodShipmentIn> = {}): CodShipmentIn => ({
     codLocalCurrency: "HUF",
   },
   fhb: null,
+  fhbCodCheckedAt: NOW,
   eu: null,
   ...over,
 });
@@ -70,6 +71,13 @@ describe("classifyCod (pure)", () => {
     ).toBe("amount");
     expect(classifyCod(base({ deliveredAt: ago(13) }), opts).mismatch).toBeNull();
     expect(classifyCod(base({ deliveredAt: ago(14) }), opts).mismatch).toBe("missing");
+    // Never read (cod sync never ran, or the shipment is outside its window): "not covered", never "missing".
+    expect(classifyCod(base({ deliveredAt: ago(200), fhbCodCheckedAt: null }), opts)).toMatchObject({
+      vendor: { state: "not_covered" },
+      mismatch: null,
+    });
+    // Read, but not yet missingDays after delivery: too early to call it missing.
+    expect(classifyCod(base({ deliveredAt: ago(20), fhbCodCheckedAt: ago(10) }), opts).mismatch).toBeNull();
     expect(
       classifyCod(
         base({
@@ -100,6 +108,11 @@ describe("classifyCod (pure)", () => {
       );
     expect(eu(null).mismatch).toBeNull();
     expect(eu({ codCheckedAt: ago(1) }).mismatch).toBe("missing");
+    // A failed check-cod-by-order (5xx, timeout) stamps codCheckedAt with lastError: not an answer.
+    expect(eu({ codCheckedAt: ago(1), lastError: "HTTP 503" })).toMatchObject({
+      vendor: { state: "none", checkedAt: null },
+      mismatch: null,
+    });
     expect(eu({ codAmount: "12500.00", codCheckedAt: ago(1) })).toMatchObject({
       vendor: { state: "received", raw: "registered", amount: 12500 },
       mismatch: null,
@@ -222,13 +235,20 @@ async function setup() {
         lastSyncAt: NOW,
       },
     });
-  return { account, coA, coB, owner, fhb, eu, ship, fhbCod };
+  const fhbCodSynced = (lastOkAt: Date | null, connectionId = fhb.id) =>
+    sys.fhbSyncState.upsert({
+      where: { connectionId_resource: { connectionId, resource: "cod" } },
+      create: { accountId: account.id, connectionId, resource: "cod", lastRunAt: lastOkAt, lastOkAt },
+      update: { lastOkAt },
+    });
+  return { account, coA, coB, owner, fhb, eu, ship, fhbCod, fhbCodSynced };
 }
 
 describe("COD board + sweep", () => {
   it("lists, totals by currency and company, filters by tab/bucket/company/warehouse, raises and resolves tasks", async () => {
     const s = await setup();
     const a = s.account.id;
+    await s.fhbCodSynced(NOW);
     const okWaiting = await s.ship(s.fhb.id, s.coA.id, { cod: 25.5, currency: "EUR", delivered: 3 });
     await s.fhbCod(okWaiting, 25.5, "waiting");
     const wrongAmount = await s.ship(s.fhb.id, s.coA.id, { cod: 30, currency: "EUR", delivered: 10 });
@@ -323,5 +343,66 @@ describe("COD board + sweep", () => {
     await expect(exportCodCsv({ ...s.owner, role: "VIEWER" }, {}, NOW)).rejects.toBeInstanceOf(
       ForbiddenError,
     );
+  });
+
+  it("FHB 'missing' only when cod/list actually covered the shipment; aged-out tasks stay open", async () => {
+    const s = await setup();
+    const a = s.account.id;
+    const db = accountDb(a);
+    // cod sync never succeeded for the connection: nothing is "missing".
+    const never = await s.ship(s.fhb.id, s.coA.id, { cod: 20, currency: "EUR", delivered: 40 });
+    await s.fhbCodSynced(null);
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 0, resolved: 0 });
+    const listed = await listCod(s.owner, { tab: "all" }, NOW);
+    expect(listed.rows.find((r) => r.fulfillmentId === never.id)?.vendor.state).toBe("not_covered");
+
+    // Sync ran, but a shipment created 200 days ago is outside the 120-day cod/list window.
+    await s.fhbCodSynced(NOW);
+    const old = await s.ship(s.fhb.id, s.coA.id, { cod: 20, currency: "EUR", delivered: 190 });
+    await systemDb().fulfillment.update({ where: { id: old.id }, data: { createdAt: ago(200) } });
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 1, resolved: 0 });
+    const open = await db.alert.findMany({ where: { status: { not: "RESOLVED" } } });
+    expect(open.map((t) => [t.kind, t.entityId])).toEqual([["cod_missing", never.id]]);
+    expect(
+      (await listCod(s.owner, { tab: "all" }, NOW)).rows.find((r) => r.fulfillmentId === old.id)?.vendor
+        .state,
+    ).toBe("not_covered");
+
+    // The unpaid shipment ages past the board's look-back: its task is not "resolved" as if COD matched.
+    await systemDb().fulfillment.update({ where: { id: never.id }, data: { createdAt: ago(400) } });
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 0, resolved: 0 });
+    // Nor when its status leaves the COD board (e.g. returned).
+    await systemDb().fulfillment.update({
+      where: { id: never.id },
+      data: { createdAt: new Date(), status: "RETURN_RECEIVED" },
+    });
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 0, resolved: 0 });
+    expect((await db.alert.findFirstOrThrow({ where: { entityId: never.id } })).status).not.toBe("RESOLVED");
+    // Back on the board with the COD now listed by FHB: re-checked by id and resolved.
+    await systemDb().fulfillment.update({ where: { id: never.id }, data: { status: "DELIVERED" } });
+    await s.fhbCod(never, 20, "received");
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 0, resolved: 1 });
+  });
+
+  it("euShipments: a failed check-cod-by-order never raises cod_missing", async () => {
+    const s = await setup();
+    const a = s.account.id;
+    const f = await s.ship(s.eu.id, s.coB.id, { cod: 40, currency: "EUR", delivered: 30 });
+    await systemDb().eushipmentsTracking.create({
+      data: {
+        accountId: a,
+        connectionId: s.eu.id,
+        fulfillmentId: f.id,
+        referenceNumber: f.externalId,
+        codCheckedAt: ago(1),
+        lastError: "server_error: HTTP 503",
+      },
+    });
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 0, resolved: 0 });
+    await systemDb().eushipmentsTracking.update({
+      where: { fulfillmentId: f.id },
+      data: { lastError: null },
+    });
+    expect(await sweepCodMismatches(a, NOW)).toEqual({ raised: 1, resolved: 0 });
   });
 });
