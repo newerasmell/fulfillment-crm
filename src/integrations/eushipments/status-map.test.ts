@@ -19,7 +19,7 @@ describe("status text normalisation", () => {
   it("maps Cyrillic look-alikes, dashes, spaces and case to one key", () => {
     expect(normaliseStatusText("Оn hold")).toBe("on hold"); // Cyrillic О from the spec
     expect(normaliseStatusText("On hold")).toBe("on hold");
-    expect(normaliseStatusText(" ON  HOLD ")).toBe("on hold");
+    expect(normaliseStatusText(" ON\u00A0 HOLD ")).toBe("on hold");
     for (const dash of ["-", "–", "—", "‑", "−", "－"])
       expect(normaliseStatusText(`Insufficient data ${dash} AWB not created`)).toBe(
         "insufficient data - awb not created",
