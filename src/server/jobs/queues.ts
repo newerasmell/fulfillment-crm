@@ -69,4 +69,15 @@ export const QUEUES = {
     options: { retryLimit: 2, expireInSeconds: 300 },
     cron: "17 * * * *",
   },
+  /** FHB: re-read the order/product one stored callback points at (data: { accountId, eventId }). */
+  fhbCallback: {
+    name: "fhb.callback",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
+  /** Every 5 min: re-queue FHB callbacks whose job was lost or failed (bounded attempts). */
+  fhbCallbackSweep: {
+    name: "fhb.callbackSweep",
+    options: { retryLimit: 0, expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

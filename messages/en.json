@@ -423,5 +423,20 @@
     "BLOCKED": "Blocked",
     "CANCELLED": "Cancelled",
     "UNKNOWN": "Unknown"
+  },
+  "fhb": {
+    "errors": {
+      "not_found": "Not found.",
+      "connection_disabled": "The warehouse connection is disabled.",
+      "no_credentials": "FHB credentials are missing.",
+      "fhb_no_store_code": "The store has no code, so no warehouse order id can be built.",
+      "fhb_already_submitted": "The order was already sent to this warehouse.",
+      "fhb_variable_symbol_exhausted": "This connection has run out of variable symbols.",
+      "fhb_order_locked": "The order is no longer \"pending\" at FHB and cannot be edited or cancelled.",
+      "fhb_receipt_locked": "The receipt is no longer \"created\" at FHB and cannot be changed.",
+      "fhb_product_not_at_vendor": "The product does not exist at FHB yet — create it first.",
+      "fhb_preflight_failed": "The pre-flight check found blocking problems.",
+      "fhb_preflight_needs_ack": "There are warnings — confirm you saw them to continue."
+    }
   }
 }
