@@ -400,6 +400,26 @@ export async function previewEuOrderFindings(
   return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).findings;
 }
 
+/**
+ * The create-order body queueEuOrder would send for this order now (P4-04 payload preview): built by the same
+ * pre-flight, nothing queued, no vendor call. Null when the connection has no euShipments companyId.
+ */
+export async function previewEuOrderPayload(
+  accountId: string,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+) {
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await loadEuConnection(accountId, input.connectionId);
+  if (!companyId) return null;
+  const order = await accountDb(accountId).order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order) throw new DomainError("not_found");
+  return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).built.body;
+}
+
 export async function queueEuOrder(
   actor: ScopedActor,
   raw: z.input<typeof QueueOrderInput>,

@@ -7,10 +7,17 @@ import { DomainError } from "@/server/accounts";
 import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import type { Finding } from "@/server/checks/findings";
-import { editorValues, getOrderReview, isEditableField, type TimelineEntry } from "@/server/review";
-import { normaliseAddress } from "@/server/shopify/orders";
+import { SHOPIFY_TEST_TAG } from "@/server/pipeline";
+import {
+  editorValues,
+  getOrderReview,
+  isEditableField,
+  PAYLOAD_PREVIEW_STATUSES,
+  type TimelineEntry,
+} from "@/server/review";
+import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
 import { StatusChip } from "../status";
-import { AddressEditor, ApplyFixButton, DecisionBar, LazyDetails, RecheckButton } from "./review-ui";
+import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
 
@@ -45,14 +52,12 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
 
   // Original (Shopify) values next to the corrected ones, both normalised the same way.
   const originalRaw = order.shippingAddressOriginal as Parameters<typeof normaliseAddress>[0] | null;
-  const raw = (order.raw ?? {}) as {
-    phone?: string | null;
-    customer?: { defaultPhoneNumber?: { phoneNumber?: string | null } | null } | null;
-  };
   const original = originalRaw
     ? editorValues(
         normaliseAddress(originalRaw),
-        raw.phone ?? originalRaw.phone ?? raw.customer?.defaultPhoneNumber?.phoneNumber ?? null,
+        shopifyPhone({ ...((order.raw ?? {}) as object), shippingAddress: originalRaw } as Parameters<
+          typeof shopifyPhone
+        >[0]),
       )
     : null;
   const statusLabel = st(order.status);
@@ -366,45 +371,39 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
             )}
           </Card>
 
-          {data.raw && (
+          <Card>
+            <h2 className="mt-0 text-base font-semibold">{r("payload.title")}</h2>
+            {!data.payload ? (
+              <p className="m-0 text-muted">
+                {PAYLOAD_PREVIEW_STATUSES.includes(order.status) ? r("payload.noRoute") : r("payload.sent")}
+              </p>
+            ) : data.payload.body == null ? (
+              <p className="m-0 text-muted" data-testid="payload-preview-blocked">
+                {r("payload.blocked", { connection: data.payload.connection })}
+              </p>
+            ) : (
+              <>
+                <p className="m-0 flex flex-wrap items-center gap-2 text-sm text-muted">
+                  <WarehouseChip type={data.payload.connectionType} name={data.payload.connection} />
+                  {r("payload.hint")}
+                </p>
+                <pre
+                  data-testid="payload-preview"
+                  className="mt-2 mb-0 max-h-96 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs"
+                >
+                  {json(data.payload.body)}
+                </pre>
+              </>
+            )}
+          </Card>
+
+          {data.canRaw && (
             <Card>
               <h2 className="mt-0 text-base font-semibold">{r("raw.title")}</h2>
               <div className="flex flex-col gap-2 text-sm">
-                {(
-                  [
-                    ["shopify", data.raw.shopify],
-                    ["original", data.raw.shippingAddressOriginal],
-                    ["routing", data.raw.routing],
-                  ] as const
-                ).map(([k, v]) => (
-                  <LazyDetails key={k} summary={r(`raw.${k}`)}>
-                    <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
-                      {json(v)}
-                    </pre>
-                  </LazyDetails>
+                {(["shopify", "original", "routing", "outbox"] as const).map((k) => (
+                  <RawDetails key={k} orderId={order.id} section={k} summary={r(`raw.${k}`)} />
                 ))}
-                <LazyDetails summary={r("raw.outbox")}>
-                  {data.fulfillments.flatMap((f) => f.outbound).length === 0 ? (
-                    <p className="m-0 mt-1 text-muted">{r("raw.none")}</p>
-                  ) : (
-                    data.fulfillments.map((f) =>
-                      f.outbound.map((o) => (
-                        <div key={o.id} className="mt-2">
-                          <div className="font-mono text-xs">
-                            {f.connection} · {o.operation} · {o.status} · {when(o.createdAt)}
-                          </div>
-                          <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
-                            {json({
-                              payload: o.payload,
-                              lastResponse: o.lastResponse,
-                              lastError: o.lastError,
-                            })}
-                          </pre>
-                        </div>
-                      )),
-                    )
-                  )}
-                </LazyDetails>
               </div>
             </Card>
           )}
@@ -419,7 +418,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           changes={data.session?.diff.length ?? 0}
           codes={codes}
           openedAt={openedAt}
-          canRelease={order.status === "ON_HOLD"}
+          canRelease={order.status === "ON_HOLD" && !order.tags.includes(SHOPIFY_TEST_TAG)}
           statusLabel={statusLabel}
         />
       )}

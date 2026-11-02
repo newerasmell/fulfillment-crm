@@ -3,8 +3,8 @@ import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { previewEuOrderFindings } from "@/server/eushipments/write";
-import { previewFhbOrderFindings } from "@/server/fhb/orders";
+import { previewEuOrderFindings, previewEuOrderPayload } from "@/server/eushipments/write";
+import { previewFhbOrderFindings, previewFhbOrderPayload } from "@/server/fhb/orders";
 import { orderFingerprint, transition, type PipelineActor } from "@/server/pipeline";
 import {
   loadRoutingContext,
@@ -52,6 +52,50 @@ const num = (d: Prisma.Decimal | null | undefined) => (d == null ? null : Number
 const json = (v: unknown) => JSON.parse(JSON.stringify(v ?? null)) as Prisma.InputJsonValue;
 const DUPLICATE_WINDOW_MS = 48 * 3600_000;
 
+/** The rule's carrier settings as the vendor queue functions take them (only for the routed connection). */
+function vendorArgs(connection: { id: string }, routing: RoutingDecision) {
+  const carrier = routing.connectionId === connection.id ? routing.carrier : null;
+  const courierId = carrier?.courierId ? Number(carrier.courierId) : undefined;
+  const serviceName = (SERVICE_NAMES as readonly string[]).includes(carrier?.serviceName ?? "")
+    ? (carrier!.serviceName as (typeof SERVICE_NAMES)[number])
+    : undefined;
+  return {
+    fhb: { parcelService: carrier?.parcelService ?? null },
+    eu: {
+      ...(courierId && Number.isInteger(courierId) && courierId > 0 ? { courierId } : {}),
+      ...(serviceName ? { serviceName } : {}),
+    },
+  };
+}
+
+/**
+ * The exact body the warehouse's queue function would send for this order now (DESIGN principle 4: "show
+ * what will be sent"), from the same pure builders and pre-flight. Reads only; never calls a vendor. Null when
+ * a hard finding blocks building it or the connection type does not ship orders.
+ */
+export async function previewVendorPayload(
+  accountId: string,
+  orderId: string,
+  connection: { id: string; type: string },
+  routing: RoutingDecision,
+  now: Date = new Date(),
+): Promise<unknown> {
+  const args = vendorArgs(connection, routing);
+  try {
+    if (connection.type === "FHB_V3")
+      return await previewFhbOrderPayload(accountId, { orderId, connectionId: connection.id, ...args.fhb });
+    if (connection.type === "EUSHIPMENTS")
+      return await previewEuOrderPayload(
+        accountId,
+        { orderId, connectionId: connection.id, ...args.eu },
+        now,
+      );
+  } catch (err) {
+    if (!(err instanceof DomainError)) throw err;
+  }
+  return null;
+}
+
 async function vendorFindings(
   accountId: string,
   orderId: string,
@@ -59,34 +103,16 @@ async function vendorFindings(
   routing: RoutingDecision,
   now: Date,
 ): Promise<Finding[]> {
-  // The rule's carrier settings apply only when the routed connection is the one being validated.
-  const carrier = routing.connectionId === connection.id ? routing.carrier : null;
+  const args = vendorArgs(connection, routing);
   try {
     if (connection.type === "FHB_V3") {
       return (
-        await previewFhbOrderFindings(accountId, {
-          orderId,
-          connectionId: connection.id,
-          parcelService: carrier?.parcelService ?? null,
-        })
+        await previewFhbOrderFindings(accountId, { orderId, connectionId: connection.id, ...args.fhb })
       ).map(fromFhb);
     }
     if (connection.type === "EUSHIPMENTS") {
-      const courierId = carrier?.courierId ? Number(carrier.courierId) : undefined;
-      const serviceName = (SERVICE_NAMES as readonly string[]).includes(carrier?.serviceName ?? "")
-        ? (carrier!.serviceName as (typeof SERVICE_NAMES)[number])
-        : undefined;
       return (
-        await previewEuOrderFindings(
-          accountId,
-          {
-            orderId,
-            connectionId: connection.id,
-            ...(courierId && Number.isInteger(courierId) && courierId > 0 ? { courierId } : {}),
-            ...(serviceName ? { serviceName } : {}),
-          },
-          now,
-        )
+        await previewEuOrderFindings(accountId, { orderId, connectionId: connection.id, ...args.eu }, now)
       ).map(fromEu);
     }
   } catch (err) {

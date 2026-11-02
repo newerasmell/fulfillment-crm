@@ -3,18 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { DomainError } from "@/server/accounts";
-import { assertCan, ForbiddenError } from "@/server/auth/rbac";
+import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { checkOrderAs, type Finding } from "@/server/checks";
-import { getOrder } from "@/server/orders";
-import { transitionOrder } from "@/server/pipeline";
 import {
   decideOrder,
   editOrderAddress,
+  getOrderRawPayload,
   previewAddress,
+  releaseOrder,
   saveReasonCode,
   setReasonCodeActive,
   type DecisionKind,
+  type RawSection,
 } from "@/server/review";
 
 /** Server actions of the review screens (P4-04 / P4-05). Every rule is enforced in src/server/review. */
@@ -94,20 +95,23 @@ export async function recheckAction(orderId: string): Promise<ReviewActionResult
 /** Releases an operator hold: the order starts over (IMPORTED) and is checked again right away. */
 export async function releaseAction(orderId: string): Promise<ReviewActionResult> {
   const ctx = await requireAccountContext();
-  const actor = actorFrom(ctx);
   try {
-    assertCan(actor.role, "orders.review");
-    await getOrder(actor, orderId); // company scope: not_found outside it
-    await transitionOrder(actor.accountId, {
-      orderId,
-      to: "IMPORTED",
-      cause: "release",
-      actor: { kind: "user", userId: actor.userId },
-      source: "review",
-    });
-    await checkOrderAs(actor, orderId);
+    await releaseOrder(actorFrom(ctx), orderId);
     revalidatePath(orderPath(orderId));
     return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** One raw payload section of the order detail, loaded when an admin opens it (never part of the page). */
+export async function rawPayloadAction(
+  orderId: string,
+  section: RawSection,
+): Promise<{ json?: string; error?: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    return { json: JSON.stringify(await getOrderRawPayload(actorFrom(ctx), orderId, section), null, 2) };
   } catch (err) {
     return toError(err);
   }

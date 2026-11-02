@@ -13,7 +13,13 @@ import { authenticateFhbCallbackPath } from "./callback-token";
 import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
 import { createFhbConnection } from "./connection";
 import { createFhbStockReceipt, deleteFhbStockReceipt, resubmitFhbStockReceipt } from "./inbound";
-import { cancelFhbOrder, FhbPreflightError, submitFhbOrder, updateFhbOrder } from "./orders";
+import {
+  cancelFhbOrder,
+  FhbPreflightError,
+  previewFhbOrderPayload,
+  submitFhbOrder,
+  updateFhbOrder,
+} from "./orders";
 import { queueFhbProduct } from "./products";
 import { createFhbTransportResolver } from "./transport";
 
@@ -263,6 +269,42 @@ describe("FHB order create through the outbox", () => {
       code: "fhb_already_submitted",
     });
     expect(await systemDb().outboundRequest.count({ where: { connectionId: s.connection.id } })).toBe(1);
+  });
+
+  it("payload preview (P4-04): the body submit would build, without notification tokens, nothing consumed", async () => {
+    const s = await setup("LIVE");
+    const body = await previewFhbOrderPayload(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(body).toMatchObject({
+      id: "TST-1001",
+      variable_symbol: "1",
+      validate: true,
+      cod: 45,
+      items: [{ id: "RSKU-1", quantity: 2 }],
+      recipient: { address: { country: "SK" }, contact: { phone: "+421900000000" } },
+    });
+    expect(body).not.toHaveProperty("notification"); // callback URLs carry HMAC tokens
+    const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
+    expect(conn.variableSymbolNext).toBe(1n);
+    expect(await systemDb().fulfillment.count({ where: { orderId: s.order.id } })).toBe(0);
+    expect(await systemDb().outboundRequest.count({ where: { connectionId: s.connection.id } })).toBe(0);
+    // A hard block: no body.
+    await systemDb().order.update({
+      where: { id: s.order.id },
+      data: {
+        shippingAddress: {
+          name: "Test Buyer",
+          address1: "Example street 1",
+          city: "Testville",
+          countryCode: "SK",
+        },
+      },
+    });
+    expect(
+      await previewFhbOrderPayload(s.account.id, { orderId: s.order.id, connectionId: s.connection.id }),
+    ).toBeNull();
   });
 
   it("duplicate-submit: a timed-out create that FHB did receive is recovered by read-back, never re-sent", async () => {

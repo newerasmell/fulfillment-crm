@@ -89,6 +89,12 @@ function meaningful(o: ShopifyOrder) {
   };
 }
 
+/** The phone the import stores as Order.phone (order, then shipping address, then customer). */
+export function shopifyPhone(o: ShopifyOrder | null | undefined): string | null {
+  if (!o) return null;
+  return o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null;
+}
+
 /** Shopify says every item is fulfilled (by someone else: before approval nothing was sent from the CRM). */
 const shopifyFulfilled = (o: ShopifyOrder) => o.displayFulfillmentStatus === "FULFILLED";
 
@@ -168,13 +174,17 @@ export async function importShopifyOrder(
       const customerName =
         shipping?.name ?? ([o.customer?.firstName, o.customer?.lastName].filter(Boolean).join(" ") || null);
       const tags = o.test ? [...o.tags, "shopify-test"] : o.tags;
-      // Keep an operator's corrected address: only refresh the normalised copy if nobody edited it.
+      // Keep an operator's correction: only refresh the normalised copy if nobody edited it. "Untouched"
+      // covers the contact fields too — a phone-only fix can leave shippingAddress byte-identical (e.g. the
+      // order phone set to the value the address phone already had).
+      const previousOriginal = existing
+        ? normaliseAddress(existing.shippingAddressOriginal as Address | null)
+        : null;
       const addressUntouched =
         !existing ||
-        jsonEqual(
-          existing.shippingAddress,
-          normaliseAddress(existing.shippingAddressOriginal as Address | null),
-        );
+        (jsonEqual(existing.shippingAddress, previousOriginal) &&
+          existing.phone === shopifyPhone(existing.raw as ShopifyOrder | null) &&
+          existing.countryCode === (previousOriginal?.countryCode ?? null));
 
       const data = {
         ...shopifyState,
@@ -188,8 +198,7 @@ export async function importShopifyOrder(
         ...(addressUntouched
           ? {
               shippingAddress: json(shipping),
-              phone:
-                o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
+              phone: shopifyPhone(o),
               countryCode: shipping?.countryCode ?? null,
             }
           : {}),

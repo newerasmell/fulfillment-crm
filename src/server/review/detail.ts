@@ -1,15 +1,17 @@
 import type { CrmOrderStatus } from "@/generated/prisma/client";
-import { can } from "@/server/auth/rbac";
-import type { Finding } from "@/server/checks";
+import type { Role } from "@/generated/prisma/client";
+import { assertCan, can } from "@/server/auth/rbac";
+import { DomainError } from "@/server/accounts";
+import { previewVendorPayload, type Finding } from "@/server/checks";
 import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import { getOrder } from "@/server/orders";
 import { nextSteps, storedFingerprint } from "@/server/pipeline";
 import { STOCK_CONNECTION_TYPES, type RoutingDecision } from "@/server/routing";
 import type { ScopedActor } from "@/server/stores";
-import { editorValues, parseDiff, type FieldChange } from "./diff";
+import { editorValues, mergeDiff, parseDiff, type FieldChange } from "./diff";
 import { listReasonCodes, type DecisionKind } from "./reasons";
-import { EDITABLE_STATUSES } from "./service";
+import { cycleStart, EDITABLE_STATUSES, openSessionsWhere } from "./service";
 
 /**
  * Everything the order detail (DESIGN.md screen 3, P4-04) shows, read in one place with the member's scope:
@@ -73,22 +75,6 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
         include: {
           connection: { select: { name: true, type: true } },
           events: { orderBy: { occurredAt: "asc" }, take: 200 },
-          ...(canRaw
-            ? {
-                outboundRequests: {
-                  orderBy: { createdAt: "asc" as const },
-                  select: {
-                    id: true,
-                    operation: true,
-                    status: true,
-                    payload: true,
-                    lastResponse: true,
-                    lastError: true,
-                    createdAt: true,
-                  },
-                },
-              }
-            : {}),
         },
       }),
       db.review.findMany({
@@ -105,11 +91,14 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
           diff: true,
         },
       }),
-      db.review.findFirst({
-        where: { orderId, reviewerId: actor.userId, decision: null },
-        orderBy: { createdAt: "desc" },
-        select: { id: true, diff: true, createdAt: true },
-      }),
+      // The undecided corrections of this review cycle (every reviewer's): the next decision carries them.
+      cycleStart(db, orderId).then((since) =>
+        db.review.findMany({
+          where: openSessionsWhere(orderId, since),
+          orderBy: { createdAt: "asc" },
+          select: { id: true, diff: true, createdAt: true },
+        }),
+      ),
       db.fulfillmentConnection.findMany({
         where: { type: { in: [...STOCK_CONNECTION_TYPES] } },
         select: { id: true, name: true, type: true, enabled: true },
@@ -138,6 +127,29 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
         : Promise.resolve([]),
       listReasonCodes(actor.accountId),
     ]);
+
+  // The exact body the routed warehouse would get (DESIGN principle 4), while nothing has been sent yet.
+  const payloadConnection =
+    check?.connectionId && PAYLOAD_PREVIEW_STATUSES.includes(order.status)
+      ? await db.fulfillmentConnection.findUnique({
+          where: { id: check.connectionId },
+          select: { id: true, name: true, type: true },
+        })
+      : null;
+  const payload = payloadConnection
+    ? {
+        connection: payloadConnection.name,
+        connectionType: payloadConnection.type,
+        body: redactSecrets(
+          await previewVendorPayload(
+            actor.accountId,
+            orderId,
+            payloadConnection,
+            check!.routing as unknown as RoutingDecision,
+          ),
+        ),
+      }
+    : null;
 
   // Names of the people in the timeline (members of this group only).
   const userIds = [
@@ -233,32 +245,87 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
       status: f.status,
       rawStatus: f.rawStatus,
       trackingNumbers: f.trackingNumbers,
-      outbound:
-        "outboundRequests" in f
-          ? (f.outboundRequests as {
-              id: string;
-              operation: string;
-              status: string;
-              payload: unknown;
-              lastResponse: unknown;
-              lastError: string | null;
-              createdAt: Date;
-            }[])
-          : [],
     })),
     timeline,
-    session: session ? { id: session.id, diff: parseDiff(session.diff) as FieldChange[] } : null,
+    session: session.length
+      ? {
+          ids: session.map((x) => x.id),
+          diff: session.reduce<FieldChange[]>((acc, x) => mergeDiff(acc, parseDiff(x.diff)), []),
+        }
+      : null,
     reasonCodes,
     canReview: can(actor.role, "orders.review"),
     canRaw,
-    raw: canRaw
-      ? {
-          shopify: order.raw,
-          shippingAddressOriginal: order.shippingAddressOriginal,
-          routing: check?.routing ?? null,
-        }
-      : null,
+    payload,
   };
+}
+
+/** Statuses in which nothing has been sent yet: the detail previews the body the warehouse would get. */
+export const PAYLOAD_PREVIEW_STATUSES: readonly CrmOrderStatus[] = [
+  "IMPORTED",
+  "NEEDS_REVIEW",
+  "READY",
+  "ON_HOLD",
+  "APPROVED",
+  "SUBMIT_FAILED",
+];
+
+/** Callback URLs carry HMAC tokens in their path: everything after /api/webhooks/ is cut before display. */
+export function redactSecrets(v: unknown): unknown {
+  if (typeof v === "string") return v.replace(/(\/api\/webhooks\/)[^\s"'<>]*/g, "$1[redacted]");
+  if (Array.isArray(v)) return v.map(redactSecrets);
+  if (v && typeof v === "object")
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactSecrets(x)]));
+  return v;
+}
+
+export const RAW_SECTIONS = ["shopify", "original", "routing", "outbox"] as const;
+export type RawSection = (typeof RAW_SECTIONS)[number];
+
+/**
+ * One raw payload section of the order detail, loaded only when an OWNER/ADMIN opens it (never part of the
+ * page itself). Scoped like the detail; tokens in callback URLs are redacted.
+ */
+export async function getOrderRawPayload(actor: ScopedActor, orderId: string, section: RawSection) {
+  assertCan(actor.role, "orders.rawPayloads");
+  if (!(RAW_SECTIONS as readonly string[]).includes(section)) throw new DomainError("invalid");
+  const order = await getOrder(actor, orderId); // company scope: not_found outside it
+  const db = accountDb(actor.accountId);
+  if (section === "shopify") return redactSecrets(order.raw ?? null);
+  if (section === "original") return redactSecrets(order.shippingAddressOriginal ?? null);
+  if (section === "routing") {
+    const check = await db.orderCheck.findUnique({
+      where: { accountId_orderId: { accountId: actor.accountId, orderId } },
+      select: { routing: true },
+    });
+    return redactSecrets(check?.routing ?? null);
+  }
+  const rows = await db.outboundRequest.findMany({
+    where: { fulfillment: { orderId } },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      operation: true,
+      status: true,
+      payload: true,
+      lastResponse: true,
+      lastError: true,
+      createdAt: true,
+      fulfillment: { select: { connection: { select: { name: true } } } },
+    },
+  });
+  return rows.map((o) =>
+    redactSecrets({
+      id: o.id,
+      connection: o.fulfillment?.connection.name ?? null,
+      operation: o.operation,
+      status: o.status,
+      createdAt: o.createdAt.toISOString(),
+      payload: o.payload,
+      lastResponse: o.lastResponse,
+      lastError: o.lastError,
+    }),
+  );
 }
 
 export type OrderReview = Awaited<ReturnType<typeof getOrderReview>>;
@@ -281,10 +348,19 @@ type Decision = (typeof DECISIONS)[number];
 const isDecision = (v: string | undefined): v is Decision =>
   !!v && (DECISIONS as readonly string[]).includes(v);
 
-type ListCtx = { accountId: string; companyScope: CompanyScope; activeCompanyId: string | null };
+type ListCtx = {
+  accountId: string;
+  role: Role;
+  companyScope: CompanyScope;
+  activeCompanyId: string | null;
+};
 
-/** Decided reviews, newest first, limited to orders of the companies the member may see. */
+/**
+ * Decided reviews, newest first, limited to orders of the companies the member may see. Needs reviews.read
+ * (the diffs hold customer phones and addresses).
+ */
 export async function listReviews(ctx: ListCtx, f: ReviewFilters) {
+  assertCan(ctx.role, "reviews.read");
   const db = accountDb(ctx.accountId);
   const q = f.q?.trim().replace(/^#/, "");
   const where = {

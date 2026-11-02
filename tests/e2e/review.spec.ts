@@ -33,6 +33,14 @@ test("review: fix the address with live validation, approve, hold, block; review
   await expect(page.getByTestId("review-routing")).toContainText("FHB Преглед");
   await expect(page.getByRole("table", { name: "Артикули" })).toContainText("6 за продажба");
   await expect(page.getByText("Сурови данни (само за администратори)")).toBeVisible();
+  // What will be sent (DESIGN principle 4): with a hard finding the body cannot be built yet.
+  await expect(page.getByRole("heading", { name: "Какво ще се изпрати" })).toBeVisible();
+  await expect(page.getByTestId("payload-preview-blocked")).toContainText("FHB Преглед");
+  // Raw payloads load only when a section is opened.
+  await page.getByText("Оригинален адрес", { exact: true }).click();
+  await expect(page.locator("pre").filter({ hasText: '"countryCode"' }).first()).toBeVisible({
+    timeout: 30_000,
+  });
 
   await page.getByRole("button", { name: "Редактирай адреса" }).click();
   const form = page.getByRole("form", { name: "Редакция на адреса" });
@@ -57,6 +65,10 @@ test("review: fix the address with live validation, approve, hold, block; review
   await expect(page.getByText("Одобрена", { exact: true }).first()).toBeVisible();
   await expect(page.getByTestId("timeline")).toContainText("Решение: Поправена и одобрена");
   await expect(page.getByRole("button", { name: "Редактирай адреса" })).toHaveCount(0);
+  // Approved, not sent yet: the exact FHB body is shown (with the corrected zip, no callback URLs).
+  const preview = page.getByTestId("payload-preview");
+  await expect(preview).toContainText('"zip": "1000"');
+  await expect(preview).not.toContainText("/api/webhooks/");
 
   // #R-7002: hold from the keyboard (H) with a reason.
   await openOrder(page, "#R-7002");
@@ -73,8 +85,9 @@ test("review: fix the address with live validation, approve, hold, block; review
   await openOrder(page, "#R-7003");
   const bar3 = page.getByRole("region", { name: "Решение за поръчката" });
   await bar3.getByRole("button", { name: "Блокирай" }).click();
-  await expect(bar3).toContainText("Shopify не се променя");
+  await expect(bar3.getByRole("alert")).toContainText("необратимо");
   await bar3.getByLabel("Причина").selectOption({ label: "Съмнение за измама" });
+  await bar3.getByLabel("Разбирам, че това не може да се отмени.").check();
   await bar3.getByRole("button", { name: "Потвърди: Блокирай" }).click();
   await expect(bar3.getByText("Решението е записано.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Отказана", { exact: true }).first()).toBeVisible();

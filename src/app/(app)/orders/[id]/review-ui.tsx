@@ -7,6 +7,7 @@ import {
   decideAction,
   previewAddressAction,
   recheckAction,
+  rawPayloadAction,
   releaseAction,
   saveAddressAction,
 } from "@/app/actions/review";
@@ -493,9 +494,19 @@ export function DecisionBar({
           >
             {t("decide.cancel")}
           </button>
-          <p className="m-0 w-full text-xs text-white/70">
-            {kind === "block" ? t("decide.blockHint") : kind === "approve" ? t("decide.approveHint") : null}
-          </p>
+          {kind === "block" ? (
+            <div role="alert" className="w-full rounded-lg bg-block-bg px-3 py-2 text-sm text-block">
+              <p className="m-0 font-semibold">{t("decide.blockHint")}</p>
+              <label className="mt-1 flex items-center gap-2">
+                <input type="checkbox" required className="h-4 w-4" />
+                {t("decide.blockAck")}
+              </label>
+            </div>
+          ) : (
+            <p className="m-0 w-full text-xs text-white/70">
+              {kind === "approve" ? t("decide.approveHint") : null}
+            </p>
+          )}
         </form>
       )}
       {error && (
@@ -512,13 +523,44 @@ export function DecisionBar({
   );
 }
 
-/** A <details> whose content is mounted only while open (raw JSON stays out of the page text until asked for). */
-export function LazyDetails({ summary, children }: { summary: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+/**
+ * A raw payload section (OWNER/ADMIN): nothing of it is in the page — it is loaded from the server only when
+ * the <details> is first opened (src/server/review/detail.ts getOrderRawPayload, callback tokens redacted).
+ */
+export function RawDetails({
+  orderId,
+  section,
+  summary,
+}: {
+  orderId: string;
+  section: "shopify" | "original" | "routing" | "outbox";
+  summary: string;
+}) {
+  const t = useTranslations("review");
+  const errorText = useErrorText();
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
   return (
-    <details onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+    <details
+      onToggle={(e) => {
+        if (!(e.currentTarget as HTMLDetailsElement).open || text !== null || pending) return;
+        start(async () => {
+          const r = await rawPayloadAction(orderId, section);
+          if (r.error) setError(errorText(r.error));
+          else setText(r.json ?? "null");
+        });
+      }}
+    >
       <summary className="cursor-pointer">{summary}</summary>
-      {open && children}
+      {pending && <p className="m-0 mt-1 text-muted">{t("raw.loading")}</p>}
+      {error && <p className="m-0 mt-1 text-block">{error}</p>}
+      {text !== null &&
+        (text === "[]" ? (
+          <p className="m-0 mt-1 text-muted">{t("raw.none")}</p>
+        ) : (
+          <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">{text}</pre>
+        ))}
     </details>
   );
 }

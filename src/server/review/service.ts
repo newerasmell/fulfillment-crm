@@ -42,6 +42,9 @@ const isEditable = (s: string) => (EDITABLE_STATUSES as readonly string[]).inclu
 /** Longest time one review may count (an order left open overnight is not 14 hours of work). */
 export const MAX_REVIEW_MS = 2 * 3600_000;
 
+/** Operator task opened when a review blocks a Shopify order (it stays open in the shop). */
+export const BLOCKED_TASK_KIND = "blocked_in_crm_open_in_shopify";
+
 async function scopedOrder(tx: Tx, actor: ScopedActor, orderId: string) {
   const order = await tx.order.findUnique({
     where: { id: orderId },
@@ -49,6 +52,9 @@ async function scopedOrder(tx: Tx, actor: ScopedActor, orderId: string) {
       id: true,
       companyId: true,
       status: true,
+      number: true,
+      storeId: true,
+      tags: true,
       phone: true,
       shippingAddress: true,
       updatedAt: true,
@@ -61,10 +67,45 @@ async function scopedOrder(tx: Tx, actor: ScopedActor, orderId: string) {
 
 const storedFindings = (v: unknown): Finding[] => (Array.isArray(v) ? (v as Finding[]) : []);
 
+/**
+ * Statuses inside one review cycle. Any move to another status (approved — by a person or the AI —, held,
+ * cancelled, queued…) ends the cycle: an undecided session opened before it belongs to an earlier cycle and is
+ * never reused (its diff and findings describe data that was already decided on).
+ */
+const CYCLE_STATUSES = ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY"] as const;
+
+/** When the order's current review cycle started (the last pipeline move out of the cycle), or null. */
+export async function cycleStart(
+  db: Tx | ReturnType<typeof accountDb>,
+  orderId: string,
+): Promise<Date | null> {
+  // Both clients have the same orderEvent delegate; the extended client's generics just do not unify.
+  const last = await (db as Tx).orderEvent.findFirst({
+    where: { orderId, toStatus: { notIn: [...CYCLE_STATUSES] } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  return last?.createdAt ?? null;
+}
+
+/** Undecided, not superseded sessions of the current cycle (optionally of one reviewer), oldest first. */
+export function openSessionsWhere(orderId: string, since: Date | null, reviewerId?: string) {
+  return {
+    orderId,
+    decision: null,
+    decidedAt: null,
+    ...(reviewerId ? { reviewerId } : {}),
+    ...(since ? { createdAt: { gt: since } } : {}),
+  };
+}
+
+/** Marker on a session that another reviewer's decision closed (its diff was merged into that Review). */
+export const SUPERSEDED_REASON = "superseded";
+
 /** The open (undecided) review of this reviewer for this order, created with the findings seen now. */
 async function openSession(tx: Tx, accountId: string, orderId: string, reviewerId: string) {
   const open = await tx.review.findFirst({
-    where: { orderId, reviewerId, decision: null },
+    where: openSessionsWhere(orderId, await cycleStart(tx, orderId), reviewerId),
     orderBy: { createdAt: "desc" },
   });
   if (open) return open;
@@ -244,7 +285,8 @@ const TARGET: Record<
   approve: { to: "APPROVED", cause: "approve" },
   hold: { to: "ON_HOLD", cause: "hold" },
   // Блокирай: the order is never sent — cancelled in the CRM only (Shopify is not touched; refunds and
-  // Shopify cancellations stay with the shop). The pipeline refuses it once a shipment is active.
+  // Shopify cancellations stay with the shop, so an operator task is opened for it). Irreversible in the
+  // CRM (CANCELLED has no way back). The pipeline refuses it once a shipment is active.
   block: { to: "CANCELLED", cause: "cancel" },
 };
 
@@ -283,7 +325,16 @@ export async function decideOrder(actor: ScopedActor, raw: DecisionInput, now = 
       if (check.hardCount > 0) throw new DomainError("hard_findings");
     }
     const session = await openSession(tx, actor.accountId, order.id, actor.userId);
-    const diff = parseDiff(session.diff);
+    // One decision closes the order's review for everyone: the corrections other reviewers made in this cycle
+    // are part of what is being decided on, so they are merged into this Review and their sessions closed.
+    const since = await cycleStart(tx, order.id);
+    const others = await tx.review.findMany({
+      where: { ...openSessionsWhere(order.id, since), id: { not: session.id } },
+      orderBy: { createdAt: "asc" },
+    });
+    const sessions = [...others, session].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    const diff = sessions.reduce<FieldChange[]>((acc, s) => mergeDiff(acc, parseDiff(s.diff)), []);
+    const firstSeen = sessions.find((s) => parseDiff(s.diff).length) ?? session;
     const decision =
       input.decision === "approve"
         ? diff.length
@@ -312,10 +363,65 @@ export async function decideOrder(actor: ScopedActor, raw: DecisionInput, now = 
         reasonText: input.reasonText ?? null,
         timeSpentMs: timeSpentMs(input.openedAt, now),
         decidedAt: now,
-        // The findings the operator decided on: those seen when the session opened (before any correction).
-        ...(diff.length ? {} : { findings: json(storedFindings(check?.findings)) }),
+        diff: json(diff),
+        // The findings the operator decided on: those seen when the first correction's session opened
+        // (before any correction), else the current check.
+        findings: diff.length
+          ? json(storedFindings(firstSeen.findings))
+          : json(storedFindings(check?.findings)),
       },
     });
+    // Every other undecided session of this order (this cycle's — merged above — and stale ones of earlier
+    // cycles) is closed without a decision, so no later decision ever picks it up again.
+    await tx.review.updateMany({
+      where: { orderId: order.id, decision: null, decidedAt: null, id: { not: session.id } },
+      data: { decidedAt: now, reasonCode: SUPERSEDED_REASON, reasonText: `review:${review.id}` },
+    });
+    if (input.decision === "block" && order.storeId) {
+      // Blocking only cancels in the CRM: the order is still open in Shopify. Someone must handle it there.
+      const open = await tx.alert.findFirst({
+        where: {
+          entityType: "Order",
+          entityId: order.id,
+          kind: BLOCKED_TASK_KIND,
+          status: { not: "RESOLVED" },
+        },
+        select: { id: true },
+      });
+      if (!open)
+        await tx.alert.create({
+          data: {
+            accountId: actor.accountId,
+            kind: BLOCKED_TASK_KIND,
+            isTask: true,
+            severity: "WARNING",
+            title: `Order ${order.number} was blocked in the CRM but is still open in Shopify — cancel or refund it in the shop`,
+            entityType: "Order",
+            entityId: order.id,
+          },
+        });
+    }
     return { reviewId: review.id, decision, status: target.to, from: moved.from };
   });
+}
+
+/**
+ * Releases an operator hold: the order starts over (IMPORTED) and is checked again right away. Strict: a
+ * Shopify test order (pipeline guard "shopify_test_order") or an order that is not held is refused.
+ */
+export async function releaseOrder(actor: ScopedActor, orderId: string) {
+  assertCan(actor.role, "orders.review");
+  await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    await lockForUpdate("Order", orderId);
+    await scopedOrder(tx, actor, orderId); // company scope: not_found outside it
+    await transition(tx, {
+      orderId,
+      to: "IMPORTED",
+      cause: "release",
+      actor: { kind: "user", userId: actor.userId },
+      source: "review",
+      mode: "strict",
+    });
+  });
+  return checkOrder(actor.accountId, orderId, { actor: { kind: "user", userId: actor.userId } });
 }
