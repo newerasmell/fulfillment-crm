@@ -63,6 +63,23 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 600 },
     cron: "*/15 * * * *",
   },
+  /** API change watcher (P9-01): daily vendor spec fetch + diff + Shopify version deprecation check. */
+  apiSpecWatch: {
+    name: "apiwatch.specs",
+    options: { retryLimit: 1, retryDelay: 600, policy: "stately", expireInSeconds: 900 },
+    cron: "23 2 * * *",
+  },
+  /** API change watcher (P9-02): daily, queues one read-only live check per store/connection. */
+  apiLiveCheck: {
+    name: "apiwatch.liveCheck",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 300 },
+    cron: "47 3 * * *",
+  },
+  /** One read-only live check (data: { accountId, kind, id }). */
+  apiLiveCheckTarget: {
+    name: "apiwatch.liveCheckTarget",
+    options: { ...retry, retryLimit: 1, policy: "stately", expireInSeconds: 600 },
+  },
   /** Hourly housekeeping: old login attempts. */
   housekeeping: {
     name: "system.housekeeping",

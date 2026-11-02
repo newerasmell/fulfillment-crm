@@ -926,3 +926,19 @@ model AiPolicy {
 
   @@unique([accountId, decisionType])
 }
+
+// ───────────────────────── wave 1: API change watcher (phase 9) ─────────────────────────
+
+/// Last run of each watched source (a vendor spec URL, the Shopify version check, the live-check sweep).
+/// Global like ApiSpecVersion: specs are the same for every account. Only systemDb() touches it.
+model ApiWatchSource {
+  /// Source key, e.g. FHB_V3, FHB_JOY, EUSHIPMENTS, SHOPIFY, LIVE_CHECK.
+  id            String    @id
+  lastCheckedAt DateTime?
+  lastOkAt      DateTime?
+  /// Short error code/message of the last failed run (never a secret or a response body).
+  lastError     String?
+  /// Consecutive failed runs; an alert is raised when it reaches the threshold.
+  failures      Int       @default(0)
+  updatedAt     DateTime  @updatedAt
+}
