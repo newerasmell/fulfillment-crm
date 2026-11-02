@@ -54,6 +54,9 @@ try {
   // Product lines + master catalogue (wave 3, core track): its own group and OWNER (tests/e2e/lines.spec.ts).
   const { seedLines } = await import("../tests/e2e/seed-lines");
   const linesOwner = await seedLines();
+  // Manual warehouse choice + reroute (wave 3, override track): its own group and OWNER (tests/e2e/override.spec.ts).
+  const { seedOverride } = await import("../tests/e2e/seed-override");
+  const overrideOwner = await seedOverride();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -76,6 +79,9 @@ try {
       E2E_LINES_EMAIL: linesOwner.email,
       E2E_LINES_PASSWORD: linesOwner.password,
       E2E_LINES_TOTP: linesOwner.totp,
+      E2E_OVERRIDE_EMAIL: overrideOwner.email,
+      E2E_OVERRIDE_PASSWORD: overrideOwner.password,
+      E2E_OVERRIDE_TOTP: overrideOwner.totp,
     },
   });
   status = run.status ?? 1;

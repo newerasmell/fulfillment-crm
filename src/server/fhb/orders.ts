@@ -265,6 +265,22 @@ async function prepare(
   return { order, connection, findings, draft };
 }
 
+/**
+ * The external id of a NEW FHB shipment of this order: never one any earlier shipment of the order used at any FHB
+ * connection (ids live per FHB account, and several connections may share one; a deleted order keeps its id).
+ */
+export async function nextFhbExternalId(tx: Tx, orderId: string, storeCode: string, orderNumber: string) {
+  const earlier = await tx.fulfillment.findMany({
+    where: { orderId, connection: { type: "FHB_V3" } },
+    select: { externalId: true },
+  });
+  const used = new Set(earlier.map((e) => e.externalId));
+  let attempt = earlier.length + 1;
+  let id = fhbOrderExternalId(storeCode, orderNumber, attempt);
+  while (used.has(id)) id = fhbOrderExternalId(storeCode, orderNumber, ++attempt);
+  return id;
+}
+
 async function loadScoped(tx: Tx, actor: ScopedActor, orderId: string, connectionId: string) {
   const order = await tx.order.findUnique({
     where: { id: orderId },
@@ -312,8 +328,9 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       });
 
       if (!fulfillment) {
-        // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, ….
-        const externalId = fhbOrderExternalId(order.store.code, order.number, previous.length + 1);
+        // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, …, counted over the order's
+        // shipments at EVERY FHB connection (a reroute FHB A → FHB B on one FHB account must not reuse A's id).
+        const externalId = await nextFhbExternalId(tx, order.id, order.store.code, order.number);
         // Allocated atomically AFTER the lock: the connection row read by loadScoped() may be stale by now
         // (a concurrent submit committed its increment while we waited for the lock).
         const bumped = await tx.fulfillmentConnection.update({
@@ -612,7 +629,7 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
       );
     const reuse = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED");
     const externalId =
-      reuse?.externalId ?? fhbOrderExternalId(order.store.code, order.number, previous.length + 1);
+      reuse?.externalId ?? (await nextFhbExternalId(tx, order.id, order.store.code, order.number));
     const variableSymbol = reuse?.variableSymbol ?? BigInt(connection.variableSymbolNext).toString();
     const duplicate = !!(await tx.fulfillment.findFirst({
       where: {

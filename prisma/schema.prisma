@@ -443,6 +443,8 @@ model FulfillmentConnection {
   eushipmentsTracking        EushipmentsTracking[]
   eushipmentsSyncs           EushipmentsSync[]
   masterCatalogueRuns        MasterCatalogueRun[]
+  warehouseChoices           OrderWarehouseChoice[]
+  rerouteTargets             OrderReroute[]        @relation("RerouteTarget")
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -716,6 +718,8 @@ model Order {
   check        OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
+  warehouseChoice   OrderWarehouseChoice?
+  reroutes          OrderReroute[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -778,6 +782,7 @@ model Fulfillment {
   lines            FulfillmentLine[]
   outboundRequests OutboundRequest[]
   shopifyWriteBack ShopifyWriteBack?
+  reroutesFrom     OrderReroute[]
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -1728,4 +1733,65 @@ model ProductMappingImport {
 
   @@unique([accountId, id])
   @@index([accountId, lineId, createdAt])
+}
+
+// ───────────────────────── wave 3 · override track (P4-09): manual warehouse choice + reroute ─────────────────────────
+
+/// "Изпрати от": a person chose the warehouse that ships this order instead of the routing decision (or a confirmed
+/// reroute bound it to a new one). While it exists every check validates for this connection and the approval /
+/// Fulfill are bound to it (OrderCheck.connectionId, routing.via = "manual"); deleting it returns to routing.
+model OrderWarehouseChoice {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String
+  connectionId String
+  /// manual (before sending) | reroute (after the old warehouse confirmed the cancellation)
+  via          String   @default("manual")
+  /// Reason code (src/server/override/reasons.ts) + free text ("Друго" requires it).
+  reasonCode   String
+  reasonText   String?
+  chosenById   String?
+  rerouteId    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order      Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, orderId])
+  @@index([accountId, connectionId])
+}
+
+/// "Пренасочи към друг склад" after sending: the old shipment is cancelled through the outbox and ONLY when the old
+/// warehouse confirmed it (read-back) the order returns to APPROVED bound to the new connection. At most one open
+/// (CANCEL_QUEUED) per order and never two active shipments per order (database triggers, see the migration).
+model OrderReroute {
+  id                String    @id @default(cuid())
+  accountId         String
+  orderId           String
+  fromFulfillmentId String
+  fromConnectionId  String
+  toConnectionId    String
+  /// CANCEL_QUEUED → DONE | REFUSED | UNCERTAIN | SIMULATED (DRY_RUN / READ_ONLY: recorded what would happen)
+  status            String    @default("CANCEL_QUEUED")
+  cancelRequestId   String?
+  reasonCode        String
+  reasonText        String?
+  requestedById     String?
+  /// What happened (or would happen in DRY_RUN / READ_ONLY), shown on the order.
+  outcome           Json      @default("{}")
+  /// Confirmation read-backs that did not (yet) show the cancellation.
+  readBackAttempts  Int       @default(0)
+  alertId           String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  finishedAt        DateTime?
+
+  order           Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fromFulfillment Fulfillment           @relation(fields: [accountId, fromFulfillmentId], references: [accountId, id], onDelete: NoAction)
+  toConnection    FulfillmentConnection @relation("RerouteTarget", fields: [accountId, toConnectionId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId, createdAt])
+  @@index([status, updatedAt])
 }

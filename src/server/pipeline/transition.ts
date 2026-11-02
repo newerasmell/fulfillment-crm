@@ -148,6 +148,15 @@ const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
       return active > 0 ? "active_shipment" : null;
     },
   ],
+  // P4-09: the old shipment must be cancelled (in the same transaction) before the order is approved again.
+  reroute: [
+    async (tx, { order }) => {
+      const active = await tx.fulfillment.count({
+        where: { orderId: order.id, status: { notIn: INACTIVE_SHIPMENT } },
+      });
+      return active > 0 ? "active_shipment" : null;
+    },
+  ],
   release: [async (_tx, { order }) => (order.tags.includes(SHOPIFY_TEST_TAG) ? "shopify_test_order" : null)],
 };
 
@@ -284,8 +293,15 @@ export async function followShipment(
   orderId: string,
   to: CrmOrderStatus,
   source: string,
-  opts: { onlyFrom?: readonly CrmOrderStatus[]; meta?: Record<string, unknown> } = {},
+  opts: {
+    onlyFrom?: readonly CrmOrderStatus[];
+    meta?: Record<string, unknown>;
+    /** The shipment the vendor status is about: a shipment replaced by a reroute is never followed (P4-09). */
+    fulfillmentId?: string;
+  } = {},
 ) {
+  const { fulfillmentId, ...rest } = opts;
+  if (fulfillmentId && (await isRerouteOwnedShipment(tx, fulfillmentId))) return false;
   const r = await transition(tx, {
     orderId,
     to,
@@ -293,9 +309,37 @@ export async function followShipment(
     actor: { kind: "system" },
     source,
     mode: "follow",
-    ...opts,
+    ...rest,
   });
   return r.changed;
+}
+
+/**
+ * A shipment that a confirmed reroute replaced (P4-09): the old warehouse confirmed its cancellation and the order
+ * moved on to another warehouse. Late vendor statuses of it are recorded on the shipment's timeline only — they
+ * never reactivate it and never move the order (which now follows its new shipment).
+ */
+export async function isSupersededShipment(tx: Tx, fulfillmentId: string) {
+  const r = await tx.orderReroute.findFirst({
+    where: { fromFulfillmentId: fulfillmentId, status: "DONE" },
+    select: { id: true },
+  });
+  return !!r;
+}
+
+/**
+ * A shipment whose order status belongs to the reroute flow (P4-09): replaced by a confirmed reroute, OR with an
+ * open one (CANCEL_QUEUED). While the cancel is on its way the vendor may already report the shipment
+ * deleted/cancelled (euShipments "Deleted" → CANCELLED); following that would strand the order in CANCELLED, which
+ * the reroute can no longer move to APPROVED. The shipment row still records the vendor status; only the order
+ * waits for the reroute's outcome (DONE → APPROVED; REFUSED → it catches up with the shipment's status).
+ */
+export async function isRerouteOwnedShipment(tx: Tx, fulfillmentId: string) {
+  const r = await tx.orderReroute.findFirst({
+    where: { fromFulfillmentId: fulfillmentId, status: { in: ["CANCEL_QUEUED", "DONE"] } },
+    select: { id: true },
+  });
+  return !!r;
 }
 
 /** Timeline of one order, oldest first (P4-04 order detail). */

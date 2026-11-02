@@ -14,12 +14,15 @@ import type { ScopedActor } from "@/server/stores";
 /** The three decisions of the decision bar (Одобри / Задръж / Блокирай). */
 export const DECISION_KINDS = ["approve", "hold", "block"] as const;
 export type DecisionKind = (typeof DECISION_KINDS)[number];
+/** Every list a code can be offered in: the three decisions + "warehouse" (Изпрати от / Пренасочи, P4-09). */
+export const REASON_KINDS = [...DECISION_KINDS, "warehouse"] as const;
+export type ReasonKind = (typeof REASON_KINDS)[number];
 
 export interface ReasonCode {
   code: string;
   labelBg: string;
   labelEn: string;
-  decisions: DecisionKind[];
+  decisions: ReasonKind[];
   active: boolean;
   sortOrder: number;
 }
@@ -31,7 +34,7 @@ const d = (
   code: string,
   labelBg: string,
   labelEn: string,
-  decisions: DecisionKind[],
+  decisions: ReasonKind[],
   sortOrder: number,
 ): ReasonCode => ({ code, labelBg, labelEn, decisions, active: true, sortOrder });
 
@@ -50,11 +53,15 @@ export const DEFAULT_REASON_CODES: readonly ReasonCode[] = [
   d("customer_cancelled", "Клиентът се отказа", "Customer cancelled", ["block"], 120),
   d("undeliverable", "Не може да се достави", "Cannot be delivered", ["block"], 130),
   d("test_order", "Тестова поръчка", "Test order", ["block"], 140),
-  d(OTHER_REASON, "Друго (опишете)", "Other (describe)", ["approve", "hold", "block"], 1000),
+  // Warehouse choice / reroute (P4-09).
+  d("no_stock", "Няма наличност", "No stock", ["warehouse"], 200),
+  d("faster_delivery", "По-бърза доставка", "Faster delivery", ["warehouse"], 210),
+  d("customer_requested", "Клиентът поиска", "The customer asked for it", ["warehouse"], 220),
+  d(OTHER_REASON, "Друго (опишете)", "Other (describe)", ["approve", "hold", "block", "warehouse"], 1000),
 ];
 
 const asKinds = (v: string[]) =>
-  v.filter((k): k is DecisionKind => (DECISION_KINDS as readonly string[]).includes(k));
+  v.filter((k): k is ReasonKind => (REASON_KINDS as readonly string[]).includes(k));
 
 /** The group's reason codes (stored ones, or the defaults), ordered for display. */
 export async function listReasonCodes(
@@ -78,7 +85,7 @@ export async function listReasonCodes(
 }
 
 /** Codes a reviewer may pick for one decision. */
-export const codesFor = (codes: readonly ReasonCode[], kind: DecisionKind) =>
+export const codesFor = (codes: readonly ReasonCode[], kind: ReasonKind) =>
   codes.filter((c) => c.active && c.decisions.includes(kind));
 
 export const ReasonCodeInput = z.object({
@@ -89,7 +96,7 @@ export const ReasonCodeInput = z.object({
     .regex(/^[a-z][a-z0-9_]{1,39}$/),
   labelBg: z.string().trim().min(1).max(80),
   labelEn: z.string().trim().min(1).max(80),
-  decisions: z.array(z.enum(DECISION_KINDS)).min(1),
+  decisions: z.array(z.enum(REASON_KINDS)).min(1),
   sortOrder: z.coerce.number().int().min(0).max(100_000).optional(),
 });
 export type ReasonCodeInput = z.input<typeof ReasonCodeInput>;

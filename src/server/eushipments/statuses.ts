@@ -16,7 +16,7 @@ import {
 } from "@/integrations/eushipments/status-map";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { followShipment, VENDOR_FROM } from "@/server/pipeline";
+import { followShipment, isSupersededShipment, VENDOR_FROM } from "@/server/pipeline";
 
 /**
  * euShipments status tracking on the CRM side (P3-03): the per-group mapping table, applying an
@@ -40,8 +40,9 @@ export async function advanceOrderStatus(
   orderId: string,
   to: CrmOrderStatus,
   source = "eushipments",
+  fulfillmentId?: string,
 ): Promise<boolean> {
-  return followShipment(tx, orderId, to, source);
+  return followShipment(tx, orderId, to, source, { fulfillmentId });
 }
 
 /** Copies the spec list into the group's mapping table (idempotent; existing rows are never overwritten). */
@@ -298,7 +299,9 @@ export async function applyOrderHistory(
       return { category: null, status: f.status, newEvents: 0, stopPolling: false, alerts };
     }
     const rule = resolveStatus(latest.record.STATUS, table);
-    const crm = CRM_STATUS[rule.category] ?? f.status; // CANCEL_PENDING keeps the previous status
+    // A shipment replaced by a confirmed reroute (P4-09) keeps its status; the order follows its new shipment.
+    const superseded = await isSupersededShipment(tx, f.id);
+    const crm = superseded ? f.status : (CRM_STATUS[rule.category] ?? f.status); // CANCEL_PENDING keeps the previous status
     const tracking = [...f.trackingNumbers];
     if (item.awb && !tracking.includes(item.awb)) tracking.push(item.awb);
     await tx.fulfillment.update({
@@ -312,7 +315,7 @@ export async function applyOrderHistory(
         ...(rule.category === "DELIVERED" && !f.deliveredAt ? { deliveredAt: latest.at ?? now } : {}),
       },
     });
-    await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history");
+    if (!superseded) await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history", f.id);
 
     const body = `Shipment ${f.externalId}: "${scrubText(latest.record.STATUS, 200)}"${
       latest.record.COMMENT ? ` (${scrubText(latest.record.COMMENT, 200)})` : ""

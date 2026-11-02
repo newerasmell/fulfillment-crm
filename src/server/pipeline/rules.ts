@@ -50,7 +50,13 @@ export type TransitionCause =
    * Shopify import changed the order's data (address, phone, COD, lines…) while it was being checked or
    * waiting for review: it starts over at IMPORTED and the check sweep validates it again.
    */
-  | "data_changed";
+  | "data_changed"
+  /**
+   * Reroute after sending (P4-09): the old warehouse CONFIRMED (read-back) that it cancelled the shipment, so the
+   * order returns to APPROVED bound to the new warehouse (src/server/override/reroute.ts). Guarded: no active
+   * shipment may be left.
+   */
+  | "reroute";
 
 /** Every cause, for exhaustive tests and docs. */
 export const CAUSES: readonly TransitionCause[] = [
@@ -68,6 +74,7 @@ export const CAUSES: readonly TransitionCause[] = [
   "submit_failed",
   "vendor",
   "data_changed",
+  "reroute",
 ];
 
 export interface TransitionRule {
@@ -151,6 +158,13 @@ export const RULES: readonly TransitionRule[] = [
     cause: "data_changed",
     from: ["CHECKING", "NEEDS_REVIEW", "READY"],
     to: ["IMPORTED"],
+    actors: ["system"],
+  },
+  // Only after the old warehouse confirmed the cancellation (P4-09); the order is still "at" the old warehouse.
+  {
+    cause: "reroute",
+    from: ["ACCEPTED", "BLOCKED", "EXCEPTION", "UNKNOWN"],
+    to: ["APPROVED"],
     actors: ["system"],
   },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({

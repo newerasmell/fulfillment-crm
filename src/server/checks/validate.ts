@@ -10,10 +10,12 @@ import {
   loadRoutingContext,
   routeWithContext,
   stockByConnection,
+  type ManualChoiceInfo,
   type RoutingDecision,
   type StockCheck,
 } from "@/server/routing";
 import type { ScopedActor } from "@/server/stores";
+import { DEFAULT_REASON_CODES, listReasonCodes } from "@/server/review/reasons";
 import { countBy, fromEu, fromFhb, sortFindings, type Finding } from "./findings";
 import { orderLevelFindings } from "./order-checks";
 
@@ -151,6 +153,9 @@ export async function validateOrder(
     where: { id: orderId },
     include: {
       lines: { select: { title: true, sku: true, productId: true, quantity: true, unitPrice: true } },
+      company: { select: { lineId: true } },
+      // "Изпрати от" (P4-09): a person's warehouse choice replaces the routing decision until it is cleared.
+      warehouseChoice: true,
     },
   });
   if (!order) throw new DomainError("not_found");
@@ -158,6 +163,8 @@ export async function validateOrder(
   const ctx = await loadRoutingContext(accountId);
   const routingOrder = {
     companyId: order.companyId,
+    // The product line bounds the stock fallback (P5-00), exactly as routeOrder() sees the order.
+    lineId: order.company?.lineId ?? null,
     storeId: order.storeId,
     countryCode: order.countryCode,
     paymentMethod: order.paymentMethod,
@@ -172,11 +179,16 @@ export async function validateOrder(
 
   let connection: { id: string; type: string } | null = null;
   let stock: StockCheck | null = routing.stock;
+  const choice = opts.connectionId ? null : order.warehouseChoice;
+  const manual = choice ? ctx.connections.find((c) => c.id === choice.connectionId) : undefined;
   if (opts.connectionId) {
     const chosen = ctx.connections.find((c) => c.id === opts.connectionId);
     if (!chosen) throw new DomainError("not_found");
     connection = chosen;
     stock = (await stockByConnection(accountId, [chosen], routingOrder.lines)).get(chosen.id) ?? null;
+  } else if (choice && manual) {
+    connection = manual;
+    stock = (await stockByConnection(accountId, [manual], routingOrder.lines)).get(manual.id) ?? null;
   } else if (routing.connectionId) {
     connection = { id: routing.connectionId, type: routing.connectionType! };
   }
@@ -227,12 +239,39 @@ export async function validateOrder(
     { localCurrency: setting?.currency ?? null, routing, stock, duplicates },
   );
   const vendor = connection ? await vendorFindings(accountId, order.id, connection, routing, now) : [];
-  const findings = sortFindings([...level.findings, ...vendor]);
+  const manualRouting =
+    choice && manual
+      ? manualDecision(routing, manual, routingOrder.companyId, stock, {
+          via: choice.via === "reroute" ? "reroute" : "manual",
+          userId: choice.chosenById,
+          userName: choice.chosenById ? await memberName(accountId, choice.chosenById) : null,
+          reasonCode: choice.reasonCode,
+          reasonLabel: await reasonLabel(accountId, choice.reasonCode),
+          reasonText: choice.reasonText,
+          at: choice.updatedAt.toISOString(),
+        })
+      : null;
+  // A chosen warehouse that was switched off since: never sent there silently, never re-routed silently either.
+  const choiceFindings: Finding[] =
+    choice && manual && !manual.enabled
+      ? [
+          {
+            code: "routing.chosen_connection_disabled",
+            severity: "hard",
+            source: "routing",
+            field: null,
+            message_bg: `Ръчно избраният склад „${manual.name}“ е изключен — изберете друг или върнете маршрута.`,
+            message_en: `The warehouse chosen by hand ("${manual.name}") is disabled — choose another or go back to routing.`,
+          },
+        ]
+      : [];
+  const findings = sortFindings([...level.findings, ...vendor, ...choiceFindings]);
   const result: OrderCheckResult = {
     orderId: order.id,
     connectionId: connection?.id ?? null,
     routing:
-      opts.connectionId && opts.connectionId !== routing.connectionId ? { ...routing, stock } : routing,
+      manualRouting ??
+      (opts.connectionId && opts.connectionId !== routing.connectionId ? { ...routing, stock } : routing),
     findings,
     ...countBy(findings),
     normalised: level.normalised,
@@ -242,7 +281,10 @@ export async function validateOrder(
   if (opts.persist !== false) {
     const data = {
       connectionId: result.connectionId,
-      ruleId: opts.connectionId && opts.connectionId !== routing.connectionId ? null : routing.ruleId,
+      ruleId:
+        manualRouting || (opts.connectionId && opts.connectionId !== routing.connectionId)
+          ? null
+          : routing.ruleId,
       routing: json(result.routing),
       findings: json(result.findings),
       hardCount: result.hardCount,
@@ -259,6 +301,86 @@ export async function validateOrder(
     });
   }
   return result;
+}
+
+const STOCK_TEXT = {
+  ok: { bg: "наличност OK", en: "stock OK" },
+  insufficient: { bg: "няма достатъчна наличност", en: "not enough stock" },
+  unknown: { bg: "наличността не е известна", en: "stock unknown" },
+} as const;
+
+async function reasonLabel(accountId: string, code: string) {
+  const c =
+    (await listReasonCodes(accountId, { includeInactive: true })).find((x) => x.code === code) ??
+    DEFAULT_REASON_CODES.find((x) => x.code === code);
+  return c ? { bg: c.labelBg, en: c.labelEn } : { bg: code, en: code };
+}
+
+async function memberName(accountId: string, userId: string) {
+  const m = await accountDb(accountId).membership.findFirst({
+    where: { userId },
+    select: { user: { select: { name: true, email: true } } },
+  });
+  return m ? (m.user.name ?? m.user.email) : null;
+}
+
+/**
+ * The routing decision as stored for a person's warehouse choice (P4-09): via "manual", the chosen warehouse, who
+ * and why, and what routing would have picked. The rule's carrier settings apply only when the person chose the
+ * routed warehouse itself.
+ */
+function manualDecision(
+  routing: RoutingDecision,
+  chosen: {
+    id: string;
+    name: string;
+    type: RoutingDecision["connectionType"] & string;
+    companyId: string | null;
+  },
+  orderCompanyId: string | null,
+  stock: StockCheck | null,
+  info: Omit<ManualChoiceInfo, "routed">,
+): RoutingDecision {
+  const crossCompany = !!orderCompanyId && !!chosen.companyId && orderCompanyId !== chosen.companyId;
+  const st = STOCK_TEXT[stock?.status ?? "unknown"];
+  const who = info.userName ?? "—";
+  const head =
+    info.via === "reroute"
+      ? { bg: `Пренасочена (${who})`, en: `Rerouted (${who})` }
+      : { bg: `Ръчен избор (${who})`, en: `Chosen by hand (${who})` };
+  const cross = crossCompany
+    ? {
+        bg: "; склад на друга фирма (отчита се само в CRM)",
+        en: "; another company's warehouse (recorded in the CRM only)",
+      }
+    : { bg: "", en: "" };
+  return {
+    ...routing,
+    connectionId: chosen.id,
+    connectionName: chosen.name,
+    connectionType: chosen.type,
+    via: "manual",
+    ruleId: null,
+    ruleNumber: null,
+    ruleName: null,
+    crossCompany,
+    carrier: routing.connectionId === chosen.id ? routing.carrier : null,
+    stock,
+    explanation: {
+      bg: `${head.bg}, причина „${info.reasonLabel.bg}“ → ${chosen.name}; ${st.bg}${cross.bg}`,
+      en: `${head.en}, reason "${info.reasonLabel.en}" → ${chosen.name}; ${st.en}${cross.en}`,
+    },
+    manual: {
+      ...info,
+      routed: {
+        connectionId: routing.connectionId,
+        connectionName: routing.connectionName,
+        via: routing.via,
+        ruleNumber: routing.ruleNumber,
+        explanation: routing.explanation,
+      },
+    },
+  };
 }
 
 /** The stored check of an order (null = never checked). */

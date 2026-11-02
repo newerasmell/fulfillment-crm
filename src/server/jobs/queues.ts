@@ -181,4 +181,10 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** Every minute: follow open reroutes (P4-09) — confirm the old warehouse's cancel by read-back, then switch. */
+  ordersRerouteSweep: {
+    name: "orders.rerouteSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "* * * * *",
+  },
 } satisfies Record<string, QueueDef>;

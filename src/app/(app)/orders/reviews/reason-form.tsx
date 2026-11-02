@@ -7,6 +7,7 @@ import { buttonCls, inputCls, labelCls } from "@/components/ui/form";
 
 export function ReasonCodeForm() {
   const t = useTranslations("review");
+  const o = useTranslations("override");
   const [state, action, pending] = useActionState(saveReasonCodeAction, undefined);
   const err = state?.error ? `error.${state.error}` : null;
   return (
@@ -37,6 +38,9 @@ export function ReasonCodeForm() {
             <input type="checkbox" name="decisions" value={k} /> {t(`kind.${k}`)}
           </label>
         ))}
+        <label className="flex items-center gap-2 font-normal">
+          <input type="checkbox" name="decisions" value="warehouse" /> {o("reasonKind")}
+        </label>
       </fieldset>
       <div className="flex items-center gap-3 sm:col-span-4">
         <button type="submit" disabled={pending} className={buttonCls}>

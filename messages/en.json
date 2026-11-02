@@ -1539,5 +1539,102 @@
       "file_too_large": "The file is over 900 KB — split it into parts.",
       "bad_file": "The file cannot be read — save it as .xlsx or .csv."
     }
+  },
+  "override": {
+    "title": "Ship from",
+    "subtitle": "Warehouses of the order's product line, with stock for its lines",
+    "crossCompany": "↔ another company's warehouse",
+    "current": "chosen",
+    "routed": "by routing",
+    "stock": {
+      "ok": "stock OK",
+      "insufficient": "not enough",
+      "unknown": "stock unknown",
+      "line": "{title}: {need} needed, {available} available"
+    },
+    "reason": "Reason",
+    "reasonPick": "Pick a reason…",
+    "note": "Note (required for “Other”)",
+    "hint": "Checks run again for the chosen warehouse; approval and Fulfill apply to it only.",
+    "choose": "Ship from this warehouse",
+    "cancel": "Cancel",
+    "clear": "Back to routing",
+    "confirmForm": "Confirm the warehouse",
+    "saved": "Warehouse chosen. Check: {hard} blocking, {soft} warnings.",
+    "cleared": "Choice removed — routing applies.",
+    "chosenBy": "Chosen by {who}",
+    "boundByReroute": "Rerouted after a confirmed cancellation",
+    "noOptions": "No active warehouse in the order's product line.",
+    "notNow": "The warehouse can no longer be changed here (status “{status}”).",
+    "shipments": {
+      "title": "Shipments",
+      "none": "No shipment yet.",
+      "external": "Number",
+      "raw": "Warehouse status"
+    },
+    "reroute": {
+      "open": "Reroute to another warehouse",
+      "form": "Reroute",
+      "target": "New warehouse",
+      "explain": "The shipment at {from} is cancelled first, through the outbox. Only when the warehouse confirms the cancellation does the order return to Approved for the new warehouse, to be sent with Fulfill.",
+      "ack": "I understand: the shipment at {from} will be cancelled.",
+      "submit": "Cancel and reroute",
+      "noTargets": "No other suitable warehouse.",
+      "pending": "Waiting for the cancellation at {from} → {to}",
+      "requestStatus": "Cancel request: {status}",
+      "canary": "Canary mode: the cancellation is sent to the warehouse only after this confirmation.",
+      "refusal": {
+        "no_active_shipment": "No active shipment.",
+        "several_active_shipments": "More than one active shipment — check by hand.",
+        "not_at_warehouse_yet_or_locked": "The shipment is not accepted by the warehouse yet, or already in progress.",
+        "fhb_not_pending": "FHB allows cancelling only in status pending.",
+        "eushipments_not_deletable": "euShipments deletes only in New / Information received / Awaiting pickup and within 14 days.",
+        "connection_type_unsupported": "This warehouse does not support cancelling.",
+        "order_status": "The order cannot be rerouted in its current status."
+      },
+      "onlyAdmins": "Rerouting after sending: owner or admin only.",
+      "history": "Reroutes",
+      "status": {
+        "CANCEL_QUEUED": "waiting for the cancellation",
+        "DONE": "rerouted",
+        "REFUSED": "refused — nothing changed",
+        "UNCERTAIN": "unknown result — task",
+        "SIMULATED": "dry run — recorded only"
+      }
+    },
+    "reasonKind": "Warehouse (Ship from / Reroute)",
+    "timeline": {
+      "warehouse_choice": "Warehouse chosen by hand",
+      "warehouse_choice_cleared": "Back to routing",
+      "reroute_requested": "Reroute requested",
+      "reroute": "Rerouted — cancelled at the old warehouse",
+      "reroute_refused": "Reroute refused",
+      "reroute_uncertain": "Reroute: unknown result",
+      "reroute_simulated": "Reroute (dry run): recorded only"
+    },
+    "error": {
+      "generic": "Action failed.",
+      "forbidden": "You do not have permission for this.",
+      "invalid": "Invalid data.",
+      "not_found": "Order not found.",
+      "reason_required": "Pick a reason.",
+      "reason_invalid": "This reason does not apply here.",
+      "reason_text_required": "Describe the reason in the note.",
+      "connection_not_eligible": "This warehouse is not in the order's product line or is disabled.",
+      "choice_not_allowed": "The warehouse cannot be changed in the current status.",
+      "no_choice": "There is no manual choice.",
+      "no_active_shipment": "No active shipment.",
+      "several_active_shipments": "More than one active shipment.",
+      "not_cancellable": "The shipment can no longer be cancelled at the warehouse.",
+      "same_connection": "Pick another warehouse.",
+      "reroute_target_used": "The order already had a shipment at this warehouse or another one on the same euShipments account (euShipments does not allow the same reference).",
+      "reroute_not_allowed": "The order cannot be rerouted in its current status.",
+      "reroute_hard_findings": "The new warehouse has blocking findings:",
+      "reroute_open": "A reroute is already in progress.",
+      "shipment_changed": "The shipment changed — reload.",
+      "cancel_uncertain": "An earlier cancellation has an unknown result — check at the warehouse.",
+      "transition_not_allowed": "Not possible in the current status.",
+      "transition_race": "The order changed — try again."
+    }
   }
 }

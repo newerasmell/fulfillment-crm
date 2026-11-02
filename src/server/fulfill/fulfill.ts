@@ -9,6 +9,7 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { queueEuOrder } from "@/server/eushipments/write";
 import { FhbPreflightError, submitFhbOrder } from "@/server/fhb/orders";
 import { FINGERPRINT_SELECT, orderFingerprint, storedFingerprint, TransitionError } from "@/server/pipeline";
+import { isTwoActiveShipments } from "@/server/override/guards";
 import { routeOrder, type RoutingDecision } from "@/server/routing";
 import type { ScopedActor } from "@/server/stores";
 
@@ -69,6 +70,8 @@ function routingChanged(
   reviewed: Partial<RoutingDecision> | null,
   now: RoutingDecision,
 ): Finding | null {
+  // A person's warehouse choice (P4-09) binds the approval to that warehouse; later routing changes do not apply.
+  if (reviewed?.via === "manual") return null;
   const routedThen = reviewed?.connectionId === approvedConnectionId;
   const routedNow = now.connectionId === approvedConnectionId;
   const carrierThen = routedThen ? (reviewed?.carrier ?? null) : null;
@@ -230,6 +233,8 @@ export async function fulfillOrder(
         })),
       });
     if (err instanceof TransitionError) return result("SKIPPED", "already_submitted", base);
+    // The database guard (one active shipment per order, P4-09) refused a racing second shipment.
+    if (isTwoActiveShipments(err)) return result("SKIPPED", "already_submitted", base);
     if (err instanceof DomainError)
       return result(
         ALREADY.has(err.code) ? "SKIPPED" : "FAILED",

@@ -571,6 +571,16 @@ export async function queueEuOrder(
 const DELETABLE = new Set(["new", "information received", "awaiting pickup"]);
 const DELETE_MAX_AGE_MS = 14 * 24 * 3600_000;
 
+/** Can euShipments still delete this shipment (status and the 14-day window, INTEGRATION_NOTES §4.3)? */
+export function isEuOrderDeletable(
+  f: { rawStatus: string | null; status: string; submittedAt: Date | null; createdAt: Date },
+  now: Date = new Date(),
+) {
+  const statusOk = f.rawStatus ? DELETABLE.has(normaliseStatusText(f.rawStatus)) : f.status === "ACCEPTED";
+  const since = f.submittedAt ?? f.createdAt;
+  return statusOk && now.getTime() - since.getTime() <= DELETE_MAX_AGE_MS;
+}
+
 export async function queueEuOrderDeletion(
   actor: ScopedActor,
   fulfillmentId: string,
@@ -582,10 +592,7 @@ export async function queueEuOrderDeletion(
   if (!f || (actor.companyScope && (!f.order.companyId || !actor.companyScope.includes(f.order.companyId))))
     throw new DomainError("not_found");
   await euConnectionFor(actor, f.connectionId);
-  const statusOk = f.rawStatus ? DELETABLE.has(normaliseStatusText(f.rawStatus)) : f.status === "ACCEPTED";
-  const since = f.submittedAt ?? f.createdAt;
-  if (!statusOk || now.getTime() - since.getTime() > DELETE_MAX_AGE_MS)
-    throw new DomainError("not_deletable");
+  if (!isEuOrderDeletable(f, now)) throw new DomainError("not_deletable");
   const { request, created } = await enqueueOutbound({
     accountId: actor.accountId,
     connectionId: f.connectionId,

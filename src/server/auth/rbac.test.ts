@@ -39,6 +39,7 @@ const EXPECTED: Record<Permission, string> = {
   "alerts.manage": "11110",
   "lines.manage": "11000",
   "lines.catalogue": "11110",
+  "orders.reroute": "11000",
 };
 
 describe("role matrix", () => {

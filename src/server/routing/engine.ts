@@ -92,7 +92,8 @@ export interface RoutingDecision {
   connectionId: string | null;
   connectionName: string | null;
   connectionType: ConnectionType | null;
-  via: "rule" | "stock_fallback" | "none";
+  /** "manual": a person chose the warehouse ("Изпрати от", P4-09) — set by the validator engine, never here. */
+  via: "rule" | "stock_fallback" | "none" | "manual";
   ruleId: string | null;
   /** 1-based position of the rule in the ordered list (what the admin page shows). */
   ruleNumber: number | null;
@@ -108,6 +109,26 @@ export interface RoutingDecision {
   stock: StockCheck | null;
   explanation: { bg: string; en: string };
   steps: RoutingStep[];
+  /** Only with via "manual": who chose, why, and what routing would have picked (P4-09). */
+  manual?: ManualChoiceInfo;
+}
+
+export interface ManualChoiceInfo {
+  /** manual = "Изпрати от" before sending; reroute = bound by a confirmed reroute after sending. */
+  via: "manual" | "reroute";
+  userId: string | null;
+  userName: string | null;
+  reasonCode: string;
+  reasonLabel: { bg: string; en: string };
+  reasonText: string | null;
+  at: string;
+  routed: {
+    connectionId: string | null;
+    connectionName: string | null;
+    via: "rule" | "stock_fallback" | "none" | "manual";
+    ruleNumber: number | null;
+    explanation: { bg: string; en: string };
+  };
 }
 
 /** Connection types that hold stock (FHB Joy prints labels only, it is never a routing target). */
