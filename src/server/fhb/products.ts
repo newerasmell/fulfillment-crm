@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
-import { payloadHash } from "@/integrations/fhb-v3/adapter";
 import { buildFhbProductCreate, buildFhbProductUpdate, fhbProductId } from "@/integrations/fhb-v3/mapper";
 import { hasHardBlock, validateFhbProduct } from "@/integrations/fhb-v3/validators";
 import { DomainError } from "@/server/accounts";
@@ -11,6 +10,7 @@ import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import { fhbStockNotifyUrl, publicBaseUrl } from "./callback-token";
 import { assertConnectionInScope, type ScopedActor } from "./connection";
 import { FhbPreflightError } from "./orders";
+import { updateRevisionKey } from "./revision";
 
 /**
  * Products at FHB (INTEGRATION_NOTES §2.1, §2.2), behind the outbox:
@@ -44,10 +44,12 @@ export type QueueFhbProductInput = z.input<typeof Input>;
 export async function queueFhbProduct(actor: ScopedActor, raw: QueueFhbProductInput) {
   assertCan(actor.role, "vendorProducts.write");
   const input = Input.parse(raw);
-  const result = await withAccountTransaction(actor.accountId, async (tx) => {
+  const result = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
     const connection = await tx.fulfillmentConnection.findUnique({ where: { id: input.connectionId } });
     if (!connection || connection.type !== "FHB_V3") throw new DomainError("not_found");
     assertConnectionInScope(actor, connection.companyId);
+    // Serialises writes per connection (update revisions below).
+    await lockForUpdate("FulfillmentConnection", connection.id);
     const product = await tx.product.findUnique({
       where: { id: input.productId },
       include: { eans: { orderBy: { createdAt: "asc" }, take: 1 } },
@@ -128,7 +130,12 @@ export async function queueFhbProduct(actor: ScopedActor, raw: QueueFhbProductIn
       accountId: actor.accountId,
       connectionId: connection.id,
       operation: "fhb.product.update",
-      idempotencyKey: `fhb.product.update:${vendorProductId}:${payloadHash(body)}`,
+      idempotencyKey: await updateRevisionKey(
+        tx,
+        connection.id,
+        `fhb.product.update:${vendorProductId}`,
+        body,
+      ),
       payload: { id: vendorProductId, body, meta } as unknown as Prisma.InputJsonValue,
       createdById: actor.userId,
     });

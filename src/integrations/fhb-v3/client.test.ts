@@ -278,6 +278,34 @@ describe("FhbClient", () => {
     expect(peak).toBe(2);
   });
 
+  it("a read sleeping in backoff does not hold a concurrency slot (writes are not starved)", async () => {
+    let releaseSleep!: () => void;
+    const sleeping = new Promise<void>((r) => (releaseSleep = r));
+    let reads = 0;
+    const fetchImpl: FetchLike = async (u, init = {}) => {
+      if (new URL(u).pathname === "/v3/login") return json({ token: "t", expiration: null });
+      if ((init.method ?? "GET") === "GET")
+        return ++reads === 1 ? json({}, 503) : json(ex["GET /product 200 response"]);
+      return json(ex["POST /order 200 response"]);
+    };
+    let sleepStarted!: () => void;
+    const inSleep = new Promise<void>((r) => (sleepStarted = r));
+    const client = new FhbClient(CREDS, {
+      fetchImpl,
+      concurrency: 1,
+      sleep: () => {
+        sleepStarted();
+        return sleeping;
+      },
+    });
+    const read = client.getProduct("1");
+    await inSleep;
+    // The only slot is free while the read waits: the write goes through now.
+    await expect(client.createOrder(ex["POST /order request"] as never)).resolves.toBeTruthy();
+    releaseSleep();
+    await expect(read).resolves.toBeTruthy();
+  });
+
   it("only talks https to the configured base", () => {
     expect(() => new FhbClient(CREDS, { baseUrl: "http://api.fhb.sk/v3" })).toThrow();
     expect(new FhbClient(CREDS).baseUrl).toBe(BASE);

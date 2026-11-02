@@ -92,6 +92,9 @@ export interface FhbOrderCheck {
 
 export const DEFAULT_STOCK_MAX_AGE_MS = 60 * 60_000;
 
+/** Currencies whose cash on delivery is collected in whole units (no rounding rule stored per country yet). */
+export const WHOLE_UNIT_COD_CURRENCIES: ReadonlySet<string> = new Set(["HUF"]);
+
 export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
   const out: ValidationFinding[] = [];
   const now = o.now ?? new Date();
@@ -315,6 +318,24 @@ export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
   } else if (o.isCod && o.codAmount !== null && o.codAmount <= 0) {
     out.push(f("fhb.cod.zero", "hard", "cod", "Наложеният платеж е 0.", "The COD amount is zero."));
   }
+  // Per-country rounding rules are not modelled yet (INTEGRATION_NOTES §2.3). Until they are, a COD with a
+  // fractional part in a currency that is collected in whole units is flagged for the operator.
+  if (
+    o.isCod &&
+    o.codAmount !== null &&
+    o.codCurrency &&
+    WHOLE_UNIT_COD_CURRENCIES.has(o.codCurrency.toUpperCase()) &&
+    Math.round(o.codAmount * 100) % 100 !== 0
+  )
+    out.push(
+      f(
+        "fhb.cod.fractional",
+        "soft",
+        "cod",
+        `Наложеният платеж ${o.codAmount} ${o.codCurrency} има дробна част; в тази валута се събират цели суми.`,
+        `The COD ${o.codAmount} ${o.codCurrency} has a fractional part; this currency is collected in whole units.`,
+      ),
+    );
   if (o.valueNotConverted)
     out.push(
       f(

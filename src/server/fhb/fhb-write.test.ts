@@ -8,8 +8,9 @@ import { accountDb, systemDb } from "@/server/db/client";
 import { processOutbound } from "@/server/outbox/outbox";
 import { applyFhbOrderView } from "./apply";
 import { authenticateFhbCallbackPath } from "./callback-token";
+import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
 import { createFhbConnection } from "./connection";
-import { createFhbStockReceipt, deleteFhbStockReceipt } from "./inbound";
+import { createFhbStockReceipt, deleteFhbStockReceipt, resubmitFhbStockReceipt } from "./inbound";
 import { cancelFhbOrder, FhbPreflightError, submitFhbOrder, updateFhbOrder } from "./orders";
 import { queueFhbProduct } from "./products";
 import { createFhbTransportResolver } from "./transport";
@@ -135,6 +136,77 @@ async function setup(mode: LiveMode = "LIVE") {
 }
 
 const orderView = (over: Record<string, unknown> = {}) => ({ ...ex["POST /order 200 response"], ...over });
+
+async function extraOrder(s: Awaited<ReturnType<typeof setup>>, number: string, quantity = 2) {
+  return systemDb().order.create({
+    data: {
+      accountId: s.account.id,
+      companyId: s.company.id,
+      source: "SHOPIFY",
+      storeId: s.store.id,
+      number,
+      email: "buyer@example.com",
+      phone: "0900 000 000",
+      customerName: "Test Buyer",
+      shippingAddress: {
+        name: "Test Buyer",
+        address1: "Example street 1",
+        city: "Testville",
+        zip: "00000",
+        countryCode: "SK",
+      },
+      countryCode: "SK",
+      currency: "EUR",
+      subtotal: "40.00",
+      total: "45.00",
+      paymentMethod: "COD",
+      codAmount: "45.00",
+      placedAt: new Date(),
+      status: "APPROVED",
+      lines: {
+        create: [{ productId: s.product.id, sku: "SKU-1", title: "Sample", quantity, unitPrice: "20.00" }],
+      },
+    },
+  });
+}
+
+const echo = (b: unknown) => {
+  const body = b as { parcel_service?: string; delivery_point?: string; note?: string };
+  return orderView({
+    id: "TST-1001",
+    status: "pending",
+    parcel_service: body.parcel_service ?? null,
+    delivery_point: body.delivery_point ?? null,
+    note: body.note ?? null,
+  });
+};
+
+/** Submits and sends the create, then marks the shipment `pending` at FHB (editable). */
+async function pendingAtFhb(
+  s: Awaited<ReturnType<typeof setup>>,
+  extra: Partial<Parameters<typeof submitFhbOrder>[1]> = {},
+) {
+  const sub = await submitFhbOrder(s.owner, {
+    orderId: s.order.id,
+    connectionId: s.connection.id,
+    acknowledgeWarnings: true,
+    ...extra,
+  });
+  const fhb = fakeFhb({
+    // FHB echoes what it holds (parcel service, point, note) — taken from the body it was sent.
+    "POST /order": [(_u, b) => json(echo(b))],
+    "PUT /order": [(_u, b) => json(echo(b))],
+  });
+  expect(await processOutbound(sub.request.id, fhb.resolve)).toBe("SENT");
+  return { ...sub, fhb };
+}
+
+const bodyOf = async (id: string) =>
+  (
+    (await systemDb().outboundRequest.findUniqueOrThrow({ where: { id } })).payload as {
+      body: Record<string, unknown>;
+    }
+  ).body;
 
 describe("FHB order create through the outbox", () => {
   it("queues a validated payload: deterministic id, variable symbol sequence, local COD, validate:true, signed URLs", async () => {
@@ -449,13 +521,123 @@ describe("FHB order update / cancel only while pending", () => {
     await processOutbound(request.id, fhb.resolve);
     const upd = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true });
     const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: upd.request.id } });
-    expect(req.idempotencyKey).toMatch(/^fhb\.order\.update:TST-1001:[0-9a-f]{16}$/);
+    expect(req.idempotencyKey).toBe("fhb.order.update:TST-1001:r1");
     const body = (req.payload as { body: Record<string, unknown> }).body;
     expect(body).not.toHaveProperty("id");
     expect(body).not.toHaveProperty("validate");
     expect(await processOutbound(upd.request.id, fhb.resolve)).toBe("FAILED");
     const after = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: upd.request.id } });
     expect(after.lastError).toContain("NOT_UPDATABLE_ORDER_ERROR");
+  });
+});
+
+describe("FHB order update keeps what the order was created with (audit fixes)", () => {
+  it("an update without carrier/point/note re-sends the stored parcel service, pick-up point and note", async () => {
+    const s = await setup("LIVE");
+    const { fulfillment, fhb } = await pendingAtFhb(s, {
+      parcelService: "test_pudo_carrier",
+      pickupPoint: true,
+      deliveryPoint: "12345",
+      note: "Fragile — handle with care",
+    });
+    const upd = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true });
+    expect(await bodyOf(upd.request.id)).toMatchObject({
+      parcel_service: "test_pudo_carrier",
+      delivery_point: "12345",
+      note: "Fragile — handle with care",
+    });
+    expect(await processOutbound(upd.request.id, fhb.resolve)).toBe("SENT");
+    expect(fhb.calls.find((c) => c.key === "PUT /order")?.body).toMatchObject({
+      parcel_service: "test_pudo_carrier",
+      delivery_point: "12345",
+    });
+    // An explicit change still wins, and clearing the point needs a new one when the carrier is PUDO.
+    const changed = await updateFhbOrder(s.owner, fulfillment.id, {
+      acknowledgeWarnings: true,
+      note: null,
+      deliveryPoint: "67890",
+    });
+    const b = await bodyOf(changed.request.id);
+    expect(b).toMatchObject({ parcel_service: "test_pudo_carrier", delivery_point: "67890" });
+    expect(b).not.toHaveProperty("note");
+    await expect(
+      updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true, deliveryPoint: null }),
+    ).rejects.toMatchObject({ code: "fhb_preflight_failed" });
+  });
+
+  it("an update credits back the order's own reservation (free_quantity 0 after create)", async () => {
+    const s = await setup("LIVE");
+    await systemDb().stockLevel.update({
+      where: { vendorProductId: s.vp.id },
+      data: { free: 2, snapshotAt: new Date() },
+    });
+    const { fulfillment } = await pendingAtFhb(s);
+    // FHB has reserved the 2 pieces: a fresh snapshot shows nothing free.
+    await systemDb().stockLevel.update({
+      where: { vendorProductId: s.vp.id },
+      data: { free: 0, snapshotAt: new Date(Date.now() + 1000) },
+    });
+    const upd = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true });
+    expect(upd.created).toBe(true);
+    // More than the reservation covers is still blocked.
+    await systemDb().orderLine.updateMany({ where: { orderId: s.order.id }, data: { quantity: 3 } });
+    const err = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as FhbPreflightError).findings.map((f) => f.code)).toContain("fhb.stock.insufficient");
+  });
+
+  it("A→B→A sends three updates (no silent divergence); the same change twice is one request", async () => {
+    const s = await setup("LIVE");
+    const { fulfillment, fhb } = await pendingAtFhb(s, { note: "A" });
+    const b = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true, note: "B" });
+    const bAgain = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true, note: "B" });
+    expect(bAgain.request.id).toBe(b.request.id);
+    expect(await processOutbound(b.request.id, fhb.resolve)).toBe("SENT");
+    const a = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true, note: "A" });
+    expect(a.created).toBe(true);
+    expect(a.request.id).not.toBe(b.request.id);
+    expect(await processOutbound(a.request.id, fhb.resolve)).toBe("SENT");
+    const puts = fhb.calls
+      .filter((c) => c.key === "PUT /order")
+      .map((c) => (c.body as { note?: string }).note);
+    expect(puts).toEqual(["B", "A"]);
+  });
+
+  it("concurrent submits on one connection all succeed with distinct variable symbols", async () => {
+    const s = await setup("LIVE");
+    const orders = [s.order, ...(await Promise.all([2, 3, 4, 5].map((n) => extraOrder(s, `#100${n}`))))];
+    const results = await Promise.all(
+      orders.map((o) =>
+        submitFhbOrder(s.owner, { orderId: o.id, connectionId: s.connection.id, acknowledgeWarnings: true }),
+      ),
+    );
+    const symbols = results.map((r) => r.fulfillment.variableSymbol);
+    expect(new Set(symbols).size).toBe(orders.length);
+    expect([...symbols].sort()).toEqual(["1", "2", "3", "4", "5"]);
+    const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
+    expect(conn.variableSymbolNext).toBe(6n);
+  });
+});
+
+describe("FHB credentials never leak into hints or errors", () => {
+  it("the vault hint is derived from the app id, not the JSON blob that ends in the secret", async () => {
+    const s = await setup("LIVE");
+    const cred = await systemDb().credential.findFirstOrThrow({ where: { accountId: s.account.id } });
+    expect(cred.hint).not.toContain("et");
+    expect(cred.hint).not.toContain('"}');
+    expect(cred.hint).toBe("app ••••-app");
+  });
+
+  it("a failure to build the client is stored as a fixed code, never the exception text", () => {
+    let err: unknown;
+    try {
+      JSON.parse('{"appId":"x","secret":"top-secret-value"');
+    } catch (e) {
+      err = e;
+    }
+    expect(clientFailureCode(err)).toBe("credentials_unreadable");
+    expect(clientFailureCode({ code: "no_credentials" })).toBe("no_credentials");
   });
 });
 
@@ -574,10 +756,11 @@ describe("FHB stock receipts", () => {
     const { inbound, request } = await createFhbStockReceipt(s.owner, {
       connectionId: s.connection.id,
       name: "Inbound 1",
+      requestToken: "form-token-0001",
       lines: [{ productId: s.product.id, quantity: 10 }],
       expectedDate: "2026-11-10",
     });
-    expect(inbound.externalRef).toMatch(/^IN-\d{8}-[0-9A-F]{10}$/);
+    expect(inbound.externalRef).toMatch(/^IN-[0-9A-F]{16}$/);
     await expect(deleteFhbStockReceipt(s.owner, inbound.id)).rejects.toMatchObject({
       code: "fhb_receipt_locked",
     });
@@ -611,6 +794,59 @@ describe("FHB stock receipts", () => {
     );
   });
 
+  it("the same request token twice is one receipt and one request; a refused receipt is re-submitted with the same id", async () => {
+    const s = await setup("LIVE");
+    const input = {
+      connectionId: s.connection.id,
+      name: "Inbound 2",
+      requestToken: "form-token-0003",
+      lines: [{ productId: s.product.id, quantity: 5 }],
+    };
+    const [one, two] = await Promise.all([
+      createFhbStockReceipt(s.owner, input),
+      createFhbStockReceipt(s.owner, input),
+    ]);
+    expect(two.inbound.id).toBe(one.inbound.id);
+    expect(two.request.id).toBe(one.request.id);
+    expect([one.created, two.created].sort()).toEqual([false, true]);
+    expect(await accountDb(s.account.id).inboundShipment.count()).toBe(1);
+    expect(await systemDb().outboundRequest.count({ where: { connectionId: s.connection.id } })).toBe(1);
+
+    const fhb = fakeFhb({
+      "POST /stock-receipt": [
+        () => json(ex["POST /stock-receipt 400 response"], 400),
+        () =>
+          json({
+            ...ex["POST /stock-receipt 200 response"],
+            id: one.inbound.externalRef,
+            items: [{ id: "RSKU-1", quantity: 6, received: 0 }],
+          }),
+      ],
+    });
+    expect(await processOutbound(one.request.id, fhb.resolve)).toBe("FAILED");
+    expect(
+      (await systemDb().inboundShipment.findUniqueOrThrow({ where: { id: one.inbound.id } })).status,
+    ).toBe("SUBMIT_FAILED");
+    const again = await resubmitFhbStockReceipt(s.owner, one.inbound.id, {
+      name: "Inbound 2",
+      lines: [{ productId: s.product.id, quantity: 6 }],
+    });
+    expect(again.request.id).toBe(one.request.id);
+    expect(again.request.status).toBe("PENDING");
+    expect(await processOutbound(again.request.id, fhb.resolve)).toBe("SENT");
+    const posts = fhb.calls
+      .filter((c) => c.key === "POST /stock-receipt")
+      .map((c) => (c.body as { id: string }).id);
+    expect(posts).toEqual([one.inbound.externalRef, one.inbound.externalRef]);
+    // Once FHB holds it, re-submitting is refused (no second receipt).
+    await expect(
+      resubmitFhbStockReceipt(s.owner, one.inbound.id, {
+        name: "x",
+        lines: [{ productId: s.product.id, quantity: 1 }],
+      }),
+    ).rejects.toMatchObject({ code: "fhb_already_submitted" });
+  });
+
   it("refuses unmapped products before anything is stored", async () => {
     const s = await setup("LIVE");
     const lone = await systemDb().product.create({
@@ -619,6 +855,7 @@ describe("FHB stock receipts", () => {
     const err = await createFhbStockReceipt(s.owner, {
       connectionId: s.connection.id,
       name: "x",
+      requestToken: "form-token-0002",
       lines: [{ productId: lone.id, quantity: 1 }],
     }).catch((e: unknown) => e);
     expect((err as FhbPreflightError).findings.map((f) => f.code)).toContain("fhb.receipt.unmapped");

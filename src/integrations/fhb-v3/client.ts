@@ -270,23 +270,27 @@ export class FhbClient {
     for (const [k, v] of Object.entries(opts.query ?? {}))
       if (v !== undefined) url.searchParams.set(k, String(v));
     const isRead = method === "GET";
-    return this.limit.run(async () => {
+    // The concurrency slot is held only for the HTTP exchange itself, never across backoff sleeps: a degraded
+    // read retrying with backoff must not keep queued writes waiting until the outbox marks them stale.
+    {
       let attempt = 0;
       let relogged = false;
       for (;;) {
         const token = await this.tokens.get(this.key, () => this.login());
         let res: Response;
         try {
-          res = await this.fetchImpl(url.toString(), {
-            method,
-            headers: {
-              Accept: "application/json",
-              "X-Authentication-Simple": Buffer.from(token, "utf8").toString("base64"),
-              ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
-            },
-            body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-            signal: AbortSignal.timeout(this.timeoutMs),
-          });
+          res = await this.limit.run(() =>
+            this.fetchImpl(url.toString(), {
+              method,
+              headers: {
+                Accept: "application/json",
+                "X-Authentication-Simple": Buffer.from(token, "utf8").toString("base64"),
+                ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
+              },
+              body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+              signal: AbortSignal.timeout(this.timeoutMs),
+            }),
+          );
         } catch (err) {
           const detail = scrubText((err as Error).message);
           if (isRead && attempt < this.maxRetries) {
@@ -355,7 +359,7 @@ export class FhbClient {
         }
         return parsed.data as z.infer<S>;
       }
-    });
+    }
   }
 
   /** Reads that answer 404 for "does not exist" return null instead of throwing. */

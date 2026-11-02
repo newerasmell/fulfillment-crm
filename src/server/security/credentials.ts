@@ -20,12 +20,19 @@ const aadFor = (accountId: string, credentialId: string) => `credential:${accoun
 export async function saveCredential(
   db: AccountDb,
   accountId: string,
-  input: { label: string; secret: string; userId?: string; credentialId?: string },
+  input: {
+    label: string;
+    secret: string;
+    userId?: string;
+    credentialId?: string;
+    /** Explicit UI hint for structured secrets (e.g. JSON), where the tail of the blob would be meaningless. */
+    hint?: string;
+  },
 ): Promise<CredentialView> {
   if (!input.secret) throw new Error("Secret must not be empty");
   const id = input.credentialId ?? crypto.randomUUID();
   const sealed = seal(input.secret, aadFor(accountId, id));
-  const data = { label: input.label, hint: hintFor(input.secret), ...sealed };
+  const data = { label: input.label, hint: input.hint ?? hintFor(input.secret), ...sealed };
   if (input.credentialId) {
     return db.credential.update({ where: { id }, data, select: VIEW_SELECT });
   }

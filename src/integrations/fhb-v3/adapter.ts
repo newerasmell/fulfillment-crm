@@ -63,6 +63,14 @@ export function parseFhbEnvelope<O extends FhbOperation>(op: O, payload: unknown
 }
 
 /** Short stable hash of a payload: idempotency keys of updates (same change twice = one request). */
+/** Fixed, secret-free code for a failure to build the client (never the exception text). */
+export function clientFailureCode(err: unknown): "no_credentials" | "not_found" | "credentials_unreadable" {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === "no_credentials") return "no_credentials";
+  if (code === "not_found") return "not_found";
+  return "credentials_unreadable";
+}
+
 export function payloadHash(v: unknown): string {
   const canon = (x: unknown): unknown =>
     Array.isArray(x)
@@ -164,8 +172,9 @@ export class FhbV3Transport implements OutboundTransport {
     try {
       client = await this.opts.client();
     } catch (err) {
-      // Nothing left the building (no credentials / vault error): a definite, visible refusal.
-      return { outcome: "rejected", response: null, error: `no_client: ${(err as Error).message}` };
+      // Nothing left the building (no credentials / vault error): a definite, visible refusal. Only a fixed
+      // code is stored — the error text on the credential path could quote the (malformed) secret.
+      return { outcome: "rejected", response: null, error: `no_client: ${clientFailureCode(err)}` };
     }
     try {
       switch (op) {

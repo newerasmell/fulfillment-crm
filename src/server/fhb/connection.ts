@@ -39,6 +39,11 @@ export const FhbConnectionInput = z.object({
     .optional(),
 });
 
+/** The vault hint for FHB: the app id's tail (never derived from the JSON blob, which ends in the secret). */
+export function fhbCredentialHint(appId: string) {
+  return appId.length >= 8 ? `app ••••${appId.slice(-4)}` : "••••";
+}
+
 export async function createFhbConnection(actor: Actor, raw: z.input<typeof FhbConnectionInput>) {
   assertCan(actor.role, "connections.manage");
   assertCan(actor.role, "credentials.write");
@@ -49,6 +54,7 @@ export async function createFhbConnection(actor: Actor, raw: z.input<typeof FhbC
   const cred = await saveCredential(db, actor.accountId, {
     label: `FHB · ${input.name}`,
     secret: JSON.stringify({ appId: input.appId, secret: input.secret }),
+    hint: fhbCredentialHint(input.appId),
     userId: actor.userId,
   });
   const connection = await db.fulfillmentConnection.create({
@@ -91,6 +97,7 @@ export async function rotateFhbCredentials(
   await saveCredential(db, actor.accountId, {
     label: `FHB · ${c.name}`,
     secret: JSON.stringify(creds),
+    hint: fhbCredentialHint(creds.appId),
     credentialId: c.credentialId,
   });
   await recordAudit({

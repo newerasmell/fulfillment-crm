@@ -1,5 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
-import { payloadHash } from "@/integrations/fhb-v3/adapter";
+import { Prisma } from "@/generated/prisma/client";
 import {
   buildFhbOrderCreate,
   buildFhbOrderUpdate,
@@ -22,6 +21,7 @@ import { isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import { fhbOrderNotificationUrls, publicBaseUrl } from "./callback-token";
 import type { ScopedActor } from "./connection";
+import { updateRevisionKey } from "./revision";
 
 /**
  * Sending an order to FHB (INTEGRATION_NOTES §2.1, §2.3, §5). Everything happens in ONE account transaction:
@@ -96,7 +96,15 @@ async function prepare(
   actor: ScopedActor,
   input: SubmitFhbOrderInput,
   ids: { externalId: string; variableSymbol: string; fulfillmentId: string },
-  opts: { duplicate: boolean },
+  opts: {
+    duplicate: boolean;
+    /**
+     * Update of an order FHB already holds: its own reservation is already taken off FHB's free_quantity
+     * (INTEGRATION_NOTES §2.2), so credit it back per CRM product — but only against stock snapshots taken
+     * after the order reached FHB (an older snapshot does not include the reservation yet).
+     */
+    reserved?: { byProduct: Map<string, number>; since: Date | null };
+  },
 ) {
   const order = await tx.order.findUnique({
     where: { id: input.orderId },
@@ -128,13 +136,19 @@ async function prepare(
     .filter((l) => l.quantity > 0)
     .map((l) => {
       const vp = l.productId ? vpOf.get(l.productId) : undefined;
+      const free = vp?.stockLevel?.free ?? null;
+      const snap = vp?.stockLevel?.snapshotAt ?? null;
+      const credit =
+        opts.reserved && l.productId && snap && (!opts.reserved.since || snap >= opts.reserved.since)
+          ? (opts.reserved.byProduct.get(l.productId) ?? 0)
+          : 0;
       return {
         label: l.sku ?? l.title,
         quantity: l.quantity,
         vendorProductId: vp?.vendorId ?? null,
         vendorActive: !!vp && !vp.archived && !!vp.lastSyncAt,
-        freeQuantity: vp?.stockLevel?.free ?? null,
-        stockSnapshotAt: vp?.stockLevel?.snapshotAt ?? null,
+        freeQuantity: free === null ? null : free + credit,
+        stockSnapshotAt: snap,
       };
     });
 
@@ -250,12 +264,15 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       if (!fulfillment) {
         // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, ….
         const externalId = fhbOrderExternalId(order.store.code, order.number, previous.length + 1);
-        const next = BigInt(connection.variableSymbolNext);
-        if (next > MAX_VARIABLE_SYMBOL) throw new DomainError("fhb_variable_symbol_exhausted");
-        await tx.fulfillmentConnection.update({
+        // Allocated atomically AFTER the lock: the connection row read by loadScoped() may be stale by now
+        // (a concurrent submit committed its increment while we waited for the lock).
+        const bumped = await tx.fulfillmentConnection.update({
           where: { id: connection.id },
-          data: { variableSymbolNext: next + 1n },
+          data: { variableSymbolNext: { increment: 1 } },
+          select: { variableSymbolNext: true },
         });
+        const next = BigInt(bumped.variableSymbolNext) - 1n;
+        if (next > MAX_VARIABLE_SYMBOL) throw new DomainError("fhb_variable_symbol_exhausted");
         fulfillment = await tx.fulfillment.create({
           data: {
             accountId: actor.accountId,
@@ -346,6 +363,16 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
   return result;
 }
 
+/** The body of the latest queued PUT for this order, if any (its note is what FHB holds now). */
+async function latestOrderBody(tx: Tx, connectionId: string, externalId: string) {
+  const row = await tx.outboundRequest.findFirst({
+    where: { connectionId, idempotencyKey: { startsWith: `fhb.order.update:${externalId}:` } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { payload: true },
+  });
+  return (row?.payload as { body?: { note?: string } } | null)?.body ?? null;
+}
+
 async function loadEditable(tx: Tx, actor: ScopedActor, fulfillmentId: string) {
   const f = await tx.fulfillment.findUnique({
     where: { id: fulfillmentId },
@@ -369,23 +396,70 @@ export async function updateFhbOrder(
   const result = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
     const f = await loadEditable(tx, actor, fulfillmentId);
     await lockForUpdate("FulfillmentConnection", f.connectionId);
+    // PUT /order "rewrites" the order with the same parameters as POST (fhb-kika-v3.md): whatever the caller
+    // does not change must be re-sent as created, or FHB drops the carrier, pick-up point and note.
+    const created = await tx.outboundRequest.findUnique({
+      where: {
+        connectionId_idempotencyKey: {
+          connectionId: f.connectionId,
+          idempotencyKey: `fhb.order.create:${f.externalId}`,
+        },
+      },
+      select: { payload: true },
+    });
+    const lastBody = await latestOrderBody(tx, f.connectionId, f.externalId);
+    const createdBody = (created?.payload as { body?: { note?: string } } | null)?.body;
+    const storedPoint = (f.deliveryPoint as { code?: string } | null)?.code ?? null;
+    const deliveryPoint = input.deliveryPoint !== undefined ? input.deliveryPoint : storedPoint;
+    const merged: SubmitFhbOrderInput = {
+      ...input,
+      orderId: f.orderId,
+      connectionId: f.connectionId,
+      parcelService: input.parcelService !== undefined ? input.parcelService : f.carrier,
+      deliveryPoint,
+      // A pick-up-point order stays one unless the caller says otherwise (e.g. switching to home delivery).
+      pickupPoint: input.pickupPoint ?? (!!storedPoint || !!deliveryPoint),
+      note:
+        input.note !== undefined
+          ? input.note
+          : lastBody
+            ? (lastBody.note ?? null)
+            : (createdBody?.note ?? null),
+    };
+    const fLines = await tx.fulfillmentLine.findMany({
+      where: { fulfillmentId: f.id },
+      include: { orderLine: { select: { productId: true } } },
+    });
+    const byProduct = new Map<string, number>();
+    for (const l of fLines)
+      if (l.orderLine?.productId)
+        byProduct.set(l.orderLine.productId, (byProduct.get(l.orderLine.productId) ?? 0) + l.quantity);
     const prepared = await prepare(
       tx,
       actor,
-      { ...input, orderId: f.orderId, connectionId: f.connectionId },
+      merged,
       { externalId: f.externalId, variableSymbol: f.variableSymbol!, fulfillmentId: f.id },
-      { duplicate: false },
+      { duplicate: false, reserved: { byProduct, since: f.submittedAt } },
     );
     const body = buildFhbOrderUpdate(prepared.draft);
-    return enqueueOutboundInTx(tx, {
+    const prefix = `fhb.order.update:${f.externalId}`;
+    const enq = await enqueueOutboundInTx(tx, {
       accountId: actor.accountId,
       connectionId: f.connectionId,
       operation: "fhb.order.update",
-      idempotencyKey: `fhb.order.update:${f.externalId}:${payloadHash(body)}`,
+      idempotencyKey: await updateRevisionKey(tx, f.connectionId, prefix, body),
       payload: { id: f.externalId, body } as unknown as Prisma.InputJsonValue,
       fulfillmentId: f.id,
       createdById: actor.userId,
     });
+    await tx.fulfillment.update({
+      where: { id: f.id },
+      data: {
+        carrier: merged.parcelService ?? null,
+        deliveryPoint: deliveryPoint ? { code: deliveryPoint } : Prisma.DbNull,
+      },
+    });
+    return enq;
   });
   await recordAudit({
     accountId: actor.accountId,

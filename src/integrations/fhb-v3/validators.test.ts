@@ -140,6 +140,17 @@ describe("FHB order pre-flight", () => {
     expect(codes(good({ codAmount: 0 }))).toContain("fhb.cod.zero");
   });
 
+  it("a fractional COD in a whole-unit currency (HUF) is a soft finding", () => {
+    const huf = { codCurrency: "HUF", localCurrency: "HUF", country: "HU" };
+    expect(codes(good({ ...huf, codAmount: 12345.67 }))).toContain("fhb.cod.fractional");
+    expect(codes(good({ ...huf, codAmount: 12345 }))).not.toContain("fhb.cod.fractional");
+    expect(codes(good({ codAmount: 12.5 }))).not.toContain("fhb.cod.fractional");
+    const found = validateFhbOrder({ ...good({ ...huf, codAmount: 1.5 }) }).find(
+      (x) => x.code === "fhb.cod.fractional",
+    );
+    expect(found?.severity).toBe("soft");
+  });
+
   it("duplicate id and PUDO without a point are hard blocks", () => {
     expect(codes(good({ duplicateExternalId: true }))).toContain("fhb.order.duplicate_id");
     expect(codes(good({ requiresDeliveryPoint: true, deliveryPoint: null }))).toContain(
