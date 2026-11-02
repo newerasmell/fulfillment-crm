@@ -196,6 +196,7 @@ model Account {
   auditLogs       AuditLog[]
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
+  eushipmentsStatusMappings EushipmentsStatusMapping[]
 }
 
 model User {
@@ -420,6 +421,17 @@ model FulfillmentConnection {
   fhbReturns       FhbReturnMirror[]
   fhbCarriers      FhbCarrier[]
   fhbPickupPoints  FhbPickupPoint[]
+  eushipmentsSettings  EushipmentsSettings?
+  eushipmentsTransfers EushipmentsTransfer[]
+  eushipmentsVendorCompanies EushipmentsVendorCompany[]
+  eushipmentsCouriers        EushipmentsCourier[]
+  eushipmentsWarehouses      EushipmentsWarehouse[]
+  eushipmentsCountries       EushipmentsCountry[]
+  eushipmentsCities          EushipmentsCity[]
+  eushipmentsOffices         EushipmentsOffice[]
+  eushipmentsStock           EushipmentsStock[]
+  eushipmentsTracking        EushipmentsTracking[]
+  eushipmentsSyncs           EushipmentsSync[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -1089,4 +1101,293 @@ model FhbPickupPoint {
   @@unique([accountId, id])
   @@unique([connectionId, service, queryCountry, vendorId])
   @@index([accountId, connectionId, service])
+}
+
+// ───────────────────────── euShipments (phase 3, track wave1/eushipments) ─────────────────────────
+
+/// Category an euShipments STATUS text maps to (INTEGRATION_NOTES §4.5; see status-map.ts).
+enum EushipmentsStatusCategory {
+  ACCEPTED
+  PROCESSING
+  IN_TRANSIT
+  DELIVERED
+  RETURNING
+  RETURN_RECEIVED
+  CANCELLED
+  CANCEL_PENDING
+  BLOCKED
+  EXCEPTION
+  UNKNOWN
+}
+
+/// euShipments status text → category, per group. Seeded from the spec list (status-map.ts); texts never seen
+/// before are added as UNKNOWN (confirmed = false) and alerted until an operator maps them.
+model EushipmentsStatusMapping {
+  id             String                    @id @default(cuid())
+  accountId      String
+  /// Normalised STATUS text (look-alikes → Latin, dashes unified, lowercase): the matching key.
+  statusKey      String
+  /// The text as the vendor sent it (or as the spec lists it).
+  statusText     String
+  /// Spec status id, for reference only (orders-history returns record ids, never status ids).
+  vendorStatusId Int?
+  category       EushipmentsStatusCategory
+  final          Boolean                   @default(false)
+  /// seed | observed | operator
+  source         String
+  /// false = observed but not mapped by anyone yet (UNKNOWN until an operator decides).
+  confirmed      Boolean                   @default(true)
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, statusKey])
+}
+
+/// Per-connection euShipments settings that do not fit FulfillmentConnection's generic columns.
+model EushipmentsSettings {
+  id                    String   @id @default(cuid())
+  accountId             String
+  connectionId          String
+  /// Alert when a shipment stays in New / Information received / … longer than this (INTEGRATION_NOTES §4.5).
+  acceptedAlertHours    Int      @default(24)
+  acceptedAlertWorkDays Boolean  @default(true)
+  /// The sender has an Econt/Speedy cash-receipt configuration: Σ(price × qty) must equal awb.bankRepayment.
+  cashReceiptCod        Boolean  @default(false)
+  /// Warn before queueing an order when the get-prod-avails snapshot is older than this (INTEGRATION_NOTES §5).
+  stockStaleHours       Int      @default(30)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, connectionId])
+}
+
+/// Warehouse transfer / scrap protocol (POST /fulfilment/create-transfer). externalRef is deterministic
+/// (derived from this row) and unique per connection; the vendor answers a resend with 409 + the protocol.
+model EushipmentsTransfer {
+  id                     String   @id @default(cuid())
+  accountId              String
+  connectionId           String
+  externalRef            String
+  sourceWarehouseId      Int
+  destinationWarehouseId Int?
+  /// 1 = NORMAL, 3 = SCRAP
+  protocolType           Int      @default(1)
+  /// [{productId, refNumber, quantity, batchNo?, batchDate?}]
+  items                  Json
+  comments               String?
+  /// QUEUED | CREATED | FAILED
+  status                 String   @default("QUEUED")
+  protocolId             String?
+  createdById            String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalRef])
+  @@index([accountId])
+}
+
+// ───────────── euShipments read side: mirror tables (phase 3 part 2, track wave1/eushipments) ─────────────
+// Everything below is a local mirror of euShipments read calls (P3-02), per connection. Products themselves are
+// mirrored into VendorProduct (vendorId = REFERENCE_NUMBER, vendorCode = euShipments product ID) and stock into
+// StockLevel; the tables here hold what has no generic home. Nothing here is ever sent back to the vendor.
+
+/// GET /get-user-companies: companies (client accounts) the connection's token can see.
+model EushipmentsVendorCompany {
+  id              String   @id @default(cuid())
+  accountId       String
+  connectionId    String
+  vendorCompanyId Int
+  name            String
+  bulstat         String?
+  syncedAt        DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, vendorCompanyId])
+  @@index([accountId])
+}
+
+/// GET /couriers/{companyId}: couriers activated for the connection's company.
+model EushipmentsCourier {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  courierId    Int
+  name         String
+  toOffice     Boolean  @default(false)
+  toAddress    Boolean  @default(false)
+  country      String?
+  currency     String?
+  syncedAt     DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, courierId])
+  @@index([accountId])
+}
+
+/// POST /fulfilment/warehouses: warehouses assigned to the connection's company.
+model EushipmentsWarehouse {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  warehouseId  Int
+  name         String
+  countryId    Int?
+  countryIso   String?
+  countryName  String?
+  syncedAt     DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, warehouseId])
+  @@index([accountId])
+}
+
+/// GET /get-countries: countries covered by the couriers of the token.
+model EushipmentsCountry {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  countryId    Int
+  name         String
+  cyrillicName String?
+  isoCode      String?
+  syncedAt     DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, countryId])
+  @@index([accountId])
+}
+
+/// GET /get-cities/{countryId}: city nomenclature (synced on demand per country).
+model EushipmentsCity {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  countryId    Int
+  cityId       Int
+  postalCode   String?
+  nameLocal    String
+  nameEn       String?
+  county       String?
+  countyEn     String?
+  syncedAt     DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, cityId])
+  @@index([accountId, connectionId, countryId])
+}
+
+/// GET /offices-by-courier/{courierId}: offices and parcel lockers (recipient.officeId = officeId).
+model EushipmentsOffice {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  officeId     Int
+  courierId    Int
+  name         String
+  code         String?
+  cityId       Int?
+  cityName     String?
+  address      String?
+  postCode     String?
+  region       String?
+  isStation    Boolean  @default(false)
+  codSupport   Boolean  @default(false)
+  latitude     String?
+  longitude    String?
+  /// {weekday: [begin, end], saturday: [begin, end]}
+  workHours    Json?
+  syncedAt     DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, officeId])
+  @@index([accountId, connectionId, courierId])
+}
+
+/// GET /fulfilment/get-prod-avails: one row per product per warehouse (a snapshot, see availDate).
+/// The per-product total goes to StockLevel (source POLL).
+model EushipmentsStock {
+  id              String    @id @default(cuid())
+  accountId       String
+  connectionId    String
+  refNumber       String
+  warehouseName   String
+  vendorProductId String?
+  availQty        Int
+  courierItemCode String?
+  availDate       DateTime?
+  syncedAt        DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, refNumber, warehouseName])
+  @@index([accountId, connectionId])
+}
+
+/// Polling state of one euShipments shipment (orders-history every 15 min, COD by reference).
+model EushipmentsTracking {
+  id              String    @id @default(cuid())
+  accountId       String
+  connectionId    String
+  fulfillmentId   String
+  referenceNumber String
+  polledAt        DateTime?
+  /// Final status reached (returns are polled until received): orders-history polling stops.
+  stopPolling     Boolean   @default(false)
+  lastError       String?
+  /// check-cod-by-order: COD in the country currency as returned, payout protocol and date.
+  codAmount       String?
+  codAwb          String?
+  codPaidNumber   String?
+  codPaidAt       DateTime?
+  codCheckedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([fulfillmentId])
+  @@index([accountId, connectionId, stopPolling, polledAt])
+}
+
+/// Freshness of each read-side sync per connection (shown on Складове и връзки).
+model EushipmentsSync {
+  id            String    @id @default(cuid())
+  accountId     String
+  connectionId  String
+  /// connection | reference | cities | products | stock | orders | bookings | cod
+  kind          String
+  lastStartedAt DateTime?
+  lastOkAt      DateTime?
+  lastError     String?
+  /// Counters of the last run, e.g. {rows, matched, unmatched}
+  info          Json      @default("{}")
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, kind])
+  @@index([accountId])
 }

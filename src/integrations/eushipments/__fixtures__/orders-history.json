@@ -1,0 +1,54 @@
+[
+  {
+    "refNum": "TST-1001",
+    "awb": null,
+    "newReturnNumber": null,
+    "error": null,
+    "errorCode": null,
+    "statusesHistory": [
+      {
+        "ID": 26332,
+        "STATUS": "Information received",
+        "DATE": "2026-10-30 10:47:18",
+        "DATE_CREATED": "2026-10-30 10:47:18",
+        "COMMENT": null,
+        "PARTNER_VOUCHER": null
+      }
+    ],
+    "items": [{ "refNumber": "ref-test-54202", "sn": null, "qty": 2 }]
+  },
+  {
+    "refNum": "TST-1002",
+    "awb": "00000000001",
+    "newReturnNumber": "00000000002",
+    "error": null,
+    "errorCode": null,
+    "statusesHistory": [
+      {
+        "ID": 26333,
+        "STATUS": "Information received",
+        "DATE": "2026-10-30 10:47:18",
+        "DATE_CREATED": "2026-10-30 10:47:18",
+        "COMMENT": null,
+        "PARTNER_VOUCHER": null
+      },
+      {
+        "ID": 26340,
+        "STATUS": "Оn hold",
+        "DATE": "2026-10-31 09:00:00",
+        "DATE_CREATED": "2026-10-31 09:00:01",
+        "COMMENT": "Задържана",
+        "PARTNER_VOUCHER": null
+      }
+    ],
+    "items": [{ "refNumber": "ref-test-54201", "sn": "SN0001234", "qty": 1 }]
+  },
+  {
+    "refNum": "TST-1003",
+    "awb": null,
+    "error": "Not found order with specified reference number!",
+    "errorCode": 404,
+    "statusesHistory": [],
+    "items": []
+  }
+]

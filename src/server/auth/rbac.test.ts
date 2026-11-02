@@ -29,6 +29,7 @@ const EXPECTED: Record<Permission, string> = {
   "orders.cancelAtWarehouse": "11100",
   "connections.sync": "11100",
   "outbox.payloads": "11000",
+  "eushipments.sync": "11110",
 };
 
 describe("role matrix", () => {

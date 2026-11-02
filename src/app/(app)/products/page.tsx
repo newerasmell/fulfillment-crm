@@ -7,6 +7,7 @@ import { requireAccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
 import { listUnmatchedVariants, stripSkuPrefix } from "@/server/shopify/products";
 import { MatchVariant } from "./forms";
+import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
 
 export default async function ProductsPage() {
   const ctx = await requireAccountContext();
@@ -107,6 +108,7 @@ export default async function ProductsPage() {
           </table>
         )}
       </Card>
+      <EuShipmentsProductsLink ctx={ctx} />
     </>
   );
 }
