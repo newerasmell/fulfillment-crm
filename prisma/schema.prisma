@@ -205,6 +205,8 @@ model Account {
   productLines              ProductLine[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
+  returnCases               ReturnCase[]
+  returnsCodSettings        ReturnsCodSettings?
 }
 
 model User {
@@ -451,6 +453,7 @@ model FulfillmentConnection {
   warehouseChoices           OrderWarehouseChoice[]
   rerouteTargets             OrderReroute[]        @relation("RerouteTarget")
   storeLocations             StoreLocation[]
+  returnCases                ReturnCase[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -1922,4 +1925,117 @@ model InventoryPushLine {
   push InventoryPush @relation(fields: [accountId, pushId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, pushId])
+}
+
+// ───────────────────────── wave 3 returns + COD (P6-01, P6-02) ─────────────────────────
+
+/// One return on the Връщания board (P6-01), built by the returns sweep from the warehouse mirrors:
+/// FHB rma/list (back from the carrier), FHB return/list (local depot returns), euShipments RETURNING /
+/// RETURN_RECEIVED shipments. One case per CRM shipment (caseKey "fulfillment:<id>"); returns the CRM cannot
+/// link get a vendor key. Never deleted; "processed" is the operator's mark that the refund/stock was handled.
+model ReturnCase {
+  id                       String    @id @default(cuid())
+  accountId                String
+  /// fulfillment:<id> | fhb-rma:<connectionId>:<externalId> | fhb-return:<connectionId>:<uid>
+  caseKey                  String
+  connectionId             String
+  fulfillmentId            String?
+  orderId                  String?
+  /// Selling company of the order, else the warehouse connection's company (company + line filters).
+  companyId                String?
+  /// Where the case was seen: FHB_RMA | FHB_LOCAL | EUSHIPMENTS (several when they describe the same parcel).
+  sources                  String[]
+  /// RETURNING | RECEIVED
+  state                    String
+  /// Vendor status as received (FHB order/return status, euShipments STATUS text).
+  rawStatus                String?
+  /// FHB return_type (return | claim | write_off) or local return type (basic | complex).
+  returnType               String?
+  /// Our order number or the vendor's order id (shown when the CRM has no order).
+  reference                String
+  trackingNumbers          String[]
+  returnTracking           String[]
+  /// [{title, sku?, quantity, condition?, action?}] — condition/action only where the vendor reports them.
+  items                    Json      @default("[]")
+  /// FHB local return photos: [{id, type}] (bytes are fetched on demand into ReturnPhoto).
+  photos                   Json      @default("[]")
+  /// FHB local return uid (when the case has one).
+  localReturnUid           String?
+  returningSince           DateTime?
+  receivedAt               DateTime?
+  processedAt              DateTime?
+  processedById            String?
+  processedNote            String?
+  /// Set by "Уведоми поддръжката"; the sweep sends and clears it.
+  supportNotifyRequestedAt DateTime?
+  supportNotifiedAt        DateTime?
+  firstSeenAt              DateTime  @default(now())
+  lastSyncAt               DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  account       Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  connection    FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  notifications ReturnNotification[]
+  photoFiles    ReturnPhoto[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, caseKey])
+  @@index([accountId, state, processedAt])
+  @@index([accountId, fulfillmentId])
+}
+
+/// "Return received — refund can be processed" to support, once per case and channel (email, telegram).
+model ReturnNotification {
+  id           String    @id @default(cuid())
+  accountId    String
+  returnCaseId String
+  channel      String
+  /// SENDING | SENT | FAILED
+  status       String    @default("SENDING")
+  error        String?
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+
+  returnCase ReturnCase @relation(fields: [accountId, returnCaseId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([returnCaseId, channel])
+  @@index([accountId, createdAt])
+}
+
+/// A FHB local return photo (GET /return/{uid}/photo/{photoId}), fetched by the worker when an operator asks.
+model ReturnPhoto {
+  id           String    @id @default(cuid())
+  accountId    String
+  returnCaseId String
+  photoId      String
+  /// package | content | document
+  type         String?
+  /// PENDING | READY | FAILED
+  status       String    @default("PENDING")
+  contentType  String?
+  bytes        Bytes?
+  error        String?
+  createdAt    DateTime  @default(now())
+  fetchedAt    DateTime?
+
+  returnCase ReturnCase @relation(fields: [accountId, returnCaseId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([returnCaseId, photoId])
+  @@index([accountId, status])
+}
+
+/// Returns + COD settings of a group (P6-01/P6-02). No row = defaults.
+model ReturnsCodSettings {
+  id                String   @id @default(cuid())
+  accountId         String   @unique
+  /// "Returning but not received after N days" alert.
+  returnOverdueDays Int      @default(14)
+  /// Delivered COD shipment with no vendor COD record after N days → task.
+  codMissingDays    Int      @default(14)
+  /// Send "return received" to support (email/Telegram; off when no channel is configured).
+  notifySupport     Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }

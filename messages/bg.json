@@ -1936,5 +1936,176 @@
       "lineCounts": "{total} реда · приложени {applied} · пробно {dry} · без промяна {unchanged} · остарели {stale} · грешка {failed}",
       "showRequest": "Покажи точната заявка"
     }
+  },
+  "returns": {
+    "title": "Връщания",
+    "subtitle": "Върнати от куриера (FHB RMA), върнати в депото (FHB) и връщания при euShipments — на едно място",
+    "filters": "Филтри",
+    "tabs": {
+      "todo": "За обработка",
+      "returning": "Връщат се",
+      "overdue": "Просрочени",
+      "processed": "Обработени",
+      "all": "Всички"
+    },
+    "source": {
+      "label": "Източник",
+      "all": "Всички източници",
+      "FHB_RMA": "FHB · върнати от куриер",
+      "FHB_LOCAL": "FHB · връщане в депо",
+      "EUSHIPMENTS": "euShipments"
+    },
+    "sourceHint": {
+      "FHB_RMA": "RMA",
+      "FHB_LOCAL": "Return",
+      "EUSHIPMENTS": "RMA"
+    },
+    "search": "Търси поръчка, товарителница или код на връщане",
+    "apply": "Филтрирай",
+    "backToList": "← Към всички връщания",
+    "empty": "Няма връщания по тези филтри.",
+    "col": {
+      "source": "Източник",
+      "order": "Поръчка",
+      "company": "Фирма",
+      "status": "Статус",
+      "dates": "Дати",
+      "items": "Артикули",
+      "tracking": "Проследяване",
+      "actions": "Действия"
+    },
+    "state": {
+      "RETURNING": "Връща се",
+      "RECEIVED": "Получено в склада"
+    },
+    "overdue": "Просрочено — {days} дни на път",
+    "returningSince": "На път от {date}",
+    "receivedAt": "Получено {date}",
+    "noDate": "без дата от склада",
+    "processedBy": "Обработено от {name} на {date}",
+    "processedNote": "Бележка: {note}",
+    "noOrder": "няма поръчка в CRM",
+    "returnTracking": "Обратна: {numbers}",
+    "localUid": "Код на връщане {uid}",
+    "condition": "състояние: {value}",
+    "action": "действие: {value}",
+    "returnType": {
+      "return": "върнато от куриера",
+      "claim": "върнато от клиента",
+      "write_off": "отписано",
+      "basic": "само пакет",
+      "complex": "по артикули"
+    },
+    "photos": "Снимки ({count})",
+    "photoType": {
+      "package": "опаковка",
+      "content": "съдържание",
+      "document": "документ"
+    },
+    "loadPhotos": "Зареди снимките",
+    "photosQueued": "Снимките се зареждат…",
+    "photoFailed": "неуспешно",
+    "process": "Маркирай като обработено",
+    "processForm": "Обработи връщане {reference}",
+    "note": "Бележка",
+    "notePlaceholder": "Напр. сумата е възстановена, стоката е заприходена",
+    "confirmProcess": "Обработено",
+    "cancel": "Отказ",
+    "reopen": "Върни за обработка",
+    "notify": "Уведоми поддръжката",
+    "notifyQueued": "Ще бъде изпратено при следващата проверка",
+    "notified": "Поддръжката е уведомена {date}",
+    "channel": {
+      "email": "имейл",
+      "telegram": "Telegram"
+    },
+    "channelStatus": {
+      "SENT": "изпратено",
+      "FAILED": "неуспешно",
+      "SENDING": "изпраща се"
+    },
+    "settings": {
+      "title": "Настройки за връщания и наложен платеж",
+      "overdueDays": "Сигнал „връща се, но не е получено“ след (дни)",
+      "codMissingDays": "Задача „липсва наложен платеж“ след доставка (дни)",
+      "notifySupport": "Уведомявай поддръжката, когато връщане бъде получено (имейл/Telegram, ако са настроени)",
+      "save": "Запази",
+      "saved": "Запазено",
+      "form": "Настройки за връщания"
+    },
+    "error": {
+      "not_found": "Няма такова връщане",
+      "already_processed": "Вече е обработено",
+      "not_processed": "Не е обработено",
+      "not_received": "Още не е получено в склада",
+      "no_photos": "Няма снимки",
+      "forbidden": "Нямате права",
+      "note_required": "Напишете бележка (поне 2 знака)",
+      "invalid": "Невалидни стойности"
+    }
+  },
+  "cod": {
+    "title": "Наложен платеж",
+    "subtitle": "Очакван наложен платеж (в местна валута) срещу отчетеното от складовете, по пратка",
+    "tabs": {
+      "outstanding": "Неизплатени",
+      "mismatch": "Разминавания",
+      "paid": "Изплатени",
+      "in_transit": "В транзит",
+      "all": "Всички"
+    },
+    "bucket": {
+      "label": "Дни от доставката",
+      "in_transit": "в транзит",
+      "d0_7": "0–7 дни",
+      "d8_14": "8–14 дни",
+      "d15_30": "15–30 дни",
+      "d30_plus": "над 30 дни",
+      "paid": "изплатени"
+    },
+    "allBuckets": "Всички",
+    "search": "Търси поръчка или товарителница",
+    "apply": "Филтрирай",
+    "export": "Експорт CSV",
+    "totals": "Суми по валута",
+    "byCompany": "По фирми",
+    "shown": "Показани {shown} от {total}",
+    "t": {
+      "expected": "Очаквано",
+      "received": "Получено от куриера",
+      "paid": "Изплатено",
+      "outstanding": "Неизплатено",
+      "count": "Пратки"
+    },
+    "col": {
+      "order": "Поръчка",
+      "company": "Фирма",
+      "warehouse": "Склад",
+      "delivered": "Доставена",
+      "expected": "Очакван НП",
+      "vendor": "Склад отчита",
+      "paid": "Изплатено",
+      "mismatch": "Разминаване",
+      "currency": "Валута"
+    },
+    "state": {
+      "none": "няма запис",
+      "not_covered": "не е четено от склада",
+      "waiting": "чака от куриера",
+      "received": "получен от куриера",
+      "paid": "изплатен",
+      "unknown": "непознат статус"
+    },
+    "registered": "регистриран",
+    "protocol": "протокол {number}",
+    "days": "{days} дни",
+    "notDelivered": "не е доставена",
+    "mismatch": {
+      "amount": "Различна сума",
+      "missing": "Липсва в склада",
+      "unexpected": "НП без да е поръчка с НП"
+    },
+    "mismatchHint": "Разминаванията стават задачи в „Сигнали и задачи“.",
+    "empty": "Няма пратки с наложен платеж по тези филтри."
   }
 }

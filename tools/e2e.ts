@@ -60,6 +60,9 @@ try {
   // Stock board, inbound and Shopify inventory push (wave 3, stock track): own group (tests/e2e/stock.spec.ts).
   const { seedStock } = await import("../tests/e2e/seed-stock");
   const stockOwner = await seedStock();
+  // Returns + COD boards (wave 3, returns track): its own group and OWNER (tests/e2e/returns-cod.spec.ts).
+  const { seedReturns } = await import("../tests/e2e/seed-returns");
+  const returnsOwner = await seedReturns();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -88,6 +91,9 @@ try {
       E2E_STOCK_EMAIL: stockOwner.email,
       E2E_STOCK_PASSWORD: stockOwner.password,
       E2E_STOCK_TOTP: stockOwner.totp,
+      E2E_RETURNS_EMAIL: returnsOwner.email,
+      E2E_RETURNS_PASSWORD: returnsOwner.password,
+      E2E_RETURNS_TOTP: returnsOwner.totp,
     },
   });
   status = run.status ?? 1;

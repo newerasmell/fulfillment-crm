@@ -1936,5 +1936,176 @@
       "lineCounts": "{total} lines · applied {applied} · dry run {dry} · unchanged {unchanged} · stale {stale} · failed {failed}",
       "showRequest": "Show the exact request"
     }
+  },
+  "returns": {
+    "title": "Returns",
+    "subtitle": "Returned from the carrier (FHB RMA), local depot returns (FHB) and euShipments returns — in one place",
+    "filters": "Filters",
+    "tabs": {
+      "todo": "To process",
+      "returning": "On the way back",
+      "overdue": "Overdue",
+      "processed": "Processed",
+      "all": "All"
+    },
+    "source": {
+      "label": "Source",
+      "all": "All sources",
+      "FHB_RMA": "FHB · returned from carrier",
+      "FHB_LOCAL": "FHB · local depot return",
+      "EUSHIPMENTS": "euShipments"
+    },
+    "sourceHint": {
+      "FHB_RMA": "RMA",
+      "FHB_LOCAL": "Return",
+      "EUSHIPMENTS": "RMA"
+    },
+    "search": "Search order, tracking or return code",
+    "apply": "Filter",
+    "backToList": "← All returns",
+    "empty": "No returns for these filters.",
+    "col": {
+      "source": "Source",
+      "order": "Order",
+      "company": "Company",
+      "status": "Status",
+      "dates": "Dates",
+      "items": "Items",
+      "tracking": "Tracking",
+      "actions": "Actions"
+    },
+    "state": {
+      "RETURNING": "On the way back",
+      "RECEIVED": "Received at the warehouse"
+    },
+    "overdue": "Overdue — {days} days on the way",
+    "returningSince": "On the way since {date}",
+    "receivedAt": "Received {date}",
+    "noDate": "no date from the warehouse",
+    "processedBy": "Processed by {name} on {date}",
+    "processedNote": "Note: {note}",
+    "noOrder": "no order in the CRM",
+    "returnTracking": "Return: {numbers}",
+    "localUid": "Return code {uid}",
+    "condition": "condition: {value}",
+    "action": "action: {value}",
+    "returnType": {
+      "return": "returned by the carrier",
+      "claim": "returned by the customer",
+      "write_off": "written off",
+      "basic": "package only",
+      "complex": "per item"
+    },
+    "photos": "Photos ({count})",
+    "photoType": {
+      "package": "package",
+      "content": "content",
+      "document": "document"
+    },
+    "loadPhotos": "Load photos",
+    "photosQueued": "Photos are loading…",
+    "photoFailed": "failed",
+    "process": "Mark as processed",
+    "processForm": "Process return {reference}",
+    "note": "Note",
+    "notePlaceholder": "E.g. refunded, goods restocked",
+    "confirmProcess": "Processed",
+    "cancel": "Cancel",
+    "reopen": "Reopen",
+    "notify": "Notify support",
+    "notifyQueued": "Will be sent on the next check",
+    "notified": "Support notified {date}",
+    "channel": {
+      "email": "email",
+      "telegram": "Telegram"
+    },
+    "channelStatus": {
+      "SENT": "sent",
+      "FAILED": "failed",
+      "SENDING": "sending"
+    },
+    "settings": {
+      "title": "Returns and COD settings",
+      "overdueDays": "Alert \"returning but not received\" after (days)",
+      "codMissingDays": "Task \"COD missing\" after delivery (days)",
+      "notifySupport": "Notify support when a return is received (email/Telegram, when configured)",
+      "save": "Save",
+      "saved": "Saved",
+      "form": "Returns settings"
+    },
+    "error": {
+      "not_found": "No such return",
+      "already_processed": "Already processed",
+      "not_processed": "Not processed",
+      "not_received": "Not received at the warehouse yet",
+      "no_photos": "No photos",
+      "forbidden": "Not allowed",
+      "note_required": "Write a note (at least 2 characters)",
+      "invalid": "Invalid values"
+    }
+  },
+  "cod": {
+    "title": "Cash on delivery",
+    "subtitle": "Expected COD (local currency) against what the warehouses report, per shipment",
+    "tabs": {
+      "outstanding": "Not paid out",
+      "mismatch": "Mismatches",
+      "paid": "Paid out",
+      "in_transit": "In transit",
+      "all": "All"
+    },
+    "bucket": {
+      "label": "Days since delivery",
+      "in_transit": "in transit",
+      "d0_7": "0–7 days",
+      "d8_14": "8–14 days",
+      "d15_30": "15–30 days",
+      "d30_plus": "over 30 days",
+      "paid": "paid out"
+    },
+    "allBuckets": "All",
+    "search": "Search order or tracking",
+    "apply": "Filter",
+    "export": "Export CSV",
+    "totals": "Totals by currency",
+    "byCompany": "By company",
+    "shown": "Showing {shown} of {total}",
+    "t": {
+      "expected": "Expected",
+      "received": "Received from carrier",
+      "paid": "Paid out",
+      "outstanding": "Not paid out",
+      "count": "Shipments"
+    },
+    "col": {
+      "order": "Order",
+      "company": "Company",
+      "warehouse": "Warehouse",
+      "delivered": "Delivered",
+      "expected": "Expected COD",
+      "vendor": "Warehouse reports",
+      "paid": "Paid out",
+      "mismatch": "Mismatch",
+      "currency": "Currency"
+    },
+    "state": {
+      "none": "no record",
+      "not_covered": "not read from the warehouse",
+      "waiting": "waiting for carrier",
+      "received": "received from carrier",
+      "paid": "paid out",
+      "unknown": "unknown status"
+    },
+    "registered": "registered",
+    "protocol": "protocol {number}",
+    "days": "{days} days",
+    "notDelivered": "not delivered",
+    "mismatch": {
+      "amount": "Different amount",
+      "missing": "Missing at the warehouse",
+      "unexpected": "COD on a non-COD order"
+    },
+    "mismatchHint": "Mismatches become tasks in Alerts and tasks.",
+    "empty": "No COD shipments for these filters."
   }
 }

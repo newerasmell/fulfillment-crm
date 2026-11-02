@@ -58,6 +58,10 @@ export const PERMISSIONS = {
   "stock.settings": ["OWNER", "ADMIN"],
   /** Shopify inventory push: preview, queue a push now, map Shopify locations to warehouses. */
   "inventory.push": ["OWNER", "ADMIN"],
+  /** Returns board: mark processed with a note, notify support, load return photos (Връщания). */
+  "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** COD board and its CSV export (amounts per shipment and company). */
+  "cod.read": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
