@@ -194,6 +194,7 @@ model Account {
   auditLogs       AuditLog[]
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
+  eushipmentsStatusMappings EushipmentsStatusMapping[]
 }
 
 model User {
@@ -412,6 +413,8 @@ model FulfillmentConnection {
   routingRules     RoutingRule[]
   fulfillments     Fulfillment[]
   outboundRequests OutboundRequest[]
+  eushipmentsSettings  EushipmentsSettings?
+  eushipmentsTransfers EushipmentsTransfer[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -925,4 +928,94 @@ model AiPolicy {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, decisionType])
+}
+
+// ───────────────────────── euShipments (phase 3, track wave1/eushipments) ─────────────────────────
+
+/// Category an euShipments STATUS text maps to (INTEGRATION_NOTES §4.5; see status-map.ts).
+enum EushipmentsStatusCategory {
+  ACCEPTED
+  PROCESSING
+  IN_TRANSIT
+  DELIVERED
+  RETURNING
+  RETURN_RECEIVED
+  CANCELLED
+  CANCEL_PENDING
+  BLOCKED
+  EXCEPTION
+  UNKNOWN
+}
+
+/// euShipments status text → category, per group. Seeded from the spec list (status-map.ts); texts never seen
+/// before are added as UNKNOWN (confirmed = false) and alerted until an operator maps them.
+model EushipmentsStatusMapping {
+  id             String                    @id @default(cuid())
+  accountId      String
+  /// Normalised STATUS text (look-alikes → Latin, dashes unified, lowercase): the matching key.
+  statusKey      String
+  /// The text as the vendor sent it (or as the spec lists it).
+  statusText     String
+  /// Spec status id, for reference only (orders-history returns record ids, never status ids).
+  vendorStatusId Int?
+  category       EushipmentsStatusCategory
+  final          Boolean                   @default(false)
+  /// seed | observed | operator
+  source         String
+  /// false = observed but not mapped by anyone yet (UNKNOWN until an operator decides).
+  confirmed      Boolean                   @default(true)
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, statusKey])
+}
+
+/// Per-connection euShipments settings that do not fit FulfillmentConnection's generic columns.
+model EushipmentsSettings {
+  id                    String   @id @default(cuid())
+  accountId             String
+  connectionId          String
+  /// Alert when a shipment stays in New / Information received / … longer than this (INTEGRATION_NOTES §4.5).
+  acceptedAlertHours    Int      @default(24)
+  acceptedAlertWorkDays Boolean  @default(true)
+  /// The sender has an Econt/Speedy cash-receipt configuration: Σ(price × qty) must equal awb.bankRepayment.
+  cashReceiptCod        Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, connectionId])
+}
+
+/// Warehouse transfer / scrap protocol (POST /fulfilment/create-transfer). externalRef is deterministic
+/// (derived from this row) and unique per connection; the vendor answers a resend with 409 + the protocol.
+model EushipmentsTransfer {
+  id                     String   @id @default(cuid())
+  accountId              String
+  connectionId           String
+  externalRef            String
+  sourceWarehouseId      Int
+  destinationWarehouseId Int?
+  /// 1 = NORMAL, 3 = SCRAP
+  protocolType           Int      @default(1)
+  /// [{productId, refNumber, quantity, batchNo?, batchDate?}]
+  items                  Json
+  comments               String?
+  /// QUEUED | CREATED | FAILED
+  status                 String   @default("QUEUED")
+  protocolId             String?
+  createdById            String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalRef])
+  @@index([accountId])
 }
