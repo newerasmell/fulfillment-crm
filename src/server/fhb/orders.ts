@@ -19,6 +19,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { transition } from "@/server/pipeline";
 import { fhbOrderNotificationUrls, publicBaseUrl } from "./callback-token";
 import type { ScopedActor } from "./connection";
 import { updateRevisionKey } from "./revision";
@@ -333,6 +334,16 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
         createdById: actor.userId,
       });
       if (!created) throw new DomainError("fhb_already_submitted");
+      // The order follows (APPROVED / READY / SUBMIT_FAILED → QUEUED); any other state keeps it.
+      await transition(tx, {
+        orderId: order.id,
+        to: "QUEUED",
+        cause: "queue",
+        actor: { kind: "user", userId: actor.userId },
+        source: "fhb.submit",
+        mode: "follow",
+        meta: { connectionId: connection.id, fulfillmentId: fulfillment.id },
+      });
       return { fulfillment, request, findings: prepared.findings, liveMode: connection.liveMode };
     });
   let result;

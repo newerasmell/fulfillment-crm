@@ -21,6 +21,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutbound, enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { transition } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
 import { loadEuConnection } from "./connection";
 
@@ -447,9 +448,14 @@ export async function queueEuOrder(
         fulfillmentId: fulfillment.id,
         createdById: actor.userId,
       });
-      await tx.order.updateMany({
-        where: { id: order.id, status: { in: ["APPROVED", "READY", "SUBMIT_FAILED"] } },
-        data: { status: "QUEUED" },
+      await transition(tx, {
+        orderId: order.id,
+        to: "QUEUED",
+        cause: "queue",
+        actor: { kind: "user", userId: actor.userId },
+        source: "eushipments.queue",
+        mode: "follow", // an order in another state keeps it (unchanged behaviour)
+        meta: { connectionId: connection.id, fulfillmentId: fulfillment.id },
       });
       return { fulfillment, request };
     });

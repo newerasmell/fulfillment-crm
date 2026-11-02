@@ -14,6 +14,7 @@ import {
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { jsonEqual } from "@/lib/json-equal";
+import { recordInitialStatus, transition } from "@/server/pipeline";
 import { matchBySku } from "./products";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -209,20 +210,28 @@ export async function importShopifyOrder(
         const created = await tx.order.create({
           data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
         });
+        await recordInitialStatus(tx, {
+          accountId,
+          orderId: created.id,
+          status,
+          actor: { kind: "system" },
+          source: "shopify.import",
+        });
         orderId = created.id;
         outcome = "created";
       } else {
-        await tx.order.update({
-          where: { id: existing.id },
-          data: {
-            ...data,
-            ...(o.cancelledAt && existing.status !== "CANCELLED"
-              ? { status: "CANCELLED" as const }
-              : shopifyFulfilled(o)
-                ? { status: "FULFILLED_EXTERNALLY" as const }
-                : {}),
-          },
-        });
+        await tx.order.update({ where: { id: existing.id }, data });
+        // Still before approval here (PRE_APPROVAL): Shopify's cancel / fulfil applies directly.
+        if (o.cancelledAt || shopifyFulfilled(o)) {
+          await transition(tx, {
+            orderId: existing.id,
+            ...(o.cancelledAt
+              ? { to: "CANCELLED" as const, cause: "shopify_cancelled" as const }
+              : { to: "FULFILLED_EXTERNALLY" as const, cause: "shopify_fulfilled" as const }),
+            actor: { kind: "system" },
+            source: "shopify.import",
+          });
+        }
         orderId = existing.id;
         outcome = "updated";
       }

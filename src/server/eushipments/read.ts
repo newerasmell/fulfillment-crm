@@ -878,7 +878,7 @@ export async function pollEuCod(accountId: string, connectionId: string, deps: R
           data: { codStatus: isPaid ? "PAID" : "REGISTERED", ...(isPaid ? { status: "COD_PAID" } : {}) },
           select: { orderId: true },
         });
-        if (isPaid) await advanceOrderStatus(tx, updated.orderId, "COD_PAID");
+        if (isPaid) await advanceOrderStatus(tx, updated.orderId, "COD_PAID", "eushipments.cod");
         if (isPaid)
           await tx.fulfillmentEvent.create({
             data: {

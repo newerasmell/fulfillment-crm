@@ -864,6 +864,45 @@ describe("FHB stock receipts", () => {
 });
 
 describe("status apply", () => {
+  it("the order follows its FHB shipment through the pipeline: QUEUED on submit, forward only after", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const status = async () =>
+      (await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status;
+    expect(await status()).toBe("QUEUED");
+    await processOutbound(
+      request.id,
+      fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
+    );
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    const apply = (st: string) =>
+      applyFhbOrderView(
+        s.account.id,
+        s.connection.id,
+        FhbOrderView.parse(orderView({ id: "TST-1001", status: st })),
+        "test",
+      );
+    expect(await status()).toBe("ACCEPTED");
+    await apply("sent");
+    const shipped = await status();
+    expect(shipped).toBe("SHIPPED");
+    await apply("pending"); // late, older status: the order never moves back
+    expect(await status()).toBe(shipped);
+    const events = await systemDb().orderEvent.findMany({
+      where: { orderId: s.order.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(events.map((e) => [e.fromStatus, e.toStatus, e.cause])).toEqual([
+      ["APPROVED", "QUEUED", "queue"],
+      ["QUEUED", "ACCEPTED", "vendor"],
+      ["ACCEPTED", shipped, "vendor"],
+    ]);
+  });
+
   it("unknown status → UNKNOWN + one alert, raw kept; rejected → BLOCKED + task", async () => {
     const s = await setup("LIVE");
     const { request, fulfillment } = await submitFhbOrder(s.owner, {

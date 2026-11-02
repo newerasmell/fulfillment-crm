@@ -697,6 +697,7 @@ model Order {
   lines        OrderLine[]
   fulfillments Fulfillment[]
   reviews      Review[]
+  events       OrderEvent[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -1406,4 +1407,31 @@ model ApiWatchSource {
   /// Consecutive failed runs; an alert is raised when it reaches the threshold.
   failures      Int       @default(0)
   updatedAt     DateTime  @updatedAt
+}
+
+// ───────────────────────── wave 2 · core of phase 4 (pipeline, checks, routing) ─────────────────────────
+
+/// One CRM pipeline step of an order (SPEC §6.1). Written ONLY by src/server/pipeline (transition()), in the
+/// same transaction as the status change: the order timeline and the audit trail of every status move.
+model OrderEvent {
+  id         String          @id @default(cuid())
+  accountId  String
+  orderId    String
+  /// Null for the first event (the status the order was created with).
+  fromStatus CrmOrderStatus?
+  toStatus   CrmOrderStatus
+  /// Transition cause, e.g. check_result, approve, vendor, shopify_cancelled (src/server/pipeline/rules.ts).
+  cause      String
+  /// user | system | ai
+  actorType  String
+  userId     String?
+  /// Which code path moved it, e.g. "shopify.import", "eushipments.history", "fhb:callback".
+  source     String?
+  reason     String?
+  meta       Json?
+  createdAt  DateTime        @default(now())
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, orderId, createdAt])
 }
