@@ -111,3 +111,29 @@ describe("dead-letter view", () => {
     await boss.stop({ graceful: false });
   });
 });
+
+describe("store job deduplication (stately queues)", () => {
+  it("a second sync for the same store is not queued while one is waiting", async () => {
+    const { enqueueShopify } = await import("@/server/shopify/jobs");
+    const boss = createBoss({ worker: true });
+    boss.on("error", () => undefined);
+    await boss.start();
+    await ensureQueues(boss, [QUEUES.shopifySyncOrders, QUEUES.shopifyWebhook]);
+    expect((await boss.getQueue(QUEUES.shopifySyncOrders.name))?.policy).toBe("stately");
+    const data = { accountId: "acc-dedupe", storeId: `store-${Date.now()}`, mode: "reconcile" as const };
+    expect(await enqueueShopify.syncOrders(boss, data)).toBeTruthy();
+    expect(await enqueueShopify.syncOrders(boss, data)).toBeNull();
+    expect(
+      await enqueueShopify.syncOrders(boss, {
+        ...data,
+        mode: "backfill",
+        from: "2026-10-01T00:00:00.000Z",
+        to: "2026-10-08T00:00:00.000Z",
+      }),
+    ).toBeTruthy();
+    const ev = { accountId: "acc-dedupe", eventId: `ev-${Date.now()}` };
+    expect(await enqueueShopify.webhook(boss, ev)).toBeTruthy();
+    expect(await enqueueShopify.webhook(boss, ev)).toBeNull();
+    await boss.stop({ graceful: false });
+  });
+});

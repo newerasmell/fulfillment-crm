@@ -10,6 +10,10 @@ export interface QueueDef {
   cron?: string;
 }
 
+/**
+ * "stately": at most one queued and one running job per singletonKey (pg-boss ignores singletonKey under the
+ * default "standard" policy). A queue's policy cannot be changed after creation — new queues only.
+ */
 const retry = {
   retryLimit: 5,
   retryDelay: 5,
@@ -21,10 +25,44 @@ const retry = {
 export const QUEUES = {
   /** Sample/health job: proves the worker runs, retries and dead-letters. */
   ping: { name: "system.ping", options: { ...retry, retryLimit: 3 } },
-  /** Sends one OutboundRequest (data: { requestId }). The sender itself never double-sends. */
+  /**
+   * Sends one OutboundRequest (data: { requestId }). Created before policies were used ("standard": duplicates
+   * possible); harmless because the sender claims each request atomically and never double-sends.
+   */
   outboxSend: { name: "outbox.send", options: { ...retry, expireInSeconds: 300 } },
   /** Every minute: picks due outbox rows, turns crashed sends into UNCERTAIN tasks. */
   outboxSweep: { name: "outbox.sweep", options: { retryLimit: 0, expireInSeconds: 120 }, cron: "* * * * *" },
+  /** Shopify: connection test for one store (data: { accountId, storeId }). */
+  shopifyTestConnection: {
+    name: "shopify.testConnection",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 120 },
+  },
+  /** Shopify: subscribe the store's webhooks to our URL (idempotent). */
+  shopifyRegisterWebhooks: {
+    name: "shopify.registerWebhooks",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
+  /** Shopify: pull orders (data: { accountId, storeId, mode: "reconcile" | "backfill", days? }). */
+  shopifySyncOrders: {
+    name: "shopify.syncOrders",
+    options: { ...retry, policy: "stately", expireInSeconds: 3600 },
+  },
+  /** Shopify: pull all variants and auto-match them to master products. */
+  shopifySyncProducts: {
+    name: "shopify.syncProducts",
+    options: { ...retry, policy: "stately", expireInSeconds: 3600 },
+  },
+  /** Shopify: act on one stored webhook event (data: { accountId, eventId }). */
+  shopifyWebhook: {
+    name: "shopify.webhook",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
+  /** Every 15 min: reconcile orders of every connected store, re-queue stuck webhook events. */
+  shopifyReconcile: {
+    name: "shopify.reconcile",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/15 * * * *",
+  },
   /** Hourly housekeeping: old login attempts. */
   housekeeping: {
     name: "system.housekeeping",

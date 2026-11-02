@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { purgeOldLoginAttempts } from "@/server/auth/rate-limit";
 import { processOutbound, sweepOutbox } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
+import { registerShopifyWorkers } from "@/server/shopify/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -30,7 +31,7 @@ export interface OutboxSendData {
   accountId: string;
 }
 
-/** Queues a send job for one outbox row (singleton per request while queued). */
+/** Queues a send job for one outbox row (duplicates are possible and harmless: the sender claims atomically). */
 export function scheduleOutboxSend(boss: PgBoss, data: OutboxSendData) {
   return boss.send(QUEUES.outboxSend.name, data, { singletonKey: data.requestId });
 }
@@ -52,6 +53,8 @@ export async function registerWorkers(deps: WorkerDeps) {
     const purged = await purgeOldLoginAttempts();
     if (purged) logger.info({ purged }, "old login attempts purged");
   });
+
+  await registerShopifyWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

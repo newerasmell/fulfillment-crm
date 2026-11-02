@@ -22,12 +22,12 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [ ] GATE P0-G1 Owner: in the existing Render account create NEW services from render.yaml (Blueprint; do not touch any existing service), set env vars and CREDENTIALS_KEY, create the first OWNER user, add accounts (companies).
 
 ## Phase 1 — Shopify
-- [ ] P1-01 Shopify GraphQL client: pinned API version in config, cost-based throttling, retries, Zod for used queries; client-credentials token fetch + 24h refresh (verify current Shopify docs first, record findings in PROGRESS.md).
-- [ ] P1-02 Store connection screen + per-store settings (code, currency, countries, write-back mode, inventory push mode).
-- [ ] P1-03 Webhooks endpoint: HMAC verification, WebhookEvent dedupe, idempotent processing; registration job for the topics in SPEC §4.
-- [ ] P1-04 Order import (orders, lines, customer, addresses original+normalised, payment method/COD, risk, tags, notes) + 15-min reconcile + backfill N days.
-- [ ] P1-05 Product/variant import + Product master + StoreVariantLink auto-match on SKU with per-store prefix stripping; unmatched work queue UI.
-- [ ] P1-06 Orders list (filters, saved views) and order detail (read-only for now), plus the Начало dashboard skeleton per docs/DESIGN.md screen 1 (attention cards and today KPIs from CRM data). Acceptance: fixture-based e2e.
+- [x] P1-01 Shopify GraphQL client: pinned API version in config, cost-based throttling, retries, Zod for used queries; client-credentials token fetch + 24h refresh (verify current Shopify docs first, record findings in PROGRESS.md).
+- [x] P1-02 Store connection screen + per-store settings (code, currency, countries, write-back mode, inventory push mode).
+- [x] P1-03 Webhooks endpoint: HMAC verification, WebhookEvent dedupe, idempotent processing; registration job for the topics in SPEC §4.
+- [x] P1-04 Order import (orders, lines, customer, addresses original+normalised, payment method/COD, risk, tags, notes) + 15-min reconcile + backfill N days.
+- [x] P1-05 Product/variant import + Product master + StoreVariantLink auto-match on SKU with per-store prefix stripping; unmatched work queue UI.
+- [x] P1-06 Orders list (filters, saved views) and order detail (read-only for now), plus the Начало dashboard skeleton per docs/DESIGN.md screen 1 (attention cards and today KPIs from CRM data). Acceptance: fixture-based e2e.
 - [ ] GATE P1-G1 Owner: create the Dev Dashboard app, install on stores, enter client id/secret per store in the CRM, confirm stores are in the same Shopify organisation.
 
 ## Phase 2 — FHB v3 (production, READ_ONLY → DRY_RUN)

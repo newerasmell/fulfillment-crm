@@ -338,6 +338,10 @@ Rules per vendor in production:
   *New* and within 14 days.
 - **Shopify:** fulfillment write-back and inventory push follow the same modes per store
   (READ_ONLY → DRY_RUN preview → LIVE). Inventory push starts disabled.
+  One exception, by design: **webhook subscriptions** (`webhookSubscriptionCreate`) are created in every
+  mode, including READ_ONLY. They change no order, product, stock or customer data — only where Shopify
+  sends change notifications — and without them reading is limited to the 15-minute reconcile. The worker
+  creates only missing topics for our own URL and never deletes or edits other subscriptions.
 - Kill switch: one OWNER action sets every connection of an account back to READ_ONLY and pauses the
   outbox; queued requests stay queued, nothing is dropped.
 - Every production write is logged with request, response, user and mode, and visible on the order timeline.

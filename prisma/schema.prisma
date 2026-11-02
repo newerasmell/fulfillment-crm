@@ -354,6 +354,14 @@ model Store {
   credentialId      String?
   webhookStatus     Json              @default("{}")
   syncCursors       Json              @default("{}")
+  /// Shop name as Shopify reports it (filled by the connection test).
+  shopName          String?
+  /// Payment gateway names that mean cash on delivery in this store (case-insensitive), e.g. "Cash on Delivery (COD)".
+  codGateways       String[]          @default(["Cash on Delivery (COD)", "cash_on_delivery", "Наложен платеж"])
+  /// Prefix this store adds to SKUs (stripped before matching variants to master products).
+  skuPrefix         String?
+  /// Last connection test: {ok, at, error?, shopName?, currency?}
+  connectionStatus  Json              @default("{}")
   writeBackMode     StoreWriteMode    @default(READ_ONLY)
   inventoryPushMode InventoryPushMode @default(DISABLED)
   inventoryBuffer   Int               @default(0)
@@ -504,6 +512,7 @@ model StoreVariantLink {
   shopifyVariantGid String
   shopifyProductGid String
   sku               String?
+  barcode           String?
   title             String
   productId         String?
   matchMethod       String?
@@ -621,40 +630,46 @@ model InboundLine {
 // ───────────────────────── orders & shipments ─────────────────────────
 
 model Order {
-  id                      String         @id @default(cuid())
-  accountId               String
+  id                       String         @id @default(cuid())
+  accountId                String
   /// Selling company (the store's company, or chosen for a manual order). Shipping may come from another
   /// company's warehouse (see Fulfillment.connection.companyId) — recorded in the CRM only.
-  companyId               String?
-  source                  OrderSource
-  storeId                 String?
-  shopifyOrderGid         String?
+  companyId                String?
+  source                   OrderSource
+  storeId                  String?
+  shopifyOrderGid          String?
   /// Human order number as shown in Shopify (e.g. #1234) or manual sequence.
-  number                  String
-  status                  CrmOrderStatus @default(IMPORTED)
-  customerName            String?
-  email                   String?
-  phone                   String?
-  shippingAddressOriginal Json?
-  shippingAddress         Json?
-  billingAddress          Json?
-  currency                String
-  subtotal                Decimal        @db.Decimal(12, 2)
-  total                   Decimal        @db.Decimal(12, 2)
-  paymentMethod           PaymentMethod
-  codAmount               Decimal?       @db.Decimal(12, 2)
+  number                   String
+  status                   CrmOrderStatus @default(IMPORTED)
+  customerName             String?
+  email                    String?
+  phone                    String?
+  shippingAddressOriginal  Json?
+  shippingAddress          Json?
+  billingAddress           Json?
+  currency                 String
+  subtotal                 Decimal        @db.Decimal(12, 2)
+  total                    Decimal        @db.Decimal(12, 2)
+  paymentMethod            PaymentMethod
+  codAmount                Decimal?       @db.Decimal(12, 2)
   /// COD in the destination country's local currency + the rate used.
-  codLocalAmount          Decimal?       @db.Decimal(12, 2)
-  codLocalCurrency        String?
-  codRate                 Decimal?       @db.Decimal(14, 6)
-  tags                    String[]
-  note                    String?
-  risk                    Json?
-  placedAt                DateTime
-  cancelledAt             DateTime?
-  raw                     Json?
-  createdAt               DateTime       @default(now())
-  updatedAt               DateTime       @updatedAt
+  codLocalAmount           Decimal?       @db.Decimal(12, 2)
+  codLocalCurrency         String?
+  codRate                  Decimal?       @db.Decimal(14, 6)
+  tags                     String[]
+  note                     String?
+  risk                     Json?
+  placedAt                 DateTime
+  cancelledAt              DateTime?
+  /// Shipping country (ISO-2), denormalised from the address for filters and routing.
+  countryCode              String?
+  shopifyFinancialStatus   String?
+  shopifyFulfillmentStatus String?
+  /// Shopify's updatedAt of the version we hold: an older event never overwrites newer data.
+  shopifyUpdatedAt         DateTime?
+  raw                      Json?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
   company      Company?      @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
@@ -669,16 +684,18 @@ model Order {
 }
 
 model OrderLine {
-  id            String  @id @default(cuid())
-  accountId     String
-  orderId       String
-  variantLinkId String?
-  productId     String?
-  sku           String?
-  title         String
-  quantity      Int
+  id             String  @id @default(cuid())
+  accountId      String
+  orderId        String
+  variantLinkId  String?
+  productId      String?
+  /// Shopify line item id (stable across order edits); null for manual orders.
+  shopifyLineGid String?
+  sku            String?
+  title          String
+  quantity       Int
   /// Unit price after discounts, order currency.
-  unitPrice     Decimal @db.Decimal(12, 2)
+  unitPrice      Decimal @db.Decimal(12, 2)
 
   order            Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
   variantLink      StoreVariantLink? @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: NoAction)
@@ -686,6 +703,7 @@ model OrderLine {
   fulfillmentLines FulfillmentLine[]
 
   @@unique([accountId, id])
+  @@unique([orderId, shopifyLineGid])
   @@index([accountId, orderId])
 }
 
