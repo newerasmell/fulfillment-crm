@@ -1,0 +1,903 @@
+{
+  "DELETE /order 400 response": {
+    "message": "Invalid request",
+    "violations": {
+      "id": [
+        {
+          "code": "NOT_UPDATABLE_ORDER_ERROR",
+          "message": "Order cannot be modified in current state."
+        }
+      ]
+    }
+  },
+  "DELETE /order 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "DELETE /stock-receipt 400 example": {
+    "message": "Invalid request"
+  },
+  "DELETE /stock-receipt 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /delivery-point/{deliveryService} 200 example": [
+    {
+      "id": 3100000,
+      "external_code": "2285",
+      "name": "HUDECZEK SERVICE",
+      "street": "Stonavská 340",
+      "city": "Albrechtice u Českého Těšína",
+      "zip": "73543",
+      "country": "cz"
+    }
+  ],
+  "GET /delivery-point/{deliveryService} 400 emptyCountry": {
+    "message": "Invalid request",
+    "violations": {
+      "request": ["Query request parameter \"country\" should not be empty."]
+    }
+  },
+  "GET /delivery-point/{deliveryService} 400 missingCountry": {
+    "message": "Country parameter is required for \"dpd_eu_pudo\" delivery service"
+  },
+  "GET /delivery-point/{deliveryService} 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /delivery-point/{deliveryService} 404 example": {
+    "message": "No delivery points available for \"invalid\" delivery service"
+  },
+  "GET /order 200 response": {
+    "id": "AB12345",
+    "variable_symbol": "12345",
+    "status": "imported",
+    "created_at": "2022-07-12T10:30:00+0100",
+    "shipped_at": "2022-07-13T14:00:00+0100",
+    "delivered_at": "2022-07-15T09:00:00+0100",
+    "parcel_service": "remax",
+    "delivery_point": "12345",
+    "cod": 0,
+    "value": 15.35,
+    "invoice": "http://example.com/order/inv123.pdf",
+    "note": "Order note",
+    "print_delivery_note": false,
+    "print_sscc": false,
+    "sscc": "085860288700000423",
+    "packing_packages": [
+      {
+        "number": 1,
+        "sscc": "085860288700000567"
+      }
+    ],
+    "sender": "SHOP_XY",
+    "recipient": {
+      "address": {
+        "name": "Martin Novák",
+        "street": "Hronská 35",
+        "city": "Zvolen",
+        "zip": "96001",
+        "province": "",
+        "country": "sk"
+      },
+      "contact": {
+        "email": "email@example.com",
+        "phone": "+421900123456"
+      }
+    },
+    "items": [
+      {
+        "id": "12345",
+        "quantity": 1,
+        "serial_numbers": ["ABCD-123-456-789"]
+      }
+    ],
+    "packages": [
+      {
+        "tracking_number": "VC23EWQD23",
+        "weight": 1.23,
+        "package_dimension": {
+          "length": 30.5,
+          "width": 20,
+          "height": 15.5,
+          "volumetric_weight": 0.189
+        }
+      }
+    ],
+    "notification": {
+      "confirmed": "http://example.com/api/order/123/confirm",
+      "sent": "http://example.com/api/order/123/sent",
+      "delivered": "http://example.com/api/order/123/delivered",
+      "returned": "http://example.com/api/order/123/returned",
+      "ticket_created": "http://example.com/api/order/123/ticket/created",
+      "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+      "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+    },
+    "tracking_numbers": [],
+    "tracking_links": [],
+    "tracking_events": [
+      {
+        "date": "2021-01-10T06:00:00+0200",
+        "message": "received data",
+        "event_code": "PRG",
+        "carrier_event_code": "1"
+      },
+      {
+        "date": "2021-01-10T18:00:00+0200",
+        "message": "arrived",
+        "event_code": "PRE",
+        "carrier_event_code": "3"
+      },
+      {
+        "date": "2021-01-11T08:00:00+0200",
+        "message": "prepared for departure",
+        "event_code": "IDP",
+        "carrier_event_code": "4"
+      },
+      {
+        "date": "2021-01-12T12:00:00+0200",
+        "message": "ready for pickup",
+        "event_code": "DPL",
+        "carrier_event_code": "5"
+      }
+    ],
+    "package_returns": [
+      {
+        "tracking": "PACKAGEXYZ",
+        "return_tracking": "RETURN123456"
+      }
+    ],
+    "proof_of_delivery": {
+      "recipient": "Martin Novák",
+      "date": "2018-11-06T09:11:20+0100"
+    }
+  },
+  "GET /order 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /order/history 200 response": {
+    "page": 1,
+    "total": 245,
+    "orders": [
+      {
+        "id": "AB12345",
+        "variable_symbol": "12345",
+        "status": "imported",
+        "created_at": "2022-07-12T10:30:00+0100",
+        "shipped_at": "2022-07-13T14:00:00+0100",
+        "delivered_at": "2022-07-15T09:00:00+0100",
+        "parcel_service": "remax",
+        "delivery_point": "12345",
+        "cod": 0,
+        "value": 15.35,
+        "invoice": "http://example.com/order/inv123.pdf",
+        "note": "Order note",
+        "sender": "SHOP_XY",
+        "recipient": {
+          "address": {
+            "name": "Martin Novák",
+            "street": "Hronská 35",
+            "city": "Zvolen",
+            "zip": "96001",
+            "province": "",
+            "country": "sk"
+          },
+          "contact": {
+            "email": "email@example.com",
+            "phone": "+421900123456"
+          }
+        },
+        "items": [
+          {
+            "id": "12345",
+            "quantity": 1,
+            "serial_numbers": ["ABCD-123-456-789"]
+          }
+        ],
+        "packages": [
+          {
+            "tracking_number": "VC23EWQD23",
+            "weight": 1.23,
+            "package_dimension": {
+              "length": 30.5,
+              "width": 20,
+              "height": 15.5,
+              "volumetric_weight": 0.189
+            }
+          }
+        ],
+        "notification": {
+          "confirmed": "http://example.com/api/order/123/confirm",
+          "sent": "http://example.com/api/order/123/sent",
+          "delivered": "http://example.com/api/order/123/delivered",
+          "returned": "http://example.com/api/order/123/returned",
+          "ticket_created": "http://example.com/api/order/123/ticket/created",
+          "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+          "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+        },
+        "tracking_numbers": [],
+        "tracking_links": [],
+        "tracking_events": [
+          {
+            "date": "2021-01-10T06:00:00+0200",
+            "message": "received data",
+            "event_code": "PRG",
+            "carrier_event_code": "1"
+          },
+          {
+            "date": "2021-01-10T18:00:00+0200",
+            "message": "arrived",
+            "event_code": "PRE",
+            "carrier_event_code": "3"
+          },
+          {
+            "date": "2021-01-11T08:00:00+0200",
+            "message": "prepared for departure",
+            "event_code": "IDP",
+            "carrier_event_code": "4"
+          },
+          {
+            "date": "2021-01-12T12:00:00+0200",
+            "message": "ready for pickup",
+            "event_code": "DPL",
+            "carrier_event_code": "5"
+          }
+        ],
+        "proof_of_delivery": {
+          "recipient": "Martin Novák",
+          "date": "2018-11-06T09:11:20+0100"
+        }
+      }
+    ]
+  },
+  "GET /order/history 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /parcel-service 200 example": [
+    {
+      "code": "gls",
+      "name": "GLS"
+    },
+    {
+      "code": "intime",
+      "name": "intime"
+    }
+  ],
+  "GET /parcel-service 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /product 200 response": {
+    "id": "123",
+    "internal_code": "ABC1234",
+    "ean": "8580000001234",
+    "name": "Shampoo",
+    "photo": "http://example.com/image.png",
+    "weight": 0,
+    "volumetric_weight": 0.5,
+    "notify_url": "http://example.com/api/product/123/notify",
+    "archived": false,
+    "stock_quantity": 0,
+    "free_quantity": 0,
+    "serial_numbers": false,
+    "type": "single",
+    "items": [
+      {
+        "id": "ABC456",
+        "name": "Component name",
+        "quantity": 2
+      }
+    ],
+    "customs_information": {
+      "hs_code": "390110",
+      "country_of_origin": "SK",
+      "purchase_price": 12.34
+    }
+  },
+  "GET /product 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /product 404 example": {
+    "message": "Product 123 not found"
+  },
+  "GET /product/all 200 response": {
+    "page": 1,
+    "total": 245,
+    "products": [
+      {
+        "id": "123",
+        "internal_code": "ABC1234",
+        "ean": "8580000001234",
+        "name": "Shampoo",
+        "photo": "http://example.com/image.png",
+        "weight": 0.32,
+        "volumetric_weight": 0.5,
+        "notify_url": "http://example.com/api/product/123/notify",
+        "archived": false,
+        "stock_quantity": 0,
+        "free_quantity": 0,
+        "serial_numbers": false,
+        "type": "single",
+        "items": [
+          {
+            "id": "ABC456",
+            "name": "Component name",
+            "quantity": 2
+          }
+        ],
+        "customs_information": {
+          "hs_code": "390110",
+          "country_of_origin": "SK",
+          "purchase_price": 12.34
+        }
+      }
+    ]
+  },
+  "GET /product/all 400 example": {
+    "message": "Invalid request"
+  },
+  "GET /product/all 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /product/archive 400 response": {
+    "message": "Invalid request",
+    "violations": {
+      "id": [
+        {
+          "code": "NOT_EXISTING_PRODUCT_ERROR",
+          "message": "Product does not exist."
+        }
+      ]
+    }
+  },
+  "GET /product/archive 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /stock-receipt 200 response": {
+    "id": "S_12345",
+    "status": "created",
+    "name": "SHAMPOO_DELIVERY_1",
+    "delivery_service": "gls",
+    "tracking_code": "TR123456789",
+    "expected_date": "2018-10-01",
+    "is_bianco": false,
+    "created_date": "2018-08-30T08:33:30+0000",
+    "items": [
+      {
+        "id": "AB123",
+        "quantity": 10,
+        "received": 0
+      }
+    ]
+  },
+  "GET /stock-receipt 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "GET /stock-receipt 404 example": {
+    "message": "Stock receipt S_12345 not found"
+  },
+  "POST /login 200 response": {
+    "token": "f7165ad327942721750f6b113d7bea9017957671khd1nvx2uc233adt1298",
+    "expiration": "2018-10-17T14:47:40+0200"
+  },
+  "POST /login 400 invalidCredentials": {
+    "message": "Invalid AppId or secret"
+  },
+  "POST /login 400 validationError": {
+    "message": "Invalid request",
+    "violations": {
+      "app_id": [
+        {
+          "code": "IS_BLANK_ERROR",
+          "message": "This value should not be blank."
+        }
+      ],
+      "secret": [
+        {
+          "code": "IS_BLANK_ERROR",
+          "message": "This value should not be blank."
+        }
+      ]
+    }
+  },
+  "POST /login request": {
+    "app_id": "c8ae18af42e300a76a7e9787c59be2b2",
+    "secret": "5Saa6ixZnxHAbGed7600858eaem0v4nllm41w1il"
+  },
+  "POST /order 200 response": {
+    "id": "AB12345",
+    "uid": "3c7ac0f0ab",
+    "variable_symbol": "12345",
+    "status": "imported",
+    "created_at": "2022-07-12T10:30:00+0100",
+    "shipped_at": "2022-07-13T14:00:00+0100",
+    "delivered_at": "2022-07-15T09:00:00+0100",
+    "parcel_service": "remax",
+    "delivery_point": "12345",
+    "cod": 0,
+    "value": 15.35,
+    "invoice": "http://example.com/order/inv123.pdf",
+    "invoice_number": "202207120001",
+    "invoice_date": "2022-07-12",
+    "note": "Order note",
+    "print_delivery_note": false,
+    "print_sscc": false,
+    "sscc": "085860288700000423",
+    "packing_packages": [
+      {
+        "number": 1,
+        "sscc": "085860288700000567"
+      }
+    ],
+    "sender": "SHOP_XY",
+    "recipient": {
+      "address": {
+        "name": "Martin Novák",
+        "street": "Hronská 35",
+        "city": "Zvolen",
+        "zip": "96001",
+        "province": "",
+        "country": "sk"
+      },
+      "contact": {
+        "email": "email@example.com",
+        "phone": "+421900123456"
+      }
+    },
+    "items": [
+      {
+        "id": "12345",
+        "quantity": 1
+      }
+    ],
+    "notification": {
+      "confirmed": "http://example.com/api/order/123/confirm",
+      "sent": "http://example.com/api/order/123/sent",
+      "delivered": "http://example.com/api/order/123/delivered",
+      "returned": "http://example.com/api/order/123/returned",
+      "ticket_created": "http://example.com/api/order/123/ticket/created",
+      "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+      "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+    },
+    "tracking_numbers": [],
+    "tracking_links": [],
+    "tracking_events": [],
+    "proof_of_delivery": {
+      "recipient": "Martin Novák",
+      "date": "2018-11-06T09:11:20+0100"
+    }
+  },
+  "POST /order 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "POST /order request": {
+    "id": "AB12345",
+    "variable_symbol": "12345",
+    "parcel_service": "remax",
+    "delivery_point": "12345",
+    "cod": 0,
+    "value": 15.35,
+    "sender": "SHOP_XY",
+    "validate": false,
+    "recipient": {
+      "address": {
+        "name": "Martin Novák",
+        "street": "Hronská 35",
+        "city": "Zvolen",
+        "zip": "96001",
+        "province": "",
+        "country": "sk"
+      },
+      "contact": {
+        "email": "email@example.com",
+        "phone": "+421900123456"
+      }
+    },
+    "items": [
+      {
+        "id": "12345",
+        "quantity": 1
+      }
+    ],
+    "notification": {
+      "confirmed": "http://example.com/api/order/123/confirm",
+      "sent": "http://example.com/api/order/123/sent",
+      "delivered": "http://example.com/api/order/123/delivered",
+      "returned": "http://example.com/api/order/123/returned",
+      "ticket_created": "http://example.com/api/order/123/ticket/created",
+      "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+      "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+    },
+    "invoice": "http://example.com/order/inv123.pdf",
+    "invoice_number": "202207120001",
+    "invoice_date": "2022-07-12",
+    "note": "Order note",
+    "print_delivery_note": false,
+    "print_sscc": false,
+    "invoice_detail": {
+      "number": "202201397",
+      "total": 353,
+      "currency": "USD",
+      "date_of_issue": "2022-11-30",
+      "products": [
+        {
+          "code": "44434",
+          "description": "\"some test basic product\"",
+          "hs_code": "64039198",
+          "value": 169,
+          "quantity": 1,
+          "country_of_origin": "CZ"
+        }
+      ],
+      "fees": [
+        {
+          "type": "shipping",
+          "description": "Shipping cost",
+          "value": 10
+        }
+      ]
+    }
+  },
+  "POST /product 200 response": {
+    "id": "123",
+    "internal_code": "ABC1234",
+    "ean": "8580000001234",
+    "name": "Shampoo",
+    "photo": "http://example.com/image.png",
+    "weight": 0,
+    "volumetric_weight": 0.5,
+    "notify_url": "http://example.com/api/product/123/notify",
+    "archived": false,
+    "stock_quantity": 0,
+    "free_quantity": 0,
+    "serial_numbers": false,
+    "type": "single",
+    "items": [
+      {
+        "id": "ABC456",
+        "name": "Component name",
+        "quantity": 2
+      }
+    ],
+    "customs_information": {
+      "hs_code": "390110",
+      "country_of_origin": "SK",
+      "purchase_price": 12.34
+    }
+  },
+  "POST /product 400 response": {
+    "message": "Invalid request",
+    "violations": {
+      "items[0].id": [
+        {
+          "code": "MULTI_ITEM_NOT_FOUND",
+          "message": "Item \"MISSING\" does not exist."
+        }
+      ]
+    }
+  },
+  "POST /product 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "POST /product 404 example": {
+    "message": "Product 123 not found"
+  },
+  "POST /product request": {
+    "id": "AB123",
+    "name": "Shampoo",
+    "ean": "8580000001234",
+    "photo": "http://example.com/image.png",
+    "notify_url": "http://example.com/api/product/123/notify",
+    "serial_numbers": false,
+    "type": "single",
+    "items": [
+      {
+        "id": "ABC456",
+        "quantity": 2
+      }
+    ],
+    "customs_information": {
+      "hs_code": "390110",
+      "country_of_origin": "SK",
+      "purchase_price": 12.34
+    }
+  },
+  "POST /stock-receipt 200 response": {
+    "id": "S_12345",
+    "status": "created",
+    "name": "SHAMPOO_DELIVERY_1",
+    "delivery_service": "gls",
+    "tracking_code": "TR12345678",
+    "expected_date": "2018-10-01",
+    "is_bianco": false,
+    "created_date": "2018-10-17T13:24:02+0000",
+    "items": [
+      {
+        "id": "AB123",
+        "quantity": 10,
+        "received": 0
+      }
+    ]
+  },
+  "POST /stock-receipt 400 response": {
+    "message": "Invalid request",
+    "violations": {
+      "items[0].id": [
+        {
+          "code": "",
+          "message": "Product \"MULTI_PRODUCT_TEST\" is multi product"
+        }
+      ]
+    }
+  },
+  "POST /stock-receipt 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "POST /stock-receipt request": {
+    "id": "S_12345",
+    "name": "SHAMPOO_DELIVERY_1",
+    "delivery_service": "gls",
+    "tracking_code": "TR12345678",
+    "expected_date": "2018-10-01",
+    "is_bianco": false,
+    "items": [
+      {
+        "id": "AB123",
+        "quantity": 10
+      }
+    ]
+  },
+  "PUT /order 200 response": {
+    "id": "AB12345",
+    "uid": "3c7ac0f0ab",
+    "variable_symbol": "12345",
+    "status": "imported",
+    "created_at": "2022-07-12T10:30:00+0100",
+    "shipped_at": "2022-07-13T14:00:00+0100",
+    "delivered_at": "2022-07-15T09:00:00+0100",
+    "parcel_service": "remax",
+    "cod": 0,
+    "value": 15.35,
+    "invoice": "http://example.com/order/inv123.pdf",
+    "note": "Order note",
+    "print_delivery_note": false,
+    "print_sscc": false,
+    "sscc": "085860288700000423",
+    "packing_packages": [
+      {
+        "number": 1,
+        "sscc": "085860288700000567"
+      }
+    ],
+    "sender": "SHOP_XY",
+    "recipient": {
+      "address": {
+        "name": "Martin Novák",
+        "street": "Hronská 35",
+        "city": "Zvolen",
+        "zip": "96001",
+        "province": "",
+        "country": "sk"
+      },
+      "contact": {
+        "email": "email@example.com",
+        "phone": "+421900123456"
+      }
+    },
+    "items": [
+      {
+        "id": "12345",
+        "quantity": 1,
+        "serial_numbers": ["ABCD-123-456-789"]
+      }
+    ],
+    "notification": {
+      "confirmed": "http://example.com/api/order/123/confirm",
+      "sent": "http://example.com/api/order/123/sent",
+      "delivered": "http://example.com/api/order/123/delivered",
+      "returned": "http://example.com/api/order/123/returned",
+      "ticket_created": "http://example.com/api/order/123/ticket/created",
+      "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+      "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+    },
+    "tracking_numbers": [],
+    "tracking_links": [],
+    "tracking_events": [],
+    "proof_of_delivery": {
+      "recipient": "Martin Novák",
+      "date": "2018-11-06T09:11:20+0100"
+    }
+  },
+  "PUT /order 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "PUT /order request": {
+    "variable_symbol": "12345",
+    "parcel_service": "remax",
+    "delivery_point": "12345",
+    "cod": 0,
+    "value": 15.35,
+    "sender": "SHOP_XY",
+    "recipient": {
+      "address": {
+        "name": "Martin Novák",
+        "street": "Hronská 35",
+        "city": "Zvolen",
+        "zip": "96001",
+        "province": "",
+        "country": "sk"
+      },
+      "contact": {
+        "email": "email@example.com",
+        "phone": "+421900123456"
+      }
+    },
+    "items": [
+      {
+        "id": "12345",
+        "quantity": 1
+      }
+    ],
+    "notification": {
+      "confirmed": "http://example.com/api/order/123/confirm",
+      "sent": "http://example.com/api/order/123/sent",
+      "delivered": "http://example.com/api/order/123/delivered",
+      "returned": "http://example.com/api/order/123/returned",
+      "ticket_created": "http://example.com/api/order/123/ticket/created",
+      "ticket_updated": "http://example.com/api/order/123/ticket/updated",
+      "ticket_closed": "http://example.com/api/order/123/ticket/closed"
+    },
+    "invoice": "http://example.com/order/inv123.pdf",
+    "note": "Order note",
+    "print_delivery_note": false,
+    "print_sscc": false,
+    "invoice_detail": {
+      "number": "202201397",
+      "total": 353,
+      "currency": "USD",
+      "date_of_issue": "2022-11-30",
+      "products": [
+        {
+          "code": "44434",
+          "description": "\"some test basic product\"",
+          "hs_code": "64039198",
+          "value": 169,
+          "quantity": 1,
+          "country_of_origin": "CZ"
+        }
+      ],
+      "fees": [
+        {
+          "type": "shipping",
+          "description": "Shipping cost",
+          "value": 10
+        }
+      ]
+    }
+  },
+  "PUT /product 200 response": {
+    "id": "123",
+    "internal_code": "ABC1234",
+    "ean": "8580000001234",
+    "name": "Shampoo",
+    "photo": "http://example.com/image.png",
+    "weight": 0,
+    "volumetric_weight": 0.5,
+    "notify_url": "http://example.com/api/product/123/notify",
+    "archived": false,
+    "stock_quantity": 0,
+    "free_quantity": 0,
+    "serial_numbers": false,
+    "type": "single",
+    "items": [
+      {
+        "id": "ABC456",
+        "name": "Component name",
+        "quantity": 2
+      }
+    ],
+    "customs_information": {
+      "hs_code": "390110",
+      "country_of_origin": "SK",
+      "purchase_price": 12.34
+    }
+  },
+  "PUT /product 400 cannotPromoteReferenced": {
+    "message": "Invalid request",
+    "violations": {
+      "type": [
+        {
+          "code": "CANNOT_PROMOTE_REFERENCED_PRODUCT",
+          "message": "Product is already a component of another multi-product and cannot be promoted."
+        }
+      ]
+    }
+  },
+  "PUT /product 400 demoteNotSupported": {
+    "message": "Invalid request",
+    "violations": {
+      "type": [
+        {
+          "code": "DEMOTE_NOT_SUPPORTED",
+          "message": "Demoting a multi-product to single is not supported."
+        }
+      ]
+    }
+  },
+  "PUT /product 400 notUniqueProduct": {
+    "message": "Invalid request",
+    "violations": {
+      "new_id": [
+        {
+          "code": "NOT_UNIQUE_PRODUCT_ERROR",
+          "message": "Product with this id already exists."
+        }
+      ]
+    }
+  },
+  "PUT /product 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "PUT /product 404 example": {
+    "message": "Product 123 not found"
+  },
+  "PUT /product request": {
+    "new_id": "ABC341",
+    "name": "Shampoo",
+    "ean": "8580000001234",
+    "photo": "http://example.com/image.png",
+    "notify_url": "http://example.com/api/product/123/notify",
+    "type": "multi",
+    "items": [
+      {
+        "id": "ABC456",
+        "quantity": 2
+      }
+    ],
+    "customs_information": {
+      "hs_code": "390110",
+      "country_of_origin": "SK",
+      "purchase_price": 12.34
+    }
+  },
+  "PUT /stock-receipt 200 response": {
+    "id": "S_12345",
+    "status": "created",
+    "name": "SHAMPOO_DELIVERY_1",
+    "delivery_service": "gls",
+    "tracking_code": "TR123456789",
+    "expected_date": "2018-10-01",
+    "is_bianco": false,
+    "created_date": "2018-08-30T08:33:30+0000",
+    "items": [
+      {
+        "id": "AB123",
+        "quantity": 10,
+        "received": 0
+      }
+    ]
+  },
+  "PUT /stock-receipt 400 response": {
+    "message": "Invalid request",
+    "violations": {
+      "items[0].id": [
+        {
+          "code": "",
+          "message": "This value should not be blank."
+        }
+      ]
+    }
+  },
+  "PUT /stock-receipt 401 example": {
+    "message": "Unauthorized. Login via POST /login, or use valid token in header"
+  },
+  "PUT /stock-receipt request": {
+    "name": "SHAMPOO_DELIVERY_1",
+    "delivery_service": "gls",
+    "tracking_code": "TR123456789",
+    "expected_date": "2018-10-01",
+    "is_bianco": false,
+    "items": [
+      {
+        "id": "AB123",
+        "quantity": 10
+      }
+    ]
+  }
+}
