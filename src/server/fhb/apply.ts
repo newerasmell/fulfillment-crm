@@ -5,7 +5,7 @@ import type { FhbOrderView, FhbProductView, FhbStockReceiptView } from "@/integr
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
-import { followShipment, transition } from "@/server/pipeline";
+import { followShipment, isSupersededShipment, transition } from "@/server/pipeline";
 
 /**
  * Applies what FHB told us (create/update responses, read-backs, callback re-reads) to the CRM mirror:
@@ -65,11 +65,13 @@ export async function applyFhbOrderView(
       where: { connectionId_externalId: { connectionId, externalId: m.externalId } },
     });
     if (!f) return null;
+    // Replaced by a confirmed reroute (P4-09): the vendor's late view is kept, but never reactivates it.
+    const superseded = await isSupersededShipment(tx, f.id);
     const changed = f.rawStatus !== m.mapping.raw || f.status !== m.mapping.status;
     await tx.fulfillment.update({
       where: { id: f.id },
       data: {
-        status: m.mapping.status,
+        status: superseded ? f.status : m.mapping.status,
         rawStatus: m.mapping.raw,
         vendorUid: m.vendorUid ?? f.vendorUid,
         carrier: m.carrier ?? f.carrier,
@@ -81,7 +83,7 @@ export async function applyFhbOrderView(
         ...(m.returnInfo ? { returnInfo: json(m.returnInfo) } : {}),
       },
     });
-    await followShipment(tx, f.orderId, m.mapping.status, `fhb:${source}`);
+    await followShipment(tx, f.orderId, m.mapping.status, `fhb:${source}`, { fulfillmentId: f.id });
     if (changed) {
       await tx.fulfillmentEvent.create({
         data: {

@@ -21,6 +21,7 @@ export default async function ReviewsPage({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const ctx = await requireAccountContext("reviews.read");
   const r = await getTranslations("review");
+  const ov = await getTranslations("override");
   const locale = await getLocale();
   const format = await getFormatter();
   const filters = {
@@ -251,7 +252,9 @@ export default async function ReviewsPage({ searchParams }: { searchParams: Prom
                     <td className={tdCls}>{c.labelBg}</td>
                     <td className={tdCls}>{c.labelEn}</td>
                     <td className={`${tdCls} text-sm`}>
-                      {c.decisions.map((k) => r(`kind.${k}`)).join(", ")}
+                      {c.decisions
+                        .map((k) => (k === "warehouse" ? ov("reasonKind") : r(`kind.${k}`)))
+                        .join(", ")}
                     </td>
                     <td className={tdCls}>{c.active ? r("reasons.active") : r("reasons.inactive")}</td>
                     <td className={tdCls}>

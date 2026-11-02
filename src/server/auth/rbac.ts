@@ -52,6 +52,8 @@ export const PERMISSIONS = {
   "lines.manage": ["OWNER", "ADMIN"],
   /** Master catalogue tool, mapping import and match decisions of a line (Продукти). */
   "lines.catalogue": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** "Пренасочи към друг склад" after sending: cancel at the old warehouse, then send from another (P4-09). */
+  "orders.reroute": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

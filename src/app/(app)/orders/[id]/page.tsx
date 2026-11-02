@@ -19,6 +19,9 @@ import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
 import { orderWriteBacks } from "@/server/fulfill";
 import { FulfillButton } from "../selection";
 import { StatusChip } from "../status";
+import { CHOICE_STATUSES, rerouteView, warehouseOptions, warehouseReasonCodes } from "@/server/override";
+import type { StockCheck } from "@/server/routing";
+import { CancelCanaryConfirm, RerouteForm, WarehouseChooser, type OptionView } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
@@ -47,6 +50,39 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
     throw err;
   }
   const { order, check } = data;
+  const o = await getTranslations("override");
+  const [wOptions, wCodes, rv] = await Promise.all([
+    warehouseOptions(actorFrom(ctx), order.id),
+    warehouseReasonCodes(ctx.accountId),
+    rerouteView(actorFrom(ctx), order.id),
+  ]);
+  const optionView = (c: {
+    id: string;
+    name: string;
+    type: string;
+    companyName: string | null;
+    crossCompany: boolean;
+    stock: StockCheck;
+  }): OptionView => ({
+    id: c.id,
+    name: c.name,
+    type: c.type,
+    companyName: c.companyName,
+    crossCompany: c.crossCompany,
+    stockStatus: c.stock.status,
+    lines: c.stock.lines.map((l) => ({ title: l.title, need: l.need, available: l.available })),
+  });
+  const reasonCodes = wCodes.map((c) => ({ code: c.code, label: locale === "en" ? c.labelEn : c.labelBg }));
+  const manual = check?.routing.via === "manual" ? (check.routing.manual ?? null) : null;
+  const manualView = manual
+    ? {
+        who: manual.userName,
+        via: manual.via,
+        reason:
+          ((locale === "en" ? manual.reasonLabel?.en : manual.reasonLabel?.bg) ?? manual.reasonCode) +
+          (manual.reasonText ? ` — ${manual.reasonText}` : ""),
+      }
+    : null;
   const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
   const tw = await getTranslations("fulfill.writeBack");
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
@@ -68,10 +104,11 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   const codes = data.reasonCodes.map((c) => ({
     code: c.code,
     label: locale === "en" ? c.labelEn : c.labelBg,
-    decisions: c.decisions,
+    decisions: c.decisions.filter((k): k is "approve" | "hold" | "block" => k !== "warehouse"),
   }));
 
   const timelineText = (e: TimelineEntry) => {
+    if (e.kind === "status" && o.has(`timeline.${e.cause}`)) return o(`timeline.${e.cause}`);
     if (e.kind === "status")
       return e.from
         ? r("timeline.moved", { from: st(e.from), to: st(e.to) })
@@ -376,6 +413,100 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                   </details>
                 )}
               </>
+            )}
+          </Card>
+
+          <Card>
+            <h2 className="mt-0 text-base font-semibold">{o("title")}</h2>
+            <p className="mt-0 mb-2 text-sm text-muted">{o("subtitle")}</p>
+            <WarehouseChooser
+              orderId={order.id}
+              options={wOptions.map(optionView)}
+              currentId={check?.connectionId ?? null}
+              routedId={manual ? manual.routed.connectionId : (check?.routing.connectionId ?? null)}
+              manual={manualView}
+              codes={reasonCodes}
+              canChoose={data.canReview && CHOICE_STATUSES.includes(order.status)}
+            />
+            {data.canReview && !CHOICE_STATUSES.includes(order.status) && (
+              <p className="mb-0 text-xs text-muted">{o("notNow", { status: statusLabel })}</p>
+            )}
+          </Card>
+
+          <Card>
+            <h2 className="mt-0 text-base font-semibold">{o("shipments.title")}</h2>
+            {data.fulfillments.length === 0 ? (
+              <p className="m-0 text-muted">{o("shipments.none")}</p>
+            ) : (
+              <ul className="m-0 flex list-none flex-col gap-2 p-0" data-testid="shipments">
+                {data.fulfillments.map((f) => (
+                  <li key={f.id} className="flex flex-wrap items-center gap-2 border-b border-line-soft pb-2">
+                    <WarehouseChip type={f.connectionType} name={f.connection} />
+                    <span className="font-mono text-[13px]">{f.externalId}</span>
+                    <StatusChip status={f.status} />
+                    {f.rawStatus && (
+                      <span className="text-xs text-muted">
+                        {o("shipments.raw")}: {f.rawStatus}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {rv.open && (
+              <div
+                className="mt-3 flex flex-col gap-2 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn"
+                data-testid="reroute-open"
+              >
+                <span className="font-semibold">
+                  {o("reroute.pending", {
+                    from: rv.shipment?.connectionName ?? "—",
+                    to: rv.history.find((h) => h.id === rv.open!.id)?.toConnection.name ?? "—",
+                  })}
+                </span>
+                {rv.open.request && (
+                  <span>{o("reroute.requestStatus", { status: rv.open.request.status })}</span>
+                )}
+                {rv.open.request &&
+                  rv.shipment?.liveMode === "CANARY" &&
+                  !rv.open.request.confirmedAt &&
+                  ["PENDING", "AWAITING_CONFIRMATION"].includes(rv.open.request.status) &&
+                  can(ctx.role, "outbox.confirmCanary") && (
+                    <CancelCanaryConfirm requestId={rv.open.request.id} />
+                  )}
+              </div>
+            )}
+            {rv.shipment && !rv.open && (
+              <div className="mt-3 flex flex-col gap-2">
+                {!rv.canReroute ? (
+                  <p className="m-0 text-xs text-muted">{o("reroute.onlyAdmins")}</p>
+                ) : rv.refusal ? (
+                  <p className="m-0 text-xs text-muted" data-testid="reroute-refusal">
+                    {o(`reroute.refusal.${rv.refusal}`)}
+                  </p>
+                ) : (
+                  <RerouteForm
+                    orderId={order.id}
+                    from={rv.shipment.connectionName}
+                    targets={rv.targets.map(optionView)}
+                    codes={reasonCodes}
+                  />
+                )}
+              </div>
+            )}
+            {rv.history.length > 0 && (
+              <details className="mt-3 text-sm" open={rv.history.some((h) => h.status !== "DONE")}>
+                <summary className="cursor-pointer text-muted">{o("reroute.history")}</summary>
+                <ul className="mt-1 mb-0 flex list-none flex-col gap-1 p-0" data-testid="reroute-history">
+                  {rv.history.map((h) => (
+                    <li key={h.id} className="flex flex-wrap gap-2">
+                      <time className="font-mono text-xs text-muted">{when(h.createdAt)}</time>
+                      <span>→ {h.toConnection.name}</span>
+                      <span className="font-medium">{o(`reroute.status.${h.status}`)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
           </Card>
 

@@ -23,6 +23,8 @@ INSERT INTO "FulfillmentConnection"(id,"accountId",type,name,"updatedAt") VALUES
 INSERT INTO "Product"(id,"accountId",sku,name,"updatedAt") VALUES ('p1','accA','SKU-1','P',now());
 INSERT INTO "Order"(id,"accountId",source,number,currency,subtotal,total,"paymentMethod","placedAt","updatedAt")
   VALUES ('o1','accA','MANUAL','1','EUR',1,1,'COD',now(),now());
+INSERT INTO "Fulfillment"(id,"accountId","orderId","connectionId","externalId",status,"updatedAt")
+  VALUES ('f1','accA','o1','c1','AAA-1','ACCEPTED',now()),('f2','accA','o1','c1','AAA-1-2','ACCEPTED',now());
 INSERT INTO "Company"(id,"accountId",name,"updatedAt") VALUES ('co1','accA','Фирма А',now());
 INSERT INTO "AuditLog"(id,"accountId",action) VALUES ('a1','accA','seed');
 INSERT INTO "Alert"(id,"accountId",kind,title) VALUES ('al1','accA','seed','Seed alert');
