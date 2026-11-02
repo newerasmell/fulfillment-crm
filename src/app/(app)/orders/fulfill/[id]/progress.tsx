@@ -66,7 +66,11 @@ export function FulfillProgress({ initial, canConfirm }: { initial: BatchView; c
 
   const retry = (row: Row, acknowledge: boolean) =>
     start(async () => {
-      const r = await retryFulfillItemAction(view.id, row.id, acknowledge);
+      const r = await retryFulfillItemAction(
+        view.id,
+        row.id,
+        acknowledge ? row.findings.map((f) => f.code) : [],
+      );
       if ("error" in r) setError(msg(r.error));
       else setView(r);
     });
@@ -79,7 +83,7 @@ export function FulfillProgress({ initial, canConfirm }: { initial: BatchView; c
   const confirm = () =>
     start(async () => {
       if (!dialog) return;
-      const r = await confirmCanaryAction(dialog.requestId);
+      const r = await confirmCanaryAction(dialog.requestId, dialog.payloadHash);
       if ("error" in r) setError(msg(r.error));
       setDialog(null);
       const v = await runFulfillStepAction(view.id);

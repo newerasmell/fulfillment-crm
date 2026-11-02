@@ -3,8 +3,10 @@ import { ShopifyClient, type ShopifyClientOptions } from "@/integrations/shopify
 import { ShopifyError } from "@/integrations/shopify/errors";
 import {
   existingFulfillment,
+  failedFulfillment,
   FULFILLMENT_CREATE_MUTATION,
   FulfillmentCreateSchema,
+  isDefiniteGraphqlRejection,
   planFulfillment,
   WRITE_BACK_READ_QUERY,
   WriteBackReadSchema,
@@ -86,7 +88,15 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
   const since = new Date(now.getTime() - WRITE_BACK_WINDOW_DAYS * 86_400_000);
   const stale = await db.shopifyWriteBack.findMany({
     where: { status: "SENDING", lockedAt: { lt: new Date(now.getTime() - WRITE_BACK_STALE_MS) } },
-    select: { id: true, accountId: true, orderId: true, evaluatedMode: true },
+    select: {
+      id: true,
+      accountId: true,
+      orderId: true,
+      fulfillmentId: true,
+      trackingNumber: true,
+      evaluatedMode: true,
+      request: true,
+    },
   });
   for (const s of stale) {
     // A DRY_RUN only read: nothing can have been created, it may simply run again.
@@ -95,7 +105,7 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
       where: { id: s.id, status: "SENDING" },
       data: { status: to, lastError: "worker stopped during the Shopify call" },
     });
-    if (moved.count === 1 && to === "UNCERTAIN")
+    if (moved.count === 1 && to === "UNCERTAIN") {
       await openTask(
         s.accountId,
         s.orderId,
@@ -104,6 +114,11 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
         "The worker stopped during fulfillmentCreate.",
         "CRITICAL",
       );
+      await event(s, "uncertain", {
+        lastError: "worker stopped during the Shopify call",
+        request: s.request,
+      });
+    }
   }
 
   const due = await db.fulfillment.findMany({
@@ -164,7 +179,11 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
 
 type Claim =
   | { kind: "skip" }
-  | { kind: "done"; status: OutboundStatus }
+  | {
+      kind: "done";
+      status: OutboundStatus;
+      row?: { id: string; accountId: string; fulfillmentId: string; trackingNumber: string };
+    }
   | {
       kind: "go";
       mode: "DRY_RUN" | "LIVE";
@@ -211,7 +230,7 @@ export async function processWriteBack(
         where: { id },
         data: { status: "REFUSED", evaluatedMode: mode, lastError: "store_read_only" },
       });
-      return { kind: "done", status: "REFUSED" };
+      return { kind: "done", status: "REFUSED", row };
     }
     const attempts = row.attempts + 1;
     await tx.shopifyWriteBack.update({
@@ -221,7 +240,11 @@ export async function processWriteBack(
     return { kind: "go", mode, attempts, row };
   });
   if (claim.kind === "skip") return "skipped";
-  if (claim.kind === "done") return claim.status;
+  if (claim.kind === "done") {
+    if (claim.status === "REFUSED" && claim.row)
+      await event(claim.row, "refused", { lastError: "store_read_only", mode: "READ_ONLY" });
+    return claim.status;
+  }
   return run(claim, clients, now);
 }
 
@@ -247,7 +270,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
   const retryLater = (detail: string) =>
     claim.attempts >= WRITE_BACK_MAX_ATTEMPTS
       ? finalize({ lastError: `max attempts: ${detail}` }, "FAILED").then(async (s) => {
-          if (s === "FAILED")
+          if (s === "FAILED") {
             await openTask(
               row.accountId,
               row.orderId,
@@ -255,15 +278,18 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
               "Shopify fulfillment could not be created",
               detail,
             );
+            await event(row, "failed", { lastError: `max attempts: ${detail}` });
+          }
           return s;
         })
       : finalize(
           { lastError: detail, nextAttemptAt: new Date(now.getTime() + backoffMs(claim.attempts)) },
           "PENDING",
         );
+  let sentRequest: Prisma.InputJsonValue | null = null;
   const failVisibly = async (reason: string, response?: unknown) => {
     const status = await finalize({ lastError: reason, lastResponse: json(response) }, "FAILED");
-    if (status === "FAILED")
+    if (status === "FAILED") {
       await openTask(
         row.accountId,
         row.orderId,
@@ -271,6 +297,23 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
         "Shopify fulfillment needs an operator",
         reason,
       );
+      await event(row, "failed", { lastError: reason, request: sentRequest, response: response ?? null });
+    }
+    return status;
+  };
+  const uncertain = async (detail: string) => {
+    const status = await finalize({ lastError: detail }, "UNCERTAIN");
+    if (status === "UNCERTAIN") {
+      await openTask(
+        row.accountId,
+        row.orderId,
+        "shopify_writeback_uncertain",
+        "Shopify fulfillment: unknown result — check the order in Shopify before doing anything",
+        detail,
+        "CRITICAL",
+      );
+      await event(row, "uncertain", { lastError: detail, request: sentRequest });
+    }
     return status;
   };
 
@@ -325,6 +368,11 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
     if (status === "SENT") await event(row, "already_fulfilled", existing);
     return status;
   }
+  // A fulfillment with our tracking number that failed at Shopify: an operator decides (never a silent SENT,
+  // never an automatic second one).
+  const failedBefore = failedFulfillment(before, row.trackingNumber);
+  if (failedBefore)
+    return failVisibly(`shopify_fulfillment_${failedBefore.status.toLowerCase()}`, failedBefore);
   const plan = planFulfillment(
     before,
     shipment.lines
@@ -342,6 +390,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
     return status;
   }
 
+  sentRequest = request;
   await db.shopifyWriteBack.updateMany({ where: { id: row.id, status: "SENDING" }, data: { request } });
   let answer;
   try {
@@ -352,8 +401,14 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
     );
   } catch (err) {
     const detail = scrubText((err as Error).message);
-    // Shopify rejected the document itself (access, validation): nothing was executed.
-    if (err instanceof ShopifyError && (err.code === "graphql_error" || err.code === "auth_failed"))
+    // Shopify rejected the document itself (HTTP 401/403, or GraphQL errors whose codes all say "rejected
+    // before execution"): nothing was executed. Any other GraphQL error (INTERNAL_SERVER_ERROR, a timeout, no
+    // code) may come after the mutation ran: resolved by reading back like any unknown outcome.
+    if (
+      err instanceof ShopifyError &&
+      (err.code === "auth_failed" ||
+        (err.code === "graphql_error" && isDefiniteGraphqlRejection(err.graphqlCodes)))
+    )
       return failVisibly(`${err.code}: ${detail}`);
     logger.warn({ writeBackId: row.id, err: detail }, "shopify fulfillmentCreate outcome unknown");
     let after: WriteBackRead;
@@ -361,19 +416,12 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
       after = await read();
     } catch (readErr) {
       const rd = scrubText((readErr as Error).message);
-      const status = await finalize({ lastError: `${detail}; read-back failed: ${rd}` }, "UNCERTAIN");
-      if (status === "UNCERTAIN")
-        await openTask(
-          row.accountId,
-          row.orderId,
-          "shopify_writeback_uncertain",
-          "Shopify fulfillment: unknown result — check the order in Shopify before doing anything",
-          `${detail}; read-back failed: ${rd}`,
-          "CRITICAL",
-        );
-      return status;
+      return uncertain(`${detail}; read-back failed: ${rd}`);
     }
     const found = existingFulfillment(after, row.trackingNumber);
+    const failedAfter = failedFulfillment(after, row.trackingNumber);
+    if (!found && failedAfter)
+      return failVisibly(`shopify_fulfillment_${failedAfter.status.toLowerCase()}`, failedAfter);
     if (found) {
       const status = await finalize(
         {
@@ -405,7 +453,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
 /** Timeline + audit entry for every write-back outcome that matters (INTEGRATION_NOTES §6). */
 async function event(
   row: { id: string; accountId: string; fulfillmentId: string; trackingNumber: string },
-  what: "sent" | "dry_run" | "already_fulfilled",
+  what: "sent" | "dry_run" | "already_fulfilled" | "failed" | "uncertain" | "refused",
   payload: unknown,
 ) {
   await systemDb().fulfillmentEvent.create({

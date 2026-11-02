@@ -10,7 +10,13 @@ import {
 import { TokenProvider } from "@/integrations/shopify/token";
 import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
-import { processWriteBack, sweepWriteBacks, type StoreClientFactory } from "./writeback";
+import {
+  processWriteBack,
+  sweepWriteBacks,
+  WRITE_BACK_STALE_MS,
+  WRITE_BACK_WINDOW_DAYS,
+  type StoreClientFactory,
+} from "./writeback";
 
 // Mocked Shopify only (no network): token endpoint + GraphQL by operation name. Synthetic ids.
 
@@ -280,5 +286,194 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
       await db().account.update({ where: { id: g.accountId }, data: { outboxPaused: false } });
     }
     expect(shop.ops).toEqual([]);
+  });
+
+  it("sweep: a stale LIVE send becomes UNCERTAIN + CRITICAL task + timeline entry; a stale DRY_RUN goes back to PENDING", async () => {
+    await setMode("LIVE");
+    const a = await shipped();
+    const b = await shipped();
+    await sweepWriteBacks();
+    const old = new Date(Date.now() - WRITE_BACK_STALE_MS - 60_000);
+    await db().shopifyWriteBack.update({
+      where: { id: (await rowFor(a.f.id))!.id },
+      data: { status: "SENDING", evaluatedMode: "LIVE", lockedAt: old },
+    });
+    await db().shopifyWriteBack.update({
+      where: { id: (await rowFor(b.f.id))!.id },
+      data: { status: "SENDING", evaluatedMode: "DRY_RUN", lockedAt: old },
+    });
+    await sweepWriteBacks();
+    expect((await rowFor(a.f.id))!.status).toBe("UNCERTAIN");
+    expect((await rowFor(b.f.id))!.status).toBe("PENDING");
+    expect(
+      await db().alert.findFirst({ where: { entityId: a.order.id, kind: "shopify_writeback_uncertain" } }),
+    ).toMatchObject({ severity: "CRITICAL" });
+    expect(
+      await db().alert.count({ where: { entityId: b.order.id, kind: "shopify_writeback_uncertain" } }),
+    ).toBe(0);
+    expect(
+      await db().fulfillmentEvent.findFirst({
+        where: { fulfillmentId: a.f.id, source: "shopify.writeback" },
+      }),
+    ).toMatchObject({ rawStatus: "uncertain" });
+  });
+
+  it("DRY_RUN_RECORDED is re-armed only for a LIVE store and only inside the window", async () => {
+    await setMode("DRY_RUN");
+    const recent = await shipped();
+    const old = await shipped();
+    await sweepWriteBacks();
+    for (const x of [recent, old])
+      await db().shopifyWriteBack.update({
+        where: { id: (await rowFor(x.f.id))!.id },
+        data: { status: "DRY_RUN_RECORDED" },
+      });
+    await db().shopifyWriteBack.update({
+      where: { id: (await rowFor(old.f.id))!.id },
+      data: { createdAt: new Date(Date.now() - (WRITE_BACK_WINDOW_DAYS + 1) * 86_400_000) },
+    });
+    await sweepWriteBacks(); // still DRY_RUN: nothing re-armed
+    expect((await rowFor(recent.f.id))!.status).toBe("DRY_RUN_RECORDED");
+    await setMode("LIVE");
+    await sweepWriteBacks();
+    expect((await rowFor(recent.f.id))!.status).toBe("PENDING");
+    expect((await rowFor(old.f.id))!.status).toBe("DRY_RUN_RECORDED");
+  });
+
+  it("two processWriteBack calls at once on the same row: exactly one fulfillmentCreate", async () => {
+    await setMode("LIVE");
+    const { f, tracking } = await shipped();
+    await sweepWriteBacks();
+    const row = (await rowFor(f.id))!;
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => readWith([]),
+      FulfillmentWriteBack: () => ({
+        fulfillmentCreate: {
+          fulfillment: { id: "gid://shopify/Fulfillment/77", status: "SUCCESS" },
+          userErrors: [],
+        },
+      }),
+    });
+    const rs = await Promise.all([
+      processWriteBack(row.id, shop.clients),
+      processWriteBack(row.id, shop.clients),
+    ]);
+    expect(rs.sort()).toEqual(["SENT", "skipped"]);
+    expect(shop.count("FulfillmentWriteBack")).toBe(1);
+    expect((await rowFor(f.id))!.trackingNumber).toBe(tracking);
+  });
+
+  it("graphql_error with only 'rejected before execution' codes → FAILED + task + timeline entry", async () => {
+    await setMode("LIVE");
+    const { f, order } = await shipped();
+    await sweepWriteBacks();
+    const row = (await rowFor(f.id))!;
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => readWith([]),
+      FulfillmentWriteBack: () =>
+        new Response(
+          JSON.stringify({ errors: [{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }] }),
+          { status: 200 },
+        ),
+    });
+    expect(await processWriteBack(row.id, shop.clients)).toBe("FAILED");
+    expect(shop.count("FulfillmentWriteBackRead")).toBe(1); // no read-back needed: nothing ran
+    expect(await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_failed" } })).toBe(
+      1,
+    );
+    expect(
+      await db().fulfillmentEvent.findFirst({ where: { fulfillmentId: f.id, source: "shopify.writeback" } }),
+    ).toMatchObject({ rawStatus: "failed" });
+  });
+
+  it("graphql_error INTERNAL_SERVER_ERROR (or no code) is an unknown outcome: read back, then SENT / UNCERTAIN", async () => {
+    await setMode("LIVE");
+    const internal = () =>
+      new Response(
+        JSON.stringify({
+          errors: [{ message: "Internal error", extensions: { code: "INTERNAL_SERVER_ERROR" } }],
+        }),
+        { status: 200 },
+      );
+    const a = await shipped();
+    await sweepWriteBacks();
+    const shopA = fakeShopify({
+      FulfillmentWriteBackRead: [() => readWith([]), () => readWith(ours(a.tracking))],
+      FulfillmentWriteBack: internal,
+    });
+    expect(await processWriteBack((await rowFor(a.f.id))!.id, shopA.clients)).toBe("SENT");
+    expect(shopA.count("FulfillmentWriteBack")).toBe(1);
+
+    const b = await shipped();
+    await sweepWriteBacks();
+    const noCode = () => new Response(JSON.stringify({ errors: [{ message: "Timeout" }] }), { status: 200 });
+    const shopB = fakeShopify({
+      FulfillmentWriteBackRead: [() => readWith([]), () => new Response("down", { status: 503 })],
+      FulfillmentWriteBack: noCode,
+    });
+    expect(await processWriteBack((await rowFor(b.f.id))!.id, shopB.clients)).toBe("UNCERTAIN");
+    expect(
+      await db().alert.findFirst({ where: { entityId: b.order.id, kind: "shopify_writeback_uncertain" } }),
+    ).toMatchObject({ severity: "CRITICAL" });
+    expect(
+      await db().alert.count({ where: { entityId: b.order.id, kind: "shopify_writeback_failed" } }),
+    ).toBe(0);
+  });
+
+  it("multiple_locations and nothing_to_fulfil → FAILED + operator task, nothing sent", async () => {
+    await setMode("LIVE");
+    const a = await shipped();
+    const b = await shipped();
+    await sweepWriteBacks();
+    const two = readWith([]);
+    const fo = two.order.fulfillmentOrders.nodes[0]!;
+    two.order.fulfillmentOrders.nodes = [
+      { ...fo, lineItems: { nodes: [{ ...fo.lineItems.nodes[0]!, remainingQuantity: 1 }] } },
+      {
+        ...fo,
+        id: `${FO_GID}2`,
+        assignedLocation: { location: { id: "gid://shopify/Location/2" } },
+        lineItems: { nodes: [{ ...fo.lineItems.nodes[0]!, id: `${FOLI_GID}2`, remainingQuantity: 1 }] },
+      },
+    ];
+    const shopA = fakeShopify({ FulfillmentWriteBackRead: () => two });
+    expect(await processWriteBack((await rowFor(a.f.id))!.id, shopA.clients)).toBe("FAILED");
+    expect((await rowFor(a.f.id))!.lastError).toBe("multiple_locations");
+    const none = readWith([]);
+    none.order.fulfillmentOrders.nodes[0]!.status = "CLOSED";
+    const shopB = fakeShopify({ FulfillmentWriteBackRead: () => none });
+    expect(await processWriteBack((await rowFor(b.f.id))!.id, shopB.clients)).toBe("FAILED");
+    expect((await rowFor(b.f.id))!.lastError).toBe("nothing_to_fulfil");
+    for (const x of [a, b])
+      expect(
+        await db().alert.count({ where: { entityId: x.order.id, kind: "shopify_writeback_failed" } }),
+      ).toBe(1);
+    expect(shopA.count("FulfillmentWriteBack") + shopB.count("FulfillmentWriteBack")).toBe(0);
+  });
+
+  it("a Shopify fulfillment with our tracking number in ERROR / FAILURE is an operator task, never SENT", async () => {
+    await setMode("LIVE");
+    const { f, tracking, order } = await shipped();
+    await sweepWriteBacks();
+    const failed = ours(tracking).map((x) => ({ ...x, status: "FAILURE" }));
+    const shop = fakeShopify({ FulfillmentWriteBackRead: () => readWith(failed) });
+    expect(await processWriteBack((await rowFor(f.id))!.id, shop.clients)).toBe("FAILED");
+    expect((await rowFor(f.id))!.lastError).toBe("shopify_fulfillment_failure");
+    expect(shop.count("FulfillmentWriteBack")).toBe(0);
+    expect(await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_failed" } })).toBe(
+      1,
+    );
+  });
+
+  it("REFUSED (store READ_ONLY at send time) is on the order timeline", async () => {
+    await setMode("LIVE");
+    const { f } = await shipped();
+    await sweepWriteBacks();
+    await setMode("READ_ONLY");
+    expect(await processWriteBack((await rowFor(f.id))!.id, fakeShopify({}).clients)).toBe("REFUSED");
+    expect(
+      await db().fulfillmentEvent.findFirst({ where: { fulfillmentId: f.id, source: "shopify.writeback" } }),
+    ).toMatchObject({ rawStatus: "refused" });
+    await setMode("LIVE");
   });
 });

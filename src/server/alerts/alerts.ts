@@ -280,6 +280,36 @@ const SWEEP_KINDS = ["order_blocked", "order_unknown", "order_submit_failed", "o
  * its threshold (never a second while one is open), and resolves those alerts by itself once the order has
  * moved on (with an auto_resolve note). Runs across accounts (worker).
  */
+/**
+ * An alert of this kind for this order was resolved after the order last entered its current status. Without
+ * an OrderEvent into that status (e.g. imported straight into it), any earlier resolution counts.
+ */
+async function resolvedSinceEntered(
+  o: { id: string; accountId: string; status: CrmOrderStatus },
+  kind: string,
+  body: string,
+) {
+  const db = systemDb();
+  const entered = await db.orderEvent.findFirst({
+    where: { accountId: o.accountId, orderId: o.id, toStatus: o.status },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  const resolved = await db.alert.findFirst({
+    where: {
+      accountId: o.accountId,
+      kind,
+      entityType: "Order",
+      entityId: o.id,
+      status: "RESOLVED",
+      body,
+      ...(entered ? { resolvedAt: { gte: entered.createdAt } } : {}),
+    },
+    select: { id: true },
+  });
+  return !!resolved;
+}
+
 export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHours(), take = 500) {
   const db = systemDb();
   let created = 0;
@@ -298,6 +328,9 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
   ) => {
     if (openKey.has(`${kind}:${o.id}`)) return;
     openKey.add(`${kind}:${o.id}`);
+    // Someone resolved this alert (with a note) while the order stayed where it is: do not raise it again
+    // (and notify again) until the order has left that status and come back.
+    if (await resolvedSinceEntered(o, kind, body)) return;
     await db.alert.create({
       data: {
         accountId: o.accountId,

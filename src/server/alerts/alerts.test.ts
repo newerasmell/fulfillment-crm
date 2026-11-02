@@ -96,6 +96,46 @@ describe("alerts and tasks (DB)", () => {
     expect((await alertHistory(g.owner, alert.id)).map((h) => h.action)).toEqual(["auto_resolve"]);
   });
 
+  it("an alert resolved with a note while the order stays in that status is not raised (or sent) again", async () => {
+    const blocked = await order("BLOCKED");
+    await db().orderEvent.create({
+      data: {
+        accountId: g.accountId,
+        orderId: blocked.id,
+        fromStatus: "PROCESSING",
+        toStatus: "BLOCKED",
+        cause: "vendor",
+        actorType: "system",
+        createdAt: new Date(Date.now() - 60_000),
+      },
+    });
+    await sweepOrderAlerts();
+    const first = await db().alert.findFirstOrThrow({
+      where: { entityId: blocked.id, kind: "order_blocked" },
+    });
+    await resolveAlert(g.owner, first.id, "Asked the warehouse, they are on it");
+    // 10 minutes later the order is still BLOCKED: no new alert.
+    await sweepOrderAlerts(new Date(Date.now() + 10 * 60_000));
+    await sweepOrderAlerts(new Date(Date.now() + 20 * 60_000));
+    expect(await db().alert.count({ where: { entityId: blocked.id, kind: "order_blocked" } })).toBe(1);
+    // It leaves BLOCKED and comes back later: a new episode, a new alert.
+    await db().orderEvent.create({
+      data: {
+        accountId: g.accountId,
+        orderId: blocked.id,
+        fromStatus: "PROCESSING",
+        toStatus: "BLOCKED",
+        cause: "vendor",
+        actorType: "system",
+        createdAt: new Date(Date.now() + 1000),
+      },
+    });
+    await sweepOrderAlerts(new Date(Date.now() + 30 * 60_000));
+    expect(
+      await db().alert.count({ where: { entityId: blocked.id, kind: "order_blocked", status: "OPEN" } }),
+    ).toBe(1);
+  });
+
   it("one list with categories and counts; assign and resolve with a note; scope respected", async () => {
     const o = await order("APPROVED");
     const alert = await db().alert.create({

@@ -62,15 +62,21 @@ export async function runFulfillStepAction(batchId: string): Promise<BatchView |
   }
 }
 
+const Codes = z.array(z.string().min(1).max(200)).max(100);
+const Hash = z.string().regex(/^[0-9a-f]{64}$/);
+
 export async function retryFulfillItemAction(
   batchId: string,
   itemId: string,
-  acknowledge: boolean,
+  /** Codes of the warnings shown on the row when "send anyway" was clicked; [] = retry without acknowledging. */
+  acknowledgedCodes: string[],
 ): Promise<BatchView | Fail> {
   const ctx = await requireAccountContext();
   const actor = actorFrom(ctx);
   try {
-    await retryFulfillItem(actor, Id.parse(itemId), { acknowledge: acknowledge === true });
+    await retryFulfillItem(actor, Id.parse(batchId), Id.parse(itemId), {
+      acknowledgedCodes: Codes.parse(acknowledgedCodes),
+    });
     return plain(await getFulfillBatch(actor, Id.parse(batchId)));
   } catch (err) {
     return toError(err);
@@ -86,10 +92,13 @@ export async function canaryViewAction(requestId: string): Promise<CanaryView | 
   }
 }
 
-export async function confirmCanaryAction(requestId: string): Promise<{ ok: true } | Fail> {
+export async function confirmCanaryAction(
+  requestId: string,
+  payloadHash: string,
+): Promise<{ ok: true } | Fail> {
   const ctx = await requireAccountContext();
   try {
-    await confirmFulfillCanary(actorFrom(ctx), Id.parse(requestId));
+    await confirmFulfillCanary(actorFrom(ctx), Id.parse(requestId), Hash.parse(payloadHash));
   } catch (err) {
     return toError(err);
   }

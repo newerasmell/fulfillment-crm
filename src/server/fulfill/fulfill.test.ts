@@ -170,11 +170,11 @@ describe("Fulfill (P4-06)", () => {
       await expect(canaryView({ ...g.owner, role: "VIEWER" }, r.requestId!)).rejects.toBeInstanceOf(
         ForbiddenError,
       );
-      await confirmFulfillCanary(g.owner, r.requestId!);
+      await confirmFulfillCanary(g.owner, r.requestId!, view.payloadHash);
       const after = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: r.requestId! } });
       expect(after).toMatchObject({ status: "PENDING", confirmedById: g.owner.userId });
       expect(after.confirmedAt).not.toBeNull();
-      await expect(confirmFulfillCanary(g.owner, r.requestId!)).rejects.toMatchObject({
+      await expect(confirmFulfillCanary(g.owner, r.requestId!, view.payloadHash)).rejects.toMatchObject({
         code: "not_confirmable",
       });
     } finally {
@@ -183,7 +183,9 @@ describe("Fulfill (P4-06)", () => {
     // Outside CANARY a confirmation is refused.
     const other = await approved();
     const r2 = await fulfillOrder(g.owner, other.id);
-    await expect(confirmFulfillCanary(g.owner, r2.requestId!)).rejects.toMatchObject({
+    await expect(
+      confirmFulfillCanary(g.owner, r2.requestId!, (await canaryView(g.owner, r2.requestId!)).payloadHash),
+    ).rejects.toMatchObject({
       code: "not_confirmable",
     });
   });
@@ -203,7 +205,7 @@ describe("Fulfill (P4-06)", () => {
     expect(view.finishedAt).not.toBeNull();
     expect(view.counts).toEqual({ QUEUED: 2, SKIPPED: 1 });
     // A SKIPPED item is final; a blocked one can be retried once the block is gone.
-    await expect(retryFulfillItem(g.owner, view.rows[2]!.id)).rejects.toMatchObject({
+    await expect(retryFulfillItem(g.owner, batch.id, view.rows[2]!.id)).rejects.toMatchObject({
       code: "not_retryable",
     });
     // Restricted members see only their companies' rows.

@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
@@ -60,6 +60,10 @@ export async function createFulfillBatch(actor: ScopedActor, orderIds: string[])
   return batch;
 }
 
+/** Items a restricted member may see and act on: only orders of their companies (same filter everywhere). */
+const itemScope = (actor: ScopedActor): Prisma.FulfillBatchItemWhereInput =>
+  actor.companyScope ? { order: { companyId: { in: actor.companyScope } } } : {};
+
 async function loadBatch(actor: ScopedActor, batchId: string) {
   const batch = await accountDb(actor.accountId).fulfillBatch.findUnique({ where: { id: batchId } });
   if (!batch) throw new DomainError("not_found");
@@ -86,7 +90,7 @@ async function processItem(actor: ScopedActor, itemId: string, orderId: string, 
     data: {
       status: r.status,
       code: r.code,
-      findings: r.findings.length ? json(r.findings) : undefined,
+      findings: r.findings.length ? json(r.findings) : Prisma.DbNull,
       connectionId: r.connectionId,
       liveMode: r.liveMode,
       requestId: r.requestId,
@@ -105,6 +109,7 @@ export async function runFulfillBatch(actor: ScopedActor, batchId: string, max =
     const next = await db.fulfillBatchItem.findFirst({
       where: {
         batchId: batch.id,
+        ...itemScope(actor),
         OR: [
           { status: "PENDING" },
           { status: "RUNNING", startedAt: { lt: new Date(now.getTime() - STALE_RUNNING_MS) } },
@@ -120,6 +125,7 @@ export async function runFulfillBatch(actor: ScopedActor, batchId: string, max =
     if (claimed.count !== 1) continue; // another tab took it
     await processItem(actor, next.id, next.orderId, { now });
   }
+  // Finished only when every item (of anyone's scope) is done.
   const waiting = await db.fulfillBatchItem.count({
     where: { batchId: batch.id, status: { in: ["PENDING", "RUNNING"] } },
   });
@@ -131,22 +137,41 @@ export async function runFulfillBatch(actor: ScopedActor, batchId: string, max =
   return { waiting };
 }
 
-/** Runs one item again (after the operator acknowledged new warnings, or once a block was fixed). */
+const RETRYABLE = ["NEEDS_ACK", "BLOCKED", "FAILED"];
+
+/**
+ * Runs one item again (after the operator acknowledged new warnings, or once a block was fixed).
+ * `acknowledgedCodes` are the warnings the operator was shown on the row; only those that are also the item's
+ * STORED NEEDS_ACK findings count (never a fresh validation), so a warning that appeared later is shown first.
+ */
 export async function retryFulfillItem(
   actor: ScopedActor,
+  batchId: string,
   itemId: string,
-  opts: { acknowledge?: boolean } = {},
+  opts: { acknowledgedCodes?: readonly string[] } = {},
 ) {
   assertCan(actor.role, "orders.fulfill");
   const db = accountDb(actor.accountId);
-  const item = await db.fulfillBatchItem.findUnique({ where: { id: itemId } });
+  const item = await db.fulfillBatchItem.findFirst({
+    where: { id: itemId, batchId, ...itemScope(actor) },
+  });
   if (!item) throw new DomainError("not_found");
+  if (!RETRYABLE.includes(item.status)) throw new DomainError("not_retryable");
+  const stored = new Set(
+    item.status === "NEEDS_ACK" ? ((item.findings ?? []) as { code?: string }[]).map((f) => f.code) : [],
+  );
+  const acknowledgedCodes = (opts.acknowledgedCodes ?? []).filter((c) => stored.has(c));
+  // Conditional on the state that was read: the stored findings are exactly what is acknowledged.
   const claimed = await db.fulfillBatchItem.updateMany({
-    where: { id: item.id, status: { in: ["NEEDS_ACK", "BLOCKED", "FAILED"] } },
-    data: { status: "RUNNING", startedAt: new Date(), findings: undefined },
+    where: {
+      id: item.id,
+      status: item.status,
+      finishedAt: item.finishedAt,
+    },
+    data: { status: "RUNNING", startedAt: new Date() },
   });
   if (claimed.count !== 1) throw new DomainError("not_retryable");
-  return processItem(actor, item.id, item.orderId, { acknowledge: opts.acknowledge });
+  return processItem(actor, item.id, item.orderId, { acknowledgedCodes });
 }
 
 export type BatchView = Awaited<ReturnType<typeof getFulfillBatch>>;
@@ -157,10 +182,7 @@ export async function getFulfillBatch(actor: ScopedActor, batchId: string) {
   const batch = await loadBatch(actor, batchId);
   const db = accountDb(actor.accountId);
   const items = await db.fulfillBatchItem.findMany({
-    where: {
-      batchId: batch.id,
-      ...(actor.companyScope ? { order: { companyId: { in: actor.companyScope } } } : {}),
-    },
+    where: { batchId: batch.id, ...itemScope(actor) },
     orderBy: { position: "asc" },
     include: { order: { select: { id: true, number: true, customerName: true, status: true } } },
   });

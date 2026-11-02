@@ -55,6 +55,8 @@ export interface SubmitFhbOrderInput {
   note?: string | null;
   /** The operator saw the soft warnings and wants to send anyway. */
   acknowledgeWarnings?: boolean;
+  /** Soft finding codes the operator saw; any other soft finding still needs an acknowledgement. */
+  acknowledgedCodes?: readonly string[];
   /** Stock older than this is a warning (default 1 h). */
   stockMaxAgeMs?: number;
 }
@@ -216,7 +218,10 @@ async function prepare(
   const { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value } =
     await fhbPreflight(tx, actor.accountId, input, ids, opts);
   if (hasHardBlock(findings)) throw new FhbPreflightError("fhb_preflight_failed", findings);
-  if (findings.length && !input.acknowledgeWarnings)
+  const unseen = input.acknowledgedCodes
+    ? findings.filter((f) => !input.acknowledgedCodes!.includes(f.code))
+    : findings;
+  if (unseen.length && !input.acknowledgeWarnings)
     throw new FhbPreflightError("fhb_preflight_needs_ack", findings);
 
   const draft: FhbOrderDraft = {

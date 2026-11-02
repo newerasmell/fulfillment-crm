@@ -103,14 +103,60 @@ export interface FulfillmentInput {
   trackingInfo: { number: string; company?: string; url?: string };
 }
 
-/** A Shopify fulfillment of ours already exists for this tracking number (cancelled ones do not count). */
+/**
+ * FulfillmentStatus in 2026-10 (schema tool): CANCELLED, ERROR, FAILURE, SUCCESS. CANCELLED does not count;
+ * ERROR / FAILURE are a failed fulfillment (an operator decides, see failedFulfillment). Anything else —
+ * SUCCESS, or a value Shopify adds later — counts as done: an unknown status never leads to a second one.
+ */
+const NOT_DONE = new Set(["CANCELLED", "ERROR", "FAILURE"]);
+const FAILED_STATUSES = new Set(["ERROR", "FAILURE"]);
+const hasTracking = (f: { trackingInfo: { number: string | null }[] }, n: string) =>
+  f.trackingInfo.some((t) => t.number === n);
+
+/** A Shopify fulfillment of ours already exists for this tracking number (cancelled / failed ones do not count). */
 export function existingFulfillment(read: WriteBackRead, trackingNumber: string) {
   return (
-    read.order?.fulfillments.find(
-      (f) => f.status !== "CANCELLED" && f.trackingInfo.some((t) => t.number === trackingNumber),
-    ) ?? null
+    read.order?.fulfillments.find((f) => !NOT_DONE.has(f.status) && hasTracking(f, trackingNumber)) ?? null
   );
 }
+
+/** A Shopify fulfillment with our tracking number that ended in ERROR / FAILURE. */
+export function failedFulfillment(read: WriteBackRead, trackingNumber: string) {
+  return (
+    read.order?.fulfillments.find((f) => FAILED_STATUSES.has(f.status) && hasTracking(f, trackingNumber)) ??
+    null
+  );
+}
+
+/**
+ * GraphQL error codes (errors[].extensions.code) that mean the document was rejected before execution, so
+ * nothing was created: access, parse/validation, cost limits. Throttling is handled by the client. Any other
+ * code (INTERNAL_SERVER_ERROR, timeouts) or no code at all means the outcome is unknown.
+ */
+export const DEFINITE_GRAPHQL_CODES: ReadonlySet<string> = new Set([
+  "ACCESS_DENIED",
+  "UNAUTHORIZED",
+  "FORBIDDEN",
+  "GRAPHQL_PARSE_FAILED",
+  "GRAPHQL_VALIDATION_FAILED",
+  "BAD_USER_INPUT",
+  "MAX_COST_EXCEEDED",
+  "THROTTLED",
+  "undefinedField",
+  "undefinedType",
+  "argumentNotAccepted",
+  "missingRequiredArguments",
+  "missingRequiredInputObjectAttribute",
+  "argumentLiteralsIncompatible",
+  "variableMismatch",
+  "variableNotUsed",
+  "variableNotDefined",
+  "parseError",
+]);
+
+/** True only when every reported code says "rejected before execution" (and there is at least one). */
+export const isDefiniteGraphqlRejection = (codes: readonly string[]) =>
+  codes.length > 0 && codes.every((c) => DEFINITE_GRAPHQL_CODES.has(c));
 
 export type PlanResult =
   | { ok: true; input: FulfillmentInput }
