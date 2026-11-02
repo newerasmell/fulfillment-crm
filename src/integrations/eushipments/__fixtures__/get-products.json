@@ -1,0 +1,22 @@
+[
+  {
+    "ID": 85,
+    "NAME": "test product",
+    "DESCRIPTION": "test description",
+    "LENGTH_ITEM": "20.50",
+    "WIDTH": "20.50",
+    "HEIGHT": "20.50",
+    "WEIGHT": "2.20",
+    "REFERENCE_NUMBER": "ref-test-54202"
+  },
+  {
+    "ID": 86,
+    "NAME": "test product 2",
+    "DESCRIPTION": null,
+    "LENGTH_ITEM": "10.00",
+    "WIDTH": "15.00",
+    "HEIGHT": "5.00",
+    "WEIGHT": "0.50",
+    "REFERENCE_NUMBER": "ref-test-54201"
+  }
+]
