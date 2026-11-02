@@ -1756,6 +1756,10 @@ model ManualShipment {
   trackedAt     DateTime?
   stopTracking  Boolean   @default(false)
   trackError    String?
+  /// AWB label fetch (print/{awb}) after create: attempts so far and the last error. The sweep stops at a cap
+  /// and opens one operator task instead of calling the vendor forever.
+  labelAttempts Int       @default(0)
+  labelError    String?
   /// Idempotency key of the form submission: a double click / retried POST returns the same shipment.
   clientRequestId String?
   createdById   String?

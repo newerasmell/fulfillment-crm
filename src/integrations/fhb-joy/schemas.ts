@@ -55,6 +55,10 @@ export const JOY_LIMITS = {
   emailMax: 50,
   phoneMin: 6,
   phoneMax: 20,
+  /**
+   * CRM limit for POST /shipments `note` — the reference gives no maximum there (only POST /packages documents
+   * `note` ≤250); we keep the same 250 as a conservative CRM-side rule, not a vendor rule.
+   */
   noteMax: 250,
   notifyUrlMax: 255,
   /** `posta_expres`: the variable symbol must be numeric and at most 10 characters. */
@@ -185,6 +189,8 @@ export const JoyShipmentInfo = z.looseObject({
   id: z.union([z.string(), z.number()]).transform(String).nullish(),
   status: str,
   parcelService: str,
+  name: str,
+  zip: str,
   variableSymbol: z.union([z.string(), z.number()]).transform(String).nullish(),
   cod: numLike,
   _embedded: Embedded,

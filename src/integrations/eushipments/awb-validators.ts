@@ -392,6 +392,32 @@ export function validateAwb(d: AwbDraft): ValidationFinding[] {
         "COD cannot be negative.",
       ),
     );
+  if (d.declaredValue && d.declaredValue > 0) {
+    // CLAUDE.md: declared value goes to the vendor in the destination country's local currency.
+    if (!d.localCurrency || t(d.codCurrency).toUpperCase() !== d.localCurrency.toUpperCase())
+      out.push(
+        f(
+          "awb.declared_value.currency",
+          "hard",
+          "awb.declaredValue",
+          d.localCurrency
+            ? `Обявената стойност трябва да е в ${d.localCurrency}.`
+            : "Няма настроена местна валута за държавата — обявената стойност не може да се изпрати.",
+          d.localCurrency
+            ? `Declared value must be in ${d.localCurrency}.`
+            : "No local currency set up for the country — declared value cannot be sent.",
+        ),
+      );
+  } else if (d.declaredValue != null && d.declaredValue < 0)
+    out.push(
+      f(
+        "awb.declared_value.negative",
+        "hard",
+        "awb.declaredValue",
+        "Обявената стойност не може да е отрицателна.",
+        "Declared value cannot be negative.",
+      ),
+    );
   return out;
 }
 

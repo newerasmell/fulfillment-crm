@@ -99,6 +99,7 @@ async function refused(
   kind: string,
   title: string,
   error: string,
+  severity: "WARNING" | "CRITICAL" = "WARNING",
 ) {
   if (!PRE_ACCEPT.includes(f.status)) return;
   await tx.fulfillment.update({ where: { id: f.id }, data: { status: "SUBMIT_FAILED" } });
@@ -111,7 +112,7 @@ async function refused(
     source,
     reason: scrubText(error, 500),
   });
-  await task(tx, f, kind, "WARNING", title, error);
+  await task(tx, f, kind, severity, title, error);
 }
 
 async function voided(
@@ -181,9 +182,12 @@ export function joyEffects(accountOf: () => Promise<string>, connectionId: strin
             tx,
             f,
             "joy.create",
-            "labels_joy_rejected",
-            `FHB Joy refused label ${f.externalId}`,
+            e.idConflict ? "labels_joy_id_conflict" : "labels_joy_rejected",
+            e.idConflict
+              ? `FHB Joy id ${f.externalId} belongs to another shipment — no label was created`
+              : `FHB Joy refused label ${f.externalId}`,
             `${e.field ? `field ${e.field}: ` : ""}${e.error}`,
+            e.idConflict ? "CRITICAL" : "WARNING",
           );
         case "voided":
           return voided(tx, f, "joy.reject", "label_rejected_at_vendor");

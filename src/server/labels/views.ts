@@ -1,5 +1,5 @@
 import { DomainError } from "@/server/accounts";
-import { can } from "@/server/auth/rbac";
+import { assertCan, can } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
 import { joySettingsOf } from "./connection";
@@ -172,8 +172,28 @@ export async function manualConnections(actor: ScopedActor) {
   }));
 }
 
+/**
+ * The euShipments connection behind the AWB form's mirror lookups: the form's permission and the actor's
+ * company scope, like requestQuote — a scoped user never lists another company's connection mirror.
+ */
+async function formConnection(actor: ScopedActor, connectionId: string) {
+  assertCan(actor.role, "orders.fulfill");
+  const c = await accountDb(actor.accountId).fulfillmentConnection.findUnique({
+    where: { id: connectionId },
+    select: { id: true, type: true, companyId: true },
+  });
+  if (
+    !c ||
+    c.type !== "EUSHIPMENTS" ||
+    (actor.companyScope && !actor.companyScope.includes(c.companyId ?? ""))
+  )
+    throw new DomainError("not_found");
+  return c;
+}
+
 /** Couriers and offices from the euShipments mirror (read-only, for the AWB form). */
 export async function euCouriers(actor: ScopedActor, connectionId: string) {
+  await formConnection(actor, connectionId);
   const db = accountDb(actor.accountId);
   return db.eushipmentsCourier.findMany({ where: { connectionId }, orderBy: { name: "asc" }, take: 200 });
 }
@@ -198,6 +218,7 @@ export async function joyConnectionsForSettings(actor: ScopedActor) {
 
 /** Courier offices / PUDO of one courier from the euShipments mirror (search by city / name / code). */
 export async function euOffices(actor: ScopedActor, connectionId: string, courierId: number, q: string) {
+  await formConnection(actor, connectionId);
   const term = q.trim();
   return accountDb(actor.accountId).eushipmentsOffice.findMany({
     where: {

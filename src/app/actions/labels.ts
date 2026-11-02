@@ -186,14 +186,17 @@ export async function quoteStatusAction(quoteId: string) {
 
 export async function officesAction(connectionId: string, courierId: number, q: string) {
   const ctx = await requireAccountContext();
-  return plain(
-    await euOffices(
-      actorFrom(ctx),
-      Id.parse(connectionId),
-      z.number().int().positive().parse(courierId),
-      z.string().max(60).parse(q),
-    ),
-  );
+  const offices = await euOffices(
+    actorFrom(ctx),
+    Id.parse(connectionId),
+    z.number().int().positive().parse(courierId),
+    z.string().max(60).parse(q),
+  ).catch((err: unknown) => {
+    // A connection outside the actor's scope / permission is simply "no offices" for the search box.
+    if (err instanceof DomainError || err instanceof ForbiddenError) return [];
+    throw err;
+  });
+  return plain(offices);
 }
 
 // ───────────────────────── FHB Joy connections ─────────────────────────

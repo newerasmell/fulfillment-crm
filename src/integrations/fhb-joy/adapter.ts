@@ -4,7 +4,7 @@ import { scrubText } from "@/lib/scrub";
 import type { OutboundCall, OutboundTransport, ReadBackResult, SendResult } from "@/server/outbox/transport";
 import { JoyError, type JoyClient } from "./client";
 import { trackingFromLabel } from "./mapper";
-import { JoyShipmentCreate } from "./schemas";
+import { JoyShipmentCreate, type JoyShipmentInfo } from "./schemas";
 
 /**
  * FHB Joy as an outbox transport (INTEGRATION_NOTES §3, §6). The outbox decides WHETHER to send (liveMode gate);
@@ -43,7 +43,15 @@ export type JoyResultEvent =
       labelBase64: string | null;
       recovered: boolean;
     }
-  | { kind: "create_rejected"; id: string; ctx: Record<string, unknown>; error: string; field: string | null }
+  | {
+      kind: "create_rejected";
+      id: string;
+      ctx: Record<string, unknown>;
+      error: string;
+      field: string | null;
+      /** The id is taken by a DIFFERENT shipment at Joy: a CRITICAL operator task, not a plain refusal. */
+      idConflict?: boolean;
+    }
   | { kind: "voided"; id: string; ctx: Record<string, unknown> }
   | { kind: "void_refused"; id: string; ctx: Record<string, unknown>; error: string };
 
@@ -53,6 +61,27 @@ export interface JoyTransportDeps {
   /** A domain effect failed after a definite vendor answer: an operator task, never a different outcome. */
   onEffectFailed?(event: JoyResultEvent, error: string): Promise<void>;
 }
+
+const norm = (v: string | null | undefined) =>
+  (v ?? "").normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
+const normZip = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, "").toUpperCase();
+
+/**
+ * Is the shipment found under our id the one we meant to create? The Joy id namespace belongs to the Joy
+ * account, not to the CRM group: another group / company using the same Joy login, a re-created account or an
+ * id used in ZOE can hold the same `M-M<n>`. Claiming it would print someone else's label. Compared on what
+ * GET /shipment returns (reference): variableSymbol, zip, name and COD; a field Joy leaves out is not compared.
+ */
+export function sameJoyShipment(found: JoyShipmentInfo, body: JoyShipmentCreate): boolean {
+  if (found.variableSymbol != null && String(found.variableSymbol).trim() !== body.variableSymbol.trim())
+    return false;
+  if (found.zip != null && normZip(found.zip) !== normZip(body.zip)) return false;
+  if (found.name != null && norm(found.name) !== norm(body.name)) return false;
+  if (found.cod != null && Math.abs(found.cod - (body.cod ?? 0)) > 0.005) return false;
+  return true;
+}
+
+export const JOY_ID_CONFLICT = "joy id already used by another shipment";
 
 const pdfBytes = (b64: string | null | undefined) => (b64 ? Math.floor((b64.length * 3) / 4) : 0);
 
@@ -104,6 +133,13 @@ export class JoyTransport implements OutboundTransport {
     return { recoveredBy: how, tracking, labelBytes: pdfBytes(label?.label) };
   }
 
+  /** Our id is held by a different shipment at Joy: never claimed, never retried with another id. */
+  private async idConflict(id: string, ctx: Record<string, unknown>): Promise<SendResult> {
+    const error = `${JOY_ID_CONFLICT} (${id})`;
+    await this.emit({ kind: "create_rejected", id, ctx, error, field: "id", idConflict: true });
+    return { outcome: "rejected", response: { idConflict: true }, error };
+  }
+
   async send(call: OutboundCall): Promise<SendResult> {
     if (call.testMode) return { outcome: "rejected", response: null, error: "joy has no test mode" };
     let client: JoyClient;
@@ -132,6 +168,7 @@ export class JoyTransport implements OutboundTransport {
               scrubText(`GET /shipment before create failed: ${(err as Error).message}`),
             );
           }
+          if (existing && !sameJoyShipment(existing, body)) return this.idConflict(id, ctx);
           if (existing)
             return {
               outcome: "accepted",
@@ -161,6 +198,7 @@ export class JoyTransport implements OutboundTransport {
             if (err.code === "conflict") {
               // "Resource already exists": read back, never retry with a new id.
               const found = await client.getShipment(id);
+              if (found && !sameJoyShipment(found, body)) return this.idConflict(id, ctx);
               if (found)
                 return {
                   outcome: "accepted",
@@ -215,9 +253,12 @@ export class JoyTransport implements OutboundTransport {
     const client = await this.deps.client();
     switch (call.operation) {
       case JOY_OPS.createShipment: {
-        const { id, ctx } = JoyEnvelopes[JOY_OPS.createShipment].parse(call.payload);
+        const { id, body, ctx } = JoyEnvelopes[JOY_OPS.createShipment].parse(call.payload);
         const found = await client.getShipment(id);
         if (!found) return { found: false };
+        // Not ours: neither "found" (it would claim a foreign label) nor "not found" (a retry would 409 again).
+        // Throwing makes the request UNCERTAIN with an operator task.
+        if (!sameJoyShipment(found, body)) throw new Error(`${JOY_ID_CONFLICT} (${id})`);
         return { found: true, response: await this.recover(client, id, ctx, "read-back") };
       }
       case JOY_OPS.rejectShipment: {

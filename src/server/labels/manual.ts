@@ -159,13 +159,96 @@ export const manualExternalId = (number: string) => `M-${number}`;
 /** The account-scoped client where a helper takes a transaction client (same scoping, reads only). */
 const scopedTx = (accountId: string) => accountDb(accountId) as unknown as Tx;
 
-/** The connection the operator chose, checked against the kind, the company scope and its state. */
-async function loadConnection(db: Tx, actor: ScopedActor, kind: ManualKind, connectionId: string) {
+/**
+ * The connection the operator chose, checked against the kind, the company scope and its state. A label is
+ * billed to the connection's vendor account and its COD is collected there, so a label kind must use a
+ * connection of the ORDER's company (or a shared one without a company): `connection_other_company` otherwise.
+ * WAREHOUSE may use another company's warehouse (routing allows it, recorded in the CRM only) — that is a soft
+ * finding the operator acknowledges (crossCompanyFinding).
+ */
+async function loadConnection(
+  db: Tx,
+  actor: ScopedActor,
+  kind: ManualKind,
+  connectionId: string,
+  companyId: string,
+) {
   const c = await db.fulfillmentConnection.findUnique({ where: { id: connectionId } });
   if (!c || !CONNECTION_FOR[kind].includes(c.type)) throw new DomainError("not_found");
   if (actor.companyScope && !actor.companyScope.includes(c.companyId ?? ""))
     throw new DomainError("not_found");
+  if (kind !== "WAREHOUSE" && c.companyId && c.companyId !== companyId)
+    throw new DomainError("connection_other_company");
   return c;
+}
+
+/** WAREHOUSE through another company's warehouse: allowed, but never silently. */
+function crossCompanyFinding(conn: { companyId: string | null; name: string }, companyId: string) {
+  if (!conn.companyId || conn.companyId === companyId) return [];
+  return [
+    {
+      code: "manual.connection_other_company",
+      severity: "soft",
+      source: "routing",
+      field: null,
+      message_bg: `Складът „${conn.name}“ е на друга фирма (отчита се само в CRM).`,
+      message_en: `Warehouse "${conn.name}" belongs to another company (recorded in the CRM only).`,
+    } satisfies Finding,
+  ];
+}
+
+/** Same window as the order checks' duplicate finder (validate.ts). */
+const DUPLICATE_WINDOW_MS = 48 * 3600_000;
+
+/**
+ * Orders of the same company that look like the same parcel: same phone or e-mail, or same street + zip, and
+ * the same amount, placed within the window. The clientRequestId only protects ONE form submission; this is
+ * what catches a reload or a second operator entering the same parcel (a second, billable label).
+ */
+async function possibleDuplicates(db: Tx, v: Parsed, now: Date) {
+  const r = v.recipient;
+  const address1 = r.buildingNumber ? `${r.address1} ${r.buildingNumber}` : r.address1;
+  const or: Prisma.OrderWhereInput[] = [
+    { phone: r.phone },
+    ...(r.email ? [{ email: { equals: r.email, mode: "insensitive" as const } }] : []),
+    ...(r.zip
+      ? [
+          {
+            AND: [
+              { shippingAddress: { path: ["zip"], equals: r.zip } },
+              { shippingAddress: { path: ["address1"], equals: address1 } },
+            ],
+          },
+        ]
+      : []),
+  ];
+  return db.order.findMany({
+    where: {
+      companyId: v.companyId,
+      status: { notIn: ["CANCELLED"] },
+      total: orderTotal(v, v.lines),
+      placedAt: { gte: new Date(now.getTime() - DUPLICATE_WINDOW_MS), lte: new Date(now.getTime() + 60_000) },
+      OR: or,
+    },
+    select: { number: true },
+    orderBy: { placedAt: "desc" },
+    take: 5,
+  });
+}
+
+function duplicateFinding(dups: { number: string }[]): Finding[] {
+  if (!dups.length) return [];
+  const list = dups.map((d) => d.number).join(", ");
+  return [
+    {
+      code: "manual.duplicate_recipient",
+      severity: "soft",
+      source: "order",
+      field: null,
+      message_bg: `Възможен дубликат на ${list}: същият получател и сума в последните 48 ч. Втори етикет се таксува отделно.`,
+      message_en: `Possible duplicate of ${list}: same recipient and amount in the last 48 h. A second label is billed separately.`,
+    },
+  ];
 }
 
 function toFinding(f: ValidationFinding, source: Finding["source"]): Finding {
@@ -340,7 +423,7 @@ export async function previewManualShipment(
   const v = ManualShipmentInput.parse(raw);
   if (actor.companyScope && !actor.companyScope.includes(v.companyId)) throw new DomainError("not_found");
   const db = scopedTx(actor.accountId);
-  const conn = await loadConnection(db, actor, v.kind, v.connectionId);
+  const conn = await loadConnection(db, actor, v.kind, v.connectionId, v.companyId);
   const localCurrency = await localCurrencyOf(db, actor.accountId, v.recipient.countryCode);
   const chosen = {
     bg: `Ръчно избрана връзка: „${conn.name}“ (${conn.type}), режим ${conn.liveMode}.`,
@@ -400,13 +483,13 @@ export async function previewManualShipment(
         localCurrency,
         routing: routing.connectionId === conn.id ? routing : { ...routing, connectionId: conn.id },
         stock,
-        duplicates: [],
+        duplicates: await possibleDuplicates(db, v, now),
       },
     );
     const sameAsRouting = routing.connectionId === conn.id;
     return {
       kind: v.kind,
-      findings: sortFindings(level.findings),
+      findings: sortFindings([...level.findings, ...crossCompanyFinding(conn, v.companyId)]),
       routing,
       stock,
       payload: null,
@@ -429,7 +512,7 @@ export async function previewManualShipment(
   );
   return {
     kind: v.kind,
-    findings: sortFindings(plan.findings),
+    findings: sortFindings([...plan.findings, ...duplicateFinding(await possibleDuplicates(db, v, now))]),
     routing: null,
     stock: null,
     payload: plan.body,
@@ -501,10 +584,13 @@ export async function createManualShipment(
   const db = scopedTx(actor.accountId);
   const company = await db.company.findUnique({ where: { id: v.companyId } });
   if (!company || company.archivedAt) throw new DomainError("not_found");
-  const conn0 = await loadConnection(db, actor, v.kind, v.connectionId);
+  const conn0 = await loadConnection(db, actor, v.kind, v.connectionId, v.companyId);
+  // Required: it is what makes a double click or a retried POST ONE shipment.
+  if (!v.clientRequestId) throw new DomainError("client_request_id_required");
   const again = await existingSubmission(actor, v.clientRequestId);
   if (again) return again;
   if (!conn0.enabled) throw new DomainError("connection_disabled");
+  if (v.kind === "WAREHOUSE") gate(crossCompanyFinding(conn0, v.companyId), v.acknowledgedCodes);
   try {
     return v.kind === "WAREHOUSE"
       ? await createWarehouse(actor, v, now)
@@ -675,10 +761,14 @@ async function createLabel(
   const localCurrency = await localCurrencyOf(db, actor.accountId, v.recipient.countryCode);
   // Fail fast (nothing written, no number consumed); the same checks run again inside the transaction.
   {
-    const conn = await loadConnection(db, actor, v.kind, v.connectionId);
+    const conn = await loadConnection(db, actor, v.kind, v.connectionId, v.companyId);
     if (conn.liveMode === "READ_ONLY") throw new DomainError("connection_read_only");
     gate(
-      planLabel(v, conn, { externalId: "M-M0", variableSymbol: "1" }, localCurrency, false, now).findings,
+      [
+        ...planLabel(v, conn, { externalId: "M-M0", variableSymbol: "1" }, localCurrency, false, now)
+          .findings,
+        ...duplicateFinding(await possibleDuplicates(db, v, now)),
+      ],
       v.acknowledgedCodes,
     );
   }
@@ -686,7 +776,7 @@ async function createLabel(
     withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
       // Serialises with the sender, the kill switch and mode changes (same lock order: connection first).
       await lockForUpdate("FulfillmentConnection", v.connectionId);
-      const conn = await loadConnection(tx, actor, v.kind, v.connectionId);
+      const conn = await loadConnection(tx, actor, v.kind, v.connectionId, v.companyId);
       if (!conn.enabled) throw new DomainError("connection_disabled");
       if (conn.liveMode === "READ_ONLY") throw new DomainError("connection_read_only");
       const number = await nextNumber(tx, actor.accountId);
@@ -714,6 +804,8 @@ async function createLabel(
         duplicate,
         now,
       );
+      // Re-read under the connection lock: a parcel committed by another operator meanwhile is seen here.
+      plan.findings.push(...duplicateFinding(await possibleDuplicates(tx, v, now)));
       gate(plan.findings, v.acknowledgedCodes);
 
       const order = await createOrderRow(tx, actor, v, number, now, orderTotal(v, []));

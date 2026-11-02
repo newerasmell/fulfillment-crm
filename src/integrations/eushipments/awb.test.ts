@@ -67,6 +67,28 @@ describe("validateAwb", () => {
   ])("hard %o → %s", (patch, code) => {
     expect(validateAwb({ ...draft, ...patch }).find((f) => f.code === code)?.severity).toBe("hard");
   });
+  it("declared value must be in the local currency, even without COD", () => {
+    const code = "awb.declared_value.currency";
+    const prepaidRo = { ...draft, country: "RO", region: "Bucuresti", phone: "0712345678", cod: 0 };
+    expect(
+      validateAwb({ ...prepaidRo, codCurrency: "EUR", localCurrency: "RON", declaredValue: 100 }).find(
+        (f) => f.code === code,
+      )?.severity,
+    ).toBe("hard");
+    expect(
+      validateAwb({ ...draft, cod: null, localCurrency: null, declaredValue: 50 }).find(
+        (f) => f.code === code,
+      )?.severity,
+    ).toBe("hard");
+    expect(
+      validateAwb({ ...prepaidRo, codCurrency: "ron", localCurrency: "RON", declaredValue: 100 }).map(
+        (f) => f.code,
+      ),
+    ).not.toContain(code);
+    expect(validateAwb({ ...draft, declaredValue: -1 }).map((f) => f.code)).toContain(
+      "awb.declared_value.negative",
+    );
+  });
   it("office delivery makes the street optional for createAWB but not for preAWB", () => {
     expect(validateAwb({ ...draft, street: null, officeId: 1297 }).map((f) => f.code)).not.toContain(
       "awb.street.missing",

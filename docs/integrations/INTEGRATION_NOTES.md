@@ -186,7 +186,8 @@ contracts. Separate base URL, separate auth call, camelCase.
   Required: `id, parcelService, name(≥3), street(≥3), city(≥2), zip(3–12), country, email(≤50),
   phone(6–20 intl), variableSymbol, numberOfPackages`. Optional: `province`, `cod` (local currency!), `weight[]`
   (length must equal numberOfPackages), `deliveryPoint`, `labelOrientation P|L`, `sender`, `senderName`,
-  `note`, `invoiceDetail` (customs), `_embedded.notifyLinks[{confirmed,sent,delivered,returned}]`.
+  `note` (no maximum in the reference for /shipments; the CRM applies 250 — **CRM limit, not from the
+  reference**, mirrored from `/packages`), `invoiceDetail` (customs), `_embedded.notifyLinks[{confirmed,sent,delivered,returned}]`.
   `variableSymbol` must be numeric ≤10 for `posta_expres`.
 - Asynchronous: `POST /packages` — note **`psc` (3–10)** instead of `zip`, `id` ≤30, name 3–100,
   street 3–255, city 2–50, `variableSymbol` ≤40, `note` ≤250. **`parcelService` is optional and silently

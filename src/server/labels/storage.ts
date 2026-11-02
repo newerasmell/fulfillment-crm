@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
+import { can, ForbiddenError } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
 
@@ -62,6 +63,9 @@ export async function storeLabel(
  * a bulk PDF needs every covered shipment in scope.
  */
 export async function labelForDownload(actor: ScopedActor, labelId: string) {
+  // Labels carry the recipient's address: the roles that ship (fulfil) or pack (warehouse) only.
+  if (!can(actor.role, "orders.fulfill") && !can(actor.role, "stock.manage"))
+    throw new ForbiddenError("orders.fulfill");
   const db = accountDb(actor.accountId);
   const label = await db.shipmentLabel.findUnique({ where: { id: labelId } });
   if (!label) throw new DomainError("not_found");

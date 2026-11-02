@@ -101,6 +101,37 @@ describe("JoyTransport — never a second label", () => {
     expect(calls.filter((c) => c === "POST /shipments")).toHaveLength(1);
   });
 
+  it("a DIFFERENT shipment under our id is never claimed (send, 409 and read-back)", async () => {
+    const foreign = { ...(info as object), name: "Someone Else", zip: "11000", variableSymbol: "999" };
+    // Before create: found, but not ours → rejected with a CRITICAL id-conflict event, no POST, no reprint.
+    const a = setup((m, p) => (p === "/shipment" ? json(foreign) : json(created)));
+    const r = await a.transport.send(a.call);
+    expect(r).toMatchObject({ outcome: "rejected", error: expect.stringContaining("joy id already used") });
+    expect(a.calls).toEqual(["GET /shipment"]);
+    expect(a.events[0]).toMatchObject({ kind: "create_rejected", idConflict: true, field: "id" });
+    // 409 on create, the read-back finds someone else's shipment.
+    let posted = false;
+    const b = setup((m, p) => {
+      if (p === "/shipment") return posted ? json(foreign) : notFound();
+      posted = true;
+      return json({ status: "error", message: "Resource already exists" }, 409);
+    });
+    expect((await b.transport.send(b.call)).outcome).toBe("rejected");
+    expect(b.events[0]).toMatchObject({ kind: "create_rejected", idConflict: true });
+    expect(b.events.some((e) => e.kind === "created")).toBe(false);
+    // Read-back after a timeout: throws (→ UNCERTAIN + operator task), never "found".
+    const c = setup((m, p) => (p === "/shipment" ? json({ ...foreign, cod: 1 }) : json(created)));
+    await expect(c.transport.readBack(c.call)).rejects.toThrow(/joy id already used/);
+    expect(c.events).toEqual([]);
+    // Same shipment with cosmetic differences (case, spaces) is still ours.
+    const d = setup((m, p) =>
+      p === "/shipment"
+        ? json({ ...(info as object), name: " oskar  šnajdr ", zip: "755 01" })
+        : json(created),
+    );
+    expect((await d.transport.readBack(d.call)).found).toBe(true);
+  });
+
   it("a 400 is a definite rejection with the field named", async () => {
     const { transport, events, call } = setup((m, p) =>
       p === "/shipment" ? notFound() : json(ex["POST /shipments 400"], 400),

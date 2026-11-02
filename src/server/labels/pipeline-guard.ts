@@ -10,7 +10,16 @@ import { registerGuard } from "@/server/pipeline/transition";
 export const LABEL_KINDS = ["JOY_LABEL", "AWB", "PRE_AWB"] as const;
 export type LabelKind = (typeof LABEL_KINDS)[number];
 
-const isLabelOnly = async (tx: Parameters<Parameters<typeof registerGuard>[1]>[0], orderId: string) =>
+type CountDb = {
+  manualShipment: { count(args: { where: { orderId: string; kind: { in: LabelKind[] } } }): Promise<number> };
+};
+
+/**
+ * True when the order is a label-only manual shipment. The vendor queue functions (fulfillOrder, queueEuOrder,
+ * submitFhbOrder) refuse such orders explicitly: the pipeline's queue guard does not run for QUEUED → QUEUED
+ * (transition() short-circuits a same-status re-arm), so it alone cannot keep them out of the Fulfill path.
+ */
+export const isLabelOnly = async (tx: CountDb, orderId: string) =>
   (await tx.manualShipment.count({ where: { orderId, kind: { in: [...LABEL_KINDS] } } })) > 0;
 
 let registered = false;

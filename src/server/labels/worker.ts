@@ -225,7 +225,10 @@ export async function applyJoyInfo(
     const tracking = [...new Set([...f.trackingNumbers, ...(emb?.trackingNumber ?? [])])];
     const urls = [...new Set([...f.trackingUrls, ...(emb?.trackingLink ?? [])])];
     // A status we did not ask for: CANCELLED by a reject we did not send (our void sets CANCELLED first).
-    const status: CrmOrderStatus = m.status === "UNKNOWN" ? f.status : m.status;
+    // Forward-only: a stale or out-of-order answer ("pending" after "sent") keeps the later status; only the raw
+    // value is stored. Final outcomes (delivered, returned, rejected) always apply.
+    const status: CrmOrderStatus =
+      m.status === "UNKNOWN" || !joyStatusMovesForward(f.status, m.status) ? f.status : m.status;
     await tx.fulfillment.update({
       where: { id: fulfillmentId },
       data: {
@@ -276,15 +279,34 @@ export async function applyJoyInfo(
   });
 }
 
+const JOY_LIFECYCLE: readonly CrmOrderStatus[] = ["QUEUED", "ACCEPTED", "PROCESSING", "SHIPPED"];
+const JOY_OUTCOMES = new Set<CrmOrderStatus>(["DELIVERED", "RETURN_RECEIVED", "CANCELLED"]);
+
+/** May a Joy status read move the shipment from `from` to `to`? Pure. */
+export function joyStatusMovesForward(from: CrmOrderStatus, to: CrmOrderStatus) {
+  if (from === to) return true;
+  if (JOY_OUTCOMES.has(to)) return true;
+  if (JOY_OUTCOMES.has(from)) return false;
+  const a = JOY_LIFECYCLE.indexOf(from);
+  const b = JOY_LIFECYCLE.indexOf(to);
+  // From a state outside the lifecycle (SUBMIT_FAILED, EXCEPTION, …) the vendor's answer is the truth.
+  return a < 0 || b > a;
+}
+
 // ───────────────────────── single labels (AWB print, Joy reprint) ─────────────────────────
 
-/** AWB shipments with an AWB number but no stored label (the label is fetched after create). */
+/** Sweep attempts at print/{awb} per AWB (every 10 min ≈ 1 h), then one operator task and no more calls. */
+export const MAX_LABEL_ATTEMPTS = 6;
+
+/** AWB shipments with an AWB number but no stored label (the label is fetched after create), below the cap. */
 export async function awbLabelsMissing(limit = 100) {
   return systemDb().manualShipment.findMany({
     where: {
       kind: "AWB",
+      labelAttempts: { lt: MAX_LABEL_ATTEMPTS },
       fulfillment: { vendorOrderId: { not: null }, labelFileKey: null, status: { in: TRACKED } },
     },
+    orderBy: { labelAttempts: "asc" },
     select: { accountId: true, fulfillmentId: true },
     take: limit,
   });
@@ -329,6 +351,44 @@ export async function fetchLabel(
     }),
   );
   return { stored: true, labelId: label.id };
+}
+
+/**
+ * One sweep attempt at a missing AWB label. A failure (vendor error, or no label in the answer) is counted on
+ * the ManualShipment with its last error; at MAX_LABEL_ATTEMPTS the sweep stops calling the vendor and opens ONE
+ * operator task (the label can still be fetched by hand from the shipment page).
+ */
+export async function fetchMissingAwbLabel(
+  accountId: string,
+  fulfillmentId: string,
+  deps: LabelWorkerDeps = {},
+) {
+  let error: string;
+  try {
+    const r = await fetchLabel(accountId, fulfillmentId, deps);
+    if (r.stored) return r;
+    error = r.reason ?? "no_label";
+  } catch (err) {
+    error = scrubText(String((err as Error)?.message ?? err), 500);
+  }
+  await withAccountTransaction(accountId, async (tx) => {
+    const ms = await tx.manualShipment.update({
+      where: { accountId_fulfillmentId: { accountId, fulfillmentId } },
+      data: { labelAttempts: { increment: 1 }, labelError: error },
+      include: { fulfillment: { select: { externalId: true, vendorOrderId: true } } },
+    });
+    if (ms.labelAttempts >= MAX_LABEL_ATTEMPTS)
+      await alertOnce(
+        tx,
+        accountId,
+        fulfillmentId,
+        "labels_awb_print_failed",
+        "WARNING",
+        `euShipments: no label for AWB ${ms.fulfillment?.vendorOrderId ?? ""} (${ms.fulfillment?.externalId ?? ""})`,
+        `print/{awb} failed ${ms.labelAttempts} times; automatic retries stopped. Last error: ${error}`,
+      );
+  });
+  return { stored: false as const, reason: error };
 }
 
 // ───────────────────────── bulk label PDF ─────────────────────────

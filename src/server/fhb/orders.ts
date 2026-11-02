@@ -1,4 +1,5 @@
 import { Prisma } from "@/generated/prisma/client";
+import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import {
   buildFhbOrderCreate,
   buildFhbOrderUpdate,
@@ -296,6 +297,7 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
   const run = () =>
     withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
       const { order, connection } = await loadScoped(tx, actor, input.orderId, input.connectionId);
+      if (await isLabelOnly(tx, order.id)) throw new DomainError("label_only_order");
       const code = orderCode(order);
       if (!code) throw new DomainError("fhb_no_store_code");
       // Serialises submissions per connection: the variable-symbol sequence and the duplicate checks below.

@@ -47,7 +47,21 @@ const TYPES: Record<Kind, Conn["type"][]> = {
   PRE_AWB: ["EUSHIPMENTS"],
 };
 const num = (v: string) => (v.trim() === "" ? null : Number(v.replace(",", ".")));
-const uuid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : undefined);
+/**
+ * One id per submission (the server refuses a create without one). crypto.randomUUID exists only in secure
+ * contexts; getRandomValues works everywhere, so the id — and the double-click protection — is never missing.
+ */
+const uuid = (): string => {
+  const c = globalThis.crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  const b = new Uint8Array(16);
+  if (c?.getRandomValues) c.getRandomValues(b);
+  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
 
 export function ManualForm(props: {
   companies: { id: string; name: string }[];
@@ -98,7 +112,7 @@ export function ManualForm(props: {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [quote, setQuote] = useState<string | null>(null);
-  const [requestId, setRequestId] = useState<string | undefined>(() => uuid());
+  const [requestId, setRequestId] = useState<string>(() => uuid());
   const [pending, start] = useTransition();
 
   const input = ((): ManualShipmentInput => {

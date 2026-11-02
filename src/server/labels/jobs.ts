@@ -6,6 +6,7 @@ import { registerJoyLiveCheck } from "./joy-live-check";
 import {
   awbLabelsMissing,
   fetchLabel,
+  fetchMissingAwbLabel,
   labelsDueForTracking,
   runLabelPrintJob,
   runQuote,
@@ -63,7 +64,9 @@ export async function registerLabelWorkers(boss: PgBoss, opts: { pollingInterval
     for (const m of await awbLabelsMissing()) {
       if (!m.fulfillmentId) continue;
       try {
-        await fetchLabel(m.accountId, m.fulfillmentId);
+        const r = await fetchMissingAwbLabel(m.accountId, m.fulfillmentId);
+        if (!r.stored)
+          logger.warn({ fulfillmentId: m.fulfillmentId, reason: r.reason }, "AWB label fetch failed");
       } catch (err) {
         logger.warn(
           { fulfillmentId: m.fulfillmentId, err: scrubText(String((err as Error).message)) },

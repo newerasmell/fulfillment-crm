@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import examples from "@/integrations/fhb-joy/__fixtures__/openapi-examples.json";
 import { checkOrder } from "@/server/checks";
 import { euTestGroup } from "@/server/eushipments/test-fixtures";
+import { queueEuOrder } from "@/server/eushipments/write";
+import { fulfillOrder } from "@/server/fulfill/fulfill";
 import { processOutbound } from "@/server/outbox/outbox";
 import { transitionOrder, TransitionError } from "@/server/pipeline";
 import { saveCredential } from "@/server/security/credentials";
@@ -19,7 +21,15 @@ import {
   type ManualShipmentInput,
 } from "./index";
 import { withLabelTransports } from "./transport";
-import { applyJoyInfo, runLabelPrintJob, trackLabels } from "./worker";
+import { euCouriers, euOffices } from "./views";
+import {
+  applyJoyInfo,
+  awbLabelsMissing,
+  fetchMissingAwbLabel,
+  MAX_LABEL_ATTEMPTS,
+  runLabelPrintJob,
+  trackLabels,
+} from "./worker";
 import { joyLiveCheck } from "./joy-live-check";
 
 // Synthetic data only. Vendor calls are mocked fetches; nothing leaves the test.
@@ -41,6 +51,8 @@ function fetchMock(route: Route) {
   });
   return { fetchImpl: fetchImpl as unknown as typeof fetch, calls };
 }
+
+const DUP = "manual.duplicate_recipient";
 
 describe("manual shipments and labels (P7)", () => {
   let g: Awaited<ReturnType<typeof euTestGroup>>;
@@ -65,6 +77,10 @@ describe("manual shipments and labels (P7)", () => {
     parcels: 1,
     weights: [1.2],
     parcelService: "pplcz",
+    // Most tests reuse one synthetic recipient on purpose: the duplicate warning is acknowledged here and
+    // tested on its own below.
+    acknowledgedCodes: [DUP],
+    clientRequestId: randomUUID(),
     ...over,
   });
   const awbInput = (over: Partial<ManualShipmentInput> = {}): ManualShipmentInput => ({
@@ -86,6 +102,8 @@ describe("manual shipments and labels (P7)", () => {
     totalWeight: 1,
     courierId: 20,
     contents: "sample",
+    acknowledgedCodes: [DUP],
+    clientRequestId: randomUUID(),
     ...over,
   });
   const setMode = (id: string, liveMode: "READ_ONLY" | "DRY_RUN" | "CANARY" | "LIVE") =>
@@ -170,7 +188,7 @@ describe("manual shipments and labels (P7)", () => {
       owner,
       joyInput({
         recipient: { ...joyInput().recipient, address1: "Hlavna ulica" },
-        acknowledgedCodes: ["joy.street.no_number"],
+        acknowledgedCodes: ["joy.street.no_number", DUP],
       }),
     );
     const evs = await g.db.orderEvent.findMany({
@@ -219,12 +237,13 @@ describe("manual shipments and labels (P7)", () => {
 
   it("a timeout on create is read back: found → SENT, never a second label", async () => {
     const r = await createManualShipment(owner, joyInput());
-    let created = false;
-    const m = fetchMock((method, path) => {
+    let created: Record<string, unknown> | null = null;
+    const m = fetchMock((method, path, body) => {
       if (path === "/shipment")
-        return created ? json(ex["GET /shipment 200"]) : json({ status: "error" }, 404);
+        return created ? json({ ...(ex["GET /shipment 200"] as object), ...created }) : json({}, 404);
       if (method === "POST") {
-        created = true;
+        const b = body as Record<string, unknown>;
+        created = { name: b.name, zip: b.zip, variableSymbol: b.variableSymbol, cod: b.cod };
         throw new Error("The operation was aborted due to timeout");
       }
       return json({ ...(ex["GET /shipments 200"] as object), label: PDF });
@@ -240,6 +259,29 @@ describe("manual shipments and labels (P7)", () => {
     expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: r.fulfillmentId! } })).status).toBe(
       "ACCEPTED",
     );
+  });
+
+  it("our Joy id held by another shipment: FAILED + one CRITICAL task, never ACCEPTED", async () => {
+    const r = await createManualShipment(owner, joyInput());
+    const m = fetchMock((method, path) =>
+      path === "/shipment"
+        ? json({ ...(ex["GET /shipment 200"] as object), name: "Someone Else", variableSymbol: "1" })
+        : json({ ...(ex["POST /shipments 200"] as object), label: PDF }),
+    );
+    const req = await g.db.outboundRequest.findFirstOrThrow({ where: { fulfillmentId: r.fulfillmentId! } });
+    expect(
+      await processOutbound(
+        req.id,
+        withLabelTransports(() => undefined, { joy: { fetchImpl: m.fetchImpl } }),
+      ),
+    ).toBe("FAILED");
+    expect(m.calls).toEqual(["GET /shipment"]);
+    const f = await g.db.fulfillment.findUniqueOrThrow({ where: { id: r.fulfillmentId! } });
+    expect(f.status).toBe("SUBMIT_FAILED");
+    expect(f.labelFileKey).toBeNull();
+    const alerts = await g.db.alert.findMany({ where: { kind: "labels_joy_id_conflict", entityId: f.id } });
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.severity).toBe("CRITICAL");
   });
 
   it("DRY_RUN records the Joy label (no test mode exists), CANARY waits for a click", async () => {
@@ -295,6 +337,98 @@ describe("manual shipments and labels (P7)", () => {
     ).rejects.toBeInstanceOf(TransitionError);
   });
 
+  it("Fulfill never routes a QUEUED label-only order (DRY_RUN recorded AWB) to a warehouse", async () => {
+    await setMode(g.connection.id, "DRY_RUN");
+    const r = await createManualShipment(owner, awbInput());
+    const m = fetchMock(() => json({ awb: 1, barcode: "B", packagesBarcodes: [], id: 9 }));
+    const req = await g.db.outboundRequest.findFirstOrThrow({ where: { fulfillmentId: r.fulfillmentId! } });
+    expect(
+      await processOutbound(
+        req.id,
+        withLabelTransports(() => undefined, { eu: { fetchImpl: m.fetchImpl } }),
+      ),
+    ).toBe("DRY_RUN_RECORDED");
+    await setMode(g.connection.id, "LIVE");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: r.orderId } })).status).toBe("QUEUED");
+    const fBefore = await g.db.fulfillment.count({ where: { orderId: r.orderId } });
+    const oBefore = await g.db.outboundRequest.count({ where: { fulfillment: { orderId: r.orderId } } });
+    const res = await fulfillOrder(owner, r.orderId);
+    expect(res).toMatchObject({ status: "BLOCKED", code: "label_only_order" });
+    await expect(
+      queueEuOrder(owner, { orderId: r.orderId, connectionId: g.connection.id }),
+    ).rejects.toMatchObject({ code: "label_only_order" });
+    expect(await g.db.fulfillment.count({ where: { orderId: r.orderId } })).toBe(fBefore);
+    expect(await g.db.outboundRequest.count({ where: { fulfillment: { orderId: r.orderId } } })).toBe(
+      oBefore,
+    );
+  });
+
+  it("the same recipient twice (reload / second operator) needs an acknowledgement; no id is refused", async () => {
+    const recipient = {
+      ...joyInput().recipient,
+      phone: "+420601999111",
+      email: "dup@example.com",
+      address1: "Duplicitni 7",
+    };
+    const first = await createManualShipment(owner, joyInput({ recipient, acknowledgedCodes: [] }));
+    const before = await g.db.order.count();
+    const second = await createManualShipment(owner, joyInput({ recipient, acknowledgedCodes: [] })).catch(
+      (e) => e,
+    );
+    expect(second).toBeInstanceOf(ManualPreflightError);
+    expect((second as ManualPreflightError).code).toBe("manual_preflight_needs_ack");
+    const dup = (second as ManualPreflightError).findings.find((f) => f.code === DUP);
+    expect(dup?.severity).toBe("soft");
+    expect(dup?.message_en).toContain(first.number);
+    expect(await g.db.order.count()).toBe(before);
+    const p = await previewManualShipment(owner, joyInput({ recipient }));
+    expect(p.findings.map((f) => f.code)).toContain(DUP);
+    // Same address + zip + amount with another phone is caught too.
+    const other = await createManualShipment(
+      owner,
+      joyInput({ recipient: { ...recipient, phone: "+420601999222", email: null }, acknowledgedCodes: [] }),
+    ).catch((e) => e);
+    expect((other as ManualPreflightError).findings?.map((f) => f.code)).toContain(DUP);
+    await expect(
+      createManualShipment(owner, joyInput({ recipient, clientRequestId: null })),
+    ).rejects.toMatchObject({ code: "client_request_id_required" });
+    // Acknowledged: created.
+    expect((await createManualShipment(owner, joyInput({ recipient }))).number).not.toBe(first.number);
+  });
+
+  it("a label uses a connection of the order's company; WAREHOUSE elsewhere is a soft finding", async () => {
+    const other = await g.db.company.create({
+      data: { accountId: g.accountId, name: `Other ${Date.now()}` },
+    });
+    await expect(createManualShipment(owner, awbInput({ companyId: other.id }))).rejects.toMatchObject({
+      code: "connection_other_company",
+    });
+    await expect(previewManualShipment(owner, joyInput({ companyId: other.id }))).rejects.toMatchObject({
+      code: "connection_other_company",
+    });
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SKU-X-${Date.now()}`, name: "Sample" },
+    });
+    const input = awbInput({
+      kind: "WAREHOUSE",
+      companyId: other.id,
+      acknowledgedCodes: [],
+      lines: [{ productId: product.id, quantity: 1, unitPrice: 20 }],
+    });
+    const p = await previewManualShipment(owner, input);
+    expect(p.findings.find((f) => f.code === "manual.connection_other_company")?.severity).toBe("soft");
+    const before = await g.db.order.count();
+    await expect(createManualShipment(owner, input)).rejects.toMatchObject({
+      code: "manual_preflight_needs_ack",
+    });
+    expect(await g.db.order.count()).toBe(before);
+    const ok = await createManualShipment(owner, {
+      ...input,
+      acknowledgedCodes: ["manual.connection_other_company"],
+    });
+    expect(ok.kind).toBe("WAREHOUSE");
+  });
+
   it("void: Joy DELETE /shipments through the outbox, the shipment and order become CANCELLED", async () => {
     const r = await createManualShipment(owner, joyInput());
     const create = fetchMock((m, p) =>
@@ -345,6 +479,12 @@ describe("manual shipments and labels (P7)", () => {
     });
     expect(await g.db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: "joy" } })).toBe(1);
     expect((await g.db.order.findUniqueOrThrow({ where: { id: r.orderId } })).status).toBe("SHIPPED");
+    // A stale "pending" after "sent" never moves the shipment back; the raw value is stored.
+    await applyJoyInfo(g.accountId, r.manualShipmentId, f.id, { id: "x", status: "pending" } as never);
+    expect(await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).toMatchObject({
+      status: "SHIPPED",
+      rawStatus: "pending",
+    });
     await applyJoyInfo(g.accountId, r.manualShipmentId, f.id, { id: "x", status: "brand_new" } as never);
     expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("SHIPPED");
     expect(await g.db.alert.count({ where: { kind: "labels_joy_unknown_status", entityId: f.id } })).toBe(1);
@@ -425,6 +565,48 @@ describe("manual shipments and labels (P7)", () => {
     expect(
       (await g.db.manualShipment.findUniqueOrThrow({ where: { id: r.manualShipmentId } })).stopTracking,
     ).toBe(true);
+  });
+
+  it("a missing AWB label is retried up to the cap, then ONE task and no more vendor calls", async () => {
+    const r = await createManualShipment(owner, awbInput());
+    await g.db.fulfillment.update({
+      where: { id: r.fulfillmentId! },
+      data: { status: "ACCEPTED", vendorOrderId: "7000000000001" },
+    });
+    const m = fetchMock(() => json({ message: "Additional package detected" }, 422));
+    for (let i = 0; i < MAX_LABEL_ATTEMPTS + 2; i++) {
+      const due = (await awbLabelsMissing(10_000)).some((x) => x.fulfillmentId === r.fulfillmentId);
+      if (!due) break;
+      expect(
+        (await fetchMissingAwbLabel(g.accountId, r.fulfillmentId!, { eu: { fetchImpl: m.fetchImpl } }))
+          .stored,
+      ).toBe(false);
+    }
+    expect(m.calls.length).toBe(MAX_LABEL_ATTEMPTS);
+    const ms = await g.db.manualShipment.findUniqueOrThrow({ where: { id: r.manualShipmentId } });
+    expect(ms.labelAttempts).toBe(MAX_LABEL_ATTEMPTS);
+    expect(ms.labelError).toBeTruthy();
+    expect(
+      await g.db.alert.count({ where: { kind: "labels_awb_print_failed", entityId: r.fulfillmentId! } }),
+    ).toBe(1);
+    expect((await awbLabelsMissing(10_000)).some((x) => x.fulfillmentId === r.fulfillmentId)).toBe(false);
+  });
+
+  it("courier / office mirror and label download respect permission and company scope", async () => {
+    const outsider = { ...owner, role: "OPERATOR" as const, companyScope: ["another-company"] };
+    await expect(euCouriers(outsider, g.connection.id)).rejects.toMatchObject({ code: "not_found" });
+    await expect(euOffices(outsider, g.connection.id, 20, "")).rejects.toMatchObject({ code: "not_found" });
+    await expect(euOffices({ ...owner, role: "VIEWER" }, g.connection.id, 20, "")).rejects.toThrow(
+      /orders.fulfill/,
+    );
+    expect(await euOffices(owner, g.connection.id, 20, "")).toEqual(expect.any(Array));
+    const label = await g.db.shipmentLabel.findFirst({ where: { accountId: g.accountId } });
+    if (label) {
+      await expect(labelForDownload({ ...owner, role: "VIEWER" }, label.id)).rejects.toThrow(
+        /orders.fulfill/,
+      );
+      expect((await labelForDownload({ ...owner, role: "WAREHOUSE" }, label.id)).id).toBe(label.id);
+    }
   });
 
   it("bulk label PDF: one Joy GET /labels call, stored once, scoped download", async () => {

@@ -4,6 +4,7 @@
 //     stored synthetic PDF (status ACCEPTED), to test download and bulk print;
 //   - "euShipments Етикети" (EUSHIPMENTS, LIVE, companyId 333) with one courier in the mirror, a product with a
 //     vendor product and stock, for the AWB and "from stock" kinds.
+import { randomUUID } from "node:crypto";
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 import { createManualShipment, createJoyConnection, storeLabel } from "@/server/labels";
@@ -108,6 +109,7 @@ export async function seedLabels() {
     parcels: 1,
     weights: [1],
     parcelService: "pplcz",
+    clientRequestId: randomUUID(),
   });
   await withAccountTransaction(accountId, async (tx) => {
     await tx.outboundRequest.updateMany({

@@ -1770,7 +1770,10 @@
       "no_label": "No label for this shipment.",
       "variable_symbol_exhausted": "Variable symbols are exhausted.",
       "not_confirmable": "The request can no longer be confirmed (changed or sent).",
-      "no_credentials": "The connection has no credentials."
+      "no_credentials": "The connection has no credentials.",
+      "connection_other_company": "The connection belongs to another company — the label would be billed and the COD collected in its account. Choose a connection of this company.",
+      "client_request_id_required": "The form has no submission id — reload the page and try again.",
+      "label_only_order": "This is a label-only shipment — it is never sent to a warehouse."
     }
   }
 }
