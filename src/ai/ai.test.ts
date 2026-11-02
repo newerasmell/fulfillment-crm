@@ -42,6 +42,7 @@ import {
 } from "./rule-mining";
 import { aiTestGroup, checkedOrder, mockLlm, type AiTestGroup } from "./test-fixtures";
 import { tryAutopilot } from "./autopilot";
+import { aiDashboard, interactionDetail, listInteractions, orderAiCard } from "./views";
 
 // Synthetic data only. Nothing calls Anthropic or Voyage: the transports are mocked.
 
@@ -744,6 +745,24 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
       });
       expect(await enforcePolicies(a.accountId)).toEqual([]); // already L0
     });
+  });
+
+  it("views: the AI card and the log respect company scope and permissions", async () => {
+    const o = await g.db.aiSuggestion.findFirstOrThrow({ select: { orderId: true } });
+    const card = await orderAiCard(g.owner, o.orderId);
+    expect(card.suggestion).not.toBeNull();
+    expect(card.status).toEqual({ enabled: false, reason: "no_api_key" });
+    const outsider = { ...g.owner, role: "ADMIN" as const, companyScope: ["no-such-company"] };
+    await expect(orderAiCard(outsider, o.orderId)).rejects.toMatchObject({ code: "not_found" });
+    expect(await listInteractions(outsider)).toEqual([]);
+    const any = await g.db.aiInteraction.findFirstOrThrow({ where: { orderId: { not: null } } });
+    await expect(interactionDetail(outsider, any.id)).rejects.toMatchObject({ code: "not_found" });
+    await expect(listInteractions({ ...g.owner, role: "OPERATOR" })).rejects.toThrow(/ai.log/);
+    expect((await interactionDetail(g.owner, any.id)).request).toBeTruthy();
+    const d = await aiDashboard(g.owner);
+    expect(d.policies.map((p) => p.decisionType)).toEqual([AI_APPROVAL_DECISION, ADDRESS_FIX_DECISION]);
+    expect(d.embeddings["local-hash"]).toBeGreaterThan(0);
+    await expect(aiDashboard({ ...g.owner, role: "VIEWER" })).rejects.toThrow(/ai.read/);
   });
 
   it("rule mining turns repeated corrections into proposals; accepting records a developer task", async () => {
