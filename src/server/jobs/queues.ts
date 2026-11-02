@@ -176,4 +176,9 @@ export const QUEUES = {
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
     cron: "*/10 * * * *",
   },
+  /** Master catalogue run of a product line (data: { accountId, runId, lineId }); one at a time per line. */
+  linesCatalogue: {
+    name: "lines.catalogue",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
+  },
 } satisfies Record<string, QueueDef>;

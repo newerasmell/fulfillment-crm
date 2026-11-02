@@ -37,6 +37,8 @@ export type RuleMatch = z.infer<typeof RuleMatch>;
 
 export interface RoutingOrder {
   companyId: string | null;
+  /** Product line of the selling company (P5-00); null/absent = no line. */
+  lineId?: string | null;
   storeId: string | null;
   countryCode: string | null;
   paymentMethod: PaymentMethod;
@@ -49,6 +51,8 @@ export interface RoutingConnection {
   name: string;
   type: ConnectionType;
   companyId: string | null;
+  /** Product line of the connection's company (P5-00); null/absent = no line. */
+  lineId?: string | null;
   enabled: boolean;
 }
 
@@ -270,9 +274,15 @@ export function evaluateRouting(input: EvaluateInput): RoutingDecision {
   }
 
   // Stock fallback: a warehouse that can ship every line; the selling company's own first, then by name.
+  // Only warehouses of companies in the order's product line (P5-00): other lines sell other goods.
+  const orderLine = order.lineId ?? null;
   const candidates = input.connections
     .filter(
-      (c) => c.enabled && STOCK_CONNECTION_TYPES.includes(c.type) && input.stock.get(c.id)?.status === "ok",
+      (c) =>
+        c.enabled &&
+        STOCK_CONNECTION_TYPES.includes(c.type) &&
+        (c.lineId ?? null) === orderLine &&
+        input.stock.get(c.id)?.status === "ok",
     )
     .sort(
       (a, b) =>

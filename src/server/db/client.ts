@@ -150,10 +150,14 @@ function withRls(client: PrismaClient, settings: { accountId: string | null; byp
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
-          const scoped = settings.accountId ? scopeArgs(model, operation, args, settings.accountId) : args;
+          // `args` / `query` are typed as unions over every model's operations; with this many models TypeScript
+          // cannot represent them (TS2590), so they go through plain types here. Behaviour is unchanged.
+          const raw: unknown = args;
+          const scoped = settings.accountId ? scopeArgs(model, operation, raw, settings.accountId) : raw;
+          const run = query as unknown as (a: unknown) => Prisma.PrismaPromise<unknown>;
           const [, result] = await client.$transaction([
             client.$executeRaw`SELECT set_config('app.account_id', ${settings.accountId ?? ""}, TRUE), set_config('app.bypass_rls', ${settings.bypass ? "on" : "off"}, TRUE)`,
-            query(scoped as typeof args),
+            run(scoped),
           ]);
           return result;
         },

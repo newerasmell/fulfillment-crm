@@ -12,9 +12,10 @@ import {
 import { DomainError, type Actor } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import type { CompanyScope } from "@/server/companies";
+import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
+import { lineProductWhere } from "@/server/lines/lines";
 import { PRE_APPROVAL } from "./statuses";
 
 /**
@@ -38,15 +39,21 @@ export function stripSkuPrefix(
   return p && s.toLowerCase().startsWith(p.toLowerCase()) && s.length > p.length ? s.slice(p.length) : s;
 }
 
-type StoreForSync = { id: string; skuPrefix: string | null };
+/** `lineId`: the product line of the store's company (P5-00); looked up when not given. */
+type StoreForSync = { id: string; skuPrefix: string | null; lineId?: string | null };
 type Tx = Parameters<Parameters<typeof withAccountTransaction>[1]>[0];
 
 /** Automatic match: SKU without the store prefix equals exactly one master SKU (case-insensitive). */
-export async function matchBySku(tx: Tx, sku: string | null | undefined, prefix: string | null | undefined) {
+export async function matchBySku(
+  tx: Tx,
+  sku: string | null | undefined,
+  prefix: string | null | undefined,
+  lineId: string | null = null,
+) {
   const key = stripSkuPrefix(sku, prefix);
   if (!key) return null;
   const products = await tx.product.findMany({
-    where: { sku: { equals: key, mode: "insensitive" }, archived: false },
+    where: { sku: { equals: key, mode: "insensitive" }, archived: false, ...lineProductWhere(lineId) },
     select: { id: true },
     take: 2,
   });
@@ -67,7 +74,16 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
       barcode: v.barcodes.nodes[0]?.value ?? null,
       title: v.displayName,
     };
-    const match = existing?.productId ? null : await matchBySku(tx, v.sku, store.skuPrefix);
+    const lineId =
+      store.lineId !== undefined
+        ? store.lineId
+        : ((
+            await tx.store.findUnique({
+              where: { id: store.id },
+              select: { company: { select: { lineId: true } } },
+            })
+          )?.company?.lineId ?? null);
+    const match = existing?.productId ? null : await matchBySku(tx, v.sku, store.skuPrefix, lineId);
     const link = existing
       ? await tx.storeVariantLink.update({ where: { id: existing.id }, data: { ...data, ...(match ?? {}) } })
       : await tx.storeVariantLink.create({
@@ -84,6 +100,10 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
 }
 
 export async function syncStoreProducts(accountId: string, store: StoreForSync, client: ShopifyClient) {
+  store = {
+    ...store,
+    lineId: store.lineId !== undefined ? store.lineId : await storeLineId(accountId, store.id),
+  };
   let after: string | null = null;
   const counts = { variants: 0, matched: 0 };
   for (let page = 0; page < 100_000; page++) {
@@ -101,6 +121,14 @@ export async function syncStoreProducts(accountId: string, store: StoreForSync, 
   }
   logger.info({ storeId: store.id, ...counts }, "shopify products synced");
   return counts;
+}
+
+async function storeLineId(accountId: string, storeId: string) {
+  const s = await accountDb(accountId).store.findUnique({
+    where: { id: storeId },
+    select: { company: { select: { lineId: true } } },
+  });
+  return s?.company?.lineId ?? null;
 }
 
 /** Webhook follow-up for products/update: re-read the product's variants from Shopify (all pages). */
@@ -129,14 +157,15 @@ export async function refreshShopifyProduct(
 type ScopedActor = Actor & { companyScope: CompanyScope };
 
 export async function listUnmatchedVariants(
-  ctx: { accountId: string; companyScope: CompanyScope; activeCompanyId: string | null },
+  ctx: {
+    accountId: string;
+    companyScope: CompanyScope;
+    activeCompanyId: string | null;
+    lineCompanyIds?: string[] | null;
+  },
   take = 200,
 ) {
-  const storeWhere = ctx.activeCompanyId
-    ? { companyId: ctx.activeCompanyId }
-    : ctx.companyScope
-      ? { companyId: { in: ctx.companyScope } }
-      : {};
+  const storeWhere = companyFilter(ctx);
   return accountDb(ctx.accountId).storeVariantLink.findMany({
     where: { productId: null, store: storeWhere },
     include: { store: { select: { name: true, code: true, skuPrefix: true } } },
@@ -193,8 +222,17 @@ export async function linkVariant(actor: ScopedActor, linkId: string, productSku
   assertCan(actor.role, "products.match");
   const { before, productId } = await withAccountTransaction(actor.accountId, async (tx) => {
     const link = await scopedLink(tx, actor, linkId);
+    // Never a master of another product line (P5-00); unassigned masters stay linkable.
+    const lineId = link.store.companyId
+      ? ((await tx.company.findUnique({ where: { id: link.store.companyId }, select: { lineId: true } }))
+          ?.lineId ?? null)
+      : null;
     const products = await tx.product.findMany({
-      where: { sku: { equals: productSku.trim(), mode: "insensitive" }, archived: false },
+      where: {
+        sku: { equals: productSku.trim(), mode: "insensitive" },
+        archived: false,
+        ...lineProductWhere(lineId),
+      },
       select: { id: true, sku: true },
     });
     const product =
@@ -221,8 +259,15 @@ export async function createProductFromVariant(actor: ScopedActor, linkId: strin
     ) {
       throw new DomainError("product_exists");
     }
+    const lineId =
+      (
+        await tx.company.findFirst({
+          where: { id: link.store.companyId ?? "" },
+          select: { lineId: true },
+        })
+      )?.lineId ?? null;
     const product = await tx.product.create({
-      data: { accountId: actor.accountId, sku, name: cleanVariantTitle(link.title) },
+      data: { accountId: actor.accountId, sku, name: cleanVariantTitle(link.title), lineId },
     });
     // Informational only (EAN is never a key).
     if (link.barcode) {

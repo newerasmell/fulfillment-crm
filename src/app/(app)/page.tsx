@@ -25,7 +25,11 @@ export default async function HomePage() {
   const scopeName = ctx.companies.find((c) => c.id === ctx.activeCompanyId)?.name ?? t("nav.allCompanies");
   const [summary, alerts] = await Promise.all([
     dashboardSummary(ctx),
-    alertCounts({ ...actorFrom(ctx), activeCompanyId: ctx.activeCompanyId }),
+    alertCounts({
+      ...actorFrom(ctx),
+      activeCompanyId: ctx.activeCompanyId,
+      lineCompanyIds: ctx.lineCompanyIds,
+    }),
   ]);
   const value = (k: string) =>
     k === "alerts" ? alerts.total : (summary.attention as Record<string, number>)[k];

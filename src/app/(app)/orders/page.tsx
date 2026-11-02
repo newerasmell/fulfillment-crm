@@ -8,6 +8,7 @@ import { isOrderTab, listOrders, ORDER_TABS, orderTabCounts, type OrderTab } fro
 import { listStores } from "@/server/stores";
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
+import { LineChip } from "@/components/ui/LineChip";
 
 type Search = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || undefined;
@@ -16,6 +17,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const sp = await searchParams;
   const ctx = await requireAccountContext();
   const t = await getTranslations("orders");
+  const tl = await getTranslations("lines");
   const format = await getFormatter();
   const tabParam = one(sp.tab);
   const tab: OrderTab = isOrderTab(tabParam) ? tabParam : "review";
@@ -119,6 +121,8 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                     <th className={thCls}>{t("placed")}</th>
                     <th className={thCls}>{t("customer")}</th>
                     <th className={thCls}>{t("store")}</th>
+                    <th className={thCls}>{tl("companyAndLine")}</th>
+                    <th className={thCls}>{tl("warehouse")}</th>
                     <th className={thCls}>{t("country")}</th>
                     <th className={thCls}>{t("items")}</th>
                     <th className={`${thCls} text-right`}>{t("total")}</th>
@@ -150,6 +154,42 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                       </td>
                       <td className={tdCls}>{o.customerName ?? "—"}</td>
                       <td className={tdCls}>{o.store?.name ?? "—"}</td>
+                      <td className={tdCls}>
+                        <span className="flex flex-wrap items-center gap-1">
+                          {o.company?.line && (
+                            <LineChip name={o.company.line.name} color={o.company.line.color} />
+                          )}
+                          {o.company && (
+                            <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
+                              {o.company.name}
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className={tdCls}>
+                        {o.warehouse ? (
+                          <span className="flex flex-col gap-0.5">
+                            <span className="flex items-center gap-1.5 text-[13px]">
+                              <span
+                                aria-hidden
+                                className={`size-2 rounded-full ${o.warehouse.type === "EUSHIPMENTS" ? "bg-eu" : "bg-fhb"}`}
+                              />
+                              {o.warehouse.name}
+                            </span>
+                            {o.warehouse.otherCompany && (
+                              <span
+                                data-testid="other-company-warehouse"
+                                title={tl("otherCompanyHint", { company: o.warehouse.companyName ?? "" })}
+                                className="w-fit rounded-full bg-warn-bg px-2 py-0.5 text-xs text-warn"
+                              >
+                                {tl("otherCompanyWarehouse")}
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
+                      </td>
                       <td className={`${tdCls} font-mono`}>{o.countryCode ?? "—"}</td>
                       <td className={tdCls}>{o._count.lines}</td>
                       <td className={`${tdCls} text-right font-mono`}>

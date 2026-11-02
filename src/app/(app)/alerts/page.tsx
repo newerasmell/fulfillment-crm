@@ -22,7 +22,11 @@ export default async function AlertsPage({ searchParams }: { searchParams: Promi
   const ctx = await requireAccountContext();
   const t = await getTranslations("alerts");
   const format = await getFormatter();
-  const actor = { ...actorFrom(ctx), activeCompanyId: ctx.activeCompanyId };
+  const actor = {
+    ...actorFrom(ctx),
+    activeCompanyId: ctx.activeCompanyId,
+    lineCompanyIds: ctx.lineCompanyIds,
+  };
   const c = one(sp.category);
   const category = (ALERT_CATEGORIES as readonly string[]).includes(c ?? "")
     ? (c as AlertCategory)

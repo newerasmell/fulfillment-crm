@@ -7,12 +7,15 @@ import type { Role } from "@/generated/prisma/client";
 import { clientIp } from "@/lib/client-ip";
 import { companyScopeOf, type CompanyScope } from "@/server/companies";
 import { accountDb, systemDb } from "@/server/db/client";
+import { listLines, pickActiveLine, visibleLines } from "@/server/lines/lines";
 import type { Actor } from "@/server/accounts";
 import { can, type Permission } from "./rbac";
 
 export const ACCOUNT_COOKIE = "crm_account";
 /** Company filter chosen in the sidebar: a company id, or absent for "all my companies". */
 export const COMPANY_COOKIE = "crm_company";
+/** Product line chosen in the sidebar (P5-00): a line id, or absent for "all lines" (OWNER/ADMIN only). */
+export const LINE_COOKIE = "crm_line";
 
 export interface CurrentUser {
   id: string;
@@ -54,6 +57,12 @@ export interface AccountContext {
   companies: { id: string; name: string }[];
   /** Company chosen in the sidebar filter, or null for all visible companies. */
   activeCompanyId: string | null;
+  /** Product lines the member may pick (P5-00); empty when the group has none. */
+  lines: { id: string; name: string; color: string }[];
+  /** Line chosen in the sidebar, or null for all lines (only OWNER/ADMIN, or when the group has no lines). */
+  activeLineId: string | null;
+  /** Companies of the active line the member may see (null = no line filter). Used by companyFilter. */
+  lineCompanyIds: string[] | null;
   ip: string | null;
   userAgent: string | null;
 }
@@ -90,11 +99,22 @@ export const getAccountContext = cache(async (): Promise<AccountContext | null> 
   const active = pickActiveMembership(memberships, jar.get(ACCOUNT_COOKIE)?.value);
   if (!active) return null;
   const companyScope = await companyScopeOf(active.accountId, active.membershipId, active.role);
-  const companies = await accountDb(active.accountId).company.findMany({
+  const allCompanies = await accountDb(active.accountId).company.findMany({
     where: { archivedAt: null, ...(companyScope ? { id: { in: companyScope } } : {}) },
-    select: { id: true, name: true },
+    select: { id: true, name: true, lineId: true },
     orderBy: { name: "asc" },
   });
+  const seesAllLines = active.role === "OWNER" || active.role === "ADMIN";
+  const lines = visibleLines(
+    await listLines(active.accountId),
+    allCompanies.map((c) => c.id),
+    seesAllLines,
+  );
+  const activeLineId = pickActiveLine(lines, jar.get(LINE_COOKIE)?.value, seesAllLines);
+  // With a line picked, the company menu and every company-owned list narrow to that line's companies.
+  const companies = (activeLineId ? allCompanies.filter((c) => c.lineId === activeLineId) : allCompanies).map(
+    ({ id, name }) => ({ id, name }),
+  );
   const h = await headers();
   return {
     user,
@@ -106,6 +126,9 @@ export const getAccountContext = cache(async (): Promise<AccountContext | null> 
     companyScope,
     companies,
     activeCompanyId: pickActiveCompany(companies, jar.get(COMPANY_COOKIE)?.value),
+    lines: lines.map(({ id, name, color }) => ({ id, name, color })),
+    activeLineId,
+    lineCompanyIds: activeLineId ? companies.map((c) => c.id) : null,
     ip: clientIp((n) => h.get(n)),
     userAgent: h.get("user-agent"),
   };

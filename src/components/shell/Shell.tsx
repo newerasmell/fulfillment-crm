@@ -8,6 +8,8 @@ import { companyFilter } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { CompanySwitcher } from "./CompanySwitcher";
+import { LineSwitcher } from "./LineSwitcher";
+import { lineColor } from "@/server/lines/colors";
 import { CreateMenu, ProfileMenu, ScopeControl, SearchBox } from "./HeaderControls";
 import { Icon } from "@/components/icons";
 import { NAV_GROUPS, NAV_HOME } from "./nav";
@@ -52,9 +54,26 @@ async function ModeCard({ ctx }: { ctx: AccountContext }) {
   );
 }
 
+/** Colour band at the top of the work area: which product line the screens show (P5-00). */
+function LineBand({ ctx, label }: { ctx: AccountContext; label: string }) {
+  const line = ctx.lines.find((l) => l.id === ctx.activeLineId);
+  if (!line) return null;
+  const c = lineColor(line.color);
+  return (
+    <div
+      data-testid="line-band"
+      className={`flex min-h-7 items-center gap-2 px-7 text-[12px] font-semibold tracking-wide text-white ${c.band}`}
+    >
+      <span className="uppercase opacity-80">{label}</span>
+      <span>{line.name}</span>
+    </div>
+  );
+}
+
 export async function Shell({ ctx, children }: { ctx: AccountContext; children: React.ReactNode }) {
   const t = await getTranslations("nav");
   const th = await getTranslations("header");
+  const tl = await getTranslations("lines");
   const locale = await getLocale();
   const rawScope = (await cookies()).get(SCOPE_COOKIE)?.value;
   const scope = isScope(rawScope) ? rawScope : "all";
@@ -75,6 +94,15 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
         </div>
         {ctx.memberships.length > 1 && (
           <AccountSwitcher label={t("group")} current={ctx.accountId} accounts={ctx.memberships} />
+        )}
+        {ctx.lines.length > 0 && (
+          <LineSwitcher
+            label={tl("line")}
+            allLabel={tl("allLines")}
+            current={ctx.activeLineId}
+            lines={ctx.lines}
+            mayPickAll={ctx.role === "OWNER" || ctx.role === "ADMIN"}
+          />
         )}
         <CompanySwitcher
           label={t("account")}
@@ -99,6 +127,7 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
         <ModeCard ctx={ctx} />
       </nav>
       <div className="flex min-w-0 flex-[999_1_640px] flex-col">
+        <LineBand ctx={ctx} label={tl("line")} />
         <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-7 py-3">
           <SearchBox />
           <ScopeControl scope={scope} />
