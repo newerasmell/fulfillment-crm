@@ -3,9 +3,12 @@
 -- orders to it. Safe on databases that already hold rows. companyId becomes NOT NULL in a later migration,
 -- once every environment has run this backfill.
 
+-- One transaction: if anything fails, nothing of this migration stays behind (a retry starts clean).
+BEGIN;
+
 -- The tables have FORCE ROW LEVEL SECURITY and this runs as their owner: without the bypass the backfill
--- below would silently touch 0 rows. Session-level here, switched off again at the end.
-SELECT set_config('app.bypass_rls', 'on', false);
+-- below would silently touch 0 rows. Transaction-local: it ends with the COMMIT (or the rollback).
+SELECT set_config('app.bypass_rls', 'on', true);
 
 -- AlterTable
 ALTER TABLE "FulfillmentConnection" ADD COLUMN     "companyId" TEXT;
@@ -119,4 +122,4 @@ UPDATE "Order" t SET "companyId" = (
   SELECT c."id" FROM "Company" c WHERE c."accountId" = t."accountId" ORDER BY c."createdAt", c."id" LIMIT 1
 ) WHERE t."companyId" IS NULL;
 
-SELECT set_config('app.bypass_rls', 'off', false);
+COMMIT;

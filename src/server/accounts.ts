@@ -2,7 +2,8 @@ import { z } from "zod";
 import type { Role } from "@/generated/prisma/client";
 import { recordAudit } from "@/server/audit";
 import { assertCan, can, ForbiddenError, ROLES } from "@/server/auth/rbac";
-import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
+import { isRestrictableRole } from "@/server/companies";
+import { accountDb, withAccountTransaction } from "@/server/db/client";
 
 /** Who is acting, in which account. Built from the session by the web layer. */
 export interface Actor {
@@ -24,28 +25,6 @@ export class DomainError extends Error {
 }
 
 const RoleSchema = z.enum(ROLES as [Role, ...Role[]]);
-
-export const NewAccountInput = z.object({ name: z.string().trim().min(2).max(200) });
-
-/** A new company. The creator becomes its OWNER. */
-export async function createAccount(actor: Actor, raw: z.input<typeof NewAccountInput>) {
-  assertCan(actor.role, "account.create");
-  const { name } = NewAccountInput.parse(raw);
-  const sys = systemDb();
-  const account = await sys.account.create({ data: { name } });
-  await sys.membership.create({ data: { accountId: account.id, userId: actor.userId, role: "OWNER" } });
-  await recordAudit({
-    accountId: account.id,
-    userId: actor.userId,
-    action: "account.create",
-    entityType: "Account",
-    entityId: account.id,
-    after: { name, createdFromAccountId: actor.accountId },
-    ip: actor.ip,
-    userAgent: actor.userAgent,
-  });
-  return account;
-}
 
 export async function listMembers(actor: Actor) {
   assertCan(actor.role, "account.read");
@@ -81,6 +60,10 @@ async function guardOwnerChange(actor: Actor, membershipId: string, nextRole: Ro
         where: { invitedById: target.userId, acceptedAt: null, revokedAt: null },
         data: { revokedAt: new Date() },
       });
+    }
+    // Owners and admins always see every company: a restriction left behind would silently come back on demotion.
+    if (nextRole && !isRestrictableRole(nextRole)) {
+      await tx.membershipCompany.deleteMany({ where: { membershipId } });
     }
     if (nextRole) {
       return {

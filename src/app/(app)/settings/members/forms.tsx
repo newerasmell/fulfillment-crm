@@ -65,7 +65,7 @@ export function NewCompanyForm() {
   );
 }
 
-/** The member's company access: summary text, and (for managers) an editable checkbox list. */
+/** The member's company access: summary text, and (for managers) an explicit all / limited editor. */
 export function MemberCompanies({
   membershipId,
   companies,
@@ -89,8 +89,29 @@ export function MemberCompanies({
       </summary>
       <form action={action} className="mt-2 flex flex-col gap-2">
         <input type="hidden" name="membershipId" value={membershipId} />
-        <CompanyChecks companies={companies} selected={selected} />
-        <span className="text-xs text-muted">{t("scopeHint")}</span>
+        <label className="flex min-h-9 items-center gap-2 text-[13px]">
+          <input
+            type="radio"
+            name="access"
+            value="all"
+            defaultChecked={selected.length === 0}
+            className="size-4"
+          />
+          {t("allCompanies")}
+        </label>
+        <label className="flex min-h-9 items-center gap-2 text-[13px]">
+          <input
+            type="radio"
+            name="access"
+            value="limited"
+            defaultChecked={selected.length > 0}
+            className="size-4"
+          />
+          {t("onlySelected")}
+        </label>
+        <div className="pl-6">
+          <CompanyChecks companies={companies} selected={selected} />
+        </div>
         <button type="submit" disabled={pending} className={`${ghostButtonCls} self-start`}>
           {t("save")}
         </button>
@@ -193,7 +214,7 @@ export function InviteForm({
           <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
             <legend className="mb-1 text-[13px] font-medium">{t("inviteCompanies")}</legend>
             <CompanyChecks companies={companies} />
-            <span className="text-xs text-muted">{t("scopeHint")}</span>
+            <span className="text-xs text-muted">{t("inviteScopeHint")}</span>
           </fieldset>
         )}
         <button type="submit" disabled={pending} className={`${buttonCls} self-start`}>

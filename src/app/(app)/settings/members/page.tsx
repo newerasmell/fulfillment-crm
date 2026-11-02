@@ -7,7 +7,7 @@ import { ghostButtonCls, tdCls, thCls } from "@/components/ui/form";
 import { listMembers } from "@/server/accounts";
 import { can, canAssignRole, ROLES } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
-import { listCompanies } from "@/server/companies";
+import { isRestrictableRole, listCompanies } from "@/server/companies";
 import { listOpenInvitations } from "@/server/invitations";
 import { InviteForm, MemberCompanies, MemberRow, NewCompanyForm } from "./forms";
 
@@ -21,7 +21,11 @@ export default async function MembersPage() {
   const assignable = ROLES.filter((r) => canAssignRole(ctx.role, r));
   const roleLabels = Object.fromEntries(ROLES.map((r) => [r, t(`roles.${r}`)]));
   const invitations = manage ? await listOpenInvitations(actor) : [];
-  const companies = await listCompanies(actor, { includeArchived: can(ctx.role, "companies.archive") });
+  // Managers also see archived companies: a member's existing restriction may name one, and the editor must
+  // keep it rather than silently dropping it on save.
+  const companies = await listCompanies(actor, {
+    includeArchived: manage || can(ctx.role, "companies.archive"),
+  });
   const active = companies.filter((c) => !c.archivedAt);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
   const scopeSummary = (ids: string[]) =>
@@ -99,12 +103,10 @@ export default async function MembersPage() {
                 const companiesCell = (
                   <MemberCompanies
                     membershipId={m.id}
-                    companies={active}
+                    companies={companies.filter((c) => !c.archivedAt || ids.includes(c.id))}
                     selected={ids}
-                    editable={
-                      manage && m.role !== "OWNER" && canAssignRole(ctx.role, m.role) && active.length > 1
-                    }
-                    summary={m.role === "OWNER" ? t("members.allCompanies") : scopeSummary(ids)}
+                    editable={manage && isRestrictableRole(m.role) && active.length > 1}
+                    summary={isRestrictableRole(m.role) ? scopeSummary(ids) : t("members.allCompanies")}
                   />
                 );
                 const since = format.dateTime(m.createdAt, { dateStyle: "medium" });

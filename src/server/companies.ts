@@ -6,19 +6,25 @@ import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/d
 
 /**
  * Companies (фирми) inside a group. The group is the tenant (database isolation); which companies a member
- * may see is a permission: no MembershipCompany rows = all companies; OWNERs always see all.
+ * may see is a permission. Only OPERATOR / WAREHOUSE / VIEWER can be limited: OWNERs and ADMINs manage people,
+ * credentials and connections of the whole group, so they always see every company (a restricted admin could
+ * otherwise widen their own or others' access). No MembershipCompany rows = all companies.
  * Products and stock belong to the group, so stock of every company can serve any company's orders.
  */
 
 /** null = every company of the group; otherwise the ids this member is limited to. */
 export type CompanyScope = string[] | null;
 
+export const RESTRICTABLE_ROLES = ["OPERATOR", "WAREHOUSE", "VIEWER"] as const;
+export const isRestrictableRole = (role: Actor["role"]) =>
+  (RESTRICTABLE_ROLES as readonly string[]).includes(role);
+
 export async function companyScopeOf(
   accountId: string,
   membershipId: string,
   role: Actor["role"],
 ): Promise<CompanyScope> {
-  if (role === "OWNER") return null;
+  if (!isRestrictableRole(role)) return null;
   const rows = await accountDb(accountId).membershipCompany.findMany({
     where: { membershipId },
     select: { companyId: true },
@@ -29,6 +35,14 @@ export async function companyScopeOf(
 /** Prisma `where` fragment limiting rows with a companyId to the member's companies. */
 export function companyWhere(scope: CompanyScope): { companyId?: { in: string[] } } {
   return scope ? { companyId: { in: scope } } : {};
+}
+
+/**
+ * `where` fragment for screens: the company picked in the sidebar if any, otherwise every company the member
+ * may see. Use it on every query of company-owned rows (stores, connections, orders).
+ */
+export function companyFilter(ctx: { companyScope: CompanyScope; activeCompanyId: string | null }) {
+  return ctx.activeCompanyId ? { companyId: ctx.activeCompanyId } : companyWhere(ctx.companyScope);
 }
 
 export async function listCompanies(
@@ -91,22 +105,30 @@ export async function setCompanyArchived(actor: Actor, companyId: string, archiv
 }
 
 /**
- * Limits a member to some companies (empty list = all). Owners cannot be limited; only someone who manages
- * members may change it, and an ADMIN cannot change another ADMIN's or an OWNER's scope.
+ * Sets a member's company access. `all: true` = every company; otherwise `companyIds` must name at least one
+ * company (an empty restriction is refused instead of silently meaning "all"). Only OPERATOR / WAREHOUSE /
+ * VIEWER members can be restricted, and only by OWNERs/ADMINs (who are never restricted themselves).
  */
-export async function setMemberCompanies(actor: Actor, membershipId: string, companyIds: string[]) {
+export async function setMemberCompanies(
+  actor: Actor,
+  membershipId: string,
+  access: { all: true } | { all: false; companyIds: string[] },
+) {
   assertCan(actor.role, "members.manage");
-  const ids = [...new Set(companyIds)];
+  const ids = access.all ? [] : [...new Set(access.companyIds)];
+  if (!access.all && ids.length === 0) throw new DomainError("pick_company");
   const before = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
     await lockForUpdate("Membership", membershipId);
     const m = await tx.membership.findUnique({ where: { id: membershipId }, include: { companies: true } });
     if (!m) throw new DomainError("not_found");
-    if (m.role === "OWNER") throw new DomainError("owner_sees_all");
-    if (actor.role !== "OWNER" && m.role === "ADMIN" && m.userId !== actor.userId) {
-      throw new DomainError("forbidden");
-    }
+    if (!isRestrictableRole(m.role)) throw new DomainError("role_sees_all");
+    const current = m.companies.map((c) => c.companyId);
     if (ids.length) {
-      const found = await tx.company.count({ where: { id: { in: ids } } });
+      // Active companies, or ones the member already had (an archived company stays selectable, so saving
+      // the form never silently drops it — and never turns the restriction into "all").
+      const found = await tx.company.count({
+        where: { id: { in: ids }, OR: [{ archivedAt: null }, { id: { in: current } }] },
+      });
       if (found !== ids.length) throw new DomainError("not_found");
     }
     await tx.membershipCompany.deleteMany({ where: { membershipId } });
@@ -115,7 +137,7 @@ export async function setMemberCompanies(actor: Actor, membershipId: string, com
         data: ids.map((companyId) => ({ accountId: actor.accountId, membershipId, companyId })),
       });
     }
-    return m.companies.map((c) => c.companyId);
+    return current;
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -123,8 +145,8 @@ export async function setMemberCompanies(actor: Actor, membershipId: string, com
     action: "member.companies",
     entityType: "Membership",
     entityId: membershipId,
-    before: { companies: before },
-    after: { companies: ids },
+    before: { companies: before.length ? before : "all" },
+    after: { companies: ids.length ? ids : "all" },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });

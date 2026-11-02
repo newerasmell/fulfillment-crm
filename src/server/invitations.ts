@@ -7,6 +7,7 @@ import { MIN_PASSWORD_LENGTH } from "@/server/auth/password";
 import { assertCan, canAssignRole, ForbiddenError, ROLES } from "@/server/auth/rbac";
 import { newTotpSecret, totpUri, verifyTotp } from "@/server/auth/totp";
 import { insertUserInTx } from "@/server/auth/users";
+import { isRestrictableRole } from "@/server/companies";
 import {
   isUniqueViolation,
   systemDb,
@@ -38,7 +39,7 @@ export const InviteInput = z.object({
   email: z.email().transform((e) => e.trim().toLowerCase()),
   name: z.string().trim().max(200).optional(),
   role: z.enum(ROLES as [Role, ...Role[]]),
-  /** Companies the new member may see; empty = all companies of the group. Ignored for OWNER. */
+  /** Companies the new member may see; empty = all. Only for OPERATOR / WAREHOUSE / VIEWER (others see all). */
   companyIds: z.array(z.string().min(1).max(64)).max(200).default([]),
 });
 
@@ -54,10 +55,10 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
       where: { email: input.email, acceptedAt: null, revokedAt: null },
       data: { revokedAt: new Date() },
     });
-    const companyIds = input.role === "OWNER" ? [] : [...new Set(input.companyIds)];
+    const companyIds = isRestrictableRole(input.role) ? [...new Set(input.companyIds)] : [];
     if (
       companyIds.length &&
-      (await tx.company.count({ where: { id: { in: companyIds } } })) !== companyIds.length
+      (await tx.company.count({ where: { id: { in: companyIds }, archivedAt: null } })) !== companyIds.length
     ) {
       throw new DomainError("not_found");
     }
@@ -81,7 +82,7 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
         })),
       });
     }
-    return created;
+    return { ...created, effectiveCompanyIds: companyIds };
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -89,7 +90,11 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
     action: "member.invite",
     entityType: "Invitation",
     entityId: invitation.id,
-    after: { email: input.email, role: input.role, companyIds: input.companyIds },
+    after: {
+      email: input.email,
+      role: input.role,
+      companies: invitation.effectiveCompanyIds.length ? invitation.effectiveCompanyIds : "all",
+    },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });

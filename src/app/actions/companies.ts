@@ -44,7 +44,9 @@ export async function setMemberCompaniesAction(_prev: Result, form: FormData): P
     await setMemberCompanies(
       actorFrom(ctx),
       String(form.get("membershipId") ?? ""),
-      form.getAll("companyIds").map(String),
+      form.get("access") === "limited"
+        ? { all: false, companyIds: form.getAll("companyIds").map(String) }
+        : { all: true },
     );
   } catch (err) {
     return toError(err);

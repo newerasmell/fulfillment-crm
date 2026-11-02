@@ -1,6 +1,7 @@
 import { getTranslations } from "next-intl/server";
 import { killSwitchAction, releaseHeldAction, resumeOutboxAction } from "@/app/actions/outbox";
 import { ConfirmButton } from "@/components/ui/ConfirmButton";
+import { companyFilter } from "@/server/companies";
 import { countHeldRequests } from "@/server/outbox/outbox";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { can } from "@/server/auth/rbac";
@@ -17,6 +18,7 @@ export default async function WarehousesPage() {
   });
   const held = await countHeldRequests(ctx.accountId);
   const connections = await db.fulfillmentConnection.findMany({
+    where: companyFilter(ctx),
     select: { id: true, name: true, type: true, liveMode: true },
     orderBy: { name: "asc" },
   });
