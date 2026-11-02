@@ -112,6 +112,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   READY or NEEDS_REVIEW (they are only checked, nothing is sent).
 - 2026-11-02 decisions with the owner: operators can choose the warehouse by hand (P4-09); companies are grouped
   into product lines, one line per company (P5-00); master products come from the warehouse catalogues.
+- 2026-11-02 (wave 3): product lines + master catalogue from a warehouse catalogue, line filter, Excel/CSV mapping,
+  coverage (P5-00); manual warehouse choice "Изпрати от" and safe reroute "Пренасочи" (P4-09, database triggers forbid
+  two active shipments per order); stock board, inbound creation, Shopify inventory push, off by default (P5-01..03);
+  returns and COD boards (P6-01..02); FHB Joy labels, euShipments AWBs, manual shipments and bulk label PDF behind the
+  outbox (P7-01..03); AI reviewer with embeddings, policies L0–L2, audit sample, kill switch and rule mining, off without
+  ANTHROPIC_API_KEY (P8-01..04). Each track was audited and fixed: docs/audits/wave-3.md; decisions and open questions
+  per track: docs/wave-3-notes.md. All migrations are additive (new tables, nullable columns or defaults).
+  Open owner questions from wave 3: Shopify app scopes read_locations/read_inventory/write_inventory (for P5-03);
+  support address for returns (RETURNS_SUPPORT_EMAIL_TO / RETURNS_SUPPORT_TELEGRAM_CHAT_ID); 14-day return/COD
+  thresholds; is FHB's local returns service active (SPEC §11.6); whether L2 autopilot also submits (now: approve,
+  then Fulfill by a person); AI high-value default amounts; retention of the AI prompt log; Joy parcel-service codes.
 
 ## Open questions
 See SPEC.md §11.

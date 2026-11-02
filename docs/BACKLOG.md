@@ -61,29 +61,29 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [x] P4-06 Single + bulk Fulfill through the outbox with progress UI; CANARY confirmation dialog + daily cap.
 - [x] P4-07 Shopify fulfillment write-back with tracking (respects store write-back mode).
 - [x] P4-08 Alerts/tasks UI: BLOCKED, UNKNOWN, stuck in status, submit failures; email/Telegram notifications.
-- [ ] P4-09 Manual warehouse choice: before sending, "Изпрати от" with stock per warehouse of the same product line, reason required, checks re-run for the chosen connection, approval bound to it; after sending, "Пренасочи" only once the old warehouse confirmed the cancellation (never two shipments). Audited.
+- [x] P4-09 Manual warehouse choice: before sending, "Изпрати от" with stock per warehouse of the same product line, reason required, checks re-run for the chosen connection, approval bound to it; after sending, "Пренасочи" only once the old warehouse confirmed the cancellation (never two shipments). Audited.
 - [ ] GATE P4-G1 Owner: review DRY_RUN results on real orders, switch one connection to CANARY, run canary orders, then LIVE.
 
 ## Phase 5 — Stock and inbound
-- [ ] P5-00 Product lines + master catalogue: each company in exactly one line (owner decision 2026-11-02); create master products from a chosen warehouse catalogue; match suggestions only within the line (SKU after prefix; barcode and name as hints only); Excel export/import of the mapping per line; coverage report (≥ 99% before LIVE); line filter on every screen; fallback warehouses only from the same line.
-- [ ] P5-01 Stock board (physical/free/reserved/sellable/Shopify qty, snapshot age) + discrepancy alerts.
-- [ ] P5-02 Inbound creation (product picker + XLSX/CSV upload) for FHB receipts and euShipments bookings; expected vs received; discrepancy tasks.
-- [ ] P5-03 Shopify inventory push with buffer and dry-run preview (disabled by default).
+- [x] P5-00 Product lines + master catalogue: each company in exactly one line (owner decision 2026-11-02); create master products from a chosen warehouse catalogue; match suggestions only within the line (SKU after prefix; barcode and name as hints only); Excel export/import of the mapping per line; coverage report (≥ 99% before LIVE); line filter on every screen; fallback warehouses only from the same line.
+- [x] P5-01 Stock board (physical/free/reserved/sellable/Shopify qty, snapshot age) + discrepancy alerts.
+- [x] P5-02 Inbound creation (product picker + XLSX/CSV upload) for FHB receipts and euShipments bookings; expected vs received; discrepancy tasks.
+- [x] P5-03 Shopify inventory push with buffer and dry-run preview (disabled by default).
 
 ## Phase 6 — Returns and COD
-- [ ] P6-01 Returns board (FHB rma/list, return/list; euShipments RETURN_RECEIVED), "returning but not received after N days", support notification.
-- [ ] P6-02 COD board + ageing report for both vendors.
+- [x] P6-01 Returns board (FHB rma/list, return/list; euShipments RETURN_RECEIVED), "returning but not received after N days", support notification.
+- [x] P6-02 COD board + ageing report for both vendors.
 
 ## Phase 7 — Manual shipments and labels
-- [ ] P7-01 FHB Joy adapter (INTEGRATION_NOTES §3) behind the outbox incl. label storage and bulk label PDF.
-- [ ] P7-02 euShipments AWB services (createAWB, preAWB, price, print, delete).
-- [ ] P7-03 Manual shipment form (warehouse stock or label-only) through the same validators and tracking.
+- [x] P7-01 FHB Joy adapter (INTEGRATION_NOTES §3) behind the outbox incl. label storage and bulk label PDF.
+- [x] P7-02 euShipments AWB services (createAWB, preAWB, price, print, delete).
+- [x] P7-03 Manual shipment form (warehouse stock or label-only) through the same validators and tracking.
 
 ## Phase 8 — AI
-- [ ] P8-01 Embeddings for reviews (pgvector) + similar-case retrieval.
-- [ ] P8-02 AI reviewer (Claude API, strict JSON tool output, model ids in config) filling Review suggestions; full prompt/response log. Check current Anthropic SDK docs first.
-- [ ] P8-03 AiPolicy L0–L2 with promotion/demotion rules, daily audit sample, kill switch; agreement dashboard.
-- [ ] P8-04 Weekly rule-mining job proposing validators for admin approval.
+- [x] P8-01 Embeddings for reviews (pgvector) + similar-case retrieval.
+- [x] P8-02 AI reviewer (Claude API, strict JSON tool output, model ids in config) filling Review suggestions; full prompt/response log. Check current Anthropic SDK docs first.
+- [x] P8-03 AiPolicy L0–L2 with promotion/demotion rules, daily audit sample, kill switch; agreement dashboard.
+- [x] P8-04 Weekly rule-mining job proposing validators for admin approval.
 - [ ] GATE P8-G1 Owner: set ANTHROPIC_API_KEY for the app, decide which accounts start in shadow mode.
 
 ## Phase 9 — API change watcher
