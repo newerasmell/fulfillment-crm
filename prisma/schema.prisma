@@ -197,6 +197,7 @@ model Account {
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
+  reviewReasonCodes         ReviewReasonCode[]
 }
 
 model User {
@@ -1462,4 +1463,29 @@ model OrderCheck {
 
   @@unique([accountId, orderId])
   @@index([accountId, checkedAt])
+}
+
+// ───────────────────────── wave 2 · review track (P4-04 / P4-05) ─────────────────────────
+
+/// Configurable reason codes for review decisions (SPEC §7.1: "a reason code from a fixed list"). An account
+/// without rows uses the built-in defaults (src/server/review/reasons.ts); the first change by an admin stores
+/// them. Codes are never deleted (old Review rows keep pointing at them), only deactivated.
+model ReviewReasonCode {
+  id        String   @id @default(cuid())
+  accountId String
+  /// Stable machine code stored on Review.reasonCode, e.g. "address_fixed".
+  code      String
+  labelBg   String
+  labelEn   String
+  /// Decisions this code is offered for: approve | hold | block.
+  decisions String[]
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, code])
+  @@index([accountId, sortOrder])
 }

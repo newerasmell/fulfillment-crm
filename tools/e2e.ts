@@ -45,6 +45,9 @@ try {
     { userId: owner.user.id, accountId: owner.account.id, role: "OWNER", companyScope: null },
     company.id,
   );
+  // Review queue (wave 2, review track): its own group and OWNER, so other specs' counts stay unchanged.
+  const { seedReview } = await import("../tests/e2e/seed-review");
+  const reviewer = await seedReview();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -61,6 +64,9 @@ try {
       E2E_OWNER_EMAIL: owner.user.email,
       E2E_OWNER_PASSWORD: "e2e-password-not-secret",
       E2E_OWNER_TOTP: owner.totpSecret,
+      E2E_REVIEW_EMAIL: reviewer.email,
+      E2E_REVIEW_PASSWORD: reviewer.password,
+      E2E_REVIEW_TOTP: reviewer.totp,
     },
   });
   status = run.status ?? 1;

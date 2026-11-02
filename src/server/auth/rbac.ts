@@ -40,6 +40,12 @@ export const PERMISSIONS = {
   "apiWatch.manage": ["OWNER", "ADMIN"],
   /** Routing rules (Настройки → Правила за маршрут): view, create, edit, reorder, delete. */
   "routing.manage": ["OWNER", "ADMIN"],
+  /** Raw payloads on the order detail (Shopify order JSON, routing JSON, outbox payloads): admin only. */
+  "orders.rawPayloads": ["OWNER", "ADMIN"],
+  /** The review records list (decisions, diffs of customer data, time spent). */
+  "reviews.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Configure the review reason codes. */
+  "reviews.reasonCodes": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

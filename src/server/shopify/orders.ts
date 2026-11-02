@@ -182,11 +182,18 @@ export async function importShopifyOrder(
         number: o.name,
         customerName,
         email: o.email ?? o.customer?.defaultEmailAddress?.emailAddress ?? null,
-        phone: o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
         shippingAddressOriginal: json(o.shippingAddress),
-        ...(addressUntouched ? { shippingAddress: json(shipping) } : {}),
+        // An operator's correction (address, phone, country — src/server/review) is kept; the original is
+        // always refreshed above.
+        ...(addressUntouched
+          ? {
+              shippingAddress: json(shipping),
+              phone:
+                o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
+              countryCode: shipping?.countryCode ?? null,
+            }
+          : {}),
         billingAddress: json(normaliseAddress(o.billingAddress)),
-        countryCode: shipping?.countryCode ?? null,
         currency: o.currencyCode,
         subtotal: money(o.subtotalPriceSet),
         total: money(o.totalPriceSet),
