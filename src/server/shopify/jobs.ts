@@ -6,12 +6,23 @@ import { testStoreConnection } from "./connection";
 import { syncStoreOrders } from "./orders";
 import { syncStoreProducts } from "./products";
 import { shopifyClientForStore } from "./store-client";
-import { processShopifyWebhook, registerStoreWebhooks, staleWebhookEvents } from "./webhooks";
+import {
+  processShopifyWebhook,
+  registerStoreWebhooks,
+  staleWebhookEvents,
+  validCallbackUrl,
+  webhookCallbackUrl,
+} from "./webhooks";
 
 /** Every payload names its account, so failures show up in that account's dead-letter view only. */
 export interface StoreJob {
   accountId: string;
   storeId: string;
+  /**
+   * Public webhook URL, set by the web service (only it knows its public host). Carried along from the connection
+   * test to the webhook registration.
+   */
+  callbackUrl?: string | null;
 }
 export interface SyncOrdersJob extends StoreJob {
   mode: "reconcile" | "backfill";
@@ -64,7 +75,23 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
   await boss.work<StoreJob>(QUEUES.shopifyRegisterWebhooks.name, opts, async (jobs) => {
     for (const { data } of jobs) {
       if (!(await connectedStore(data.accountId, data.storeId))) continue;
-      const status = await registerStoreWebhooks(data.accountId, data.storeId);
+      const uri = validCallbackUrl(data.callbackUrl) ?? webhookCallbackUrl();
+      if (!uri) {
+        await accountDb(data.accountId).store.update({
+          where: { id: data.storeId },
+          data: {
+            webhookStatus: {
+              ok: false,
+              at: new Date().toISOString(),
+              topics: [],
+              errors: ["no_callback_url"],
+            },
+          },
+        });
+        logger.warn({ storeId: data.storeId }, "shopify webhooks: public URL unknown");
+        continue;
+      }
+      const status = await registerStoreWebhooks(data.accountId, data.storeId, uri);
       logger.info(
         { storeId: data.storeId, ok: status.ok, topics: status.topics.length },
         "shopify webhooks registered",

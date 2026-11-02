@@ -85,12 +85,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   `orders/edited` carries `order_edit.order_id`, `refunds/create` carries `order_id`.
   Decisions: webhook bodies are only pointers — the worker re-reads the order/product from Shopify; dedupe key
   is `<storeId>:<X-Shopify-Webhook-Id>`; when one shop is connected in two groups, the HMAC decides which store
-  sent it. Webhooks are registered by the worker against `https://$APP_HOST/api/webhooks/shopify` (APP_HOST comes
-  from the web service in render.yaml). Order lines of not-yet-synced variants get a stub StoreVariantLink so the
+  sent it. Webhooks are registered by the worker against `<public web URL>/api/webhooks/shopify`; the web service passes its public URL
+  (RENDER_EXTERNAL_URL, or APP_URL) in the job payload — Render's `fromService host` is an internal name Shopify rejects.yaml). Order lines of not-yet-synced variants get a stub StoreVariantLink so the
   product sync / matching queue can attach them later. Manual variant links are never overwritten by auto-match.
   Before approval Shopify edits apply directly (lines, untouched address, cancellation); after approval only
   Shopify's status fields follow and meaningful changes open operator tasks. Test orders are imported ON_HOLD. Saved views in the orders list are URL-based for now (filters live in the query string).
   Phase 1 audit: docs/audits/phase-1.md (query-cost cap, stately queues, import lock, post-approval protection).
+
+- 2026-11-02 (first live store): webhook URL fixed (see above); orders Shopify already reports FULFILLED when first
+  imported get the new status FULFILLED_EXTERNALLY (outside the review queue, no tasks on later changes); "last sync"
+  shows the time of the last run. Decision with the owner: master products are created from the warehouse catalogues
+  (phases 2–3), not from Shopify variants — until then store variants stay unmatched.
 
 ## Open questions
 See SPEC.md §11.

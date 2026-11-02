@@ -355,7 +355,8 @@
       "product_not_found": "No master product with this SKU.",
       "product_exists": "A master product with this SKU exists — link it instead.",
       "variant_without_sku": "The variant has no SKU."
-    }
+    },
+    "waitWarehouses": "Master products will be created from the warehouse catalogues (FHB, euShipments) once they are connected. Until then store variants stay unmatched — that is expected and nothing is sent."
   },
   "orders": {
     "title": "Orders",
@@ -422,6 +423,7 @@
     "ON_HOLD": "On hold",
     "BLOCKED": "Blocked",
     "CANCELLED": "Cancelled",
-    "UNKNOWN": "Unknown"
+    "UNKNOWN": "Unknown",
+    "FULFILLED_EXTERNALLY": "Fulfilled outside the CRM"
   }
 }

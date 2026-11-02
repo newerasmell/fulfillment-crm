@@ -19,13 +19,30 @@ import { shopifyClientForStore } from "./store-client";
 
 export const MAX_WEBHOOK_BYTES = 1_000_000;
 
-/** Public base URL of the web service; webhooks are registered against it. */
-export function webhookCallbackUrl(env: NodeJS.ProcessEnv = process.env) {
-  const base = env.APP_URL || (env.APP_HOST ? `https://${env.APP_HOST}` : env.RENDER_EXTERNAL_URL);
-  if (!base) throw new Error("APP_URL / APP_HOST is not set");
-  const url = new URL("/api/webhooks/shopify", base);
-  if (url.protocol !== "https:" && env.NODE_ENV === "production")
-    throw new Error("webhook URL must be https");
+/**
+ * Webhook URL on the PUBLIC host of the web service. The web service knows it (RENDER_EXTERNAL_URL, or APP_URL);
+ * the worker does not, so the web passes it along in the job payload. A host without a dot (a Render internal
+ * service name) is refused — Shopify rejects it anyway ("Address must use a valid domain name").
+ */
+export function webhookCallbackUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const base = env.APP_URL || env.RENDER_EXTERNAL_URL;
+  return base ? validCallbackUrl(new URL("/api/webhooks/shopify", base).toString(), env) : null;
+}
+
+export function validCallbackUrl(
+  raw: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const local = env.NODE_ENV !== "production" && url.hostname === "localhost";
+  if (!local && (url.protocol !== "https:" || !url.hostname.includes("."))) return null;
+  if (url.pathname !== "/api/webhooks/shopify") return null;
   return url.toString();
 }
 
@@ -192,8 +209,8 @@ export async function staleWebhookEvents(olderThanMs = 2 * 60_000, take = 200) {
 export async function registerStoreWebhooks(
   accountId: string,
   storeId: string,
+  uri: string,
   opts: ShopifyClientOptions = {},
-  uri = webhookCallbackUrl(),
 ) {
   const { client } = await shopifyClientForStore(accountId, storeId, opts);
   const existing = await client.query(WEBHOOK_SUBSCRIPTIONS_QUERY, { uri }, WebhookSubscriptions);

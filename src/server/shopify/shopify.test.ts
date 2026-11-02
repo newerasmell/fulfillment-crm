@@ -9,9 +9,21 @@ import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createStore, type ScopedActor } from "@/server/stores";
 import { backfillWindows, importShopifyOrder, isCod, refreshShopifyOrder, syncStoreOrders } from "./orders";
-import { createProductFromVariant, linkVariant, stripSkuPrefix, upsertVariant } from "./products";
+import {
+  createProductFromVariant,
+  linkVariant,
+  stripSkuPrefix,
+  upsertVariant,
+  cleanVariantTitle,
+} from "./products";
 import { testStoreConnection } from "./connection";
-import { processShopifyWebhook, receiveShopifyWebhook, registerStoreWebhooks } from "./webhooks";
+import {
+  processShopifyWebhook,
+  receiveShopifyWebhook,
+  registerStoreWebhooks,
+  validCallbackUrl,
+  webhookCallbackUrl,
+} from "./webhooks";
 
 // Synthetic data only (CLAUDE.md: no real business data in the repo).
 const SECRET = "test-client-secret-0001";
@@ -419,6 +431,49 @@ describe("Shopify import (DB)", () => {
     ]);
   });
 
+  it("orders Shopify already fulfilled are recorded outside the review queue and raise no tasks later", async () => {
+    const s = await store();
+    const db = accountDb(accountId);
+    const o = order({ id: "gid://shopify/Order/9600", name: "#9600", displayFulfillmentStatus: "FULFILLED" });
+    const { orderId } = await importShopifyOrder(accountId, s, o);
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(
+      "FULFILLED_EXTERNALLY",
+    );
+    await importShopifyOrder(accountId, s, {
+      ...o,
+      updatedAt: "2026-11-01T12:00:00Z",
+      totalOutstandingSet: money("0.00"),
+    });
+    expect(await db.alert.count({ where: { entityId: orderId } })).toBe(0);
+    // A pre-approval order fulfilled by hand in Shopify leaves the queue too.
+    const p = order({ id: "gid://shopify/Order/9601", name: "#9601" });
+    const r = await importShopifyOrder(accountId, s, p);
+    await importShopifyOrder(accountId, s, {
+      ...p,
+      updatedAt: "2026-11-01T12:00:00Z",
+      displayFulfillmentStatus: "FULFILLED",
+    });
+    expect((await db.order.findUniqueOrThrow({ where: { id: r.orderId } })).status).toBe(
+      "FULFILLED_EXTERNALLY",
+    );
+  });
+
+  it("webhook URLs must be public https hosts on our path", () => {
+    const prod = { NODE_ENV: "production" } as NodeJS.ProcessEnv;
+    expect(validCallbackUrl("https://crm.example.com/api/webhooks/shopify", prod)).toBe(
+      "https://crm.example.com/api/webhooks/shopify",
+    );
+    expect(validCallbackUrl("https://fulfillment-crm-web/api/webhooks/shopify", prod)).toBeNull(); // Render internal name
+    expect(validCallbackUrl("http://crm.example.com/api/webhooks/shopify", prod)).toBeNull();
+    expect(validCallbackUrl("https://crm.example.com/other", prod)).toBeNull();
+    expect(validCallbackUrl(undefined, prod)).toBeNull();
+    expect(webhookCallbackUrl({ ...prod, RENDER_EXTERNAL_URL: "https://crm-web.onrender.com" })).toBe(
+      "https://crm-web.onrender.com/api/webhooks/shopify",
+    );
+    expect(webhookCallbackUrl(prod)).toBeNull();
+    expect(cleanVariantTitle("Sample EDP 50 ml - Default Title")).toBe("Sample EDP 50 ml");
+  });
+
   it("COD only when money is owed; Shopify test orders are held", async () => {
     const s = await store();
     const db = accountDb(accountId);
@@ -696,7 +751,7 @@ describe("Shopify import (DB)", () => {
         };
       },
     });
-    const status = await registerStoreWebhooks(accountId, storeId, fake.opts, uri);
+    const status = await registerStoreWebhooks(accountId, storeId, uri, fake.opts);
     expect(created).not.toContain("ORDERS_CREATE");
     expect(created).toHaveLength(6);
     expect(status).toMatchObject({ ok: true });

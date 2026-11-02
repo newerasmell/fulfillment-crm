@@ -92,6 +92,8 @@ enum CrmOrderStatus {
   BLOCKED
   CANCELLED
   UNKNOWN
+  /// Shopify already reported it fulfilled when we first saw it: shipped outside the CRM, nothing to do.
+  FULFILLED_EXTERNALLY
 }
 
 enum OrderSource {
