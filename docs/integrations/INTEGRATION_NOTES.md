@@ -168,6 +168,12 @@ problem that needs an operator, which is BLOCKED plus an operator task.
 
 ---
 
+### 2.x Observed in production (2026-11-02, P2-09)
+- `GET /order/history`, `GET /rma/list` and `GET /cod/list` list orders with **`id: null`** when the order was
+  created outside an integration (e.g. by hand in ZOE). `uid` is always present. Mirrors key such orders as
+  `uid:{uid}`; CRM shipments always have our id, so they never collide.
+- `GET /stock/movements` sends `page` as a **string**; `page`/`total` are coerced to numbers on every list.
+
 ## 3. FHB Joy API (label printing / manual parcels)
 
 Use for **manual shipments we pack ourselves** (replacements, samples, B2B parcels) using FHB's carrier

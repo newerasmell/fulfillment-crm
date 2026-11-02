@@ -9,7 +9,7 @@ import {
   mapFhbOrderMirror,
   mapFhbReturn,
 } from "@/integrations/fhb-v3/read-mapper";
-import type { FhbOrderView, FhbProductView } from "@/integrations/fhb-v3/schemas";
+import type { FhbOrderListItem, FhbOrderView, FhbProductView } from "@/integrations/fhb-v3/schemas";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
@@ -299,11 +299,17 @@ async function alertUnknownOrderStatus(accountId: string, connectionId: string, 
 /** Mirrors FHB order views and moves the CRM shipments we know (only when something changed). */
 export async function upsertFhbOrders(
   ctx: Omit<SyncContext, "client">,
-  views: FhbOrderView[],
+  listed: FhbOrderListItem[],
   opts: { fromRma?: boolean; source: string },
 ) {
   const { accountId, connectionId, now } = ctx;
-  const rows = views.map((v) => mapFhbOrderMirror(v, opts));
+  // Orders FHB lists without id or uid cannot be mirrored (none seen so far); everything else is.
+  const pairs = listed.flatMap((v) => {
+    const row = mapFhbOrderMirror(v, opts);
+    return row ? [{ view: v, row }] : [];
+  });
+  const views = pairs.map((p) => p.view);
+  const rows = pairs.map((p) => p.row);
   await withAccountTransaction(accountId, async (tx) => {
     for (let i = 0; i < rows.length; i++) {
       const { alert: _alert, inRma, ...r } = rows[i]!;
@@ -335,7 +341,10 @@ export async function upsertFhbOrders(
       f.trackingNumbers.join("|") !== r.trackingNumbers.join("|") ||
       (!!r.returnedAt && !f.returnInfo);
     if (!changed) continue;
-    await applyFhbOrderView(accountId, connectionId, views[i]!, opts.source, now);
+    // Only orders with an id can be CRM shipments (their externalId is the id we sent).
+    const view = views[i]!;
+    if (!view.id) continue;
+    await applyFhbOrderView(accountId, connectionId, view as FhbOrderView, opts.source, now);
     applied++;
   }
   return { applied };
@@ -438,8 +447,13 @@ export async function syncFhbCod(ctx: SyncContext) {
       return { total: r.total, items: r.items };
     },
     PAGE_SIZE.cod,
-    async (items) => {
-      const rows = items.map(mapFhbCod);
+    async (listed) => {
+      const pairs = listed.flatMap((item) => {
+        const row = mapFhbCod(item);
+        return row ? [{ item, row }] : [];
+      });
+      const rows = pairs.map((p) => p.row);
+      const items = pairs.map((p) => p.item);
       await withAccountTransaction(accountId, async (tx) => {
         for (let i = 0; i < rows.length; i++) {
           const { unknownStatus, ...r } = rows[i]!;
