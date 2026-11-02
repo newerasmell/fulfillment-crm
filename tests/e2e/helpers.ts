@@ -33,6 +33,8 @@ export async function freshCode(secret: string) {
 
 export async function login(page: Page, who = OWNER) {
   await page.goto("/login");
+  // On a cold dev server the form can be visible before React has hydrated it; typing then is lost.
+  await page.waitForLoadState("networkidle");
   await page.locator('input[name="email"]').fill(who.email);
   await page.locator('input[name="password"]').fill(who.password);
   await page.locator('input[name="code"]').fill(await freshCode(who.totp));
