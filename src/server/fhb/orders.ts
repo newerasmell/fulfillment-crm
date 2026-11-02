@@ -19,7 +19,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
-import { transition } from "@/server/pipeline";
+import { queueGate } from "@/server/pipeline";
 import { fhbOrderNotificationUrls, publicBaseUrl } from "./callback-token";
 import type { ScopedActor } from "./connection";
 import { updateRevisionKey } from "./revision";
@@ -278,6 +278,16 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       const active = previous.find((p) => (ACTIVE as readonly string[]).includes(p.status));
       let fulfillment = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED") ?? null;
       if (active && active.status !== "QUEUED") throw new DomainError("fhb_already_submitted");
+      // The pipeline is the gate: only an APPROVED / SUBMIT_FAILED order is queued (strict, before anything is
+      // written). The order row lock serialises this with a concurrent cancel, hold or check.
+      await lockForUpdate("Order", order.id);
+      await queueGate(tx, {
+        orderId: order.id,
+        userId: actor.userId,
+        source: "fhb.submit",
+        connectionId: connection.id,
+        rearmQueued: fulfillment?.status === "QUEUED",
+      });
 
       if (!fulfillment) {
         // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, ….
@@ -351,16 +361,6 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
         createdById: actor.userId,
       });
       if (!created) throw new DomainError("fhb_already_submitted");
-      // The order follows (APPROVED / READY / SUBMIT_FAILED → QUEUED); any other state keeps it.
-      await transition(tx, {
-        orderId: order.id,
-        to: "QUEUED",
-        cause: "queue",
-        actor: { kind: "user", userId: actor.userId },
-        source: "fhb.submit",
-        mode: "follow",
-        meta: { connectionId: connection.id, fulfillmentId: fulfillment.id },
-      });
       return { fulfillment, request, findings: prepared.findings, liveMode: connection.liveMode };
     });
   let result;

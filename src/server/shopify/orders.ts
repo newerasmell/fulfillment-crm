@@ -14,7 +14,13 @@ import {
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { jsonEqual } from "@/lib/json-equal";
-import { recordInitialStatus, transition } from "@/server/pipeline";
+import {
+  FINGERPRINT_SELECT,
+  currentOrderFingerprint,
+  orderFingerprint,
+  recordInitialStatus,
+  transition,
+} from "@/server/pipeline";
 import { matchBySku } from "./products";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -101,6 +107,7 @@ export async function importShopifyOrder(
       const existing = await tx.order.findUnique({
         where: { accountId_storeId_shopifyOrderGid: { accountId, storeId: store.id, shopifyOrderGid: o.id } },
         select: {
+          ...FINGERPRINT_SELECT,
           id: true,
           status: true,
           shopifyUpdatedAt: true,
@@ -245,6 +252,22 @@ export async function importShopifyOrder(
         );
       }
       await replaceLines(tx, accountId, store, orderId, o);
+      // The data a check validated changed (address, phone, COD, lines…): a check or review of the old data
+      // must not authorise it. The order starts over at IMPORTED and the check sweep validates it again
+      // (the approve guard also compares the check's fingerprint, for a check still running right now).
+      if (existing && !o.cancelledAt && !shopifyFulfilled(o)) {
+        const after = await currentOrderFingerprint(tx, orderId);
+        if (after !== orderFingerprint(existing)) {
+          await transition(tx, {
+            orderId,
+            to: "IMPORTED",
+            cause: "data_changed",
+            actor: { kind: "system" },
+            source: "shopify.import",
+            mode: "follow",
+          });
+        }
+      }
       return { orderId, outcome };
     },
     IMPORT_TX,

@@ -1027,6 +1027,7 @@
       "routing_connection_type": "Only FHB or euShipments warehouses can ship orders.",
       "routing_unknown_store": "Unknown store.",
       "routing_unknown_product": "Unknown SKU.",
+      "routing_out_of_scope": "A neighbouring rule belongs to another company: it cannot be moved past it.",
       "generic": "Could not save."
     }
   }

@@ -1027,6 +1027,7 @@
       "routing_connection_type": "Само FHB или euShipments складове могат да изпращат поръчки.",
       "routing_unknown_store": "Непознат магазин.",
       "routing_unknown_product": "Непознато SKU.",
+      "routing_out_of_scope": "Съседното правило е на друга фирма: не може да се премести покрай него.",
       "generic": "Неуспешно записване."
     }
   }

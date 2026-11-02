@@ -251,6 +251,31 @@ describe("validateOrder / checkOrder (database)", () => {
     expect(await g.db.outboundRequest.count({ where: { connectionId: fhb.id } })).toBe(0);
   });
 
+  it("an approved order is not pulled back into CHECKING by a re-check (reopen first)", async () => {
+    const { order, product } = await fresh("#2007");
+    await mapProduct(product.id);
+    await g.db.order.update({ where: { id: order.id }, data: { status: "APPROVED" } });
+    const r = await checkOrder(g.accountId, order.id, { actor: { kind: "system" } });
+    expect(r).toMatchObject({ status: "APPROVED", moved: false });
+  });
+
+  it("the stored check covers the data it validated: an edit after it blocks approval until re-checked", async () => {
+    const { order, product } = await fresh("#2008");
+    await mapProduct(product.id);
+    expect((await checkOrder(g.accountId, order.id, { actor: { kind: "system" } })).hardCount).toBe(0);
+    await g.db.order.update({ where: { id: order.id }, data: { customerName: "Someone Else" } });
+    const approve = () =>
+      transitionOrder(g.accountId, {
+        orderId: order.id,
+        to: "APPROVED",
+        cause: "approve",
+        actor: { kind: "user", userId: g.owner.userId },
+      });
+    await expect(approve()).rejects.toMatchObject({ code: "transition_guard:check_stale" });
+    expect((await checkOrder(g.accountId, order.id, { actor: { kind: "system" } })).hardCount).toBe(0);
+    await expect(approve()).resolves.toMatchObject({ changed: true });
+  });
+
   it("an order already at the warehouse is validated but its status is left alone", async () => {
     const { order } = await fresh("#2005");
     await g.db.order.update({ where: { id: order.id }, data: { status: "SHIPPED" } });

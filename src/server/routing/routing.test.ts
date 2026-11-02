@@ -361,6 +361,54 @@ describe("routing rules (database)", () => {
     await deleteRoutingRule(g.owner, foreign.id);
   });
 
+  it("a restricted admin cannot touch a rule that routes another company's store, even to their warehouse", async () => {
+    const otherStore = await accountDb(g.accountId).store.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.otherCompany,
+        domain: `ro-${Date.now()}.example`,
+        code: "RO",
+        name: "Other store",
+        currency: "EUR",
+      },
+    });
+    const scoped: ScopedActor = { ...g.owner, role: "ADMIN", companyScope: [g.company] };
+    const rule = await createRoutingRule(g.owner, {
+      name: "Other store to our warehouse",
+      connectionId: g.fhb,
+      match: { storeIds: [otherStore.id] },
+    });
+    expect((await listRoutingRules(scoped)).map((r) => r.id)).not.toContain(rule.id);
+    await expect(deleteRoutingRule(scoped, rule.id)).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      updateRoutingRule(scoped, rule.id, { name: "mine now", connectionId: g.fhb }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(moveRoutingRule(scoped, rule.id, "up")).rejects.toMatchObject({ code: "not_found" });
+    expect(await accountDb(g.accountId).routingRule.count({ where: { id: rule.id } })).toBe(1);
+    await deleteRoutingRule(g.owner, rule.id);
+  });
+
+  it("a restricted admin cannot move their rule past another company's rule", async () => {
+    const scoped: ScopedActor = { ...g.owner, role: "ADMIN", companyScope: [g.company] };
+    const foreign = await createRoutingRule(g.owner, { name: "Other company first", connectionId: g.other });
+    const mine = await createRoutingRule(g.owner, { name: "Catch-all of ours", connectionId: g.fhb });
+    const mine2 = await createRoutingRule(g.owner, { name: "Second of ours", connectionId: g.eu });
+    await expect(moveRoutingRule(scoped, mine.id, "up")).rejects.toMatchObject({
+      code: "routing_out_of_scope",
+    });
+    const order = async () =>
+      (await listRoutingRules(g.owner))
+        .filter((r) => [foreign.id, mine.id, mine2.id].includes(r.id))
+        .map((r) => r.id);
+    expect(await order()).toEqual([foreign.id, mine.id, mine2.id]);
+    // Between two of their own rules the move is fine.
+    expect(await moveRoutingRule(scoped, mine2.id, "up")).toMatchObject({ from: 3, to: 2 });
+    expect(await order()).toEqual([foreign.id, mine2.id, mine.id]);
+    // An unrestricted owner may still move across companies.
+    expect(await moveRoutingRule(g.owner, mine2.id, "up")).toMatchObject({ from: 2, to: 1 });
+    for (const r of [foreign, mine, mine2]) await deleteRoutingRule(g.owner, r.id);
+  });
+
   it("routeOrder uses the stored rules and the mirrored stock", async () => {
     const db = accountDb(g.accountId);
     const o = await db.order.create({

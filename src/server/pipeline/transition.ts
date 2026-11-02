@@ -1,6 +1,7 @@
 import type { AiLevel, CrmOrderStatus, Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { withAccountTransaction } from "@/server/db/client";
+import { currentOrderFingerprint, storedFingerprint } from "./fingerprint";
 import { isAllowed, type ActorKind, type TransitionCause } from "./rules";
 
 /**
@@ -22,8 +23,11 @@ import { isAllowed, type ActorKind, type TransitionCause } from "./rules";
 export type PipelineActor =
   | { kind: "user"; userId: string }
   | { kind: "system" }
-  /** An AI decision; `level` is the AiPolicy level that allowed it (approval needs L2). */
-  | { kind: "ai"; level: AiLevel; policyId?: string | null };
+  /**
+   * An AI decision. `policyId` names the AiPolicy that allowed it; the approve guard loads that policy and
+   * trusts only what is stored there (`level` is informational, recorded on the event).
+   */
+  | { kind: "ai"; level: AiLevel; policyId: string };
 
 export interface TransitionInput {
   orderId: string;
@@ -91,18 +95,49 @@ const INACTIVE_SHIPMENT: CrmOrderStatus[] = ["SUBMIT_FAILED", "CANCELLED"];
 /** Shopify test orders are held on import and must never reach a warehouse by accident. */
 export const SHOPIFY_TEST_TAG = "shopify-test";
 
+/** AiPolicy.decisionType whose L2 level allows the AI to approve orders (SPEC §7.4). */
+export const AI_APPROVAL_DECISION = "order_approval";
+
 const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
   approve: [
-    async (_tx, { actor }) => (actor.kind === "ai" && actor.level !== "L2" ? "ai_policy_not_l2" : null),
-    // Validate before sending: the latest pre-flight check (src/server/checks) must exist and have no hard
-    // finding. Editing an order must run the check again (checkOrder) before it can be approved.
-    async (tx, { order }) => {
+    // AI approval only when an enabled AiPolicy at L2 for order approval exists in this account — loaded
+    // here, never taken from the caller.
+    async (tx, { actor }) => {
+      if (actor.kind !== "ai") return null;
+      if (!actor.policyId) return "ai_policy_missing";
+      const policy = await tx.aiPolicy.findFirst({
+        where: { id: actor.policyId },
+        select: { level: true, enabled: true, decisionType: true },
+      });
+      if (!policy || policy.decisionType !== AI_APPROVAL_DECISION) return "ai_policy_missing";
+      if (!policy.enabled) return "ai_policy_disabled";
+      return policy.level === "L2" ? null : "ai_policy_not_l2";
+    },
+    // Validate before sending: the stored pre-flight check (src/server/checks) must exist, have no hard
+    // finding, have validated the order data as it is NOW (fingerprint) and — when the caller names the
+    // warehouse it approves for — that warehouse.
+    async (tx, { order, meta }) => {
       const check = await tx.orderCheck.findFirst({
         where: { orderId: order.id },
-        select: { hardCount: true },
+        select: { hardCount: true, normalised: true, connectionId: true },
       });
       if (!check) return "no_check";
-      return check.hardCount > 0 ? "hard_findings" : null;
+      if (check.hardCount > 0) return "hard_findings";
+      const stored = storedFingerprint(check.normalised);
+      if (!stored || stored !== (await currentOrderFingerprint(tx, order.id))) return "check_stale";
+      const connectionId = typeof meta?.connectionId === "string" ? meta.connectionId : null;
+      if (connectionId && connectionId !== check.connectionId) return "check_connection_mismatch";
+      return null;
+    },
+  ],
+  // A check that ran while a shipment became active (should be impossible: the queue gate refuses CHECKING)
+  // must not pull the order back to READY / NEEDS_REVIEW, where it would no longer follow its shipment.
+  check_result: [
+    async (tx, { order }) => {
+      const active = await tx.fulfillment.count({
+        where: { orderId: order.id, status: { notIn: INACTIVE_SHIPMENT } },
+      });
+      return active > 0 ? "active_shipment" : null;
     },
   ],
   cancel: [
@@ -200,9 +235,16 @@ export async function transition(tx: Tx, input: TransitionInput): Promise<Transi
 const aiMeta = (a: PipelineActor) =>
   a.kind === "ai" ? { aiLevel: a.level, aiPolicyId: a.policyId ?? null } : {};
 
-/** transition() in its own account transaction. */
+/**
+ * transition() in its own account transaction, with the Order row locked first: cancel / hold / approve
+ * serialise with a concurrent submit (which locks the same row) so a guard never reads a state the other
+ * writer is about to change.
+ */
 export function transitionOrder(accountId: string, input: TransitionInput) {
-  return withAccountTransaction(accountId, (tx) => transition(tx, input));
+  return withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
+    await lockForUpdate("Order", input.orderId);
+    return transition(tx, input);
+  });
 }
 
 /**
@@ -259,4 +301,38 @@ export async function followShipment(
 /** Timeline of one order, oldest first (P4-04 order detail). */
 export function orderEvents(tx: Tx, orderId: string) {
   return tx.orderEvent.findMany({ where: { orderId }, orderBy: { createdAt: "asc" } });
+}
+
+/**
+ * The submit gate (FHB submit, euShipments queue): call it inside the submit transaction, with the Order row
+ * locked (`lockForUpdate("Order", orderId)`), BEFORE any Fulfillment or outbox row is written. Moves the
+ * order APPROVED / SUBMIT_FAILED → QUEUED in strict mode, so a cancelled, held, unchecked or unapproved order
+ * (or one being checked right now) throws TransitionError and the whole submit rolls back.
+ *
+ * An order that is already QUEUED passes only when the caller re-arms that very shipment (`rearmQueued`:
+ * the same connection's QUEUED Fulfillment whose request never left — dry run, mode gate); a second
+ * shipment for a queued order is refused.
+ */
+export async function queueGate(
+  tx: Tx,
+  input: {
+    orderId: string;
+    userId: string;
+    source: string;
+    connectionId: string;
+    rearmQueued: boolean;
+  },
+): Promise<TransitionResult> {
+  const r = await transition(tx, {
+    orderId: input.orderId,
+    to: "QUEUED",
+    cause: "queue",
+    actor: { kind: "user", userId: input.userId },
+    source: input.source,
+    mode: "strict",
+    onlyFrom: ["APPROVED", "SUBMIT_FAILED"],
+    meta: { connectionId: input.connectionId },
+  });
+  if (!r.changed && !input.rearmQueued) throw new TransitionError("not_allowed", r.from, "QUEUED");
+  return r;
 }

@@ -16,7 +16,11 @@ import type { CrmOrderStatus } from "@/generated/prisma/client";
 export type ActorKind = "user" | "system" | "ai";
 
 export type TransitionCause =
-  /** Pre-flight checks start (validator engine). Also a re-check after an edit or a failed submit. */
+  /**
+   * Pre-flight checks start (validator engine). Also a re-check after an edit or a failed submit. Not from
+   * APPROVED: re-checking an approved order is reopen (→ NEEDS_REVIEW) first, so a check can never run while
+   * the order may be submitted.
+   */
   | "check_start"
   /** Pre-flight checks finished: hard findings → NEEDS_REVIEW, otherwise READY. */
   | "check_result"
@@ -41,7 +45,30 @@ export type TransitionCause =
   /** The vendor definitely refused the create. */
   | "submit_failed"
   /** The order follows its shipment's vendor status (FHB status map, euShipments history/COD). */
-  | "vendor";
+  | "vendor"
+  /**
+   * Shopify import changed the order's data (address, phone, COD, lines…) while it was being checked or
+   * waiting for review: it starts over at IMPORTED and the check sweep validates it again.
+   */
+  | "data_changed";
+
+/** Every cause, for exhaustive tests and docs. */
+export const CAUSES: readonly TransitionCause[] = [
+  "check_start",
+  "check_result",
+  "approve",
+  "reopen",
+  "hold",
+  "release",
+  "cancel",
+  "shopify_cancelled",
+  "shopify_fulfilled",
+  "queue",
+  "submitting",
+  "submit_failed",
+  "vendor",
+  "data_changed",
+];
 
 export interface TransitionRule {
   cause: TransitionCause;
@@ -87,7 +114,7 @@ const ALL: ActorKind[] = ["user", "system", "ai"];
 export const RULES: readonly TransitionRule[] = [
   {
     cause: "check_start",
-    from: ["IMPORTED", "NEEDS_REVIEW", "READY", "APPROVED", "SUBMIT_FAILED"],
+    from: ["IMPORTED", "NEEDS_REVIEW", "READY", "SUBMIT_FAILED"],
     to: ["CHECKING"],
     actors: ALL,
   },
@@ -110,15 +137,22 @@ export const RULES: readonly TransitionRule[] = [
   },
   { cause: "shopify_cancelled", from: PRE_APPROVAL, to: ["CANCELLED"], actors: ["system"] },
   { cause: "shopify_fulfilled", from: PRE_APPROVAL, to: ["FULFILLED_EXTERNALLY"], actors: ["system"] },
-  // READY → QUEUED is kept: the euShipments queue function accepted READY before the pipeline existed.
+  // Only an approved order (or one whose submit was refused) is queued: the submit paths use this rule as
+  // their gate, in strict mode and before any Fulfillment / outbox row exists.
   {
     cause: "queue",
-    from: ["APPROVED", "READY", "SUBMIT_FAILED"],
+    from: ["APPROVED", "SUBMIT_FAILED"],
     to: ["QUEUED"],
     actors: ["user", "system"],
   },
   { cause: "submitting", from: ["QUEUED"], to: ["SUBMITTING"], actors: ["system"] },
   { cause: "submit_failed", from: ["QUEUED", "SUBMITTING"], to: ["SUBMIT_FAILED"], actors: ["system"] },
+  {
+    cause: "data_changed",
+    from: ["CHECKING", "NEEDS_REVIEW", "READY"],
+    to: ["IMPORTED"],
+    actors: ["system"],
+  },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,

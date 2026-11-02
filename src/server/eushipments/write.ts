@@ -21,7 +21,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutbound, enqueueOutboundInTx } from "@/server/outbox/outbox";
-import { transition } from "@/server/pipeline";
+import { queueGate } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
 import { loadEuConnection } from "./connection";
 
@@ -428,7 +428,7 @@ export async function queueEuOrder(
   if (unacked.length) return { status: "needs_ack", findings };
 
   const run = () =>
-    withAccountTransaction(actor.accountId, async (tx, { lockKey }) => {
+    withAccountTransaction(actor.accountId, async (tx, { lockKey, lockForUpdate }) => {
       await lockKey(`eushipments:order:${connection.id}:${reference}`);
       const existing = await tx.fulfillment.findUnique({
         where: { connectionId_externalId: { connectionId: connection.id, externalId: reference } },
@@ -450,6 +450,16 @@ export async function queueEuOrder(
         if (!ourSideOpen || (req && !REARMABLE_REQUEST.has(req.status)))
           throw new DomainError("duplicate_reference");
       }
+      // The pipeline is the gate: only an APPROVED / SUBMIT_FAILED order is queued (strict, before anything is
+      // written). The order row lock serialises this with a concurrent cancel, hold or check.
+      await lockForUpdate("Order", order.id);
+      await queueGate(tx, {
+        orderId: order.id,
+        userId: actor.userId,
+        source: "eushipments.queue",
+        connectionId: connection.id,
+        rearmQueued: existing?.status === "QUEUED",
+      });
       let fulfillment: Fulfillment;
       if (existing) {
         fulfillment = await tx.fulfillment.update({
@@ -504,15 +514,6 @@ export async function queueEuOrder(
         }),
         fulfillmentId: fulfillment.id,
         createdById: actor.userId,
-      });
-      await transition(tx, {
-        orderId: order.id,
-        to: "QUEUED",
-        cause: "queue",
-        actor: { kind: "user", userId: actor.userId },
-        source: "eushipments.queue",
-        mode: "follow", // an order in another state keeps it (unchanged behaviour)
-        meta: { connectionId: connection.id, fulfillmentId: fulfillment.id },
       });
       return { fulfillment, request };
     });

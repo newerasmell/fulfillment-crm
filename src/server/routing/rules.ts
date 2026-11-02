@@ -71,12 +71,39 @@ async function checkReferences(actor: ScopedActor, input: z.output<typeof Routin
   }
 }
 
+/** Store ids a rule's stored match names (none = the rule matches every store). */
+const ruleStoreIds = (match: unknown) => RuleMatch.safeParse(match ?? {}).data?.storeIds ?? [];
+
+/**
+ * Store → company for the account (one read, for scope checks on many rules). Only needed for restricted
+ * actors; null otherwise.
+ */
+async function storeCompanies(actor: ScopedActor) {
+  if (!actor.companyScope) return null;
+  const stores = await accountDb(actor.accountId).store.findMany({ select: { id: true, companyId: true } });
+  return new Map(stores.map((s) => [s.id, s.companyId]));
+}
+
+/**
+ * A rule is in a restricted actor's scope when its warehouse AND every store it names belong to their
+ * companies (a rule routing another company's store to their warehouse is not theirs to change).
+ */
+function ruleInScope(
+  actor: ScopedActor,
+  rule: { match: unknown; connection: { companyId: string | null } },
+  stores: Map<string, string | null> | null,
+) {
+  if (!actor.companyScope) return true;
+  if (!inScope(actor, rule.connection.companyId)) return false;
+  return ruleStoreIds(rule.match).every((id) => inScope(actor, stores?.get(id) ?? null));
+}
+
 async function loadInScope(actor: ScopedActor, ruleId: string) {
   const rule = await accountDb(actor.accountId).routingRule.findUnique({
     where: { id: ruleId },
     include: { connection: { select: { companyId: true } } },
   });
-  if (!rule || !inScope(actor, rule.connection.companyId)) throw new DomainError("not_found");
+  if (!rule || !ruleInScope(actor, rule, await storeCompanies(actor))) throw new DomainError("not_found");
   const { connection: _c, ...plain } = rule;
   return plain;
 }
@@ -88,9 +115,10 @@ export async function listRoutingRules(actor: ScopedActor) {
     orderBy: [{ priority: "asc" }, { id: "asc" }],
     include: { connection: { select: { id: true, name: true, type: true, companyId: true, enabled: true } } },
   });
+  const stores = await storeCompanies(actor);
   return rules
     .map((r, i) => ({ ...r, number: i + 1, matchParsed: RuleMatch.safeParse(r.match ?? {}).data ?? null }))
-    .filter((r) => inScope(actor, r.connection.companyId));
+    .filter((r) => ruleInScope(actor, r, stores));
 }
 
 export async function createRoutingRule(actor: ScopedActor, raw: RoutingRuleInput) {
@@ -172,7 +200,9 @@ export async function deleteRoutingRule(actor: ScopedActor, ruleId: string) {
 
 /**
  * Moves a rule one place up or down (swaps with its neighbour in the full list) and renumbers priorities
- * 10, 20, 30… so the order stays unambiguous. Serialised per group (advisory lock).
+ * 10, 20, 30… so the order stays unambiguous. Serialised per group (advisory lock). A member limited to some
+ * companies may only swap with a neighbour that is also in their scope: moving past another company's rule
+ * would change which warehouse ships that company's orders (routing_out_of_scope).
  */
 export async function moveRoutingRule(actor: ScopedActor, ruleId: string, direction: "up" | "down") {
   assertCan(actor.role, "routing.manage");
@@ -181,11 +211,16 @@ export async function moveRoutingRule(actor: ScopedActor, ruleId: string, direct
     await lockKey("routing-rules");
     const rules = await tx.routingRule.findMany({
       orderBy: [{ priority: "asc" }, { id: "asc" }],
-      select: { id: true, priority: true },
+      select: { id: true, priority: true, match: true, connection: { select: { companyId: true } } },
     });
     const i = rules.findIndex((r) => r.id === ruleId);
     const j = direction === "up" ? i - 1 : i + 1;
     if (i < 0 || j < 0 || j >= rules.length) return null;
+    if (actor.companyScope) {
+      const stores = await storeCompanies(actor);
+      if (!ruleInScope(actor, rules[i]!, stores) || !ruleInScope(actor, rules[j]!, stores))
+        throw new DomainError("routing_out_of_scope");
+    }
     const order = rules.map((r) => r.id);
     [order[i], order[j]] = [order[j]!, order[i]!];
     for (const [k, id] of order.entries()) {

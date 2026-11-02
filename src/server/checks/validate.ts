@@ -5,7 +5,7 @@ import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { previewEuOrderFindings } from "@/server/eushipments/write";
 import { previewFhbOrderFindings } from "@/server/fhb/orders";
-import { transition, type PipelineActor } from "@/server/pipeline";
+import { orderFingerprint, transition, type PipelineActor } from "@/server/pipeline";
 import {
   loadRoutingContext,
   routeWithContext,
@@ -123,7 +123,9 @@ export async function validateOrder(
   const db = accountDb(accountId);
   const order = await db.order.findUnique({
     where: { id: orderId },
-    include: { lines: { select: { title: true, sku: true, productId: true, quantity: true } } },
+    include: {
+      lines: { select: { title: true, sku: true, productId: true, quantity: true, unitPrice: true } },
+    },
   });
   if (!order) throw new DomainError("not_found");
 
@@ -219,7 +221,8 @@ export async function validateOrder(
       findings: json(result.findings),
       hardCount: result.hardCount,
       softCount: result.softCount,
-      normalised: json(result.normalised),
+      // The fingerprint of the data validated here: approve refuses once the order no longer matches it.
+      normalised: json({ ...result.normalised, orderFingerprint: orderFingerprint(order) }),
       checkedById: opts.checkedById ?? null,
       checkedAt: now,
     };
@@ -246,7 +249,7 @@ export interface CheckOrderResult extends OrderCheckResult {
 }
 
 /**
- * Runs the pre-flight checks inside the pipeline: IMPORTED / NEEDS_REVIEW / READY / APPROVED / SUBMIT_FAILED
+ * Runs the pre-flight checks inside the pipeline: IMPORTED / NEEDS_REVIEW / READY / SUBMIT_FAILED
  * → CHECKING → READY (no finding) or NEEDS_REVIEW (any finding). An order in another state (e.g. already at
  * the warehouse) is validated and its check stored, but its status is left alone.
  */
@@ -256,7 +259,8 @@ export async function checkOrder(
   opts: { actor: PipelineActor; connectionId?: string; now?: Date },
 ): Promise<CheckOrderResult> {
   const source = "checks";
-  const started = await withAccountTransaction(accountId, async (tx) => {
+  const started = await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
+    await lockForUpdate("Order", orderId);
     const r = await transition(tx, {
       orderId,
       to: "CHECKING",
@@ -274,7 +278,8 @@ export async function checkOrder(
   });
   let moved = false;
   if (started) {
-    moved = await withAccountTransaction(accountId, async (tx) => {
+    moved = await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
+      await lockForUpdate("Order", orderId);
       const r = await transition(tx, {
         orderId,
         to: result.findings.length ? "NEEDS_REVIEW" : "READY",

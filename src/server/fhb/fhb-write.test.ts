@@ -6,6 +6,8 @@ import type { Actor } from "@/server/accounts";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { accountDb, systemDb } from "@/server/db/client";
 import { processOutbound } from "@/server/outbox/outbox";
+import { checkOrder } from "@/server/checks";
+import { transitionOrder } from "@/server/pipeline";
 import { applyFhbOrderView } from "./apply";
 import { authenticateFhbCallbackPath } from "./callback-token";
 import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
@@ -617,6 +619,127 @@ describe("FHB order update keeps what the order was created with (audit fixes)",
     expect([...symbols].sort()).toEqual(["1", "2", "3", "4", "5"]);
     const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
     expect(conn.variableSymbolNext).toBe(6n);
+  });
+});
+
+describe("FHB submit is gated by the order pipeline (audit fixes)", () => {
+  const counts = async (s: Awaited<ReturnType<typeof setup>>, orderId: string) => ({
+    fulfillments: await systemDb().fulfillment.count({ where: { orderId } }),
+    requests: await systemDb().outboundRequest.count({
+      where: { connectionId: s.connection.id, operation: "fhb.order.create", fulfillment: { orderId } },
+    }),
+  });
+
+  it("an order that is not APPROVED / SUBMIT_FAILED is refused with no shipment, no request, no symbol", async () => {
+    const s = await setup("LIVE");
+    const statuses = [
+      "CANCELLED",
+      "ON_HOLD",
+      "NEEDS_REVIEW",
+      "CHECKING",
+      "READY",
+      "IMPORTED",
+      "SHIPPED",
+      "FULFILLED_EXTERNALLY",
+    ] as const;
+    for (const [i, status] of statuses.entries()) {
+      const o = await extraOrder(s, `#20${i}`);
+      await systemDb().order.update({ where: { id: o.id }, data: { status } });
+      await expect(
+        submitFhbOrder(s.owner, { orderId: o.id, connectionId: s.connection.id, acknowledgeWarnings: true }),
+        status,
+      ).rejects.toMatchObject({ code: "transition_not_allowed" });
+      expect(await counts(s, o.id), status).toEqual({ fulfillments: 0, requests: 0 });
+      expect((await systemDb().order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe(status);
+    }
+    const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
+    expect(conn.variableSymbolNext).toBe(1n);
+  });
+
+  it("a queued order cannot get a second shipment from another warehouse", async () => {
+    const s = await setup("LIVE");
+    await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const second = await createFhbConnection(s.owner, {
+      companyId: s.company.id,
+      name: "FHB second",
+      appId: "test-app-2",
+      secret: "test-secret-2",
+      skuPrefix: "R",
+    });
+    await expect(
+      submitFhbOrder(s.owner, { orderId: s.order.id, connectionId: second.id, acknowledgeWarnings: true }),
+    ).rejects.toMatchObject({ code: "transition_not_allowed" });
+    expect(await systemDb().fulfillment.count({ where: { orderId: s.order.id } })).toBe(1);
+  });
+
+  it("cancel and submit at the same moment: exactly one wins, never a shipment for a cancelled order", async () => {
+    const s = await setup("LIVE");
+    const orders = await Promise.all([1, 2, 3, 4, 5, 6].map((n) => extraOrder(s, `#30${n}`)));
+    await Promise.all(
+      orders.map((o) =>
+        Promise.allSettled([
+          transitionOrder(s.account.id, {
+            orderId: o.id,
+            to: "CANCELLED",
+            cause: "cancel",
+            actor: { kind: "user", userId: s.owner.userId },
+          }),
+          submitFhbOrder(s.owner, {
+            orderId: o.id,
+            connectionId: s.connection.id,
+            acknowledgeWarnings: true,
+          }),
+        ]),
+      ),
+    );
+    for (const o of orders) {
+      const { status } = await systemDb().order.findUniqueOrThrow({ where: { id: o.id } });
+      const c = await counts(s, o.id);
+      if (status === "CANCELLED") expect(c).toEqual({ fulfillments: 0, requests: 0 });
+      else {
+        expect(status).toBe("QUEUED");
+        expect(c).toEqual({ fulfillments: 1, requests: 1 });
+      }
+    }
+  });
+
+  it("a re-check racing a submit never leaves a queued order looking ready (no second shipment)", async () => {
+    const s = await setup("LIVE");
+    // Approved order: a re-check does not move it (reopen first), so the submit always goes through.
+    const [check, sub] = await Promise.allSettled([
+      checkOrder(s.account.id, s.order.id, { actor: { kind: "system" } }),
+      submitFhbOrder(s.owner, {
+        orderId: s.order.id,
+        connectionId: s.connection.id,
+        acknowledgeWarnings: true,
+      }),
+    ]);
+    expect(check.status).toBe("fulfilled");
+    expect(sub.status).toBe("fulfilled");
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe("QUEUED");
+
+    // A refused order being re-checked (CHECKING) cannot be submitted until the check result is in.
+    const o = await extraOrder(s, "#401");
+    await systemDb().order.update({ where: { id: o.id }, data: { status: "SUBMIT_FAILED" } });
+    const [check2, sub2] = await Promise.allSettled([
+      checkOrder(s.account.id, o.id, { actor: { kind: "system" } }),
+      submitFhbOrder(s.owner, { orderId: o.id, connectionId: s.connection.id, acknowledgeWarnings: true }),
+    ]);
+    expect(check2.status).toBe("fulfilled");
+    const after = (await systemDb().order.findUniqueOrThrow({ where: { id: o.id } })).status;
+    const c = await counts(s, o.id);
+    if (sub2.status === "fulfilled") {
+      // The submit won the order lock: the check saw QUEUED and left it alone.
+      expect(after).toBe("QUEUED");
+      expect(c).toEqual({ fulfillments: 1, requests: 1 });
+    } else {
+      expect(after === "READY" || after === "NEEDS_REVIEW").toBe(true);
+      expect(c).toEqual({ fulfillments: 0, requests: 0 });
+    }
   });
 });
 

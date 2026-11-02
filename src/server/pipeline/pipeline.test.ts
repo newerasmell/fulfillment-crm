@@ -2,14 +2,18 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { CrmOrderStatus } from "@/generated/prisma/client";
 import { SYNTHETIC_ORDERS } from "@/integrations/shopify/__fixtures__/orders";
 import { bootstrapOwner } from "@/server/auth/users";
-import { accountDb, systemDb } from "@/server/db/client";
+import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 import { importShopifyOrder } from "@/server/shopify/orders";
 import {
+  AI_APPROVAL_DECISION,
   allowedTransitions,
+  CAUSES as ALL_CAUSES,
+  currentOrderFingerprint,
   isAllowed,
   nextSteps,
   RULES,
   TERMINAL,
+  transition,
   transitionOrder,
   TransitionError,
   type PipelineActor,
@@ -48,6 +52,7 @@ let g: {
   companyId: string;
   storeId: string;
   connectionId: string;
+  policyId: string;
 };
 let n = 0;
 
@@ -74,7 +79,17 @@ beforeAll(async () => {
   const connection = await db.fulfillmentConnection.create({
     data: { accountId, companyId: company.id, type: "FHB_V3", name: "FHB test" },
   });
-  g = { accountId, userId: r.user.id, companyId: company.id, storeId: store.id, connectionId: connection.id };
+  const policy = await db.aiPolicy.create({
+    data: { accountId, decisionType: AI_APPROVAL_DECISION, level: "L2", enabled: true },
+  });
+  g = {
+    accountId,
+    userId: r.user.id,
+    companyId: company.id,
+    storeId: store.id,
+    connectionId: connection.id,
+    policyId: policy.id,
+  };
 });
 
 async function orderIn(status: CrmOrderStatus, tags: string[] = []) {
@@ -96,14 +111,30 @@ async function orderIn(status: CrmOrderStatus, tags: string[] = []) {
   });
 }
 
-/** A passed pre-flight check (the approve guard needs one). */
-const cleanCheck = (orderId: string, hardCount = 0) =>
-  accountDb(g.accountId).orderCheck.create({
-    data: { accountId: g.accountId, orderId, routing: {}, hardCount },
+/** A passed pre-flight check of the order as it is now (the approve guard needs one). */
+const cleanCheck = async (orderId: string, hardCount = 0, connectionId: string | null = null) => {
+  const db = accountDb(g.accountId);
+  const orderFingerprint = await withAccountTransaction(g.accountId, (tx) =>
+    currentOrderFingerprint(tx, orderId),
+  );
+  return db.orderCheck.create({
+    data: {
+      accountId: g.accountId,
+      orderId,
+      routing: {},
+      hardCount,
+      connectionId,
+      normalised: { orderFingerprint },
+    },
   });
+};
 
 const actorOf = (kind: "user" | "system" | "ai"): PipelineActor =>
-  kind === "user" ? { kind, userId: g.userId } : kind === "ai" ? { kind, level: "L2" } : { kind };
+  kind === "user"
+    ? { kind, userId: g.userId }
+    : kind === "ai"
+      ? { kind, level: "L2", policyId: g.policyId }
+      : { kind };
 
 describe("rule table (pure)", () => {
   it("uses only real statuses and leaves terminal states alone", () => {
@@ -148,6 +179,30 @@ describe("rule table (pure)", () => {
         for (const cause of CAUSES)
           for (const a of ["user", "system", "ai"] as const)
             expect(isAllowed(cause, from, to, a)).toBe(false);
+  });
+
+  it("every cause is in CAUSES, and every combination outside the table is refused", () => {
+    expect([...CAUSES].sort()).toEqual([...ALL_CAUSES].sort());
+    const allowed = new Set(
+      allowedTransitions().flatMap((t) => t.actors.map((a) => `${t.cause}|${t.from}|${t.to}|${a}`)),
+    );
+    let refused = 0;
+    for (const cause of ALL_CAUSES)
+      for (const from of ALL_STATUSES)
+        for (const to of ALL_STATUSES)
+          for (const a of ["user", "system", "ai"] as const) {
+            const key = `${cause}|${from}|${to}|${a}`;
+            expect(isAllowed(cause, from, to, a), key).toBe(allowed.has(key));
+            if (!allowed.has(key)) refused++;
+          }
+    expect(refused).toBeGreaterThan(0);
+  });
+
+  it("only an approved (or refused) order can be queued, and a check never starts on an approved one", () => {
+    const queueFrom = ALL_STATUSES.filter((f) => isAllowed("queue", f, "QUEUED", "user"));
+    expect(queueFrom.sort()).toEqual(["APPROVED", "SUBMIT_FAILED"]);
+    expect(isAllowed("check_start", "APPROVED", "CHECKING", "system")).toBe(false);
+    expect(isAllowed("check_start", "APPROVED", "CHECKING", "user")).toBe(false);
   });
 
   it("nextSteps lists what an operator may do", () => {
@@ -242,25 +297,128 @@ describe("refusals and guards", () => {
     await expect(approve()).resolves.toMatchObject({ changed: true });
   });
 
-  it("AI approval needs an L2 policy; AI can never cancel", async () => {
+  it("AI approval needs an enabled L2 approval policy loaded from the account; a forged level is ignored", async () => {
     const o = await orderIn("READY");
     await cleanCheck(o.id);
+    const db = accountDb(g.accountId);
+    const asAi = (actor: PipelineActor) =>
+      transitionOrder(g.accountId, { orderId: o.id, to: "APPROVED", cause: "approve", actor });
+    // A caller claiming L2 without a policy, or with a policy id that does not exist.
+    await expect(asAi({ kind: "ai", level: "L2", policyId: "" })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_missing",
+    });
+    await expect(asAi({ kind: "ai", level: "L2", policyId: "no-such-policy" })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_missing",
+    });
+    // The stored policy is L1: claiming L2 does not help.
+    await db.aiPolicy.update({ where: { id: g.policyId }, data: { level: "L1" } });
+    await expect(asAi({ kind: "ai", level: "L2", policyId: g.policyId })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_not_l2",
+    });
+    await db.aiPolicy.update({ where: { id: g.policyId }, data: { level: "L2", enabled: false } });
+    await expect(asAi({ kind: "ai", level: "L2", policyId: g.policyId })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_disabled",
+    });
+    // A policy for another decision type is not an approval policy.
+    const other = await db.aiPolicy.create({
+      data: { accountId: g.accountId, decisionType: "address_fix", level: "L2", enabled: true },
+    });
+    await expect(asAi({ kind: "ai", level: "L2", policyId: other.id })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_missing",
+    });
+    // Another group's L2 policy is not visible here.
+    const foreign = await systemDb().account.create({ data: { name: "Foreign AI group" } });
+    const foreignPolicy = await systemDb().aiPolicy.create({
+      data: { accountId: foreign.id, decisionType: AI_APPROVAL_DECISION, level: "L2", enabled: true },
+    });
+    await expect(asAi({ kind: "ai", level: "L2", policyId: foreignPolicy.id })).rejects.toMatchObject({
+      code: "transition_guard:ai_policy_missing",
+    });
+    await db.aiPolicy.update({ where: { id: g.policyId }, data: { enabled: true } });
+    await expect(asAi({ kind: "ai", level: "L1", policyId: g.policyId })).resolves.toMatchObject({
+      changed: true,
+    });
+    const ev = await db.orderEvent.findFirstOrThrow({ where: { orderId: o.id, cause: "approve" } });
+    expect(ev.meta).toMatchObject({ aiPolicyId: g.policyId });
     await expect(
+      transitionOrder(g.accountId, {
+        orderId: (await orderIn("READY")).id,
+        to: "CANCELLED",
+        cause: "cancel",
+        actor: actorOf("ai"),
+      }),
+    ).rejects.toBeInstanceOf(TransitionError);
+  });
+
+  it("a check of older order data does not authorise approval (stale fingerprint)", async () => {
+    const o = await orderIn("READY");
+    await cleanCheck(o.id);
+    const db = accountDb(g.accountId);
+    await db.order.update({ where: { id: o.id }, data: { phone: "+359000000000" } });
+    const approve = () =>
+      transitionOrder(g.accountId, { orderId: o.id, to: "APPROVED", cause: "approve", actor: user() });
+    await expect(approve()).rejects.toMatchObject({ code: "transition_guard:check_stale" });
+    // A check stored before fingerprints existed is stale too.
+    await db.orderCheck.updateMany({ where: { orderId: o.id }, data: { normalised: {} } });
+    await expect(approve()).rejects.toMatchObject({ code: "transition_guard:check_stale" });
+    await db.orderCheck.deleteMany({ where: { orderId: o.id } });
+    await cleanCheck(o.id);
+    await expect(approve()).resolves.toMatchObject({ changed: true });
+  });
+
+  it("approval for a warehouse needs a check of that warehouse", async () => {
+    const o = await orderIn("READY");
+    await cleanCheck(o.id, 0, g.connectionId);
+    const approveFor = (connectionId: string) =>
       transitionOrder(g.accountId, {
         orderId: o.id,
         to: "APPROVED",
         cause: "approve",
-        actor: { kind: "ai", level: "L1" },
-      }),
-    ).rejects.toMatchObject({ code: "transition_guard:ai_policy_not_l2" });
-    await expect(
-      transitionOrder(g.accountId, {
+        actor: user(),
+        meta: { connectionId },
+      });
+    await expect(approveFor("another-connection")).rejects.toMatchObject({
+      code: "transition_guard:check_connection_mismatch",
+    });
+    await expect(approveFor(g.connectionId)).resolves.toMatchObject({ changed: true });
+  });
+
+  it("a check result never pulls an order with an active shipment back to review", async () => {
+    const o = await orderIn("CHECKING");
+    await accountDb(g.accountId).fulfillment.create({
+      data: {
+        accountId: g.accountId,
         orderId: o.id,
-        to: "CANCELLED",
-        cause: "cancel",
-        actor: { kind: "ai", level: "L2" },
-      }),
-    ).rejects.toBeInstanceOf(TransitionError);
+        connectionId: g.connectionId,
+        externalId: `CR-${o.id}`,
+        status: "QUEUED",
+      },
+    });
+    const r = await transitionOrder(g.accountId, {
+      orderId: o.id,
+      to: "READY",
+      cause: "check_result",
+      actor: { kind: "system" },
+    });
+    expect(r).toMatchObject({ changed: false, reason: "guard", guard: "active_shipment" });
+  });
+
+  it("transition() refuses every (cause, from) outside the table in strict mode", async () => {
+    for (const cause of ALL_CAUSES) {
+      const rule = RULES.find((r) => r.cause === cause)!;
+      const to = rule.to[0]!;
+      const actor = rule.actors[0]!;
+      for (const from of ALL_STATUSES) {
+        if (from === to || isAllowed(cause, from, to, actor)) continue;
+        const o = await orderIn(from);
+        await expect(
+          withAccountTransaction(g.accountId, (tx) =>
+            transition(tx, { orderId: o.id, to, cause, actor: actorOf(actor), mode: "strict" }),
+          ),
+          `${cause} ${from}→${to}`,
+        ).rejects.toMatchObject({ code: "transition_not_allowed" });
+      }
+    }
   });
 
   it("cancel is refused while a shipment is active at a warehouse, allowed after it failed", async () => {
@@ -330,5 +488,27 @@ describe("Shopify import goes through the pipeline", () => {
       [null, "IMPORTED", "created", "shopify.import"],
       ["IMPORTED", "CANCELLED", "shopify_cancelled", "shopify.import"],
     ]);
+  });
+
+  it("a Shopify change to a checked order sends it back to IMPORTED (checked again)", async () => {
+    const store = { id: g.storeId, companyId: g.companyId, codGateways: [], skuPrefix: null };
+    const base = SYNTHETIC_ORDERS.find(
+      (o) => !o.cancelledAt && o.displayFulfillmentStatus !== "FULFILLED" && !o.test,
+    )!;
+    const o = { ...base, id: `gid://shopify/Order/pipeline-dc-${Date.now()}` };
+    const { orderId } = await importShopifyOrder(g.accountId, store, o);
+    const db = accountDb(g.accountId);
+    await db.order.update({ where: { id: orderId }, data: { status: "READY" } });
+    await cleanCheck(orderId);
+    // A newer version with only Shopify-side noise (same data): nothing moves.
+    const t1 = new Date(new Date(o.updatedAt).getTime() + 60_000).toISOString();
+    await importShopifyOrder(g.accountId, store, { ...o, updatedAt: t1 });
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("READY");
+    // The phone changed in Shopify: the check no longer covers this order.
+    const t2 = new Date(new Date(o.updatedAt).getTime() + 120_000).toISOString();
+    await importShopifyOrder(g.accountId, store, { ...o, updatedAt: t2, phone: "+359 888 000 111" });
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("IMPORTED");
+    const last = await db.orderEvent.findFirstOrThrow({ where: { orderId }, orderBy: { createdAt: "desc" } });
+    expect(last).toMatchObject({ fromStatus: "READY", toStatus: "IMPORTED", cause: "data_changed" });
   });
 });
