@@ -1,8 +1,10 @@
 import Link from "next/link";
+import type { Role } from "@/generated/prisma/client";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Card } from "@/components/ui/PageHeader";
 import { buttonCls, inputCls, tdCls, thCls } from "@/components/ui/form";
 import {
+  canSeeDryRuns,
   mirrorBookings,
   mirrorCod,
   mirrorCouriers,
@@ -27,6 +29,7 @@ interface Props {
   prefix: string;
   canLink: boolean;
   canSync: boolean;
+  role: Role;
   search: Search;
 }
 
@@ -547,11 +550,18 @@ async function WarehousesTab({ accountId, connectionId }: Props) {
   );
 }
 
-async function DryRunTab({ accountId, connectionId, search }: Props) {
+async function DryRunTab({ accountId, connectionId, role, search }: Props) {
   const t = await getTranslations("eushipments");
   const format = await getFormatter();
   const page = pageOf(search);
-  const r = await mirrorDryRuns(accountId, connectionId, { page });
+  // The bodies carry customer data: only members who may review orders see them.
+  if (!canSeeDryRuns(role))
+    return (
+      <Card>
+        <Empty text={t("dryRunForbidden")} />
+      </Card>
+    );
+  const r = await mirrorDryRuns(accountId, connectionId, role, { page });
   const tone: Record<string, string> = {
     validated: "bg-ok-bg text-ok",
     rejected: "bg-block-bg text-block",

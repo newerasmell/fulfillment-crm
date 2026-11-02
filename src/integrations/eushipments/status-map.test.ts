@@ -103,6 +103,9 @@ describe("status mapping (INTEGRATION_NOTES §4.5)", () => {
     expect(stopsPolling(rule("Cancelled"))).toBe(true);
     expect(stopsPolling(rule("In transit"))).toBe(false);
     expect(stopsPolling(rule("Teleported"))).toBe(false);
+    // Final in the spec, but the money outcome ("Compensation paid") is still to come.
+    expect(stopsPolling(rule("Claim opened"))).toBe(false);
+    expect(stopsPolling(rule("Compensation paid"))).toBe(true);
   });
 });
 

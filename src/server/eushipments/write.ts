@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Fulfillment, Prisma } from "@/generated/prisma/client";
+import { Prisma, type Fulfillment, type OutboundStatus } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
 import {
   buildCreateOrder,
@@ -47,12 +46,26 @@ async function euConnectionFor(actor: ScopedActor, connectionId: string) {
 
 /** refNumbers at this connection for our products (VendorProduct links, never EANs). */
 async function refNumbersFor(accountId: string, connectionId: string, productIds: string[]) {
+  return new Map(
+    [...(await vendorProductsFor(accountId, connectionId, productIds))].map(([k, v]) => [k, v.ref]),
+  );
+}
+
+async function vendorProductsFor(accountId: string, connectionId: string, productIds: string[]) {
   const rows = await accountDb(accountId).vendorProduct.findMany({
     where: { connectionId, productId: { in: productIds }, archived: false },
-    select: { productId: true, vendorId: true },
+    select: { id: true, productId: true, vendorId: true },
   });
-  return new Map(rows.map((r) => [r.productId!, r.vendorId]));
+  return new Map(rows.map((r) => [r.productId!, { ref: r.vendorId, vendorProductId: r.id }]));
 }
+
+/**
+ * Outbox states in which nothing was created at the vendor, so our record may be queued again under the same
+ * deterministic key (mirrors the outbox's own re-arm rule: DRY_RUN_RECORDED, REFUSED, FAILED).
+ */
+const REARMABLE_REQUEST = new Set<OutboundStatus>(["DRY_RUN_RECORDED", "REFUSED", "FAILED"]);
+/** Default for EushipmentsSettings.stockStaleHours (the reference example is a daily 06:00 snapshot). */
+export const DEFAULT_STOCK_STALE_HOURS = 30;
 
 // ───────────────────────── products ─────────────────────────
 
@@ -164,6 +177,85 @@ const block = (code: string, field: string, bg: string, en: string): Finding => 
   message_en: en,
 });
 
+const warn = (code: string, field: string, bg: string, en: string): Finding => ({
+  code,
+  severity: "warn",
+  field,
+  message_bg: bg,
+  message_en: en,
+});
+
+/**
+ * Stock pre-flight (INTEGRATION_NOTES §4.3, §5): euShipments accepts an order only when the warehouse has the
+ * stock. Hard block when Σqty of a product exceeds the last get-prod-avails snapshot minus CRM reservations,
+ * or when there is no snapshot at all; a soft warning when the snapshot is older than the threshold.
+ */
+async function stockFindings(
+  accountId: string,
+  lines: { productId: string | null; quantity: number; title: string }[],
+  vps: Map<string, { ref: string; vendorProductId: string }>,
+  staleHours: number,
+  now: Date,
+): Promise<Finding[]> {
+  const need = new Map<string, { qty: number; index: number; title: string }>();
+  lines.forEach((l, index) => {
+    const vp = l.productId ? vps.get(l.productId) : undefined;
+    if (!vp) return; // product_not_mapped is reported already
+    const prev = need.get(vp.vendorProductId);
+    need.set(vp.vendorProductId, {
+      qty: (prev?.qty ?? 0) + l.quantity,
+      index: prev?.index ?? index,
+      title: prev?.title ?? l.title,
+    });
+  });
+  if (need.size === 0) return [];
+  const levels = await accountDb(accountId).stockLevel.findMany({
+    where: { vendorProductId: { in: [...need.keys()] } },
+    select: { vendorProductId: true, free: true, reserved: true, snapshotAt: true },
+  });
+  const byVp = new Map(levels.map((l) => [l.vendorProductId, l]));
+  const out: Finding[] = [];
+  let oldest: Date | null = null;
+  for (const [vpId, n] of need) {
+    const field = `products[${n.index}].qty`;
+    const level = byVp.get(vpId);
+    if (!level) {
+      out.push(
+        block(
+          "no_stock_snapshot",
+          field,
+          `Няма наличност от euShipments за „${n.title}“ (складът още не е синхронизиран).`,
+          `No euShipments stock is known for "${n.title}" (the stock has not been synced yet).`,
+        ),
+      );
+      continue;
+    }
+    const available = level.free - level.reserved;
+    if (n.qty > available)
+      out.push(
+        block(
+          "insufficient_stock",
+          field,
+          `„${n.title}“: нужни ${n.qty}, свободни ${Math.max(0, available)} в euShipments.`,
+          `"${n.title}": ${n.qty} needed, ${Math.max(0, available)} free at euShipments.`,
+        ),
+      );
+    if (!oldest || level.snapshotAt < oldest) oldest = level.snapshotAt;
+  }
+  if (oldest && now.getTime() - oldest.getTime() > staleHours * 3600_000) {
+    const hours = Math.floor((now.getTime() - oldest.getTime()) / 3600_000);
+    out.push(
+      warn(
+        "stock_snapshot_stale",
+        "products",
+        `Наличността от euShipments е отпреди ${hours} ч. (праг ${staleHours} ч.).`,
+        `The euShipments stock snapshot is ${hours} h old (threshold ${staleHours} h).`,
+      ),
+    );
+  }
+  return out;
+}
+
 export async function queueEuOrder(
   actor: ScopedActor,
   raw: z.input<typeof QueueOrderInput>,
@@ -185,11 +277,12 @@ export async function queueEuOrder(
   const lines = order.lines.filter((l) => l.quantity > 0);
   if (!lines.length)
     findings.push(block("no_lines", "products", "Поръчката няма редове.", "The order has no lines."));
-  const refs = await refNumbersFor(
+  const vps = await vendorProductsFor(
     actor.accountId,
     connection.id,
     lines.map((l) => l.productId).filter((p): p is string => !!p),
   );
+  const refs = new Map([...vps].map(([k, v]) => [k, v.ref]));
   for (const l of lines) {
     if (!l.productId || !refs.has(l.productId))
       findings.push(
@@ -239,6 +332,15 @@ export async function queueEuOrder(
   const settings = await db.eushipmentsSettings.findUnique({
     where: { accountId_connectionId: { accountId: actor.accountId, connectionId: connection.id } },
   });
+  findings.push(
+    ...(await stockFindings(
+      actor.accountId,
+      lines,
+      vps,
+      settings?.stockStaleHours ?? DEFAULT_STOCK_STALE_HOURS,
+      now,
+    )),
+  );
   const cashReceiptCod = settings?.cashReceiptCod ?? false;
   const today = sofiaToday(now);
   const built = buildCreateOrder({
@@ -273,11 +375,42 @@ export async function queueEuOrder(
       const existing = await tx.fulfillment.findUnique({
         where: { connectionId_externalId: { connectionId: connection.id, externalId: reference } },
       });
-      // Only a definitely-failed submission may be re-sent under the same reference.
-      if (existing && existing.status !== "SUBMIT_FAILED") throw new DomainError("duplicate_reference");
+      if (existing) {
+        // Queued again only when nothing can exist at the vendor: our side is still before submission AND the
+        // outbox request never left (dry run, refused by the mode gate / disabled connection, or a definite
+        // rejection). Anything in flight, sent or uncertain stays a duplicate.
+        const req = await tx.outboundRequest.findUnique({
+          where: {
+            connectionId_idempotencyKey: {
+              connectionId: connection.id,
+              idempotencyKey: `order:${reference}`,
+            },
+          },
+          select: { status: true },
+        });
+        const ourSideOpen = existing.status === "QUEUED" || existing.status === "SUBMIT_FAILED";
+        if (!ourSideOpen || (req && !REARMABLE_REQUEST.has(req.status)))
+          throw new DomainError("duplicate_reference");
+      }
       let fulfillment: Fulfillment;
       if (existing) {
-        fulfillment = await tx.fulfillment.update({ where: { id: existing.id }, data: { status: "QUEUED" } });
+        fulfillment = await tx.fulfillment.update({
+          where: { id: existing.id },
+          data: {
+            status: "QUEUED",
+            deliveryPoint: input.officeId ? { officeId: input.officeId } : Prisma.DbNull,
+          },
+        });
+        // The order may have been edited since: the shipment's lines follow the body being queued now.
+        await tx.fulfillmentLine.deleteMany({ where: { fulfillmentId: existing.id } });
+        await tx.fulfillmentLine.createMany({
+          data: lines.map((l) => ({
+            accountId: actor.accountId,
+            fulfillmentId: existing.id,
+            orderLineId: l.id,
+            quantity: l.quantity,
+          })),
+        });
       } else {
         fulfillment = await tx.fulfillment.create({
           data: {
@@ -440,25 +573,58 @@ export async function queueEuBooking(actor: ScopedActor, raw: z.input<typeof Que
   );
   if (!body.success) throw new DomainError("invalid_booking", body.error.issues[0]?.message);
 
+  const lineRows = input.lines.map((l) => ({ productId: l.productId, expectedQty: l.quantity }));
   let res;
   try {
-    res = await withAccountTransaction(actor.accountId, async (tx) => {
-      const inbound = await tx.inboundShipment.create({
-        data: {
-          accountId: actor.accountId,
-          connectionId: connection.id,
-          externalRef: input.documentNumber,
-          status: "QUEUED",
-          tracking: input.trackNumb ?? null,
-          expectedAt: input.deliveryDate ? new Date(`${input.deliveryDate}T00:00:00Z`) : null,
-          lines: {
-            create: input.lines.map((l) => ({
-              productId: l.productId,
-              expectedQty: l.quantity,
-            })),
-          },
+    res = await withAccountTransaction(actor.accountId, async (tx, { lockKey }) => {
+      await lockKey(`eushipments:booking:${connection.id}:${input.documentNumber}`);
+      const existing = await tx.inboundShipment.findUnique({
+        where: {
+          connectionId_externalRef: { connectionId: connection.id, externalRef: input.documentNumber },
         },
       });
+      let inbound;
+      if (existing) {
+        // Same document number again: only when the booking never reached euShipments (dry run, refused by the
+        // mode gate, or a definite rejection). There is no read-back for bookings, so anything else stays a
+        // duplicate — never a second booking request.
+        const req = await tx.outboundRequest.findUnique({
+          where: {
+            connectionId_idempotencyKey: {
+              connectionId: connection.id,
+              idempotencyKey: `booking:${existing.id}`,
+            },
+          },
+          select: { status: true },
+        });
+        const ourSideOpen =
+          !existing.vendorId && (existing.status === "QUEUED" || existing.status === "FAILED");
+        if (!ourSideOpen || !req || !REARMABLE_REQUEST.has(req.status))
+          throw new DomainError("duplicate_reference");
+        await tx.inboundLine.deleteMany({ where: { inboundId: existing.id } });
+        inbound = await tx.inboundShipment.update({
+          where: { id: existing.id },
+          data: {
+            status: "QUEUED",
+            tracking: input.trackNumb ?? null,
+            expectedAt: input.deliveryDate ? new Date(`${input.deliveryDate}T00:00:00Z`) : null,
+            raw: Prisma.DbNull,
+            lines: { create: lineRows },
+          },
+        });
+      } else {
+        inbound = await tx.inboundShipment.create({
+          data: {
+            accountId: actor.accountId,
+            connectionId: connection.id,
+            externalRef: input.documentNumber,
+            status: "QUEUED",
+            tracking: input.trackNumb ?? null,
+            expectedAt: input.deliveryDate ? new Date(`${input.deliveryDate}T00:00:00Z`) : null,
+            lines: { create: lineRows },
+          },
+        });
+      }
       const { request } = await enqueueOutboundInTx(tx, {
         accountId: actor.accountId,
         connectionId: connection.id,
@@ -488,6 +654,12 @@ export async function queueEuBooking(actor: ScopedActor, raw: z.input<typeof Que
 
 export const QueueTransferInput = z.object({
   connectionId: z.string().min(1),
+  /**
+   * The caller's idempotency key for this transfer (a form nonce generated when the form is rendered, or the
+   * CRM transfer document id): the same key always means the same protocol, so a double click or a retried
+   * action returns the existing transfer instead of creating a second one (a scrap would remove stock twice).
+   */
+  requestKey: z.string().uuid(),
   sourceWarehouseId: z.number().int().positive(),
   destinationWarehouseId: z.number().int().positive().optional(),
   protocolType: z.union([z.literal(1), z.literal(3)]).default(1),
@@ -507,7 +679,11 @@ export const QueueTransferInput = z.object({
     .min(1),
 });
 
-/** Transfer / scrap protocol with a deterministic externalRef: resends are answered 409 + the same protocol. */
+/**
+ * Transfer / scrap protocol. The row id is the caller's requestKey, and externalRef is derived from it, so one
+ * user intent is one protocol: resends to the vendor are answered 409 + the same protocol, and a repeated call
+ * here returns the existing row and request (re-armed only if nothing was created at the vendor).
+ */
 export async function queueEuTransfer(actor: ScopedActor, raw: z.input<typeof QueueTransferInput>) {
   assertCan(actor.role, "stock.manage");
   const input = QueueTransferInput.parse(raw);
@@ -518,7 +694,7 @@ export async function queueEuTransfer(actor: ScopedActor, raw: z.input<typeof Qu
     input.lines.map((l) => l.productId),
   );
   if (input.lines.some((l) => !refs.has(l.productId))) throw new DomainError("product_not_mapped");
-  const transferId = randomUUID();
+  const transferId = input.requestKey;
   const body = CreateTransferBody.safeParse(
     buildCreateTransfer({
       companyId,
@@ -536,31 +712,63 @@ export async function queueEuTransfer(actor: ScopedActor, raw: z.input<typeof Qu
     }),
   );
   if (!body.success) throw new DomainError("invalid_transfer", body.error.issues[0]?.message);
-  const res = await withAccountTransaction(actor.accountId, async (tx) => {
-    const transfer = await tx.eushipmentsTransfer.create({
-      data: {
-        id: transferId,
+  const run = () =>
+    withAccountTransaction(actor.accountId, async (tx, { lockKey }) => {
+      await lockKey(`eushipments:transfer:${transferId}`);
+      const existing = await tx.eushipmentsTransfer.findUnique({ where: { id: transferId } });
+      if (existing && existing.connectionId !== connection.id) throw new DomainError("duplicate_reference");
+      const transfer =
+        existing ??
+        (await tx.eushipmentsTransfer.create({
+          data: {
+            id: transferId,
+            accountId: actor.accountId,
+            connectionId: connection.id,
+            externalRef: body.data.externalRef,
+            sourceWarehouseId: input.sourceWarehouseId,
+            destinationWarehouseId: input.destinationWarehouseId ?? null,
+            protocolType: input.protocolType,
+            items: json(input.lines.map((l) => ({ ...l, refNumber: refs.get(l.productId) }))),
+            comments: input.comments ?? null,
+            createdById: actor.userId,
+          },
+        }));
+      // An existing request is returned as is (in flight / sent / uncertain), or re-armed when nothing was created.
+      const { request, created } = await enqueueOutboundInTx(tx, {
         accountId: actor.accountId,
         connectionId: connection.id,
-        externalRef: body.data.externalRef,
-        sourceWarehouseId: input.sourceWarehouseId,
-        destinationWarehouseId: input.destinationWarehouseId ?? null,
-        protocolType: input.protocolType,
-        items: json(input.lines.map((l) => ({ ...l, refNumber: refs.get(l.productId) }))),
-        comments: input.comments ?? null,
+        operation: EU_OPS.createTransfer,
+        idempotencyKey: `transfer:${body.data.externalRef}`,
+        payload: json({ body: body.data, ctx: { transferId } }),
         createdById: actor.userId,
-      },
+      });
+      if (existing && created)
+        await tx.eushipmentsTransfer.update({
+          where: { id: existing.id },
+          data: {
+            status: "QUEUED",
+            sourceWarehouseId: input.sourceWarehouseId,
+            destinationWarehouseId: input.destinationWarehouseId ?? null,
+            protocolType: input.protocolType,
+            items: json(input.lines.map((l) => ({ ...l, refNumber: refs.get(l.productId) }))),
+            comments: input.comments ?? null,
+          },
+        });
+      return { transfer, request, created };
     });
-    const { request } = await enqueueOutboundInTx(tx, {
-      accountId: actor.accountId,
-      connectionId: connection.id,
-      operation: EU_OPS.createTransfer,
-      idempotencyKey: `transfer:${body.data.externalRef}`,
-      payload: json({ body: body.data, ctx: { transferId } }),
-      createdById: actor.userId,
-    });
-    return { transfer, request };
-  });
+  let res;
+  try {
+    res = await run();
+  } catch (err) {
+    // A concurrent call with the same key lost the race on the primary key: the second run finds the winner.
+    if (!isUniqueViolation(err)) throw err;
+    try {
+      res = await run();
+    } catch (again) {
+      if (isUniqueViolation(again)) throw new DomainError("duplicate_reference");
+      throw again;
+    }
+  }
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,

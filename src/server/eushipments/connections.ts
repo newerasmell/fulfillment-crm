@@ -54,15 +54,26 @@ async function assertVendorCompanyFree(accountId: string, vendorCompanyId: numbe
   if (taken) throw new DomainError("connection_exists");
 }
 
-/** Credentials that already belong to an euShipments connection of the group (reusable for another company). */
-export async function euCredentials(accountId: string) {
-  const rows = await accountDb(accountId).fulfillmentConnection.findMany({
+/**
+ * Credentials that already belong to an euShipments connection of the group (reusable for another company).
+ * A company-restricted member only sees a token when EVERY connection using it belongs to one of their
+ * companies: a token reaches all euShipments companies it can see, so reusing another company's token would
+ * mirror that company's products, stock and orders into theirs.
+ */
+export async function euCredentials(actor: { accountId: string; companyScope: CompanyScope }) {
+  const rows = await accountDb(actor.accountId).fulfillmentConnection.findMany({
     where: { type: "EUSHIPMENTS", credentialId: { not: null } },
-    select: { credential: { select: { id: true, label: true, hint: true } } },
+    select: { companyId: true, credential: { select: { id: true, label: true, hint: true } } },
   });
   const seen = new Map<string, { id: string; label: string; hint: string }>();
-  for (const r of rows) if (r.credential) seen.set(r.credential.id, r.credential);
-  return [...seen.values()];
+  const outside = new Set<string>();
+  for (const r of rows) {
+    if (!r.credential) continue;
+    seen.set(r.credential.id, r.credential);
+    if (actor.companyScope && (!r.companyId || !actor.companyScope.includes(r.companyId)))
+      outside.add(r.credential.id);
+  }
+  return [...seen.values()].filter((c) => !outside.has(c.id));
 }
 
 export async function createEuConnection(actor: ScopedActor, raw: z.input<typeof NewEuConnectionInput>) {
@@ -76,7 +87,7 @@ export async function createEuConnection(actor: ScopedActor, raw: z.input<typeof
 
   let credentialId = input.credentialId || undefined;
   if (credentialId) {
-    if (!(await euCredentials(actor.accountId)).some((c) => c.id === credentialId))
+    if (!(await euCredentials(actor)).some((c) => c.id === credentialId))
       throw new DomainError("invalid_credential");
   } else {
     if (!input.token) throw new DomainError("token_required");
@@ -160,6 +171,28 @@ export async function getEuConnection(actor: Pick<ScopedActor, "accountId" | "co
   return { ...c, vendorCompanyId: ids.success ? ids.data.companyId : null };
 }
 
+/**
+ * Whether anything was (or may have been) written at euShipments under the connection's company: shipments,
+ * and every outbox write that left or may have left (products, bookings, transfers, orders). Those records
+ * live under the old company, so it cannot change any more. Mirrored read-side rows do not lock it.
+ */
+async function hasVendorWrites(accountId: string, connectionId: string) {
+  const db = accountDb(accountId);
+  const [fulfillments, writes, bookings, transfers] = await Promise.all([
+    db.fulfillment.count({ where: { connectionId } }),
+    db.outboundRequest.count({
+      where: {
+        connectionId,
+        status: { in: ["SENDING", "SENT", "UNCERTAIN"] },
+        evaluatedMode: { not: "DRY_RUN" },
+      },
+    }),
+    db.inboundShipment.count({ where: { connectionId, vendorId: { not: null } } }),
+    db.eushipmentsTransfer.count({ where: { connectionId, status: "CREATED" } }),
+  ]);
+  return fulfillments + writes + bookings + transfers > 0;
+}
+
 export const EuSettingsInput = z.object({
   name: z.string().trim().min(1).max(200),
   companyId: z.string().min(1),
@@ -171,6 +204,12 @@ export const EuSettingsInput = z.object({
     .min(1)
     .max(24 * 14),
   acceptedAlertWorkDays: z.boolean(),
+  stockStaleHours: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 14)
+    .default(30),
   cashReceiptCod: z.boolean(),
   canaryDailyCap: z.coerce.number().int().min(1).max(500),
   enabled: z.boolean(),
@@ -194,7 +233,7 @@ export async function updateEuConnection(
     throw new DomainError("not_found");
   if (input.vendorCompanyId !== before.vendorCompanyId) {
     if (input.vendorCompanyId) await assertVendorCompanyFree(actor.accountId, input.vendorCompanyId, id);
-    if (before.vendorCompanyId && (await db.fulfillment.count({ where: { connectionId: id } })) > 0)
+    if (before.vendorCompanyId && (await hasVendorWrites(actor.accountId, id)))
       throw new DomainError("company_locked");
   }
   // More sends a day in CANARY is a step towards LIVE: an OWNER decision like the mode itself.
@@ -202,6 +241,7 @@ export async function updateEuConnection(
   const settings = {
     acceptedAlertHours: input.acceptedAlertHours,
     acceptedAlertWorkDays: input.acceptedAlertWorkDays,
+    stockStaleHours: input.stockStaleHours,
     cashReceiptCod: input.cashReceiptCod,
   };
   await withAccountTransaction(actor.accountId, async (tx) => {
@@ -244,6 +284,7 @@ export async function updateEuConnection(
       acceptedAlertHours: before.eushipmentsSettings?.acceptedAlertHours ?? null,
       acceptedAlertWorkDays: before.eushipmentsSettings?.acceptedAlertWorkDays ?? null,
       cashReceiptCod: before.eushipmentsSettings?.cashReceiptCod ?? null,
+      stockStaleHours: before.eushipmentsSettings?.stockStaleHours ?? null,
     },
     after: input,
     ip: actor.ip,

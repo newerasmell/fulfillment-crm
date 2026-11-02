@@ -992,6 +992,8 @@ model EushipmentsSettings {
   acceptedAlertWorkDays Boolean  @default(true)
   /// The sender has an Econt/Speedy cash-receipt configuration: Σ(price × qty) must equal awb.bankRepayment.
   cashReceiptCod        Boolean  @default(false)
+  /// Warn before queueing an order when the get-prod-avails snapshot is older than this (INTEGRATION_NOTES §5).
+  stockStaleHours       Int      @default(30)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 

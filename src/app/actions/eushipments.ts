@@ -67,6 +67,7 @@ export async function saveEuSettingsAction(id: string, _prev: Result, form: Form
       skuPrefix: str(form, "skuPrefix"),
       acceptedAlertHours: Number(str(form, "acceptedAlertHours") || 24),
       acceptedAlertWorkDays: form.get("acceptedAlertWorkDays") === "on",
+      stockStaleHours: Number(str(form, "stockStaleHours") || 30),
       cashReceiptCod: form.get("cashReceiptCod") === "on",
       canaryDailyCap: Number(str(form, "canaryDailyCap") || 10),
       enabled: form.get("enabled") === "on",

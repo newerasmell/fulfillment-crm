@@ -14,7 +14,7 @@ export default async function EuShipmentsConnectionsPage() {
   const t = await getTranslations();
   const connections = await listEuConnections(ctx);
   const manage = can(ctx.role, "connections.manage");
-  const credentials = manage ? await euCredentials(ctx.accountId) : [];
+  const credentials = manage ? await euCredentials(ctx) : [];
   return (
     <>
       <PageHeader

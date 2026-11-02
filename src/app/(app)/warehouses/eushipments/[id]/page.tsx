@@ -10,7 +10,7 @@ import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { getEuConnection } from "@/server/eushipments/connections";
 import { prefixOf } from "@/server/eushipments/read";
 import { MANUAL_SYNCS } from "@/server/eushipments/jobs";
-import { MIRROR_TABS, type MirrorTab } from "@/server/eushipments/mirror";
+import { canSeeDryRuns, MIRROR_TABS, type MirrorTab } from "@/server/eushipments/mirror";
 import { EuModeStepper, EuSettingsForm, EuTokenForm } from "../forms";
 import { Freshness, TabLabel, TestBadge, WarehouseChip } from "../ui";
 import { MirrorTabContent } from "./tabs";
@@ -127,7 +127,7 @@ export default async function EuShipmentsConnectionPage({
 
       <section aria-label={t("eushipments.mirror")} className="flex flex-col gap-4">
         <nav aria-label={t("eushipments.mirror")} className="flex flex-wrap gap-1 border-b border-line">
-          {MIRROR_TABS.map((m) => (
+          {MIRROR_TABS.filter((m) => m !== "dryrun" || canSeeDryRuns(ctx.role)).map((m) => (
             <Link
               key={m}
               href={hrefFor(m)}
@@ -147,6 +147,7 @@ export default async function EuShipmentsConnectionPage({
           prefix={prefixOf(c.skuPrefixRule)}
           canLink={can(ctx.role, "products.match")}
           canSync={canSync}
+          role={ctx.role}
           search={sp}
         />
       </section>
@@ -169,6 +170,7 @@ export default async function EuShipmentsConnectionPage({
               acceptedAlertHours: c.eushipmentsSettings?.acceptedAlertHours ?? 24,
               acceptedAlertWorkDays: c.eushipmentsSettings?.acceptedAlertWorkDays ?? true,
               cashReceiptCod: c.eushipmentsSettings?.cashReceiptCod ?? false,
+              stockStaleHours: c.eushipmentsSettings?.stockStaleHours ?? 30,
               canaryDailyCap: c.canaryDailyCap,
               enabled: c.enabled,
             }}

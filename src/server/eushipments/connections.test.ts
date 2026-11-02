@@ -5,6 +5,7 @@ import { readCredentialSecret } from "@/server/security/credentials";
 import type { ScopedActor } from "@/server/stores";
 import {
   createEuConnection,
+  euCredentials,
   getEuConnection,
   linkEuVendorProduct,
   listEuConnections,
@@ -12,7 +13,7 @@ import {
   setEuConnectionMode,
   updateEuConnection,
 } from "./connections";
-import { mirrorDryRuns, mirrorProducts } from "./mirror";
+import { canSeeDryRuns, mirrorDryRuns, mirrorProducts } from "./mirror";
 import { euTestGroup } from "./test-fixtures";
 
 const TOKEN = "test-token-not-real-0002";
@@ -96,6 +97,24 @@ describe("euShipments connections (DB)", () => {
     ).rejects.toMatchObject({ code: "invalid_credential" });
   });
 
+  it("a company-restricted admin cannot reuse a token that serves another company's connection", async () => {
+    // Defense in depth: admins are never restricted today (companies.ts), but the service must not rely on it.
+    const scoped: ScopedActor = { ...admin, companyScope: [g.company.id] };
+    const b = (await listEuConnections({ ...owner, activeCompanyId: null })).find((c) => c.name === "eu B")!;
+    expect((await euCredentials(scoped)).map((c) => c.id)).not.toContain(b.credentialId);
+    expect((await euCredentials(owner)).map((c) => c.id)).toContain(b.credentialId);
+    await expect(
+      createEuConnection(scoped, {
+        companyId: g.company.id,
+        name: "steal",
+        credentialId: b.credentialId!,
+        vendorCompanyId: 599,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_credential" });
+    // The token of the scoped member's own company's connection is offered.
+    expect((await euCredentials(scoped)).map((c) => c.id)).toContain(g.connection.credentialId);
+  });
+
   it("operators cannot create or change connections; restricted members see only their companies", async () => {
     const op: ScopedActor = { ...owner, role: "OPERATOR" };
     await expect(
@@ -166,6 +185,54 @@ describe("euShipments connections (DB)", () => {
     ).rejects.toMatchObject({ code: "company_locked" });
   });
 
+  it("the euShipments company is locked once any write reached (or may have reached) the vendor", async () => {
+    const c = await createEuConnection(owner, {
+      companyId: companyB,
+      name: "eu lock",
+      token: TOKEN,
+      vendorCompanyId: 601,
+    });
+    const s = (over: Record<string, unknown>) => settings({ name: "eu lock", vendorCompanyId: 601, ...over });
+    // A dry-run record does not lock it…
+    await g.db.outboundRequest.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: c.id,
+        operation: "eushipments.createProduct",
+        idempotencyKey: "product:DRY",
+        payload: { body: {}, ctx: {} },
+        status: "DRY_RUN_RECORDED",
+        evaluatedMode: "DRY_RUN",
+      },
+    });
+    await updateEuConnection(owner, c.id, s({ vendorCompanyId: 602 }));
+    // …a product actually created under the company does.
+    await g.db.outboundRequest.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: c.id,
+        operation: "eushipments.createProduct",
+        idempotencyKey: "product:LIVE",
+        payload: { body: {}, ctx: {} },
+        status: "SENT",
+        evaluatedMode: "LIVE",
+      },
+    });
+    await expect(updateEuConnection(owner, c.id, s({ vendorCompanyId: 603 }))).rejects.toMatchObject({
+      code: "company_locked",
+    });
+    await expect(
+      updateEuConnection(owner, c.id, s({ vendorCompanyId: 602, stockStaleHours: 12 })),
+    ).resolves.toBeUndefined();
+    expect(
+      (
+        await g.db.eushipmentsSettings.findUniqueOrThrow({
+          where: { accountId_connectionId: { accountId: g.accountId, connectionId: c.id } },
+        })
+      ).stockStaleHours,
+    ).toBe(12);
+  });
+
   it("token rotation stores a new credential and requires a new test", async () => {
     const b = (await listEuConnections({ ...owner, activeCompanyId: null })).find((c) => c.name === "eu B")!;
     await replaceEuToken(admin, b.id, "test-token-not-real-0003");
@@ -216,7 +283,10 @@ describe("euShipments connections (DB)", () => {
           connectionId: g.connection.id,
           operation,
           idempotencyKey: key,
-          payload: { body: { awb: { referenceNumber: key } }, ctx: {} },
+          payload: {
+            body: { awb: { referenceNumber: key } },
+            ctx: { fulfillmentId: "f1", invoicePdfBase64: "JVBERi0xLjQgc3ludGhldGlj" },
+          },
           status,
           evaluatedMode: "DRY_RUN",
           lastResponse: lastResponse as never,
@@ -226,7 +296,15 @@ describe("euShipments connections (DB)", () => {
     await mk("eushipments.createOrder", "order:TST-D1", "DRY_RUN_RECORDED", { orderId: null, error: false });
     await mk("eushipments.createOrder", "order:TST-D2", "FAILED", { error: "x" });
     await mk("eushipments.createProduct", "product:P1", "DRY_RUN_RECORDED", null);
-    const r = await mirrorDryRuns(g.accountId, g.connection.id);
+    // The bodies carry customer data: only orders.review roles may load them.
+    for (const role of ["VIEWER", "WAREHOUSE"] as const)
+      await expect(mirrorDryRuns(g.accountId, g.connection.id, role)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(canSeeDryRuns("VIEWER")).toBe(false);
+    expect(canSeeDryRuns("OPERATOR")).toBe(true);
+    const r = await mirrorDryRuns(g.accountId, g.connection.id, "OPERATOR");
+    // Only payload.body leaves the server: never our ctx (ids, the invoice PDF).
+    expect(JSON.stringify(r.rows)).not.toContain("invoicePdfBase64");
+    expect(r.rows.every((x) => !("payload" in x))).toBe(true);
     const byKey = Object.fromEntries(r.rows.map((x) => [x.idempotencyKey, x]));
     expect(byKey["order:TST-D1"]).toMatchObject({ testMode: true, verdict: "validated" });
     expect(byKey["order:TST-D2"]).toMatchObject({ testMode: true, verdict: "rejected" });

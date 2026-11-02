@@ -90,6 +90,42 @@ describe("euShipments status tracking (DB)", () => {
     expect(row.rawStatus).toBe("Loaded hub Sofia (BG)");
   });
 
+  it("the Order follows its shipment forward (SPEC §6.1), never backwards, and never over an operator hold", async () => {
+    const f = await newFulfillment("2010");
+    const orderStatus = async () =>
+      (await g.db.order.findUniqueOrThrow({ where: { id: f.orderId }, select: { status: true } })).status;
+    await applyOrderHistory(
+      g.accountId,
+      f.id,
+      item([rec(101, "Information received", "2026-11-01 08:00:00")]),
+    );
+    expect(await orderStatus()).toBe("ACCEPTED");
+    await applyOrderHistory(g.accountId, f.id, item([rec(102, "Оn hold", "2026-11-01 09:00:00")]));
+    expect(await orderStatus()).toBe("BLOCKED");
+    await applyOrderHistory(
+      g.accountId,
+      f.id,
+      item([rec(103, "Loaded hub Sofia (BG)", "2026-11-01 18:00:00")]),
+    );
+    expect(await orderStatus()).toBe("SHIPPED");
+    await applyOrderHistory(g.accountId, f.id, item([rec(104, "Delivered", "2026-11-02 10:00:00")]));
+    expect(await orderStatus()).toBe("DELIVERED");
+    // A late transit scan as the newest record does not move the Order back.
+    await applyOrderHistory(
+      g.accountId,
+      f.id,
+      item([rec(105, "Loaded hub Sofia (BG)", "2026-11-02 11:00:00")]),
+    );
+    expect(await orderStatus()).toBe("DELIVERED");
+    await applyOrderHistory(g.accountId, f.id, item([rec(106, "Returned", "2026-11-03 10:00:00")]));
+    expect(await orderStatus()).toBe("RETURNING");
+
+    const held = await newFulfillment("2011");
+    await g.db.order.update({ where: { id: held.orderId }, data: { status: "ON_HOLD" } });
+    await applyOrderHistory(g.accountId, held.id, item([rec(111, "Delivered", "2026-11-02 10:00:00")]));
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: held.orderId } })).status).toBe("ON_HOLD");
+  });
+
   it("return received notifies support and stops polling; Returned keeps polling", async () => {
     const f = await newFulfillment("2003");
     const r1 = await applyOrderHistory(g.accountId, f.id, item([rec(31, "Returned", "2026-11-01 08:00:00")]));

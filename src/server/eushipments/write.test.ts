@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { EU_OPS, EuShipmentsTransport } from "@/integrations/eushipments/adapter";
 import { EuShipmentsClient } from "@/integrations/eushipments/client";
@@ -5,8 +6,9 @@ import R from "@/integrations/eushipments/__fixtures__/responses.json";
 import { DomainError } from "@/server/accounts";
 import { accountDb, systemDb } from "@/server/db/client";
 import { processOutbound } from "@/server/outbox/outbox";
+import { addDays, sofiaToday } from "@/integrations/eushipments/validators";
 import { euTestGroup, euTestOrder } from "./test-fixtures";
-import { euShipmentsTransportFor } from "./transport";
+import { effectFailureAlert, euShipmentsTransportFor } from "./transport";
 import {
   queueEuBooking,
   queueEuOrder,
@@ -46,23 +48,47 @@ function vendor(routes: Record<string, Handler>) {
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
     calls.push({ path, body });
     const key = Object.keys(routes).find((k) => path.startsWith(k));
+    // Default: the pre-send orders-history check finds nothing (the documented 404 item = safe to send).
+    if (!key && path.startsWith("/fulfilment/orders-history"))
+      return json((body!.orders as { refNum: string }[]).map((o) => notFound(o.refNum)));
     if (!key) throw new Error(`unexpected call ${path}`);
     return routes[key]!(path, body);
   });
-  const resolve = (c: { id: string; type: string }) =>
-    euShipmentsTransportFor(c, { fetchImpl, sleep: async () => {} });
+  const resolve = (c: { id: string; type: string }, now?: () => Date) =>
+    euShipmentsTransportFor(c, { fetchImpl, sleep: async () => {}, now });
   const count = (p: string) => calls.filter((c) => c.path.startsWith(p)).length;
-  return { calls, resolve, count };
+  const sent = (p: string, n = 0) => calls.filter((c) => c.path.startsWith(p))[n]?.body;
+  return { calls, resolve, count, sent };
 }
 
 const PDF = Buffer.from("%PDF-1.4 synthetic test file").toString("base64");
 
 describe("euShipments write side through the outbox (DB)", () => {
   let g: Awaited<ReturnType<typeof euTestGroup>>;
-  const mapProduct = (productId: string, refNumber: string) =>
-    g.db.vendorProduct.create({
+  /** Links the product at the connection and gives it a fresh stock snapshot (free 100) unless told otherwise. */
+  const mapProduct = async (
+    productId: string,
+    refNumber: string,
+    stock: { free: number; reserved?: number; snapshotAt?: Date } | null = { free: 100 },
+  ) => {
+    const vp = await g.db.vendorProduct.create({
       data: { accountId: g.accountId, connectionId: g.connection.id, productId, vendorId: refNumber },
     });
+    if (stock)
+      await g.db.stockLevel.create({
+        data: {
+          accountId: g.accountId,
+          vendorProductId: vp.id,
+          physical: stock.free,
+          free: stock.free,
+          reserved: stock.reserved ?? 0,
+          sellable: stock.free - (stock.reserved ?? 0),
+          snapshotAt: stock.snapshotAt ?? new Date(),
+          source: "POLL",
+        },
+      });
+    return vp;
+  };
   const request = (id: string) => systemDb().outboundRequest.findUniqueOrThrow({ where: { id } });
   const setMode = (liveMode: "READ_ONLY" | "DRY_RUN" | "CANARY" | "LIVE") =>
     g.db.fulfillmentConnection.update({ where: { id: g.connection.id }, data: { liveMode } });
@@ -134,7 +160,9 @@ describe("euShipments write side through the outbox (DB)", () => {
       "/fulfilment/attach-pdf-files": () => json(R.attachPdfOk),
     });
     expect(await processOutbound(q.requestId, v.resolve)).toBe("SENT");
-    const sent = v.calls[0]!.body!;
+    // orders-history by our reference first (referenceNumber is not unique at the vendor), then the create.
+    expect(v.calls.map((c) => c.path)).toEqual(["/fulfilment/orders-history", "/fulfilment/create-order"]);
+    const sent = v.sent("/fulfilment/create-order")!;
     expect(sent).toMatchObject({
       testMode: false,
       senderId: 333,
@@ -152,7 +180,7 @@ describe("euShipments write side through the outbox (DB)", () => {
     });
     expect(attach.operation).toBe(EU_OPS.attachPdf);
     expect(await processOutbound(attach.id, v.resolve)).toBe("SENT");
-    expect(v.calls[1]!.body).toMatchObject({
+    expect(v.sent("/fulfilment/attach-pdf-files")).toMatchObject({
       testMode: false,
       referenceNumber: "TST-1001",
       files: [{ base64Attached: PDF }],
@@ -165,17 +193,24 @@ describe("euShipments write side through the outbox (DB)", () => {
     await mapProduct(product.id, `ref-${product.sku}`);
     const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
     if (q.status !== "queued") throw new Error("not queued");
+    let sentOnce = false;
     const v = vendor({
-      "/fulfilment/create-order": timeout, // the vendor may have created it
+      "/fulfilment/create-order": () => {
+        sentOnce = true;
+        return timeout(); // the vendor may have created it
+      },
       "/fulfilment/orders-history": (_p, b) => {
         const ref = (b!.orders as { refNum: string }[])[0]!.refNum;
-        return json([found(ref)]);
+        return json([sentOnce ? found(ref) : notFound(ref)]);
       },
     });
     expect(await processOutbound(q.requestId, v.resolve)).toBe("SENT");
     expect(await processOutbound(q.requestId, v.resolve)).toBe("skipped");
     expect(v.count("/fulfilment/create-order")).toBe(1);
-    expect(v.calls[1]!.body).toEqual({ testMode: false, orders: [{ refNum: "TST-1002" }] });
+    expect(v.sent("/fulfilment/orders-history", 1)).toEqual({
+      testMode: false,
+      orders: [{ refNum: "TST-1002" }],
+    });
     const f = await g.db.fulfillment.findUniqueOrThrow({ where: { id: q.fulfillmentId } });
     expect(f.status).toBe("ACCEPTED");
     expect((await request(q.requestId)).lastError).toMatch(/recovered by read-back/);
@@ -209,10 +244,16 @@ describe("euShipments write side through the outbox (DB)", () => {
     await mapProduct(o2.product.id, `ref-${o2.product.sku}`);
     const q2 = await queueEuOrder(g.owner, { orderId: o2.order.id, connectionId: g.connection.id });
     if (q2.status !== "queued") throw new Error("not queued");
+    let created2 = false;
     const v2 = vendor({
-      "/fulfilment/create-order": timeout,
+      "/fulfilment/create-order": () => {
+        created2 = true;
+        return timeout();
+      },
       "/fulfilment/orders-history": () =>
-        json([{ refNum: "TST-1004", error: "Temporary problem", errorCode: 500, statusesHistory: [] }]),
+        created2
+          ? json([{ refNum: "TST-1004", error: "Temporary problem", errorCode: 500, statusesHistory: [] }])
+          : json([notFound("TST-1004")]),
     });
     expect(await processOutbound(q2.requestId, v2.resolve)).toBe("UNCERTAIN");
     expect(v2.count("/fulfilment/create-order")).toBe(1);
@@ -256,6 +297,26 @@ describe("euShipments write side through the outbox (DB)", () => {
         "QUEUED",
       );
       expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "attach-pdf:TST-1006" } })).toBe(0);
+
+      // After the OWNER raises the mode, the same order can be queued again and is sent exactly once.
+      await setMode("LIVE");
+      const again = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+      expect(again).toMatchObject({
+        status: "queued",
+        fulfillmentId: q.fulfillmentId,
+        requestId: q.requestId,
+      });
+      const live = vendor({ "/fulfilment/create-order": () => json(R.createOrderOk) });
+      expect(await processOutbound(q.requestId, live.resolve)).toBe("SENT");
+      expect(await processOutbound(q.requestId, live.resolve)).toBe("skipped");
+      expect(live.count("/fulfilment/create-order")).toBe(1);
+      expect(live.sent("/fulfilment/create-order")).toMatchObject({ testMode: false });
+      expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: q.fulfillmentId } })).status).toBe(
+        "ACCEPTED",
+      );
+      expect(await g.db.fulfillment.count({ where: { orderId: order.id } })).toBe(1);
+      expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "order:TST-1006" } })).toBe(1);
+      await setMode("DRY_RUN");
 
       // Operations without a validate-only mode are only recorded in DRY_RUN.
       const p = await queueEuProduct(g.owner, { connectionId: g.connection.id, productId: product.id });
@@ -400,6 +461,7 @@ describe("euShipments write side through the outbox (DB)", () => {
     await mapProduct(product.id, `ref-${product.sku}`);
     const t = await queueEuTransfer(g.owner, {
       connectionId: g.connection.id,
+      requestKey: randomUUID(),
       sourceWarehouseId: 4,
       destinationWarehouseId: 7,
       lines: [{ productId: product.id, quantity: 1 }],
@@ -426,6 +488,7 @@ describe("euShipments write side through the outbox (DB)", () => {
       await mapProduct(product.id, `ref-${product.sku}`);
       const t = await queueEuTransfer(g.owner, {
         connectionId: g.connection.id,
+        requestKey: randomUUID(),
         sourceWarehouseId: 4,
         protocolType: 3,
         lines: [{ productId: product.id, quantity: 1 }],
@@ -489,6 +552,267 @@ describe("euShipments write side through the outbox (DB)", () => {
     );
   });
 
+  it("READ_ONLY refuses an order; after the mode is raised the same order is queued again and sent once", async () => {
+    await setMode("READ_ONLY");
+    const { order, product } = await euTestOrder(g, { number: "#1008" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    let q;
+    try {
+      q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+      if (q.status !== "queued") throw new Error("not queued");
+      expect(await processOutbound(q.requestId, vendor({}).resolve)).toBe("REFUSED");
+    } finally {
+      await setMode("LIVE");
+    }
+    const again = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+    expect(again).toMatchObject({ status: "queued", fulfillmentId: q.fulfillmentId, requestId: q.requestId });
+    const v = vendor({ "/fulfilment/create-order": () => json(R.createOrderOk) });
+    expect(await processOutbound(q.requestId, v.resolve)).toBe("SENT");
+    expect(v.count("/fulfilment/create-order")).toBe(1);
+    // Sent now: a further re-queue is a duplicate.
+    await expect(
+      queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id }),
+    ).rejects.toMatchObject({ code: "duplicate_reference" });
+  });
+
+  it("duplicate submit at the service: sequential and concurrent queueing leave one shipment and one request", async () => {
+    const a = await euTestOrder(g, { number: "#1010" });
+    await mapProduct(a.product.id, `ref-${a.product.sku}`);
+    const first = await queueEuOrder(g.owner, { orderId: a.order.id, connectionId: g.connection.id });
+    expect(first.status).toBe("queued");
+    await expect(
+      queueEuOrder(g.owner, { orderId: a.order.id, connectionId: g.connection.id }),
+    ).rejects.toMatchObject({ code: "duplicate_reference" });
+
+    const b = await euTestOrder(g, { number: "#1011" });
+    await mapProduct(b.product.id, `ref-${b.product.sku}`);
+    const both = await Promise.allSettled([
+      queueEuOrder(g.owner, { orderId: b.order.id, connectionId: g.connection.id }),
+      queueEuOrder(g.owner, { orderId: b.order.id, connectionId: g.connection.id }),
+    ]);
+    expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = both.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "duplicate_reference" });
+    expect(await g.db.fulfillment.count({ where: { orderId: b.order.id } })).toBe(1);
+    expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "order:TST-1011" } })).toBe(1);
+  });
+
+  it("a re-queue while the request is in flight is refused and does not flip the shipment back to QUEUED", async () => {
+    const { order, product } = await euTestOrder(g, { number: "#1012" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+    if (q.status !== "queued") throw new Error("not queued");
+    // The rejection effect has run (SUBMIT_FAILED) but the request is still SENDING (not finalised yet).
+    await systemDb().outboundRequest.update({ where: { id: q.requestId }, data: { status: "SENDING" } });
+    await g.db.fulfillment.update({ where: { id: q.fulfillmentId }, data: { status: "SUBMIT_FAILED" } });
+    await expect(
+      queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id }),
+    ).rejects.toMatchObject({ code: "duplicate_reference" });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: q.fulfillmentId } })).status).toBe(
+      "SUBMIT_FAILED",
+    );
+    expect((await request(q.requestId)).status).toBe("SENDING");
+    expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "order:TST-1012" } })).toBe(1);
+  });
+
+  it("stock pre-flight: blocks above free minus reserved and without a snapshot; warns on an old snapshot", async () => {
+    const short = await euTestOrder(g, { number: "#1020" }); // 2 pcs ordered
+    await mapProduct(short.product.id, `ref-${short.product.sku}`, { free: 3, reserved: 2 });
+    const r1 = await queueEuOrder(g.owner, { orderId: short.order.id, connectionId: g.connection.id });
+    expect(r1.status).toBe("blocked");
+    expect(r1.findings).toContainEqual(
+      expect.objectContaining({ code: "insufficient_stock", severity: "block", field: "products[0].qty" }),
+    );
+
+    const none = await euTestOrder(g, { number: "#1021" });
+    await mapProduct(none.product.id, `ref-${none.product.sku}`, null);
+    const r2 = await queueEuOrder(g.owner, { orderId: none.order.id, connectionId: g.connection.id });
+    expect(r2.status).toBe("blocked");
+    expect(r2.findings.map((f) => f.code)).toContain("no_stock_snapshot");
+
+    const old = await euTestOrder(g, { number: "#1022" });
+    await mapProduct(old.product.id, `ref-${old.product.sku}`, {
+      free: 2,
+      snapshotAt: new Date(Date.now() - 31 * 3600_000), // default threshold 30 h
+    });
+    const r3 = await queueEuOrder(g.owner, { orderId: old.order.id, connectionId: g.connection.id });
+    expect(r3).toMatchObject({
+      status: "needs_ack",
+      findings: [expect.objectContaining({ code: "stock_snapshot_stale", severity: "warn" })],
+    });
+    const ok = await queueEuOrder(g.owner, {
+      orderId: old.order.id,
+      connectionId: g.connection.id,
+      acknowledged: ["stock_snapshot_stale"],
+    });
+    expect(ok.status).toBe("queued"); // exactly enough stock (2 of 2) passes
+    for (const n of ["TST-1020", "TST-1021"])
+      expect(await g.db.outboundRequest.count({ where: { idempotencyKey: `order:${n}` } })).toBe(0);
+  });
+
+  it("orders-history before the first send: an order that already exists at the vendor is never created again", async () => {
+    const { order, product } = await euTestOrder(g, { number: "#1030" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+    if (q.status !== "queued") throw new Error("not queued");
+    const v = vendor({
+      "/fulfilment/create-order": () => json(R.createOrderOk),
+      "/fulfilment/orders-history": () => json([found("TST-1030")]), // e.g. created in the cabinet
+    });
+    expect(await processOutbound(q.requestId, v.resolve)).toBe("SENT");
+    expect(v.count("/fulfilment/create-order")).toBe(0);
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: q.fulfillmentId } })).status).toBe(
+      "ACCEPTED",
+    );
+    expect((await request(q.requestId)).lastResponse).toMatchObject({
+      recoveredBy: "orders-history before send",
+    });
+
+    // The reference belongs to a deleted shipment at the vendor: refused, nothing created, operator task.
+    const d = await euTestOrder(g, { number: "#1031" });
+    await mapProduct(d.product.id, `ref-${d.product.sku}`);
+    const qd = await queueEuOrder(g.owner, { orderId: d.order.id, connectionId: g.connection.id });
+    if (qd.status !== "queued") throw new Error("not queued");
+    const vd = vendor({
+      "/fulfilment/create-order": () => json(R.createOrderOk),
+      "/fulfilment/orders-history": () => json([found("TST-1031", "Deleted")]),
+    });
+    expect(await processOutbound(qd.requestId, vd.resolve)).toBe("FAILED");
+    expect(vd.count("/fulfilment/create-order")).toBe(0);
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: qd.fulfillmentId } })).status).toBe(
+      "SUBMIT_FAILED",
+    );
+
+    // An unreadable orders-history answer is not "not found": UNCERTAIN, never sent blind.
+    const e = await euTestOrder(g, { number: "#1032" });
+    await mapProduct(e.product.id, `ref-${e.product.sku}`);
+    const qe = await queueEuOrder(g.owner, { orderId: e.order.id, connectionId: g.connection.id });
+    if (qe.status !== "queued") throw new Error("not queued");
+    const ve = vendor({
+      "/fulfilment/create-order": () => json(R.createOrderOk),
+      "/fulfilment/orders-history": () =>
+        json([{ refNum: "TST-1032", error: "Temporary problem", errorCode: 500, statusesHistory: [] }]),
+    });
+    expect(await processOutbound(qe.requestId, ve.resolve)).toBe("UNCERTAIN");
+    expect(ve.count("/fulfilment/create-order")).toBe(0);
+  });
+
+  it("waybillAvailableDate is moved up to today when a request is sent after the day it was queued", async () => {
+    const { order, product } = await euTestOrder(g, { number: "#1040" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const queuedAt = new Date(Date.now() - 2 * 86400_000);
+    const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id }, queuedAt);
+    if (q.status !== "queued") throw new Error("not queued");
+    const stored = (await request(q.requestId)).payload as { body: { waybillAvailableDate: string } };
+    expect(stored.body.waybillAvailableDate).toBe(sofiaToday(queuedAt));
+    const v = vendor({ "/fulfilment/create-order": () => json(R.createOrderOk) });
+    const sendAt = new Date();
+    expect(await processOutbound(q.requestId, (c) => v.resolve(c, () => sendAt))).toBe("SENT");
+    expect(v.sent("/fulfilment/create-order")).toMatchObject({ waybillAvailableDate: sofiaToday(sendAt) });
+    expect(sofiaToday(sendAt) > stored.body.waybillAvailableDate).toBe(true);
+
+    // A date the operator picked in the future is kept.
+    const later = await euTestOrder(g, { number: "#1041" });
+    await mapProduct(later.product.id, `ref-${later.product.sku}`);
+    const picked = addDays(sofiaToday(sendAt), 3);
+    const q2 = await queueEuOrder(g.owner, {
+      orderId: later.order.id,
+      connectionId: g.connection.id,
+      waybillAvailableDate: picked,
+    });
+    if (q2.status !== "queued") throw new Error("not queued");
+    expect(await processOutbound(q2.requestId, (c) => v.resolve(c, () => sendAt))).toBe("SENT");
+    expect(v.sent("/fulfilment/create-order", 1)).toMatchObject({ waybillAvailableDate: picked });
+  });
+
+  it("an effect failure after a real create becomes a CRITICAL operator task with the request", async () => {
+    const { order, product } = await euTestOrder(g, { number: "#1050" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+    if (q.status !== "queued") throw new Error("not queued");
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("orders-history")) {
+        const b = JSON.parse(String(init!.body)) as { orders: { refNum: string }[] };
+        return json([notFound(b.orders[0]!.refNum)]);
+      }
+      return json(R.createOrderOk);
+    });
+    const t = new EuShipmentsTransport({
+      connect: async () => ({
+        client: new EuShipmentsClient("test-token", { fetchImpl, sleep: async () => {} }),
+        companyId: 333,
+      }),
+      effects: {
+        orderCreated: async () => {
+          throw new Error("database went away");
+        },
+      },
+      onEffectFailed: effectFailureAlert(async () => g.accountId, g.connection.id),
+    });
+    expect(await processOutbound(q.requestId, () => t)).toBe("SENT"); // the vendor answer stands
+    const alert = await g.db.alert.findFirstOrThrow({
+      where: { kind: "eushipments_effect_failed", entityId: q.requestId },
+    });
+    expect(alert).toMatchObject({ severity: "CRITICAL", isTask: true, entityType: "OutboundRequest" });
+    expect(alert.body).toContain("TST-1050");
+  });
+
+  it("transfer: the caller's requestKey makes a double submit one transfer and one request", async () => {
+    const { product } = await euTestOrder(g, { number: "#1310" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const input = {
+      connectionId: g.connection.id,
+      requestKey: randomUUID(),
+      sourceWarehouseId: 4,
+      protocolType: 3 as const,
+      lines: [{ productId: product.id, quantity: 1 }],
+    };
+    const [a, b] = await Promise.all([queueEuTransfer(g.owner, input), queueEuTransfer(g.owner, input)]);
+    const c = await queueEuTransfer(g.owner, input);
+    expect(new Set([a.transfer.id, b.transfer.id, c.transfer.id]).size).toBe(1);
+    expect(new Set([a.request.id, b.request.id, c.request.id]).size).toBe(1);
+    expect(await g.db.eushipmentsTransfer.count({ where: { id: input.requestKey } })).toBe(1);
+    expect(
+      await g.db.outboundRequest.count({ where: { idempotencyKey: `transfer:${a.transfer.externalRef}` } }),
+    ).toBe(1);
+    const other = await queueEuTransfer(g.owner, { ...input, requestKey: randomUUID() });
+    expect(other.transfer.id).not.toBe(a.transfer.id);
+    await expect(queueEuTransfer(g.owner, { ...input, requestKey: "not-a-uuid" })).rejects.toThrow();
+  });
+
+  it("booking: a dry-run booking is queued again under the same document number after the mode is raised", async () => {
+    const { product } = await euTestOrder(g, { number: "#1210" });
+    await mapProduct(product.id, `ref-${product.sku}`);
+    const input = {
+      connectionId: g.connection.id,
+      warehouseId: 1,
+      documentNumber: "INB-2026-0010",
+      lines: [{ productId: product.id, quantity: 4 }],
+    };
+    await setMode("DRY_RUN");
+    let b;
+    try {
+      b = await queueEuBooking(g.owner, input);
+      expect(await processOutbound(b.request.id, vendor({}).resolve)).toBe("DRY_RUN_RECORDED");
+    } finally {
+      await setMode("LIVE");
+    }
+    const again = await queueEuBooking(g.owner, {
+      ...input,
+      lines: [{ productId: product.id, quantity: 5 }],
+    });
+    expect(again.inbound.id).toBe(b.inbound.id);
+    expect(again.request.id).toBe(b.request.id);
+    expect(await g.db.inboundShipment.count({ where: { externalRef: "INB-2026-0010" } })).toBe(1);
+    expect(
+      (await g.db.inboundLine.findMany({ where: { inboundId: b.inbound.id } })).map((l) => l.expectedQty),
+    ).toEqual([5]);
+    const v = vendor({ "/fulfilment/create-request": () => json(R.createRequestOk, 201) });
+    expect(await processOutbound(b.request.id, v.resolve)).toBe("SENT");
+    expect(v.count("/fulfilment/create-request")).toBe(1);
+    await expect(queueEuBooking(g.owner, input)).rejects.toMatchObject({ code: "duplicate_reference" });
+  });
+
   it("other groups see none of this group's requests", async () => {
     const other = await euTestGroup("write-other");
     expect(await accountDb(other.accountId).outboundRequest.count()).toBe(0);
@@ -548,7 +872,18 @@ describe("EuShipmentsTransport (unit)", () => {
   });
 
   it("a create-order 2xx without orderId is an unknown outcome on a real send", async () => {
-    const t = transport(() => json({ orderId: null, error: "something", code: 200 }));
+    const t = new EuShipmentsTransport({
+      connect: async () => ({
+        client: new EuShipmentsClient("test-token", {
+          fetchImpl: async (url: string) =>
+            String(url).includes("orders-history")
+              ? json([notFound("TST-1")])
+              : json({ orderId: null, error: "something", code: 200 }),
+          sleep: async () => {},
+        }),
+        companyId: 1,
+      }),
+    });
     const call = {
       operation: EU_OPS.createOrder,
       idempotencyKey: "k",

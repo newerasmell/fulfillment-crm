@@ -235,12 +235,19 @@ export function seedTable(): Map<string, StatusRule> {
 }
 
 /**
- * Whether polling can stop. Final statuses stop it, except returns (polled until the return is received)
- * and Cancel (spec: not final). UNKNOWN never stops polling.
+ * Statuses that are final in the spec but still have a money outcome to come: "Claim opened" is followed by
+ * "Compensation paid", so it is polled on until that (or another status) arrives.
  */
-export function stopsPolling(rule: StatusRule): boolean {
+const POLL_PAST_FINAL = new Set(["claim opened"]);
+
+/**
+ * Whether polling can stop. Final statuses stop it, except returns (polled until the return is received),
+ * Cancel (spec: not final) and an open claim (until the compensation is paid). UNKNOWN never stops polling.
+ */
+export function stopsPolling(rule: StatusRule & { key?: string }): boolean {
   if (rule.category === "RETURNING" || rule.category === "CANCEL_PENDING" || rule.category === "UNKNOWN")
     return false;
+  if (rule.key && POLL_PAST_FINAL.has(rule.key)) return false;
   if (rule.category === "RETURN_RECEIVED" || rule.category === "CANCELLED") return true;
   return rule.final;
 }

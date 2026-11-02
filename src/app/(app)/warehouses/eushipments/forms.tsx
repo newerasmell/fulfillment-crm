@@ -107,6 +107,7 @@ export interface EuSettingsView {
   skuPrefix: string;
   acceptedAlertHours: number;
   acceptedAlertWorkDays: boolean;
+  stockStaleHours: number;
   cashReceiptCod: boolean;
   canaryDailyCap: number;
   enabled: boolean;
@@ -181,6 +182,17 @@ export function EuSettingsForm({
           min={1}
           max={336}
           defaultValue={s.acceptedAlertHours}
+          className={inputCls}
+        />
+      </label>
+      <label className={labelCls}>
+        {t("stockStaleHours")}
+        <input
+          name="stockStaleHours"
+          type="number"
+          min={1}
+          max={336}
+          defaultValue={s.stockStaleHours}
           className={inputCls}
         />
       </label>

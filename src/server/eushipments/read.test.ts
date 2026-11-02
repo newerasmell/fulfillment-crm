@@ -68,6 +68,12 @@ describe("pure helpers", () => {
     expect(rowsForCompany(rows, [two[0]!], 333).rows).toHaveLength(2);
     expect(rowsForCompany(rows, two, 999)).toEqual({ rows: [], unattributed: 2 });
     expect(rowsForCompany(rows, [], 333)).toEqual({ rows: [], unattributed: 2 });
+    // A CUST_NAME that matches none of the token's companies is counted, never silently dropped.
+    const off = [{ ...rows[0]!, CUST_NAME: "Example Company Ltd" }, rows[1]!];
+    expect(rowsForCompany(off, two, 333)).toEqual({ rows: [], unattributed: 1 });
+    // Two companies with the same name: no row can be attributed.
+    const same = [two[0]!, { vendorCompanyId: 334, name: " example  company ltd. " }];
+    expect(rowsForCompany(rows, same, 333)).toMatchObject({ rows: [], ambiguous: true });
   });
 });
 
@@ -226,6 +232,33 @@ describe("euShipments read side (DB)", () => {
     );
     expect(await g.db.eushipmentsStock.count({ where: { connectionId: g.connection.id } })).toBe(0);
     expect((await g.db.stockLevel.findUniqueOrThrow({ where: { vendorProductId: vp.id } })).free).toBe(0);
+  });
+
+  it("stock: rows that cannot be attributed to our company fail the sync and never zero the catalogue", async () => {
+    await syncEuStock(g.accountId, g.connection.id, vendor(routes).deps);
+    const vp = await g.db.vendorProduct.findUniqueOrThrow({
+      where: { connectionId_vendorId: { connectionId: g.connection.id, vendorId: "ref-test-54202" } },
+    });
+    const level = () => g.db.stockLevel.findUniqueOrThrow({ where: { vendorProductId: vp.id } });
+    expect((await level()).free).toBe(90);
+    const before = (await level()).snapshotAt;
+    // The cabinet's CUST_NAME differs by one character from get-user-companies' NAME.
+    const off = vendor({
+      "/fulfilment/get-prod-avails": () =>
+        json([
+          { ...RD.prodAvails[0]!, CUST_NAME: "Example Company Ltd" },
+          { ...RD.prodAvails[0]!, CUST_NAME: "Second Example Ltd.", AVAIL_QTY: 999 },
+        ]),
+    });
+    await expect(syncEuStock(g.accountId, g.connection.id, off.deps)).rejects.toMatchObject({
+      code: "stock_unattributed",
+    });
+    expect(await level()).toMatchObject({ free: 90, physical: 90, snapshotAt: before });
+    const sync = await g.db.eushipmentsSync.findUniqueOrThrow({
+      where: { connectionId_kind: { connectionId: g.connection.id, kind: "stock" } },
+    });
+    expect(sync.lastError).toBe("stock_unattributed");
+    expect(await g.db.eushipmentsStock.count({ where: { connectionId: g.connection.id } })).toBe(2);
   });
 
   it("orders-history: batches of 100, per-item results, final status stops polling", async () => {
@@ -418,6 +451,50 @@ describe("euShipments read side (DB)", () => {
     const v2 = vendor({});
     await pollEuCod(g.accountId, g.connection.id, v2.deps);
     expect(v2.calls).toHaveLength(0);
+  });
+
+  it("COD: one failing reference does not stop the run; the Order follows DELIVERED → COD_PAID", async () => {
+    const mk = async (ref: string) => {
+      const { order } = await euTestOrder(g, { number: `#${ref}` });
+      await g.db.order.update({ where: { id: order.id }, data: { status: "DELIVERED" } });
+      return g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          connectionId: g.connection.id,
+          externalId: ref,
+          status: "DELIVERED",
+          deliveredAt: new Date(),
+        },
+      });
+    };
+    const bad = await mk("TST-2001");
+    const good = await mk("TST-2002");
+    const v = vendor({
+      "/check-cod-by-order/TST-2001": () => json({ error: "Wrong params." }, 400),
+      "/check-cod-by-order/TST-2002": () => json(RD.codPaid),
+      "/check-cod-by-order/": () => new Response("null", { status: 200 }),
+    });
+    const info = await pollEuCod(g.accountId, g.connection.id, v.deps);
+    expect(info).toMatchObject({ paid: 1, errors: 1 });
+    const t = await g.db.eushipmentsTracking.findUniqueOrThrow({ where: { fulfillmentId: bad.id } });
+    expect(t.lastError).toBeTruthy();
+    expect(t.codCheckedAt).not.toBeNull();
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: good.id } })).status).toBe("COD_PAID");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: good.orderId } })).status).toBe("COD_PAID");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: bad.orderId } })).status).toBe("DELIVERED");
+
+    // Every check failing fails the job.
+    const only = await mk("TST-2003");
+    await g.db.eushipmentsTracking.updateMany({
+      where: { fulfillmentId: { in: [bad.id, good.id] } },
+      data: { codCheckedAt: new Date() },
+    });
+    const allBad = vendor({ "/check-cod-by-order/": () => json({ error: "Wrong params." }, 400) });
+    await expect(pollEuCod(g.accountId, g.connection.id, allBad.deps)).rejects.toBeTruthy();
+    expect(
+      (await g.db.eushipmentsTracking.findUniqueOrThrow({ where: { fulfillmentId: only.id } })).lastError,
+    ).toBeTruthy();
   });
 
   it("everything above is scoped to the account", async () => {

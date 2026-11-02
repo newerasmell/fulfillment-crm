@@ -1,5 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
+import type { Role } from "@/generated/prisma/client";
+import { assertCan, can } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
 
 /**
@@ -221,9 +223,19 @@ export const TEST_MODE_OPERATIONS: readonly string[] = [EU_OPS.createOrder, EU_O
 /**
  * DRY_RUN preview: every request evaluated in DRY_RUN — the exact body that would be sent, whether it went to
  * euShipments with `testMode: true` (create-order, create-transfer) or was only recorded, and the vendor's
- * validation answer.
+ * validation answer. The bodies carry customer data (recipient name, phone, e-mail, address), so only members
+ * who may review orders see them (orders.review); only `payload.body` is returned — never our ctx (which may
+ * hold the invoice PDF).
  */
-export async function mirrorDryRuns(accountId: string, connectionId: string, opts: { page?: number } = {}) {
+export const canSeeDryRuns = (role: Role) => can(role, "orders.review");
+
+export async function mirrorDryRuns(
+  accountId: string,
+  connectionId: string,
+  role: Role,
+  opts: { page?: number } = {},
+) {
+  assertCan(role, "orders.review");
   const db = accountDb(accountId);
   const where: Prisma.OutboundRequestWhereInput = { connectionId, evaluatedMode: "DRY_RUN" };
   const [rows, total] = await Promise.all([
@@ -257,7 +269,8 @@ export async function mirrorDryRuns(accountId: string, connectionId: string, opt
               ? "validated"
               : "recorded"
             : "pending";
-      return { ...r, body: (r.payload as { body?: unknown } | null)?.body ?? null, testMode, verdict };
+      const { payload, ...rest } = r;
+      return { ...rest, body: (payload as { body?: unknown } | null)?.body ?? null, testMode, verdict };
     }),
     total,
   };

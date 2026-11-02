@@ -10,7 +10,7 @@ import { scrubText } from "@/lib/scrub";
 import { DomainError } from "@/server/accounts";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { euReadClientFor } from "./connection";
-import { applyOrderHistory } from "./statuses";
+import { advanceOrderStatus, applyOrderHistory } from "./statuses";
 
 /**
  * euShipments read side (P3-02). Only GET/list calls (plus the documented read-only POSTs
@@ -403,18 +403,27 @@ const norm = (s: string | null | undefined) => (s ?? "").trim().replace(/\s+/g, 
  * Which get-prod-avails rows belong to this connection. The call has no parameters and returns the rows of
  * EVERY company of the token; a row only names its company by CUST_NAME. With one company on the token all
  * rows are ours; otherwise only rows whose CUST_NAME equals our company's name (from get-user-companies).
+ * `unattributed` counts rows whose CUST_NAME matches none of the token's companies; `ambiguous` is set when
+ * another company of the token has the same (normalised) name, so no row can be attributed safely.
  */
 export function rowsForCompany(
   rows: ProdAvail[],
   companies: { vendorCompanyId: number; name: string }[],
   companyId: number,
-): { rows: ProdAvail[]; unattributed: number } {
-  if (companies.length <= 1 && (companies.length === 0 || companies[0]!.vendorCompanyId === companyId))
-    return companies.length === 0 ? { rows: [], unattributed: rows.length } : { rows, unattributed: 0 };
+): { rows: ProdAvail[]; unattributed: number; ambiguous?: boolean } {
+  if (companies.length === 0) return { rows: [], unattributed: rows.length };
+  if (companies.length === 1)
+    return companies[0]!.vendorCompanyId === companyId
+      ? { rows, unattributed: 0 }
+      : { rows: [], unattributed: rows.length };
   const ours = companies.find((c) => c.vendorCompanyId === companyId);
   if (!ours) return { rows: [], unattributed: rows.length };
-  const mine = rows.filter((r) => norm(r.CUST_NAME) === norm(ours.name));
-  return { rows: mine, unattributed: 0 };
+  const name = norm(ours.name);
+  const known = new Set(companies.map((c) => norm(c.name)));
+  const unattributed = rows.filter((r) => !known.has(norm(r.CUST_NAME))).length;
+  if (companies.filter((c) => norm(c.name) === name).length > 1)
+    return { rows: [], unattributed, ambiguous: true };
+  return { rows: rows.filter((r) => norm(r.CUST_NAME) === name), unattributed };
 }
 
 /**
@@ -433,7 +442,11 @@ export async function syncEuStock(accountId: string, connectionId: string, deps:
     });
     if (companies.length === 0) throw new DomainError("companies_not_synced");
     const all = await client.getProdAvails();
-    const { rows, unattributed } = rowsForCompany(all, companies, companyId);
+    const { rows, unattributed, ambiguous } = rowsForCompany(all, companies, companyId);
+    // Never zero a catalogue on an attribution problem: with several companies on the token, rows that exist
+    // but none of them is ours (a CUST_NAME that differs from get-user-companies) fail the sync visibly.
+    if (companies.length > 1 && (ambiguous || (rows.length === 0 && all.length > 0)))
+      throw new DomainError(ambiguous ? "stock_company_ambiguous" : "stock_unattributed");
 
     const vps = await accountDb(accountId).vendorProduct.findMany({
       where: { connectionId },
@@ -816,8 +829,25 @@ export async function pollEuCod(accountId: string, connectionId: string, deps: R
     let paid = 0;
     let registered = 0;
     let missing = 0;
+    let errors = 0;
+    let lastError: unknown = null;
     for (const f of due) {
-      const info = await client.checkCodByOrder(f.externalId, false);
+      let info;
+      try {
+        info = await client.checkCodByOrder(f.externalId, false);
+      } catch (err) {
+        if (err instanceof EuShipmentsError && err.code === "auth_failed") throw err;
+        // One bad reference must not stop the run (and then every next run) for all the others.
+        errors++;
+        lastError = err;
+        const failed = { codCheckedAt: now, lastError: scrubText(String((err as Error).message), 300) };
+        await db.eushipmentsTracking.upsert({
+          where: { fulfillmentId: f.id },
+          create: { accountId, connectionId, fulfillmentId: f.id, referenceNumber: f.externalId, ...failed },
+          update: failed,
+        });
+        continue;
+      }
       const base = { codCheckedAt: now };
       if (!info) {
         missing++;
@@ -843,10 +873,12 @@ export async function pollEuCod(accountId: string, connectionId: string, deps: R
           create: { accountId, connectionId, fulfillmentId: f.id, referenceNumber: f.externalId, ...data },
           update: data,
         });
-        await tx.fulfillment.update({
+        const updated = await tx.fulfillment.update({
           where: { id: f.id },
           data: { codStatus: isPaid ? "PAID" : "REGISTERED", ...(isPaid ? { status: "COD_PAID" } : {}) },
+          select: { orderId: true },
         });
+        if (isPaid) await advanceOrderStatus(tx, updated.orderId, "COD_PAID");
         if (isPaid)
           await tx.fulfillmentEvent.create({
             data: {
@@ -863,6 +895,7 @@ export async function pollEuCod(accountId: string, connectionId: string, deps: R
       if (isPaid) paid++;
       else registered++;
     }
-    return { checked: due.length, paid, registered, missing };
+    if (due.length > 0 && errors === due.length) throw lastError;
+    return { checked: due.length, paid, registered, missing, errors };
   });
 }

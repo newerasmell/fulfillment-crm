@@ -1,4 +1,5 @@
 import type { PgBoss } from "pg-boss";
+import { z } from "zod";
 import { logger } from "@/lib/logger";
 import { systemDb } from "@/server/db/client";
 import { QUEUES } from "@/server/jobs/queues";
@@ -15,12 +16,20 @@ import {
 } from "./read";
 
 /** Every payload names its account, so failures show up in that account's dead-letter view only. */
-export interface EuConnectionJob {
-  accountId: string;
-  connectionId: string;
-}
-export interface EuCitiesJob extends EuConnectionJob {
-  countryId: number;
+export const EuConnectionJob = z.object({ accountId: z.string().min(1), connectionId: z.string().min(1) });
+export type EuConnectionJob = z.infer<typeof EuConnectionJob>;
+export const EuCitiesJob = EuConnectionJob.extend({ countryId: z.number().int().positive() });
+export type EuCitiesJob = z.infer<typeof EuCitiesJob>;
+
+/**
+ * Zod at the queue boundary: a malformed payload is never run. It throws, so pg-boss fails the job and it ends
+ * in the dead-letter queue (QUEUES options) instead of doing anything with half an id.
+ */
+export function parseEuJob<T>(schema: z.ZodType<T>, data: unknown, queue: string): T {
+  const r = schema.safeParse(data);
+  if (r.success) return r.data;
+  logger.error({ queue, issues: r.error.issues.map((i) => i.path.join(".")) }, "malformed eushipments job");
+  throw new Error(`malformed ${queue} job payload`);
 }
 
 const one = (queue: string) => (boss: PgBoss, d: EuConnectionJob) =>
@@ -83,16 +92,18 @@ export async function usableEuConnections() {
 
 export async function registerEushipmentsWorkers(boss: PgBoss, opts: { pollingIntervalSeconds: number }) {
   const each =
-    (fn: (accountId: string, connectionId: string) => Promise<unknown>) =>
+    (queue: string, fn: (accountId: string, connectionId: string) => Promise<unknown>) =>
     async (jobs: { data: EuConnectionJob }[]) => {
-      for (const { data } of jobs) {
+      for (const job of jobs) {
+        const data = parseEuJob(EuConnectionJob, job.data, queue);
         const info = await fn(data.accountId, data.connectionId);
         logger.info({ connectionId: data.connectionId, info }, "eushipments sync done");
       }
     };
 
   await boss.work<EuConnectionJob>(QUEUES.eushipmentsTestConnection.name, opts, async (jobs) => {
-    for (const { data } of jobs) {
+    for (const job of jobs) {
+      const data = parseEuJob(EuConnectionJob, job.data, QUEUES.eushipmentsTestConnection.name);
       const info = await testEuConnection(data.accountId, data.connectionId);
       // A good test with a company chosen starts the first mirrors.
       if (info.companyVisible) {
@@ -102,14 +113,41 @@ export async function registerEushipmentsWorkers(boss: PgBoss, opts: { pollingIn
       }
     }
   });
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsSyncReference.name, opts, each(syncEuReference));
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsSyncProducts.name, opts, each(syncEuProducts));
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsSyncStock.name, opts, each(syncEuStock));
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsPollOrders.name, opts, each(pollEuOrders));
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsPollBookings.name, opts, each(pollEuBookings));
-  await boss.work<EuConnectionJob>(QUEUES.eushipmentsPollCod.name, opts, each(pollEuCod));
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsSyncReference.name,
+    opts,
+    each(QUEUES.eushipmentsSyncReference.name, syncEuReference),
+  );
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsSyncProducts.name,
+    opts,
+    each(QUEUES.eushipmentsSyncProducts.name, syncEuProducts),
+  );
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsSyncStock.name,
+    opts,
+    each(QUEUES.eushipmentsSyncStock.name, syncEuStock),
+  );
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsPollOrders.name,
+    opts,
+    each(QUEUES.eushipmentsPollOrders.name, pollEuOrders),
+  );
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsPollBookings.name,
+    opts,
+    each(QUEUES.eushipmentsPollBookings.name, pollEuBookings),
+  );
+  await boss.work<EuConnectionJob>(
+    QUEUES.eushipmentsPollCod.name,
+    opts,
+    each(QUEUES.eushipmentsPollCod.name, pollEuCod),
+  );
   await boss.work<EuCitiesJob>(QUEUES.eushipmentsSyncCities.name, opts, async (jobs) => {
-    for (const { data } of jobs) await syncEuCities(data.accountId, data.connectionId, data.countryId);
+    for (const job of jobs) {
+      const data = parseEuJob(EuCitiesJob, job.data, QUEUES.eushipmentsSyncCities.name);
+      await syncEuCities(data.accountId, data.connectionId, data.countryId);
+    }
   });
 
   await boss.work(QUEUES.eushipmentsTick.name, opts, async () => {
