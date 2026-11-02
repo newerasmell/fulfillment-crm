@@ -1,0 +1,356 @@
+{
+  "POST /login 401": {
+    "status": "error",
+    "message": "AppId or secret not valid"
+  },
+  "POST /shipments 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "POST /shipments 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /shipments 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "DELETE /shipments 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /shipment 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /labels 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "POST /packages 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "POST /packages 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "PUT /packages 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "PUT /packages 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /packages 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "DELETE /packages 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "POST /packing-list 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "POST /packing-list 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /packing-list 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "GET /packing-list 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "DELETE /packing-list 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "POST /packing-list-item 400": {
+    "status": "error",
+    "message": "Missing field: name",
+    "id": "name"
+  },
+  "POST /packing-list-item 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "DELETE /packing-list-item 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "GET /delivery-point 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "PUT /anonymization 401": {
+    "status": "error",
+    "message": "Token expired. Login via POST /login"
+  },
+  "POST /login request": {
+    "appId": "1234",
+    "secret": "1234"
+  },
+  "POST /login 200": {
+    "token": "A98ophrkh67",
+    "expiration": "2014-07-08 15:00:00 +0100"
+  },
+  "POST /shipments request": {
+    "id": "1003201",
+    "parcelService": "pplcz",
+    "name": "Oskar Šnajdr",
+    "street": "Hlavná 23",
+    "city": "Horní Jasenka",
+    "zip": "75501",
+    "country": "cz",
+    "email": "example@example.com",
+    "phone": "+421901000000",
+    "variableSymbol": "12345",
+    "cod": 250,
+    "sender": "CUSTOMER_SENDER_CODE_1",
+    "note": "Note",
+    "numberOfPackages": 1,
+    "weight": [1.45],
+    "deliveryPoint": "12451",
+    "labelOrientation": "P",
+    "_embedded": {
+      "notifyLinks": [
+        {
+          "confirmed": "http://example.com/order/1003201/confirmed",
+          "sent": "http://example.com/order/1003201/sent",
+          "delivered": "http://example.com/order/1003201/delivered",
+          "returned": "http://example.com/order/1003201/returned"
+        }
+      ]
+    },
+    "invoiceDetail": {
+      "number": "202201397",
+      "total": 353,
+      "currency": "USD",
+      "dateOfIssue": "2022-11-30",
+      "products": [
+        {
+          "description": "basic product",
+          "hsCode": "64039198",
+          "value": 169,
+          "quantity": 1,
+          "countryOfOrigin": "cz"
+        }
+      ],
+      "fees": [
+        {
+          "type": "shipping",
+          "description": "Shipping cost",
+          "value": 10
+        }
+      ]
+    }
+  },
+  "POST /shipments 200": {
+    "packages": [
+      {
+        "id": "1003201",
+        "tracking": "40050000000"
+      }
+    ],
+    "label": "JVBERi0xLjQKJe...",
+    "_links": {
+      "self": {
+        "href": "/api/joy/shipments?id=A1234EDQS11A1"
+      }
+    }
+  },
+  "GET /shipments 200": {
+    "packages": [
+      {
+        "id": "1003201",
+        "tracking": "40050000000"
+      }
+    ],
+    "label": "JVBERi0xLjQKJe...",
+    "_links": {
+      "self": {
+        "href": "/api/joy/shipments?id=A1234EDQS11A1"
+      }
+    }
+  },
+  "GET /shipment 200": {
+    "id": "AB123456",
+    "status": "pending",
+    "parcelService": "pplcz",
+    "name": "Oskar Šnajdr",
+    "street": "Hlavná 23",
+    "city": "Horní Jasenka",
+    "zip": "75501",
+    "country": "cz",
+    "email": "example@example.com",
+    "phone": "+421901000000",
+    "variableSymbol": "12345",
+    "cod": 250,
+    "_embedded": {
+      "trackingNumber": ["40050587805"],
+      "trackingLink": ["https://www.speedy.bg/en/track-shipment?shipmentNumber=61878361874"],
+      "items": [{}],
+      "trackingEvents": [
+        {
+          "date": "2018-09-01 12:45:15",
+          "message": "Package in transit"
+        }
+      ]
+    }
+  },
+  "GET /labels 200": {
+    "labels": "JVBERi0xLjQKJe..."
+  },
+  "POST /packages request": {
+    "id": "1003201",
+    "parcelService": "joy",
+    "name": "Oskar Šnajdr",
+    "street": "Hlavná 23",
+    "city": "Horní Jasenka",
+    "psc": "75501",
+    "country": "cz",
+    "email": "example@example.com",
+    "phone": "+421901000000",
+    "variableSymbol": "12345",
+    "cod": 250,
+    "numberOfPackages": 1,
+    "deliveryPoint": "12451",
+    "weight": [1.45],
+    "_embedded": {
+      "notifyLinks": [
+        {
+          "confirmed": "http://example.com/order/1003201/confirmed",
+          "sent": "http://example.com/order/1003201/sent",
+          "delivered": "http://example.com/order/1003201/delivered",
+          "returned": "http://example.com/order/1003201/returned"
+        }
+      ]
+    }
+  },
+  "POST /packages 201": {
+    "_links": {
+      "self": {
+        "href": "/api/joy/packages?id=1003201"
+      }
+    }
+  },
+  "PUT /packages request": {
+    "id": "1003201",
+    "parcelService": "joy",
+    "name": "Oskar Šnajdr",
+    "street": "Hlavná 23",
+    "city": "Horní Jasenka",
+    "psc": "75501",
+    "country": "cz",
+    "email": "example@example.com",
+    "phone": "+421901000000",
+    "variableSymbol": "12345",
+    "cod": 250,
+    "numberOfPackages": 1,
+    "deliveryPoint": "12451",
+    "weight": [1.45],
+    "_embedded": {
+      "notifyLinks": [
+        {
+          "confirmed": "http://example.com/order/1003201/confirmed",
+          "sent": "http://example.com/order/1003201/sent",
+          "delivered": "http://example.com/order/1003201/delivered",
+          "returned": "http://example.com/order/1003201/returned"
+        }
+      ]
+    }
+  },
+  "PUT /packages 200": {
+    "_links": {
+      "self": {
+        "href": "/api/joy/packages?id=1003201"
+      }
+    }
+  },
+  "GET /packages 200": {
+    "id": "AB123456",
+    "status": "pending",
+    "parcelService": "joy",
+    "name": "Oskar Šnajdr",
+    "street": "Hlavná 23",
+    "city": "Horní Jasenka",
+    "psc": "75501",
+    "country": "cz",
+    "email": "example@example.com",
+    "phone": "+421901000000",
+    "variableSymbol": "12345",
+    "cod": 250,
+    "barcode": "A1234EDQS11A1",
+    "_embedded": {
+      "trackingNumber": ["40050587805"],
+      "items": [{}],
+      "trackingEvents": [
+        {
+          "date": "2018-09-01 12:45:15",
+          "message": "Package in transit"
+        }
+      ]
+    }
+  },
+  "POST /packing-list request": {
+    "code": "1003201",
+    "expected_delivery_date": "2023-01-15",
+    "items": ["23012345", "23012346"]
+  },
+  "POST /packing-list 200": {
+    "id": "J9VZIXSAL8",
+    "code": "1003201",
+    "expected_delivery_date": "2023-01-15",
+    "count": 2,
+    "items": ["23012345", "23012346"],
+    "label": "JVBERi0xLjQKJeLjz.."
+  },
+  "GET /packing-list 200": {
+    "id": "J9VZIXSAL8",
+    "code": "1003201",
+    "expected_delivery_date": "2023-01-15",
+    "count": 2,
+    "items": ["23012345", "23012346"],
+    "label": "JVBERi0xLjQKJeLjz.."
+  },
+  "DELETE /packing-list 200": {
+    "status": "ok"
+  },
+  "POST /packing-list-item request": {},
+  "POST /packing-list-item 200": {
+    "status": "ok"
+  },
+  "DELETE /packing-list-item 200": {
+    "status": "ok"
+  },
+  "GET /delivery-point 200": [
+    {
+      "code": "KM10103842",
+      "name": "Potraviny Lipa",
+      "street": "Nám. M.R. Štefánika",
+      "city": "Brezno",
+      "zip": "97701",
+      "country": "sk",
+      "latitude": 48.656829,
+      "longitude": 19.491561
+    }
+  ],
+  "PUT /anonymization 200": {
+    "_links": {
+      "self": {
+        "href": "/api/joy/packages?id=1003201"
+      }
+    }
+  }
+}

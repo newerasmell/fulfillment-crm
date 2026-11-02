@@ -181,4 +181,21 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** Labels (P7): every 10 min — tracking of label shipments (Joy GET /shipment, AWB waybills-history) and
+   * fetching AWB labels not stored yet. Read calls only. */
+  labelsSweep: {
+    name: "labels.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Tracking of one label connection (data: { accountId, connectionId }). */
+  labelsTrack: {
+    name: "labels.track",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 900 },
+  },
+  /** One label read: bulk PDF job, AWB/Joy label re-fetch, price quote, Joy login test (data: { accountId, kind, id }). */
+  labelsRead: {
+    name: "labels.read",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 300 },
+  },
 } satisfies Record<string, QueueDef>;

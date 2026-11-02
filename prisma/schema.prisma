@@ -443,6 +443,10 @@ model FulfillmentConnection {
   eushipmentsTracking        EushipmentsTracking[]
   eushipmentsSyncs           EushipmentsSync[]
   masterCatalogueRuns        MasterCatalogueRun[]
+  manualShipments            ManualShipment[]
+  shipmentLabels             ShipmentLabel[]
+  labelPrintJobs             LabelPrintJob[]
+  shippingQuotes             ShippingQuote[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -716,6 +720,7 @@ model Order {
   check        OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
+  manualShipment    ManualShipment?
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -778,6 +783,8 @@ model Fulfillment {
   lines            FulfillmentLine[]
   outboundRequests OutboundRequest[]
   shopifyWriteBack ShopifyWriteBack?
+  manualShipment   ManualShipment?
+  labels           ShipmentLabel[]
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -1728,4 +1735,120 @@ model ProductMappingImport {
 
   @@unique([accountId, id])
   @@index([accountId, lineId, createdAt])
+}
+
+// ───────────────────────── wave 3: manual shipments and labels (P7-01 … P7-03) ─────────────────────────
+
+/// Ръчни пратки: a shipment created by hand (not from Shopify). Always a MANUAL Order + how it ships. kind:
+/// WAREHOUSE (vendor order from stock — the normal review/Fulfill flow), JOY_LABEL (FHB Joy label for a parcel we
+/// pack), AWB (euShipments courier waybill), PRE_AWB (euShipments order without a waybill yet).
+model ManualShipment {
+  id            String    @id @default(cuid())
+  accountId     String
+  orderId       String
+  kind          String
+  connectionId  String
+  /// The shipment row (label kinds: created with the request; WAREHOUSE: when Fulfill queues it).
+  fulfillmentId String?
+  /// Parcel parameters from the form (parcels, weights, parcel service / courier, office, dispatch date, …).
+  params        Json      @default("{}")
+  /// Label tracking poller state (Joy GET /shipment, euShipments waybills-history).
+  trackedAt     DateTime?
+  stopTracking  Boolean   @default(false)
+  trackError    String?
+  /// Idempotency key of the form submission: a double click / retried POST returns the same shipment.
+  clientRequestId String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  order       Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderId])
+  @@unique([accountId, fulfillmentId])
+  @@unique([accountId, clientRequestId])
+  @@index([accountId, createdAt])
+  @@index([accountId, kind, stopTracking])
+}
+
+/// Per-group sequence of manual order numbers (M1001, M1002, …) — deterministic external ids for the vendors.
+model ManualShipmentSequence {
+  accountId String   @id
+  next      Int      @default(1001)
+  updatedAt DateTime @updatedAt
+}
+
+/// A stored label PDF (Joy label, euShipments AWB print, or a bulk print). Kept in the database: the codebase has
+/// no object store, and a vendor may refuse a reprint later (Joy: 5 days after creation).
+model ShipmentLabel {
+  id             String   @id @default(cuid())
+  accountId      String
+  connectionId   String
+  /// The single shipment this label is for (null for a bulk PDF).
+  fulfillmentId  String?
+  /// single | bulk
+  kind           String   @default("single")
+  /// PDF | ZPL
+  format         String   @default("PDF")
+  /// joy.create, joy.reprint, joy.labels, awb.print, awb.merged
+  source         String
+  content        Bytes
+  sha256         String
+  sizeBytes      Int
+  /// Shipments a bulk PDF covers, in print order.
+  fulfillmentIds String[]
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@index([accountId, fulfillmentId, createdAt])
+}
+
+/// Bulk label print: one PDF per connection, built by the worker from the vendor's bulk endpoint
+/// (Joy GET /labels?ids= ≤ 100, euShipments merged/print ≤ 50). Read calls only.
+model LabelPrintJob {
+  id             String    @id @default(cuid())
+  accountId      String
+  connectionId   String
+  /// QUEUED | RUNNING | DONE | FAILED
+  status         String    @default("QUEUED")
+  fulfillmentIds String[]
+  labelId        String?
+  /// Per-shipment problems (not printable, no AWB yet, …).
+  errors         Json      @default("{}")
+  error          String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+/// euShipments shipment-price quote from the manual shipment form (a read call, run by the worker).
+model ShippingQuote {
+  id           String    @id @default(cuid())
+  accountId    String
+  connectionId String
+  request      Json
+  /// QUEUED | DONE | NO_PRICE | FAILED
+  status       String    @default("QUEUED")
+  response     Json?
+  error        String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
 }
