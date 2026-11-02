@@ -181,4 +181,21 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** Every 10 min: return cases from the warehouse mirrors, overdue alerts, support notifications (P6-01). */
+  returnsSweep: {
+    name: "returns.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** FHB local return photos of one case (data: { accountId, caseId }); GET calls only. */
+  returnsPhotos: {
+    name: "returns.photos",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 600 },
+  },
+  /** Hourly: COD mismatches (amount / missing / unexpected) → operator tasks (P6-02). */
+  codSweep: {
+    name: "cod.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 1800 },
+    cron: "37 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

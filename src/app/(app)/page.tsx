@@ -4,6 +4,7 @@ import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { alertCounts } from "@/server/alerts";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { dashboardSummary } from "@/server/orders";
+import { countReturnsToProcess } from "@/server/returns";
 import { StatusChip } from "./orders/status";
 
 /** Phase 1: order-based numbers. Returns, tickets, stock-outs and warehouse splits arrive with phases 2–4. */
@@ -11,7 +12,7 @@ const ATTENTION = [
   { key: "review", href: "/orders?tab=review" },
   { key: "blocked", href: "/orders?tab=blocked" },
   { key: "errors", href: "/orders?tab=blocked" },
-  { key: "returns", href: "/returns" },
+  { key: "returns", href: "/returns?tab=todo" },
   { key: "tickets", href: "/tickets" },
   { key: "stockouts", href: "/products" },
   { key: "alerts", href: "/alerts" },
@@ -23,16 +24,22 @@ export default async function HomePage() {
   const format = await getFormatter();
   const today = format.dateTime(new Date(), { weekday: "long", day: "numeric", month: "long" });
   const scopeName = ctx.companies.find((c) => c.id === ctx.activeCompanyId)?.name ?? t("nav.allCompanies");
-  const [summary, alerts] = await Promise.all([
+  const scoped = {
+    ...actorFrom(ctx),
+    activeCompanyId: ctx.activeCompanyId,
+    lineCompanyIds: ctx.lineCompanyIds,
+  };
+  const [summary, alerts, returnsToProcess] = await Promise.all([
     dashboardSummary(ctx),
-    alertCounts({
-      ...actorFrom(ctx),
-      activeCompanyId: ctx.activeCompanyId,
-      lineCompanyIds: ctx.lineCompanyIds,
-    }),
+    alertCounts(scoped),
+    countReturnsToProcess(scoped),
   ]);
   const value = (k: string) =>
-    k === "alerts" ? alerts.total : (summary.attention as Record<string, number>)[k];
+    k === "alerts"
+      ? alerts.total
+      : k === "returns"
+        ? returnsToProcess
+        : (summary.attention as Record<string, number>)[k];
   const delta = (a: number, b: number) => (a === b ? "=" : a > b ? `+${a - b}` : `−${b - a}`);
   const kpis = [
     { key: "orders", now: summary.today.orders, before: summary.yesterday.orders },

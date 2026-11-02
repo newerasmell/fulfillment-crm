@@ -52,6 +52,10 @@ export const PERMISSIONS = {
   "lines.manage": ["OWNER", "ADMIN"],
   /** Master catalogue tool, mapping import and match decisions of a line (Продукти). */
   "lines.catalogue": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** Returns board: mark processed with a note, notify support, load return photos (Връщания). */
+  "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** COD board and its CSV export (amounts per shipment and company). */
+  "cod.read": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

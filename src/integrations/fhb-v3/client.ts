@@ -264,7 +264,7 @@ export class FhbClient {
   async request<S extends z.ZodTypeAny>(
     method: Method,
     path: string,
-    opts: { query?: Query; body?: unknown; schema?: S } = {},
+    opts: { query?: Query; body?: unknown; schema?: S; binary?: { maxBytes: number } } = {},
   ): Promise<z.infer<S>> {
     const url = new URL(this.baseUrl + path);
     for (const [k, v] of Object.entries(opts.query ?? {}))
@@ -283,7 +283,7 @@ export class FhbClient {
             this.fetchImpl(url.toString(), {
               method,
               headers: {
-                Accept: "application/json",
+                Accept: opts.binary ? "*/*" : "application/json",
                 "X-Authentication-Simple": Buffer.from(token, "utf8").toString("base64"),
                 ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
               },
@@ -335,6 +335,24 @@ export class FhbClient {
         if (!res.ok) {
           const body = await this.readError(res);
           throw new FhbError("http_error", `${method} ${path}: HTTP ${res.status}`, res.status, body);
+        }
+        if (opts.binary) {
+          // Binary reads (return photos): capped, content type kept as sent; never parsed or logged.
+          const declared = Number(res.headers.get("content-length") ?? 0);
+          if (declared > opts.binary.maxBytes) {
+            await res.body?.cancel().catch(() => undefined);
+            throw new FhbError(
+              "http_error",
+              `${method} ${path}: file larger than ${opts.binary.maxBytes} bytes`,
+            );
+          }
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          if (bytes.byteLength > opts.binary.maxBytes)
+            throw new FhbError(
+              "http_error",
+              `${method} ${path}: file larger than ${opts.binary.maxBytes} bytes`,
+            );
+          return { contentType: res.headers.get("content-type") ?? "", bytes } as never;
         }
         if (res.status === 204 || !opts.schema) {
           await res.body?.cancel().catch(() => undefined);
@@ -453,6 +471,14 @@ export class FhbClient {
   /** GET /return/{uid} — null on 404. */
   getReturn(uid: string) {
     return this.orNull(this.request("GET", `/return/${encodeURIComponent(uid)}`, { schema: FhbReturn }));
+  }
+  /** GET /return/{uid}/photo/{photoId} — the photo bytes (null on 404). Read only; capped at `maxBytes`. */
+  returnPhoto(uid: string, photoId: string, maxBytes = 5 * 1024 * 1024) {
+    return this.orNull(
+      this.request("GET", `/return/${encodeURIComponent(uid)}/photo/${encodeURIComponent(photoId)}`, {
+        binary: { maxBytes },
+      }) as Promise<{ contentType: string; bytes: Uint8Array }>,
+    );
   }
   /** GET /cod/list (100/page), status waiting|received|paid, `from`/`to` ISO dates on order creation. */
   codList(q: { status?: string; from?: string; to?: string; page?: number }) {
