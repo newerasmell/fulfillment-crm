@@ -55,6 +55,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/settings/credentials", key: "credentials", icon: "key", permission: "credentials.write" },
       { href: "/settings/audit", key: "audit", icon: "log", permission: "audit.read" },
       { href: "/settings/jobs", key: "jobs", icon: "cog", permission: "jobs.admin" },
+      { href: "/settings/lines", key: "lines", icon: "box", permission: "lines.manage" },
     ],
   },
 ];

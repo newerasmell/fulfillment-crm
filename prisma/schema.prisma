@@ -202,6 +202,7 @@ model Account {
   alertNotes                AlertNote[]
   alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
+  productLines              ProductLine[]
 }
 
 model User {
@@ -233,10 +234,13 @@ model Company {
   name         String
   legalDetails Json?
   archivedAt   DateTime?
+  /// Product line of the company (P5-00): every company sells the goods of exactly one line. Null = not set yet.
+  lineId       String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   account     Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line        ProductLine?            @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
   stores      Store[]
   connections FulfillmentConnection[]
   orders      Order[]
@@ -438,6 +442,7 @@ model FulfillmentConnection {
   eushipmentsStock           EushipmentsStock[]
   eushipmentsTracking        EushipmentsTracking[]
   eushipmentsSyncs           EushipmentsSync[]
+  masterCatalogueRuns        MasterCatalogueRun[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -500,10 +505,13 @@ model Product {
   countryOfOrigin String?
   images          String[]
   archived        Boolean  @default(false)
+  /// Product line of the master (P5-00). Null = not assigned to a line yet.
+  lineId          String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   account        Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line           ProductLine?       @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
   parent         Product?           @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
   testers        Product[]          @relation("TesterOf")
   eans           ProductEan[]
@@ -514,6 +522,7 @@ model Product {
 
   @@unique([accountId, id])
   @@unique([accountId, sku])
+  @@index([accountId, lineId])
 }
 
 /// Known EANs of a product with batch notes. Never a join key.
@@ -1619,4 +1628,104 @@ model AlertNotification {
 
   @@unique([alertId, channel])
   @@index([accountId, createdAt])
+}
+
+// ───────────────────────── wave 3 core: product lines + master catalogue (P5-00) ─────────────────────────
+
+/// A product line of the group (e.g. cosmetics, textiles). Every company belongs to exactly one line; the companies
+/// of a line sell identical goods, so master products, matching and stock fallback stay inside the line.
+model ProductLine {
+  id         String    @id @default(cuid())
+  accountId  String
+  name       String
+  /// Colour token (src/server/lines/colors.ts), never a status or warehouse colour.
+  color      String    @default("rose")
+  sortOrder  Int       @default(0)
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  companies      Company[]
+  products       Product[]
+  catalogueRuns  MasterCatalogueRun[]
+  mappingImports ProductMappingImport[]
+  dismissals     ProductMatchDismissal[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, name])
+}
+
+/// Background run of "create master products from warehouse X's catalogue" (worker job, small batches, resumable).
+model MasterCatalogueRun {
+  id              String    @id @default(cuid())
+  accountId       String
+  lineId          String
+  connectionId    String
+  /// QUEUED | RUNNING | DONE | FAILED
+  status          String    @default("QUEUED")
+  /// masters | autolink | done
+  phase           String    @default("masters")
+  total           Int       @default(0)
+  processed       Int       @default(0)
+  created         Int       @default(0)
+  linked          Int       @default(0)
+  adopted         Int       @default(0)
+  alreadyLinked   Int       @default(0)
+  conflicts       Int       @default(0)
+  autoLinked      Int       @default(0)
+  /// A few SKUs that could not be used (another line already has them), for the operator.
+  conflictSamples Json      @default("[]")
+  /// Last VendorProduct id processed (the run resumes after it).
+  cursor          String?
+  error           String?
+  createdById     String?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  line       ProductLine           @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, lineId, createdAt])
+}
+
+/// "Друго": an operator rejected a match suggestion (item = VendorProduct or StoreVariantLink) — not shown again.
+model ProductMatchDismissal {
+  id          String   @id @default(cuid())
+  accountId   String
+  lineId      String
+  /// vendor | variant
+  kind        String
+  itemId      String
+  productId   String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  line ProductLine @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, kind, itemId, productId])
+  @@index([accountId, lineId])
+}
+
+/// An uploaded mapping file (Excel/CSV) of one line: validated plan first (PREVIEW), applied by a person (APPLIED).
+model ProductMappingImport {
+  id          String    @id @default(cuid())
+  accountId   String
+  lineId      String
+  fileName    String
+  /// PREVIEW | INVALID | APPLYING | APPLIED | FAILED
+  status      String    @default("PREVIEW")
+  plan        Json      @default("{}")
+  errors      Json      @default("[]")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  appliedAt   DateTime?
+
+  line ProductLine @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, lineId, createdAt])
 }

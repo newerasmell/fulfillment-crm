@@ -40,7 +40,7 @@ export function categoryOf(kind: string): AlertCategory {
   return "other";
 }
 
-type Ctx = ScopedActor & { activeCompanyId?: string | null };
+type Ctx = ScopedActor & { activeCompanyId?: string | null; lineCompanyIds?: string[] | null };
 
 interface ListFilter {
   category?: AlertCategory;
@@ -100,8 +100,15 @@ async function companiesOf(
 }
 
 /** Restricted members see alerts of their companies only; the sidebar company filter narrows further. */
-function visible(company: string | null | undefined, scope: CompanyScope, active: string | null | undefined) {
+function visible(
+  company: string | null | undefined,
+  scope: CompanyScope,
+  active: string | null | undefined,
+  lineCompanyIds?: string[] | null,
+) {
   if (active) return company === active;
+  // Sidebar product line (P5-00): alerts of that line's companies; group-level alerts (no company) as before.
+  if (lineCompanyIds) return company ? lineCompanyIds.includes(company) : !scope;
   if (!scope) return true;
   return !!company && scope.includes(company);
 }
@@ -125,7 +132,7 @@ async function openAlertsInScope(ctx: Ctx) {
         order: e?.orderId ? { id: e.orderId, number: e.orderNumber! } : null,
       };
     })
-    .filter((a) => visible(a.companyId, ctx.companyScope ?? null, ctx.activeCompanyId));
+    .filter((a) => visible(a.companyId, ctx.companyScope ?? null, ctx.activeCompanyId, ctx.lineCompanyIds));
 }
 
 const SEVERITY_RANK: Record<AlertSeverity, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };

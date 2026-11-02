@@ -48,6 +48,10 @@ export const PERMISSIONS = {
   "reviews.reasonCodes": ["OWNER", "ADMIN"],
   /** Alerts and tasks: assign and resolve with a note (Сигнали и задачи). */
   "alerts.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** Product lines: create/rename/archive lines and put companies into them (Настройки → Линии и фирми). */
+  "lines.manage": ["OWNER", "ADMIN"],
+  /** Master catalogue tool, mapping import and match decisions of a line (Продукти). */
+  "lines.catalogue": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

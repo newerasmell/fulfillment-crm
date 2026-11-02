@@ -27,6 +27,17 @@
   --color-block: #a51c12;
   --color-block-bg: #fdecea;
   --color-dark: #17171a;
+  /* Product line identity (P5-00): never a status or warehouse colour; always shown with the line name. */
+  --color-pl-rose: #b4236b;
+  --color-pl-rose-chip: #fbe9f2;
+  --color-pl-slate: #44505e;
+  --color-pl-slate-chip: #eceff3;
+  --color-pl-brown: #7a4e2d;
+  --color-pl-brown-chip: #f4ece4;
+  --color-pl-olive: #5a6514;
+  --color-pl-olive-chip: #f1f3df;
+  --color-pl-ink: #3c3c43;
+  --color-pl-ink-chip: #ededea;
 
   --radius-card: 12px;
   --radius-pill: 999px;

@@ -75,6 +75,15 @@ export async function listOrders(ctx: Ctx, f: OrderFilters) {
         tags: true,
         store: { select: { name: true, code: true } },
         _count: { select: { lines: true } },
+        companyId: true,
+        company: { select: { name: true, line: { select: { name: true, color: true } } } },
+        fulfillments: {
+          where: { status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+          select: { connectionId: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+        check: { select: { connectionId: true } },
       },
       orderBy: { placedAt: "desc" },
       skip: (page - 1) * ORDERS_PAGE_SIZE,
@@ -82,7 +91,36 @@ export async function listOrders(ctx: Ctx, f: OrderFilters) {
     }),
     db.order.count({ where }),
   ]);
-  return { rows, total, page, pages: Math.max(1, Math.ceil(total / ORDERS_PAGE_SIZE)) };
+  // Shipping warehouse (P5-00 marker): the active shipment's connection, else the one the check routed to.
+  const connIds = [
+    ...new Set(
+      rows
+        .map((r) => r.fulfillments[0]?.connectionId ?? r.check?.connectionId)
+        .filter((c): c is string => !!c),
+    ),
+  ];
+  const conns = connIds.length
+    ? await db.fulfillmentConnection.findMany({
+        where: { id: { in: connIds } },
+        select: { id: true, name: true, type: true, companyId: true, company: { select: { name: true } } },
+      })
+    : [];
+  const connOf = new Map(conns.map((c) => [c.id, c]));
+  const withWarehouse = rows.map(({ fulfillments, check, ...r }) => {
+    const c = connOf.get(fulfillments[0]?.connectionId ?? check?.connectionId ?? "");
+    return {
+      ...r,
+      warehouse: c
+        ? {
+            name: c.name,
+            type: c.type,
+            companyName: c.company?.name ?? null,
+            otherCompany: !!r.companyId && !!c.companyId && c.companyId !== r.companyId,
+          }
+        : null,
+    };
+  });
+  return { rows: withWarehouse, total, page, pages: Math.max(1, Math.ceil(total / ORDERS_PAGE_SIZE)) };
 }
 
 /** Counts per tab for the same filters (each tab number links to its list). */

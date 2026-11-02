@@ -41,8 +41,15 @@ export function companyWhere(scope: CompanyScope): { companyId?: { in: string[] 
  * `where` fragment for screens: the company picked in the sidebar if any, otherwise every company the member
  * may see. Use it on every query of company-owned rows (stores, connections, orders).
  */
-export function companyFilter(ctx: { companyScope: CompanyScope; activeCompanyId: string | null }) {
-  return ctx.activeCompanyId ? { companyId: ctx.activeCompanyId } : companyWhere(ctx.companyScope);
+export function companyFilter(ctx: {
+  companyScope: CompanyScope;
+  activeCompanyId: string | null;
+  /** Companies of the sidebar product line (P5-00), already limited to the member's scope; null = no line filter. */
+  lineCompanyIds?: string[] | null;
+}) {
+  if (ctx.activeCompanyId) return { companyId: ctx.activeCompanyId };
+  if (ctx.lineCompanyIds) return { companyId: { in: ctx.lineCompanyIds } };
+  return companyWhere(ctx.companyScope);
 }
 
 export async function listCompanies(

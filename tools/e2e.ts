@@ -51,6 +51,9 @@ try {
   // Synthetic Fulfill / write-back / alerts data (wave 2, fulfill track): tests/e2e/fulfill.spec.ts.
   const { seedFulfill } = await import("./e2e-fulfill");
   await seedFulfill({ userId: owner.user.id, accountId: owner.account.id }, company.id);
+  // Product lines + master catalogue (wave 3, core track): its own group and OWNER (tests/e2e/lines.spec.ts).
+  const { seedLines } = await import("../tests/e2e/seed-lines");
+  const linesOwner = await seedLines();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -70,6 +73,9 @@ try {
       E2E_REVIEW_EMAIL: reviewer.email,
       E2E_REVIEW_PASSWORD: reviewer.password,
       E2E_REVIEW_TOTP: reviewer.totp,
+      E2E_LINES_EMAIL: linesOwner.email,
+      E2E_LINES_PASSWORD: linesOwner.password,
+      E2E_LINES_TOTP: linesOwner.totp,
     },
   });
   status = run.status ?? 1;

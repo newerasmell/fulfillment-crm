@@ -10,6 +10,7 @@ import { registerApiWatcherWorkers } from "@/server/api-watcher/jobs";
 import { registerCheckWorkers } from "@/server/checks/jobs";
 import { registerFulfillWorkers } from "@/server/fulfill/jobs";
 import { registerAlertWorkers } from "@/server/alerts/jobs";
+import { registerLineWorkers } from "@/server/lines/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -67,6 +68,7 @@ export async function registerWorkers(deps: WorkerDeps) {
   await registerCheckWorkers(boss, opts);
   await registerFulfillWorkers(boss, opts);
   await registerAlertWorkers(boss, opts);
+  await registerLineWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

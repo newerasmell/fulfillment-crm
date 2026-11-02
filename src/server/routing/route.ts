@@ -29,11 +29,23 @@ export async function loadRoutingContext(accountId: string): Promise<RoutingCont
   const [rules, connections, stores] = await Promise.all([
     db.routingRule.findMany({ orderBy: [{ priority: "asc" }, { id: "asc" }] }),
     db.fulfillmentConnection.findMany({
-      select: { id: true, name: true, type: true, companyId: true, enabled: true },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        companyId: true,
+        enabled: true,
+        company: { select: { lineId: true } },
+      },
     }),
     db.store.findMany({ select: { id: true, code: true } }),
   ]);
-  return { accountId, rules, connections, storeCodes: new Map(stores.map((s) => [s.id, s.code])) };
+  return {
+    accountId,
+    rules,
+    connections: connections.map(({ company, ...c }) => ({ ...c, lineId: company?.lineId ?? null })),
+    storeCodes: new Map(stores.map((s) => [s.id, s.code])),
+  };
 }
 
 /** Sellable units per CRM product at each stock-holding connection (first non-archived vendor product). */
@@ -84,6 +96,7 @@ export async function loadRoutingOrder(accountId: string, orderId: string): Prom
     where: { id: orderId },
     select: {
       companyId: true,
+      company: { select: { lineId: true } },
       storeId: true,
       countryCode: true,
       paymentMethod: true,
@@ -92,8 +105,10 @@ export async function loadRoutingOrder(accountId: string, orderId: string): Prom
     },
   });
   if (!order) throw new DomainError("not_found");
+  const { company, ...rest } = order;
   return {
-    ...order,
+    ...rest,
+    lineId: company?.lineId ?? null,
     lines: order.lines.map((l) => ({
       productId: l.productId,
       quantity: l.quantity,
