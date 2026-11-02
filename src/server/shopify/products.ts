@@ -1,9 +1,11 @@
-import { z } from "zod";
+import type { z } from "zod";
+import type { CrmOrderStatus } from "@/generated/prisma/client";
 import type { ShopifyClient } from "@/integrations/shopify/client";
 import {
   PRODUCT_VARIANTS_QUERY,
   ProductVariants,
   VARIANTS_PAGE_QUERY,
+  VARIANTS_PAGE_SIZE,
   VariantsPage,
   type ShopifyVariant,
 } from "@/integrations/shopify/products";
@@ -17,9 +19,13 @@ import { logger } from "@/lib/logger";
 /**
  * Shopify variants → StoreVariantLink, matched to the group's master Product (SPEC §3). One physical product
  * has ONE master record; each store's variant and each warehouse's code point to it.
- * Auto-match: variant SKU with the store's prefix stripped == master SKU (case-insensitive). A manual link is
- * never overwritten by the automation. EAN/barcode is kept for display and suggestions, never as the key.
+ * Auto-match: variant SKU with the store's prefix stripped == master SKU (case-insensitive, and only when
+ * exactly one master product fits). A manual link is never overwritten by the automation. EAN/barcode is kept
+ * for display only, never as a key.
  */
+
+/** Orders whose lines may still be re-pointed to another product (nothing sent to a warehouse yet). */
+const RELINKABLE: CrmOrderStatus[] = ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY", "ON_HOLD", "BLOCKED"];
 
 export function stripSkuPrefix(
   sku: string | null | undefined,
@@ -34,15 +40,19 @@ export function stripSkuPrefix(
 type StoreForSync = { id: string; skuPrefix: string | null };
 type Tx = Parameters<Parameters<typeof withAccountTransaction>[1]>[0];
 
-/** Automatic match: SKU without the store prefix equals a master SKU (case-insensitive). */
+/** Automatic match: SKU without the store prefix equals exactly one master SKU (case-insensitive). */
 export async function matchBySku(tx: Tx, sku: string | null | undefined, prefix: string | null | undefined) {
   const key = stripSkuPrefix(sku, prefix);
   if (!key) return null;
-  const product = await tx.product.findFirst({
+  const products = await tx.product.findMany({
     where: { sku: { equals: key, mode: "insensitive" }, archived: false },
     select: { id: true },
+    take: 2,
   });
-  return product ? { productId: product.id, matchMethod: "sku", matchedAt: new Date() } : null;
+  // Two masters that differ only by case are ambiguous: leave it to a person.
+  return products.length === 1
+    ? { productId: products[0]!.id, matchMethod: "sku", matchedAt: new Date() }
+    : null;
 }
 
 export async function upsertVariant(accountId: string, store: StoreForSync, v: ShopifyVariant) {
@@ -62,23 +72,23 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
       : await tx.storeVariantLink.create({
           data: { accountId, storeId: store.id, shopifyVariantGid: v.id, ...data, ...(match ?? {}) },
         });
-    if (match) await attachOrderLines(tx, link.id, match.productId);
-    return { linkId: link.id, matched: !!(link.productId ?? match) };
+    // Automatic match only fills lines that have no product yet.
+    if (match)
+      await tx.orderLine.updateMany({
+        where: { variantLinkId: link.id, productId: null },
+        data: { productId: match.productId },
+      });
+    return { linkId: link.id, matched: !!link.productId };
   });
-}
-
-/** Order lines imported before the variant was matched get the product now (only if still unset). */
-async function attachOrderLines(tx: Tx, linkId: string, productId: string) {
-  await tx.orderLine.updateMany({ where: { variantLinkId: linkId, productId: null }, data: { productId } });
 }
 
 export async function syncStoreProducts(accountId: string, store: StoreForSync, client: ShopifyClient) {
   let after: string | null = null;
   const counts = { variants: 0, matched: 0 };
-  for (let page = 0; page < 1000; page++) {
+  for (let page = 0; page < 100_000; page++) {
     const res: z.infer<typeof VariantsPage> = await client.query(
       VARIANTS_PAGE_QUERY,
-      { first: 100, after, query: null },
+      { first: VARIANTS_PAGE_SIZE, after, query: null },
       VariantsPage,
     );
     for (const v of res.productVariants.nodes) {
@@ -92,18 +102,30 @@ export async function syncStoreProducts(accountId: string, store: StoreForSync, 
   return counts;
 }
 
-/** Webhook follow-up for products/update: re-read the product's variants from Shopify. */
+/** Webhook follow-up for products/update: re-read the product's variants from Shopify (all pages). */
 export async function refreshShopifyProduct(
   accountId: string,
   store: StoreForSync,
   client: ShopifyClient,
   productGid: string,
 ) {
-  const { product } = await client.query(PRODUCT_VARIANTS_QUERY, { id: productGid }, ProductVariants);
-  for (const v of product?.variants.nodes ?? []) await upsertVariant(accountId, store, v);
+  let after: string | null = null;
+  for (let page = 0; page < 1000; page++) {
+    const res: z.infer<typeof ProductVariants> = await client.query(
+      PRODUCT_VARIANTS_QUERY,
+      { id: productGid, after },
+      ProductVariants,
+    );
+    if (!res.product) return;
+    for (const v of res.product.variants.nodes) await upsertVariant(accountId, store, v);
+    if (!res.product.variants.pageInfo.hasNextPage) return;
+    after = res.product.variants.pageInfo.endCursor ?? null;
+  }
 }
 
 // ───────────── the "unmatched" work queue ─────────────
+
+type ScopedActor = Actor & { companyScope: CompanyScope };
 
 export async function listUnmatchedVariants(
   ctx: { accountId: string; companyScope: CompanyScope; activeCompanyId: string | null },
@@ -122,79 +144,95 @@ export async function listUnmatchedVariants(
   });
 }
 
-async function linkVariantTo(
-  actor: Actor & { companyScope: CompanyScope },
-  linkId: string,
-  productId: string,
-  method: "manual" | "created",
-) {
-  await withAccountTransaction(actor.accountId, async (tx) => {
-    const link = await tx.storeVariantLink.findUnique({
-      where: { id: linkId },
-      include: { store: { select: { companyId: true } } },
-    });
-    if (!link || (actor.companyScope && !actor.companyScope.includes(link.store.companyId ?? ""))) {
-      throw new DomainError("not_found");
-    }
-    await tx.storeVariantLink.update({
-      where: { id: linkId },
-      data: { productId, matchMethod: method, matchedAt: new Date() },
-    });
-    await attachOrderLines(tx, linkId, productId);
+/** Loads a link the actor may see (its store's company is in scope); not_found otherwise. */
+async function scopedLink(tx: Tx, actor: ScopedActor, linkId: string) {
+  const link = await tx.storeVariantLink.findUnique({ where: { id: linkId }, include: { store: true } });
+  if (!link || (actor.companyScope && !actor.companyScope.includes(link.store.companyId ?? ""))) {
+    throw new DomainError("not_found");
+  }
+  return link;
+}
+
+/**
+ * Points the variant (and the lines of orders not yet sent anywhere) at the product. A person's decision
+ * also replaces a previous link, so re-linking from A to B moves those order lines to B.
+ */
+async function applyLink(tx: Tx, linkId: string, productId: string, method: "manual" | "created") {
+  await tx.storeVariantLink.update({
+    where: { id: linkId },
+    data: { productId, matchMethod: method, matchedAt: new Date() },
   });
+  await tx.orderLine.updateMany({
+    where: { variantLinkId: linkId, order: { status: { in: RELINKABLE } } },
+    data: { productId },
+  });
+}
+
+async function auditLink(
+  actor: ScopedActor,
+  linkId: string,
+  before: string | null,
+  productId: string,
+  method: string,
+) {
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
     action: "variant.link",
     entityType: "StoreVariantLink",
     entityId: linkId,
+    before: { productId: before },
     after: { productId, method },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
 }
 
-export async function linkVariant(
-  actor: Actor & { companyScope: CompanyScope },
-  linkId: string,
-  productSku: string,
-) {
+export async function linkVariant(actor: ScopedActor, linkId: string, productSku: string) {
   assertCan(actor.role, "products.match");
-  const product = await accountDb(actor.accountId).product.findFirst({
-    where: { sku: { equals: productSku.trim(), mode: "insensitive" }, archived: false },
+  const { before, productId } = await withAccountTransaction(actor.accountId, async (tx) => {
+    const link = await scopedLink(tx, actor, linkId);
+    const products = await tx.product.findMany({
+      where: { sku: { equals: productSku.trim(), mode: "insensitive" }, archived: false },
+      select: { id: true, sku: true },
+    });
+    const product =
+      products.find((p) => p.sku === productSku.trim()) ?? (products.length === 1 ? products[0] : null);
+    if (!product) throw new DomainError("product_not_found");
+    await applyLink(tx, linkId, product.id, "manual");
+    return { before: link.productId, productId: product.id };
   });
-  if (!product) throw new DomainError("product_not_found");
-  await linkVariantTo(actor, linkId, product.id, "manual");
+  await auditLink(actor, linkId, before, productId, "manual");
 }
 
-/** Creates the master product from a Shopify variant (SKU without the store prefix) and links it. */
-export async function createProductFromVariant(
-  actor: Actor & { companyScope: CompanyScope },
-  linkId: string,
-) {
+/** Creates the master product from a Shopify variant (SKU without the store prefix) and links it — atomically. */
+export async function createProductFromVariant(actor: ScopedActor, linkId: string) {
   assertCan(actor.role, "products.match");
-  const db = accountDb(actor.accountId);
-  const link = await db.storeVariantLink.findUnique({ where: { id: linkId }, include: { store: true } });
-  if (!link) throw new DomainError("not_found");
-  const sku = stripSkuPrefix(link.sku, link.store.skuPrefix);
-  if (!sku) throw new DomainError("variant_without_sku");
-  let product;
-  try {
-    product = await db.product.create({ data: { accountId: actor.accountId, sku, name: link.title } });
-  } catch (err) {
+  const result = await withAccountTransaction(actor.accountId, async (tx) => {
+    const link = await scopedLink(tx, actor, linkId);
+    const sku = stripSkuPrefix(link.sku, link.store.skuPrefix);
+    if (!sku) throw new DomainError("variant_without_sku");
+    if (
+      await tx.product.findFirst({
+        where: { sku: { equals: sku, mode: "insensitive" } },
+        select: { id: true },
+      })
+    ) {
+      throw new DomainError("product_exists");
+    }
+    const product = await tx.product.create({ data: { accountId: actor.accountId, sku, name: link.title } });
+    // Informational only (EAN is never a key).
+    if (link.barcode) {
+      await tx.productEan.create({
+        data: { accountId: actor.accountId, productId: product.id, ean: link.barcode, source: "shopify" },
+      });
+    }
+    await applyLink(tx, linkId, product.id, "created");
+    return { product, before: link.productId };
+  }).catch((err) => {
     if (isUniqueViolation(err)) throw new DomainError("product_exists");
     throw err;
-  }
-  if (link.barcode) {
-    // Informational only (EAN is never a key); a barcode already recorded elsewhere is simply not repeated.
-    await db.productEan
-      .create({
-        data: { accountId: actor.accountId, productId: product.id, ean: link.barcode, source: "shopify" },
-      })
-      .catch((err) => {
-        if (!isUniqueViolation(err)) throw err;
-      });
-  }
-  await linkVariantTo(actor, linkId, product.id, "created");
-  return product;
+  });
+  await auditLink(actor, linkId, result.before, result.product.id, "created");
+  return result.product;
 }

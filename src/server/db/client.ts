@@ -217,6 +217,11 @@ export type LockableTable = "Membership" | "FulfillmentConnection";
 export interface AccountTxHelpers {
   /** SELECT … FOR UPDATE on this account's rows of `table` (one row when `id` is given). */
   lockForUpdate(table: LockableTable, id?: string): Promise<void>;
+  /**
+   * Transaction-scoped advisory lock on (account, key): serialises work on something that may not exist as a
+   * row yet (e.g. importing one Shopify order from a webhook and the reconcile at the same time).
+   */
+  lockKey(key: string): Promise<void>;
 }
 
 /**
@@ -249,6 +254,10 @@ export async function withAccountTransaction<T>(
             accountId,
           );
         }
+      },
+      async lockKey(key) {
+        // Wrapped so the result has a plain column (the function itself returns void).
+        await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${`${accountId}:${key}`}, 0))) l`;
       },
     };
     return fn(scopeTransactionClient(tx, accountId), helpers);

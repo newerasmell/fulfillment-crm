@@ -2,6 +2,11 @@ import { z } from "zod";
 
 /** Variant queries (API 2026-10: barcodes are a connection, `barcodes { nodes { value } }`). */
 
+/** Bounded by the 1000-point query cost cap (see query-cost.test.ts). */
+export const VARIANTS_PAGE_SIZE = 50;
+export const PRODUCT_VARIANTS_PAGE_SIZE = 50;
+
+/** One barcode is enough: it is shown as a hint only, never used as a key. */
 const VARIANT_FIELDS = /* GraphQL */ `
   fragment VariantFields on ProductVariant {
     id
@@ -9,7 +14,7 @@ const VARIANT_FIELDS = /* GraphQL */ `
     title
     displayName
     updatedAt
-    barcodes(first: 5) {
+    barcodes(first: 1) {
       nodes {
         value
       }
@@ -40,12 +45,16 @@ export const VARIANTS_PAGE_QUERY = /* GraphQL */ `
 
 export const PRODUCT_VARIANTS_QUERY = /* GraphQL */ `
   ${VARIANT_FIELDS}
-  query ProductVariants($id: ID!) {
+  query ProductVariants($id: ID!, $after: String) {
     product(id: $id) {
       id
-      variants(first: 250) {
+      variants(first: ${PRODUCT_VARIANTS_PAGE_SIZE}, after: $after) {
         nodes {
           ...VariantFields
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
@@ -71,5 +80,13 @@ export const VariantsPage = z.object({
 });
 
 export const ProductVariants = z.object({
-  product: z.object({ id: z.string(), variants: z.object({ nodes: z.array(ShopifyVariant) }) }).nullable(),
+  product: z
+    .object({
+      id: z.string(),
+      variants: z.object({
+        nodes: z.array(ShopifyVariant),
+        pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullish() }),
+      }),
+    })
+    .nullable(),
 });

@@ -88,8 +88,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   sent it. Webhooks are registered by the worker against `https://$APP_HOST/api/webhooks/shopify` (APP_HOST comes
   from the web service in render.yaml). Order lines of not-yet-synced variants get a stub StoreVariantLink so the
   product sync / matching queue can attach them later. Manual variant links are never overwritten by auto-match.
-  Before approval Shopify edits apply directly (lines, untouched address, cancellation); after approval they
-  open operator tasks. Saved views in the orders list are URL-based for now (filters live in the query string).
+  Before approval Shopify edits apply directly (lines, untouched address, cancellation); after approval only
+  Shopify's status fields follow and meaningful changes open operator tasks. Test orders are imported ON_HOLD. Saved views in the orders list are URL-based for now (filters live in the query string).
+  Phase 1 audit: docs/audits/phase-1.md (query-cost cap, stately queues, import lock, post-approval protection).
 
 ## Open questions
 See SPEC.md §11.

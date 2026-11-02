@@ -31,7 +31,7 @@ export interface OutboxSendData {
   accountId: string;
 }
 
-/** Queues a send job for one outbox row (singleton per request while queued). */
+/** Queues a send job for one outbox row (duplicates are possible and harmless: the sender claims atomically). */
 export function scheduleOutboxSend(boss: PgBoss, data: OutboxSendData) {
   return boss.send(QUEUES.outboxSend.name, data, { singletonKey: data.requestId });
 }

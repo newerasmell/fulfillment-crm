@@ -6,12 +6,16 @@ import { login } from "./helpers";
 test("orders: tabs with counts, filters and a read-only detail", async ({ page }) => {
   test.setTimeout(180_000);
   await login(page);
-  await expect(page.getByRole("link", { name: /За преглед/ }).first()).toContainText("3");
+  await expect(page.getByRole("link", { name: /За преглед/ }).first()).toContainText("2");
   await page.goto("/orders");
   const tabs = page.getByRole("navigation", { name: "Изгледи" });
-  await expect(tabs.getByRole("link", { name: /За преглед/ })).toContainText("3");
-  await expect(page.getByRole("row")).toHaveCount(4);
+  await expect(tabs.getByRole("link", { name: /За преглед/ })).toContainText("2");
+  await expect(page.getByRole("row")).toHaveCount(3);
+  // The Shopify test order is held, never in the review queue.
+  await tabs.getByRole("link", { name: /Блокирани/ }).click();
   await expect(page.getByText("тест", { exact: true })).toBeVisible();
+  await expect(page.getByText("Задържана")).toBeVisible();
+  await tabs.getByRole("link", { name: /За преглед/ }).click();
 
   await page.getByRole("textbox", { name: "Държава" }).fill("RO");
   await page.getByRole("button", { name: "Филтрирай" }).click();

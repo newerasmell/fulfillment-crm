@@ -1,9 +1,13 @@
 import type { CrmOrderStatus, Prisma } from "@/generated/prisma/client";
 import type { ShopifyClient } from "@/integrations/shopify/client";
+import type { z } from "zod";
 import {
   ORDER_BY_ID_QUERY,
+  ORDER_LINES_QUERY,
   OrderById,
+  OrderLines,
   ORDERS_PAGE_QUERY,
+  ORDERS_PAGE_SIZE,
   OrdersPage,
   type ShopifyOrder,
 } from "@/integrations/shopify/orders";
@@ -70,13 +74,33 @@ export interface ImportResult {
   outcome: "created" | "updated" | "stale";
 }
 
+/** What, if it changes in Shopify after approval, an operator must look at (not status or our own write-backs). */
+function meaningful(o: ShopifyOrder) {
+  return {
+    lines: o.lineItems.nodes
+      .filter((l) => l.currentQuantity > 0)
+      .map((l) => [l.id, l.variant?.id ?? null, l.currentQuantity])
+      .sort(),
+    address: normaliseAddress(o.shippingAddress),
+    total: money(o.totalPriceSet),
+    outstanding: money(o.totalOutstandingSet),
+    gateways: [...o.paymentGatewayNames].sort(),
+    email: o.email ?? null,
+    phone: o.phone ?? null,
+    cancelled: !!o.cancelledAt,
+  };
+}
+
 export async function importShopifyOrder(
   accountId: string,
   store: StoreForImport,
   o: ShopifyOrder,
 ): Promise<ImportResult> {
   const updatedAt = new Date(o.updatedAt);
-  return withAccountTransaction(accountId, async (tx) => {
+  return withAccountTransaction(accountId, async (tx, { lockKey }) => {
+    // Webhook and reconcile workers may import the same order at the same moment: serialise them, so the
+    // "older never overwrites newer" check and the create-or-update decision see each other's result.
+    await lockKey(`shopify-order:${store.id}:${o.id}`);
     const existing = await tx.order.findUnique({
       where: { accountId_storeId_shopifyOrderGid: { accountId, storeId: store.id, shopifyOrderGid: o.id } },
       select: {
@@ -85,53 +109,14 @@ export async function importShopifyOrder(
         shopifyUpdatedAt: true,
         shippingAddress: true,
         shippingAddressOriginal: true,
+        raw: true,
       },
     });
     if (existing?.shopifyUpdatedAt && existing.shopifyUpdatedAt >= updatedAt) {
       return { orderId: existing.id, outcome: "stale" as const };
     }
 
-    const cod = isCod(o.paymentGatewayNames, store.codGateways);
-    const shipping = normaliseAddress(o.shippingAddress);
-    const customerName =
-      shipping?.name ?? ([o.customer?.firstName, o.customer?.lastName].filter(Boolean).join(" ") || null);
-    const tags = o.test ? [...o.tags, "shopify-test"] : o.tags;
-    const preApproval = !existing || PRE_APPROVAL.has(existing.status);
-    // Keep an operator's corrected address: only refresh the normalised copy if nobody edited it.
-    const addressUntouched =
-      !existing ||
-      jsonEqual(
-        existing.shippingAddress,
-        normaliseAddress(existing.shippingAddressOriginal as Address | null),
-      );
-
-    const common = {
-      companyId: store.companyId,
-      number: o.name,
-      customerName,
-      email: o.email ?? o.customer?.defaultEmailAddress?.emailAddress ?? null,
-      phone: o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
-      shippingAddressOriginal: json(o.shippingAddress),
-      ...(addressUntouched && preApproval ? { shippingAddress: json(shipping) } : {}),
-      billingAddress: json(normaliseAddress(o.billingAddress)),
-      countryCode: shipping?.countryCode ?? null,
-      currency: o.currencyCode,
-      subtotal: money(o.subtotalPriceSet),
-      total: money(o.totalPriceSet),
-      paymentMethod: cod ? ("COD" as const) : ("PREPAID" as const),
-      codAmount: cod
-        ? Number(money(o.totalOutstandingSet)) > 0
-          ? money(o.totalOutstandingSet)
-          : money(o.totalPriceSet)
-        : null,
-      tags,
-      note: o.note ?? null,
-      risk: json(
-        o.risk
-          ? { recommendation: o.risk.recommendation, levels: o.risk.assessments.map((a) => a.riskLevel) }
-          : null,
-      ),
-      placedAt: new Date(o.processedAt),
+    const shopifyState = {
       cancelledAt: o.cancelledAt ? new Date(o.cancelledAt) : null,
       shopifyFinancialStatus: o.displayFinancialStatus ?? null,
       shopifyFulfillmentStatus: o.displayFulfillmentStatus,
@@ -139,41 +124,22 @@ export async function importShopifyOrder(
       raw: json(o),
     };
 
-    let orderId: string;
-    let outcome: ImportResult["outcome"];
-    if (!existing) {
-      const created = await tx.order.create({
-        data: {
+    // After approval the CRM is the source of truth: amounts, COD and recipient were already decided (and
+    // possibly sent to the warehouse). Only Shopify's own status fields follow; real changes become a task.
+    if (existing && !PRE_APPROVAL.has(existing.status)) {
+      await tx.order.update({ where: { id: existing.id }, data: shopifyState });
+      const before = existing.raw ? meaningful(existing.raw as unknown as ShopifyOrder) : null;
+      if (o.cancelledAt && existing.status !== "CANCELLED" && !before?.cancelled) {
+        await openTask(
+          tx,
           accountId,
-          source: "SHOPIFY",
-          storeId: store.id,
-          shopifyOrderGid: o.id,
-          status: o.cancelledAt ? "CANCELLED" : "IMPORTED",
-          ...common,
-        },
-      });
-      orderId = created.id;
-      outcome = "created";
-    } else {
-      let status: CrmOrderStatus | undefined;
-      if (o.cancelledAt && existing.status !== "CANCELLED") {
-        if (PRE_APPROVAL.has(existing.status)) status = "CANCELLED";
-        else
-          await openTask(
-            tx,
-            accountId,
-            existing.id,
-            "shopify_cancelled_after_approval",
-            `Order ${o.name} was cancelled in Shopify after approval — check the warehouse`,
-          );
+          existing.id,
+          "shopify_cancelled_after_approval",
+          `Order ${o.name} was cancelled in Shopify after approval — check the warehouse`,
+        );
       }
-      await tx.order.update({
-        where: { id: existing.id },
-        data: { ...common, ...(status ? { status } : {}) },
-      });
-      orderId = existing.id;
-      outcome = "updated";
-      if (!preApproval) {
+      const now = meaningful(o);
+      if (before && !jsonEqual({ ...before, cancelled: false }, { ...now, cancelled: false })) {
         await openTask(
           tx,
           accountId,
@@ -182,9 +148,83 @@ export async function importShopifyOrder(
           `Order ${o.name} changed in Shopify after approval — compare before shipping`,
         );
       }
+      return { orderId: existing.id, outcome: "updated" as const };
     }
 
-    if (preApproval) await replaceLines(tx, accountId, store, orderId, o);
+    // COD only when a COD gateway was used AND money is still owed; a COD gateway with nothing outstanding
+    // (paid otherwise, or marked paid) must never be collected at the door.
+    const codGateway = isCod(o.paymentGatewayNames, store.codGateways);
+    const outstanding = Number(money(o.totalOutstandingSet));
+    const cod = codGateway && outstanding > 0;
+    const shipping = normaliseAddress(o.shippingAddress);
+    const customerName =
+      shipping?.name ?? ([o.customer?.firstName, o.customer?.lastName].filter(Boolean).join(" ") || null);
+    const tags = o.test ? [...o.tags, "shopify-test"] : o.tags;
+    // Keep an operator's corrected address: only refresh the normalised copy if nobody edited it.
+    const addressUntouched =
+      !existing ||
+      jsonEqual(
+        existing.shippingAddress,
+        normaliseAddress(existing.shippingAddressOriginal as Address | null),
+      );
+
+    const data = {
+      ...shopifyState,
+      companyId: store.companyId,
+      number: o.name,
+      customerName,
+      email: o.email ?? o.customer?.defaultEmailAddress?.emailAddress ?? null,
+      phone: o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
+      shippingAddressOriginal: json(o.shippingAddress),
+      ...(addressUntouched ? { shippingAddress: json(shipping) } : {}),
+      billingAddress: json(normaliseAddress(o.billingAddress)),
+      countryCode: shipping?.countryCode ?? null,
+      currency: o.currencyCode,
+      subtotal: money(o.subtotalPriceSet),
+      total: money(o.totalPriceSet),
+      paymentMethod: cod ? ("COD" as const) : ("PREPAID" as const),
+      codAmount: cod ? money(o.totalOutstandingSet) : null,
+      tags,
+      note: o.note ?? null,
+      risk: json(
+        o.risk
+          ? { recommendation: o.risk.recommendation, levels: o.risk.assessments.map((a) => a.riskLevel) }
+          : null,
+      ),
+      placedAt: new Date(o.processedAt),
+    };
+
+    let orderId: string;
+    let outcome: ImportResult["outcome"];
+    if (!existing) {
+      // Shopify test orders are held: they must never reach a warehouse by accident.
+      const status: CrmOrderStatus = o.cancelledAt ? "CANCELLED" : o.test ? "ON_HOLD" : "IMPORTED";
+      const created = await tx.order.create({
+        data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
+      });
+      orderId = created.id;
+      outcome = "created";
+    } else {
+      await tx.order.update({
+        where: { id: existing.id },
+        data: {
+          ...data,
+          ...(o.cancelledAt && existing.status !== "CANCELLED" ? { status: "CANCELLED" as const } : {}),
+        },
+      });
+      orderId = existing.id;
+      outcome = "updated";
+    }
+    if (codGateway && !cod && !o.cancelledAt) {
+      await openTask(
+        tx,
+        accountId,
+        orderId,
+        "cod_nothing_outstanding",
+        `Order ${o.name} used a cash-on-delivery method but nothing is outstanding — imported as prepaid, check before shipping`,
+      );
+    }
+    await replaceLines(tx, accountId, store, orderId, o);
     return { orderId, outcome };
   });
 }
@@ -269,9 +309,30 @@ async function openTask(
 
 export type SyncMode = { kind: "reconcile" } | { kind: "backfill"; days: number };
 
+/** Shopify's search index lags behind writes: re-read this much before the cursor (re-imports are no-ops). */
+const RECONCILE_OVERLAP_MS = 10 * 60_000;
+
+/** Orders come with the first ORDER_LINES_FIRST lines; fetch the rest so an order is never imported half. */
+export async function completeOrderLines(client: ShopifyClient, o: ShopifyOrder): Promise<ShopifyOrder> {
+  let pageInfo = o.lineItems.pageInfo;
+  const nodes = [...o.lineItems.nodes];
+  for (let page = 0; pageInfo?.hasNextPage && page < 100; page++) {
+    const { order } = await client.query(
+      ORDER_LINES_QUERY,
+      { id: o.id, after: pageInfo.endCursor ?? null },
+      OrderLines,
+    );
+    if (!order) break;
+    nodes.push(...order.lineItems.nodes);
+    pageInfo = order.lineItems.pageInfo;
+  }
+  if (pageInfo?.hasNextPage) throw new Error(`order ${o.id}: too many line items`);
+  return { ...o, lineItems: { nodes, pageInfo: null } };
+}
+
 /**
- * Pulls orders page by page. Reconcile: everything updated since the stored cursor (minus a one-minute
- * overlap; re-imports are no-ops). Backfill: everything created in the last N days.
+ * Pulls orders page by page. Reconcile: everything updated since the stored cursor (minus an overlap).
+ * Backfill: everything created in the last N days.
  */
 export async function syncStoreOrders(
   accountId: string,
@@ -281,26 +342,39 @@ export async function syncStoreOrders(
   now = new Date(),
 ) {
   const cursors = (store.syncCursors ?? {}) as { ordersUpdatedAt?: string };
+  const cursorStart = new Date(cursors.ordersUpdatedAt ?? store.createdAt.getTime() - 86_400_000);
   const since =
     mode.kind === "backfill"
       ? `created_at:>='${new Date(now.getTime() - mode.days * 86_400_000).toISOString()}'`
-      : `updated_at:>='${new Date(new Date(cursors.ordersUpdatedAt ?? new Date(store.createdAt.getTime() - 86_400_000)).getTime() - 60_000).toISOString()}'`;
+      : `updated_at:>='${new Date(cursorStart.getTime() - RECONCILE_OVERLAP_MS).toISOString()}'`;
   let after: string | null = null;
   let maxUpdated = cursors.ordersUpdatedAt ? new Date(cursors.ordersUpdatedAt) : null;
   const counts = { created: 0, updated: 0, stale: 0 };
-  for (let page = 0; page < 1000; page++) {
-    const res: {
-      orders: { nodes: ShopifyOrder[]; pageInfo: { hasNextPage: boolean; endCursor?: string | null } };
-    } = await client.query(ORDERS_PAGE_QUERY, { first: 50, after, query: since }, OrdersPage);
+  for (let page = 0; page < 100_000; page++) {
+    const res: z.infer<typeof OrdersPage> = await client.query(
+      ORDERS_PAGE_QUERY,
+      { first: ORDERS_PAGE_SIZE, after, query: since },
+      OrdersPage,
+    );
     for (const o of res.orders.nodes) {
-      counts[(await importShopifyOrder(accountId, store, o)).outcome]++;
+      counts[(await importShopifyOrder(accountId, store, await completeOrderLines(client, o))).outcome]++;
       const u = new Date(o.updatedAt);
       if (!maxUpdated || u > maxUpdated) maxUpdated = u;
     }
     if (mode.kind === "reconcile" && maxUpdated) {
+      // Read-modify-write of the JSON is safe: one sync job per store at a time (stately queue).
+      const fresh = await accountDb(accountId).store.findUniqueOrThrow({
+        where: { id: store.id },
+        select: { syncCursors: true },
+      });
       await accountDb(accountId).store.update({
         where: { id: store.id },
-        data: { syncCursors: { ...(cursors as object), ordersUpdatedAt: maxUpdated.toISOString() } },
+        data: {
+          syncCursors: {
+            ...((fresh.syncCursors ?? {}) as object),
+            ordersUpdatedAt: maxUpdated.toISOString(),
+          },
+        },
       });
     }
     if (!res.orders.pageInfo.hasNextPage) break;
@@ -318,5 +392,5 @@ export async function refreshShopifyOrder(
   orderGid: string,
 ) {
   const { order } = await client.query(ORDER_BY_ID_QUERY, { id: orderGid }, OrderById);
-  return order ? importShopifyOrder(accountId, store, order) : null;
+  return order ? importShopifyOrder(accountId, store, await completeOrderLines(client, order)) : null;
 }

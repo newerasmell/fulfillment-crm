@@ -8,7 +8,7 @@ import { verifyWebhookHmac, webhookTarget } from "@/integrations/shopify/webhook
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createStore, type ScopedActor } from "@/server/stores";
-import { importShopifyOrder, isCod, syncStoreOrders } from "./orders";
+import { importShopifyOrder, isCod, refreshShopifyOrder, syncStoreOrders } from "./orders";
 import { createProductFromVariant, linkVariant, stripSkuPrefix, upsertVariant } from "./products";
 import { testStoreConnection } from "./connection";
 import { processShopifyWebhook, receiveShopifyWebhook, registerStoreWebhooks } from "./webhooks";
@@ -285,25 +285,121 @@ describe("Shopify import (DB)", () => {
     ).toBe("Corrected by operator");
   });
 
-  it("after approval Shopify changes become operator tasks, not silent edits", async () => {
+  it("after approval only Shopify's status fields follow; real changes become operator tasks", async () => {
     const s = await store();
+    const db = accountDb(accountId);
     const o = order({ id: "gid://shopify/Order/2002", name: "#2002" });
     const { orderId } = await importShopifyOrder(accountId, s, o);
-    await accountDb(accountId).order.update({ where: { id: orderId }, data: { status: "APPROVED" } });
+    await db.order.update({ where: { id: orderId }, data: { status: "APPROVED" } });
+    const tasks = async () =>
+      (await db.alert.findMany({ where: { entityId: orderId } })).map((a) => a.kind).sort();
+
+    // Status-only change (e.g. paid): no task, status fields follow.
+    await importShopifyOrder(accountId, s, {
+      ...o,
+      updatedAt: "2026-11-01T10:30:00Z",
+      displayFinancialStatus: "PAID",
+    });
+    expect(await tasks()).toEqual([]);
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).shopifyFinancialStatus).toBe(
+      "PAID",
+    );
+
+    // A refund lowers what is owed and the phone changes: COD and recipient stay as approved, a task opens.
     await importShopifyOrder(accountId, s, {
       ...o,
       updatedAt: "2026-11-01T11:00:00Z",
-      cancelledAt: "2026-11-01T11:00:00Z",
+      totalOutstandingSet: money("5.00"),
+      phone: "+359111111111",
     });
-    const after = await accountDb(accountId).order.findUniqueOrThrow({
-      where: { id: orderId },
-      include: { lines: true },
+    const after = await db.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(Number(after.codAmount)).toBe(45);
+    expect(after.phone).not.toBe("+359111111111");
+    expect(await tasks()).toEqual(["shopify_changed_after_approval"]);
+
+    await importShopifyOrder(accountId, s, {
+      ...o,
+      updatedAt: "2026-11-01T12:00:00Z",
+      totalOutstandingSet: money("5.00"),
+      phone: "+359111111111",
+      cancelledAt: "2026-11-01T12:00:00Z",
     });
-    expect(after.status).toBe("APPROVED");
-    const kinds = (await accountDb(accountId).alert.findMany({ where: { entityId: orderId } }))
-      .map((a) => a.kind)
-      .sort();
-    expect(kinds).toEqual(["shopify_cancelled_after_approval", "shopify_changed_after_approval"]);
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("APPROVED");
+    expect(await tasks()).toEqual(["shopify_cancelled_after_approval", "shopify_changed_after_approval"]);
+  });
+
+  it("COD only when money is owed; Shopify test orders are held", async () => {
+    const s = await store();
+    const db = accountDb(accountId);
+    const paid = await importShopifyOrder(
+      accountId,
+      s,
+      order({
+        id: "gid://shopify/Order/6001",
+        name: "#6001",
+        paymentGatewayNames: ["shopify_payments", "Cash on Delivery (COD)"],
+        totalOutstandingSet: money("0.00"),
+      }),
+    );
+    const p = await db.order.findUniqueOrThrow({ where: { id: paid.orderId } });
+    expect(p.paymentMethod).toBe("PREPAID");
+    expect(p.codAmount).toBeNull();
+    expect((await db.alert.findMany({ where: { entityId: paid.orderId } })).map((a) => a.kind)).toEqual([
+      "cod_nothing_outstanding",
+    ]);
+    const partly = await importShopifyOrder(
+      accountId,
+      s,
+      order({ id: "gid://shopify/Order/6002", name: "#6002", totalOutstandingSet: money("30.00") }),
+    );
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: partly.orderId } })).codAmount)).toBe(30);
+    const test = await importShopifyOrder(
+      accountId,
+      s,
+      order({ id: "gid://shopify/Order/6003", name: "#6003", test: true }),
+    );
+    expect((await db.order.findUniqueOrThrow({ where: { id: test.orderId } })).status).toBe("ON_HOLD");
+  });
+
+  it("concurrent imports of one order (webhook + reconcile) create it once and keep the newest version", async () => {
+    const s = await store();
+    const o = order({ id: "gid://shopify/Order/7001", name: "#7001" });
+    const results = await Promise.all([
+      importShopifyOrder(accountId, s, { ...o, updatedAt: "2026-11-01T10:00:00Z", note: "old" }),
+      importShopifyOrder(accountId, s, { ...o, updatedAt: "2026-11-01T11:00:00Z", note: "new" }),
+      importShopifyOrder(accountId, s, { ...o, updatedAt: "2026-11-01T10:30:00Z", note: "middle" }),
+    ]);
+    expect(results.filter((r) => r.outcome === "created")).toHaveLength(1);
+    const rows = await accountDb(accountId).order.findMany({ where: { shopifyOrderGid: o.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.note).toBe("new");
+  });
+
+  it("fetches the remaining line items of a long order before importing it", async () => {
+    const line = (n: number) => ({
+      ...order().lineItems.nodes[0]!,
+      id: `gid://shopify/LineItem/9${n}`,
+      sku: `XX-L${n}`,
+    });
+    const first = order({
+      id: "gid://shopify/Order/8001",
+      name: "#8001",
+      lineItems: { nodes: [line(1)], pageInfo: { hasNextPage: true, endCursor: "l1" } },
+    });
+    const fake = fakeShopify({
+      OrderById: () => ({ order: first }),
+      OrderLines: (vars) => {
+        expect(vars.after).toBe("l1");
+        return {
+          order: {
+            lineItems: { nodes: [line(2), line(3)], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        };
+      },
+    });
+    const r = await refreshShopifyOrder(accountId, await store(), fake.client, first.id);
+    const lines = await accountDb(accountId).orderLine.findMany({ where: { orderId: r!.orderId } });
+    expect(lines.map((l) => l.sku).sort()).toEqual(["XX-L1", "XX-L2", "XX-L3"]);
   });
 
   it("matches variants by SKU without the store prefix and attaches earlier order lines", async () => {
@@ -351,6 +447,54 @@ describe("Shopify import (DB)", () => {
     await expect(linkVariant({ ...owner, role: "VIEWER" }, b.linkId, "NEW-1")).rejects.toThrow();
   });
 
+  it("re-linking moves lines of open orders; other companies' variants are out of reach; ambiguous SKUs stay unmatched", async () => {
+    const db = accountDb(accountId);
+    const s = await store();
+    const pa = await db.product.create({ data: { accountId, sku: "RL-A", name: "A" } });
+    const pb = await db.product.create({ data: { accountId, sku: "RL-B", name: "B" } });
+    const o = order({
+      id: "gid://shopify/Order/9100",
+      name: "#9100",
+      lineItems: {
+        nodes: [
+          {
+            ...order().lineItems.nodes[0]!,
+            id: "gid://shopify/LineItem/9100",
+            sku: "XX-RL-A",
+            variant: { id: "gid://shopify/ProductVariant/9100" },
+          },
+        ],
+      },
+    });
+    const { orderId } = await importShopifyOrder(accountId, s, o);
+    const line = async () => db.orderLine.findFirstOrThrow({ where: { orderId } });
+    expect((await line()).productId).toBe(pa.id); // auto-matched on import
+    await linkVariant(owner, (await line()).variantLinkId!, "RL-B");
+    expect((await line()).productId).toBe(pb.id);
+
+    // A member restricted to another company cannot touch this store's variants.
+    const other = await systemDb().company.create({ data: { accountId, name: "Other company" } });
+    const restricted = { ...owner, role: "OPERATOR" as const, companyScope: [other.id] };
+    await expect(linkVariant(restricted, (await line()).variantLinkId!, "RL-A")).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(createProductFromVariant(restricted, (await line()).variantLinkId!)).rejects.toMatchObject({
+      code: "not_found",
+    });
+
+    await db.product.create({ data: { accountId, sku: "dup-1", name: "lower" } });
+    await db.product.create({ data: { accountId, sku: "DUP-1", name: "upper" } });
+    expect(
+      (
+        await upsertVariant(
+          accountId,
+          s,
+          variant({ id: "gid://shopify/ProductVariant/9200", sku: "XX-Dup-1" }),
+        )
+      ).matched,
+    ).toBe(false);
+  });
+
   it("reconcile pages through orders and advances the cursor", async () => {
     const pages = [
       {
@@ -372,6 +516,7 @@ describe("Shopify import (DB)", () => {
     const counts = await syncStoreOrders(accountId, await store(), fake.client, { kind: "reconcile" });
     expect(counts.created).toBe(2);
     expect((queries[1] as { after: string }).after).toBe("c1");
+    expect((queries[0] as { first: number; query: string }).first).toBeLessThanOrEqual(10);
     expect(((await store()).syncCursors as { ordersUpdatedAt: string }).ordersUpdatedAt).toBe(
       "2026-11-02T09:00:00.000Z",
     );
@@ -406,6 +551,10 @@ describe("Shopify import (DB)", () => {
     const fake = fakeShopify({
       OrderById: () => ({ order: order({ id: "gid://shopify/Order/4001", name: "#4001" }) }),
     });
+    const stored = await accountDb(accountId).webhookEvent.findUniqueOrThrow({
+      where: { id: (first as { eventId: string }).eventId },
+    });
+    expect(JSON.stringify(stored.payload)).not.toContain("never trusted"); // only the pointer is kept
     const eventId = (first as { eventId: string }).eventId;
     expect(await processShopifyWebhook(accountId, eventId, fake.opts)).toBe("PROCESSED");
     expect(await processShopifyWebhook(accountId, eventId, fake.opts)).toBe("PROCESSED");

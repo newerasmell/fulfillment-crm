@@ -5,9 +5,9 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb, isUniqueViolation } from "@/server/db/client";
-import { saveCredential } from "@/server/security/credentials";
+import { readCredentialSecret, saveCredential } from "@/server/security/credentials";
 import { normaliseShopDomain } from "@/integrations/shopify/config";
-import { AppCredentials } from "@/integrations/shopify/credentials";
+import { AppCredentials, parseAppCredentials } from "@/integrations/shopify/credentials";
 
 /**
  * Shopify stores. A store belongs to one company of the group. Its Dev Dashboard app credentials
@@ -70,8 +70,12 @@ export async function createStore(actor: ScopedActor, raw: z.input<typeof NewSto
 
   let credentialId = input.credentialId;
   if (credentialId) {
-    if (!(await db.credential.findUnique({ where: { id: credentialId } })))
-      throw new DomainError("not_found");
+    // Only a Shopify app credential of this group may be reused (not, say, a warehouse API key).
+    try {
+      parseAppCredentials(await readCredentialSecret(db, actor.accountId, credentialId));
+    } catch {
+      throw new DomainError("invalid_credential");
+    }
   } else {
     const creds = AppCredentials.parse({ clientId: input.clientId, clientSecret: input.clientSecret });
     const view = await saveCredential(db, actor.accountId, {

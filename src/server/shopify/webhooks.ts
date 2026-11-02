@@ -29,6 +29,37 @@ export function webhookCallbackUrl(env: NodeJS.ProcessEnv = process.env) {
   return url.toString();
 }
 
+/**
+ * Decrypted client secrets, briefly cached per credential so a flood of (forged) webhooks for a known shop
+ * does not decrypt the vault entry on every request. A rotated credential has a new id, so no stale hits.
+ */
+const SECRET_TTL_MS = 5 * 60_000;
+const secretCache = new Map<string, { secret: string; until: number }>();
+
+async function webhookSecret(accountId: string, credentialId: string) {
+  const hit = secretCache.get(credentialId);
+  if (hit && hit.until > Date.now()) return hit.secret;
+  const { clientSecret } = parseAppCredentials(
+    await readCredentialSecret(accountDb(accountId), accountId, credentialId),
+  );
+  if (secretCache.size > 500) secretCache.clear();
+  secretCache.set(credentialId, { secret: clientSecret, until: Date.now() + SECRET_TTL_MS });
+  return clientSecret;
+}
+
+/** The stored payload is only the pointer we act on — the order/customer data is re-read from Shopify. */
+export function webhookPointer(payload: unknown) {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const edit = p.order_edit as Record<string, unknown> | undefined;
+  const pick = (v: unknown) => (typeof v === "string" || typeof v === "number" ? v : undefined);
+  return {
+    id: pick(p.id),
+    admin_graphql_api_id: pick(p.admin_graphql_api_id),
+    order_id: pick(p.order_id),
+    ...(edit ? { order_edit: { order_id: pick(edit.order_id) } } : {}),
+  };
+}
+
 export type ReceiveResult =
   | { status: 401 }
   | { status: 400 }
@@ -54,10 +85,7 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
   let store: (typeof stores)[number] | null = null;
   for (const s of stores) {
     try {
-      const creds = parseAppCredentials(
-        await readCredentialSecret(accountDb(s.accountId), s.accountId, s.credentialId!),
-      );
-      if (verifyWebhookHmac(rawBody, hmac, creds.clientSecret)) {
+      if (verifyWebhookHmac(rawBody, hmac, await webhookSecret(s.accountId, s.credentialId!))) {
         store = s;
         break;
       }
@@ -84,7 +112,7 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
         dedupeKey: `${store.id}:${webhookId}`,
         topic,
         headers: { storeId: store.id, webhookId, triggeredAt: headers.get("x-shopify-triggered-at") },
-        payload: payload as object,
+        payload: webhookPointer(payload),
       },
     });
     return { status: 200, eventId: event.id, accountId: store.accountId, duplicate: false };

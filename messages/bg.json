@@ -316,7 +316,8 @@
       "invalid_response": "Неочакван отговор от Shopify.",
       "domain_mismatch": "Данните са за друг магазин.",
       "app_uninstalled": "Приложението е деинсталирано от магазина.",
-      "unexpected": "Неочаквана грешка."
+      "unexpected": "Неочаквана грешка.",
+      "invalid_credential": "Избраните данни не са на Shopify приложение."
     },
     "writeModes": {
       "READ_ONLY": "Само четене",

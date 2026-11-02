@@ -1,3 +1,4 @@
+import { logger } from "@/lib/logger";
 import { PgBoss } from "pg-boss";
 import { DEAD_LETTER_QUEUE, QUEUES, type QueueDef } from "./queues";
 
@@ -22,8 +23,17 @@ export async function ensureQueues(boss: PgBoss, defs: QueueDef[] = Object.value
     await boss.createQueue(DEAD_LETTER_QUEUE, { retryLimit: 0, retentionSeconds: 60 * 60 * 24 * 30 });
   }
   for (const q of defs) {
-    if (await boss.getQueue(q.name)) await boss.updateQueue(q.name, q.options);
-    else await boss.createQueue(q.name, q.options);
+    const existing = await boss.getQueue(q.name);
+    if (existing) {
+      const { policy, ...rest } = q.options as typeof q.options & { policy?: string };
+      if (policy && existing.policy !== policy) {
+        logger.warn(
+          { queue: q.name, has: existing.policy, wants: policy },
+          "queue policy differs; recreate it to change",
+        );
+      }
+      await boss.updateQueue(q.name, rest);
+    } else await boss.createQueue(q.name, q.options);
     if (q.cron) await boss.schedule(q.name, q.cron);
   }
 }

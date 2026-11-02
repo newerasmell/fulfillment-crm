@@ -316,7 +316,8 @@
       "invalid_response": "Unexpected response from Shopify.",
       "domain_mismatch": "These credentials belong to another shop.",
       "app_uninstalled": "The app was uninstalled from the store.",
-      "unexpected": "Unexpected error."
+      "unexpected": "Unexpected error.",
+      "invalid_credential": "The selected credential is not a Shopify app."
     },
     "writeModes": {
       "READ_ONLY": "Read only",

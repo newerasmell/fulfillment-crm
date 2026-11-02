@@ -1,4 +1,5 @@
 import { logger } from "@/lib/logger";
+import { readCapped } from "@/lib/read-capped";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
 import { MAX_WEBHOOK_BYTES, receiveShopifyWebhook } from "@/server/shopify/webhooks";
@@ -12,8 +13,8 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   const declared = Number(req.headers.get("content-length") ?? 0);
   if (declared > MAX_WEBHOOK_BYTES) return new Response(null, { status: 413 });
-  const raw = await req.text();
-  if (Buffer.byteLength(raw) > MAX_WEBHOOK_BYTES) return new Response(null, { status: 413 });
+  const raw = await readCapped(req, MAX_WEBHOOK_BYTES);
+  if (raw === null) return new Response(null, { status: 413 });
 
   const result = await receiveShopifyWebhook(raw, req.headers);
   if (result.status !== 200) return new Response(null, { status: result.status });
