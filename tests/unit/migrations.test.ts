@@ -24,6 +24,7 @@ INSERT INTO "Product"(id,"accountId",sku,name,"updatedAt") VALUES ('p1','accA','
 INSERT INTO "Order"(id,"accountId",source,number,currency,subtotal,total,"paymentMethod","placedAt","updatedAt")
   VALUES ('o1','accA','MANUAL','1','EUR',1,1,'COD',now(),now());
 INSERT INTO "AuditLog"(id,"accountId",action) VALUES ('a1','accA','seed');
+INSERT INTO "Alert"(id,"accountId",kind,title) VALUES ('al1','accA','seed','Seed alert');
 `;
 
 function withDatabase(url: string, db: string) {

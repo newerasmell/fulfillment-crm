@@ -103,13 +103,13 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
           <SearchBox />
           <ScopeControl scope={scope} />
           <CreateMenu />
-          <button
-            type="button"
+          <Link
+            href="/alerts"
             aria-label={th("notifications")}
-            className="flex size-11 items-center justify-center rounded-[10px] border border-line bg-surface"
+            className="flex size-11 items-center justify-center rounded-[10px] border border-line bg-surface text-ink"
           >
             <Icon name="bell" />
-          </button>
+          </Link>
           <ProfileMenu name={ctx.user.name} locale={locale} />
         </header>
         <main className="flex flex-col gap-6 px-7 pt-6 pb-12">{children}</main>

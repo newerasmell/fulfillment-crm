@@ -199,6 +199,8 @@ model Account {
   eushipmentsStatusMappings EushipmentsStatusMapping[]
   fulfillBatches            FulfillBatch[]
   shopifyWriteBacks         ShopifyWriteBack[]
+  alertNotes                AlertNote[]
+  alertNotifications        AlertNotification[]
 }
 
 model User {
@@ -903,7 +905,9 @@ model Alert {
   createdAt  DateTime      @default(now())
   resolvedAt DateTime?
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  notes         AlertNote[]
+  notifications AlertNotification[]
 
   @@index([accountId, status, createdAt])
 }
@@ -1553,4 +1557,40 @@ model ShopifyWriteBack {
   @@unique([accountId, fulfillmentId])
   @@index([accountId, orderId])
   @@index([status, nextAttemptAt])
+}
+
+/// Alert/task history (P4-08): who assigned, resolved (with the note) or reopened it. Alert itself is unchanged.
+model AlertNote {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  userId    String?
+  /// assign | resolve | reopen | note | auto_resolve
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, alertId, createdAt])
+}
+
+/// One notification per alert and channel (email, telegram): the unique key makes sending idempotent.
+model AlertNotification {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  channel   String
+  /// SENDING | SENT | FAILED
+  status    String   @default("SENDING")
+  error     String?
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, channel])
+  @@index([accountId, createdAt])
 }

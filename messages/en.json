@@ -34,7 +34,8 @@
     "modeCard": "Warehouse mode",
     "noConnections": "No warehouses connected",
     "group": "Group",
-    "allCompanies": "All companies"
+    "allCompanies": "All companies",
+    "alerts": "Alerts and tasks"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -119,7 +120,8 @@
     "errors": "With errors",
     "returns": "Returned, ready to refund",
     "tickets": "Tickets",
-    "stockouts": "Running out"
+    "stockouts": "Running out",
+    "alerts": "Alerts and tasks"
   },
   "members": {
     "title": "Companies and users",
@@ -1133,6 +1135,54 @@
         "FAILED": "failed",
         "UNCERTAIN": "unknown outcome"
       }
+    }
+  },
+  "alerts": {
+    "title": "Alerts and tasks",
+    "subtitle": "Everything open in one place: blocked, uncertain, stuck, submit failures, Shopify changes, import failures.",
+    "filters": "Filters",
+    "all": "All",
+    "mine": "Mine",
+    "empty": "No open alerts.",
+    "task": "task",
+    "col": {
+      "severity": "Severity",
+      "title": "Alert",
+      "category": "Kind",
+      "order": "Order",
+      "created": "Created",
+      "assignee": "Assignee",
+      "actions": "Actions"
+    },
+    "severity": {
+      "CRITICAL": "Critical",
+      "WARNING": "Warning",
+      "INFO": "Info"
+    },
+    "category": {
+      "uncertain": "Unknown outcome",
+      "blocked": "Blocked",
+      "unknown": "Unknown status",
+      "stuck": "Stuck",
+      "submit_failed": "Submit failures",
+      "shopify_changed": "Shopify changes after approval",
+      "import_failed": "Import failures",
+      "other": "Other"
+    },
+    "assignToMe": "Take it",
+    "unassign": "Release",
+    "resolve": "Resolve",
+    "resolveForm": "Resolve: {title}",
+    "note": "Note",
+    "notePlaceholder": "What was done?",
+    "confirmResolve": "Resolve with note",
+    "cancel": "Cancel",
+    "error": {
+      "forbidden": "You may not do this.",
+      "not_found": "Alert not found.",
+      "alert_resolved": "The alert is already resolved.",
+      "not_a_member": "The user is not in this group.",
+      "note_required": "Write a note (at least 2 characters)."
     }
   }
 }

@@ -170,4 +170,10 @@ export const QUEUES = {
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
     cron: "*/2 * * * *",
   },
+  /** Every 10 min: order-state alerts (blocked / unknown / submit failed / stuck) and email/Telegram notifications. */
+  alertsSweep: {
+    name: "alerts.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

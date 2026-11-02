@@ -61,3 +61,28 @@ test("Shopify write-back: a DRY_RUN record shows the exact fulfillmentCreate dat
   await wb.getByText("Точни данни (fulfillmentCreate)").click();
   await expect(wb.locator("pre")).toContainText('"notifyCustomer": true');
 });
+
+test("alerts and tasks: count on Начало, one list, take it, resolve with a note", async ({ page }) => {
+  test.setTimeout(240_000);
+  await login(page);
+  const card = page.getByRole("link", { name: /Сигнали и задачи\s*\d+/ });
+  await expect(card).toBeVisible();
+  await card.click();
+  await expect(page.getByRole("heading", { name: "Сигнали и задачи", level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: /Промени в Shopify след одобрение/ }).click();
+  const row = page.getByRole("row", { name: /E2E: поръчка отказана в Shopify след одобрение/ });
+  await expect(row).toContainText("#93002");
+  await expect(row).toContainText("Критичен");
+  await page.waitForLoadState("networkidle");
+  await row.getByRole("button", { name: "Поеми" }).click();
+  await expect(row).toContainText("E2E Owner", { timeout: 30_000 });
+  await row.getByRole("button", { name: "Приключи" }).click();
+  const form = page.getByRole("form", { name: /Приключване: E2E: поръчка отказана/ });
+  await form.getByRole("button", { name: "Приключи със бележка" }).click();
+  await expect(row.getByRole("alert")).toContainText("Напишете бележка");
+  await form.getByLabel("Бележка").fill("Проверено: пратката е спряна в склада");
+  await form.getByRole("button", { name: "Приключи със бележка" }).click();
+  await expect(page.getByRole("row", { name: /E2E: поръчка отказана/ })).toHaveCount(0, { timeout: 30_000 });
+  await page.goto("/settings/audit");
+  await expect(page.getByRole("cell", { name: "alert.resolve" }).first()).toBeVisible();
+});

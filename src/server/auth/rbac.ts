@@ -40,6 +40,8 @@ export const PERMISSIONS = {
   "apiWatch.manage": ["OWNER", "ADMIN"],
   /** Routing rules (Настройки → Правила за маршрут): view, create, edit, reorder, delete. */
   "routing.manage": ["OWNER", "ADMIN"],
+  /** Alerts and tasks: assign and resolve with a note (Сигнали и задачи). */
+  "alerts.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

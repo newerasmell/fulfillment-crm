@@ -33,6 +33,7 @@ const EXPECTED: Record<Permission, string> = {
   "apiWatch.read": "11000",
   "apiWatch.manage": "11000",
   "routing.manage": "11000",
+  "alerts.manage": "11110",
 };
 
 describe("role matrix", () => {

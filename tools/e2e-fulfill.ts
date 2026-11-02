@@ -154,5 +154,17 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       },
     },
   });
+  // An open task of the kind the Shopify import raises after approval (alerts screen, P4-08).
+  await db.alert.create({
+    data: {
+      accountId,
+      kind: "shopify_cancelled_after_approval",
+      isTask: true,
+      severity: "CRITICAL",
+      title: "E2E: поръчка отказана в Shopify след одобрение",
+      entityType: "Order",
+      entityId: orders.b!,
+    },
+  });
   return { connectionId: connection.id, orders, shippedOrderId: shipped.id };
 }
