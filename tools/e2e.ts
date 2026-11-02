@@ -36,6 +36,12 @@ try {
   );
   const seeded = await systemDb().store.update({ where: { id: store.id }, data: { skuPrefix: "DM-" } });
   for (const o of SYNTHETIC_ORDERS) await importShopifyOrder(owner.account.id, seeded, o);
+  // Synthetic euShipments mirror (vendor mocked): tests/e2e/eushipments.spec.ts.
+  const { seedEuShipments } = await import("./e2e-eushipments");
+  await seedEuShipments(
+    { userId: owner.user.id, accountId: owner.account.id, role: "OWNER", companyScope: null },
+    company.id,
+  );
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });

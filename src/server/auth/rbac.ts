@@ -26,6 +26,8 @@ export const PERMISSIONS = {
   "inbound.manage": ["OWNER", "ADMIN", "WAREHOUSE"],
   "audit.read": ["OWNER", "ADMIN"],
   "jobs.admin": ["OWNER", "ADMIN"],
+  /** Start an euShipments read-side sync by hand (read calls only). */
+  "eushipments.sync": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
