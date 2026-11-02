@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import { Prisma, type Fulfillment, type OutboundStatus } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
 import {
@@ -435,6 +436,7 @@ export async function queueEuOrder(
   });
   if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
     throw new DomainError("not_found");
+  if (await isLabelOnly(db, order.id)) throw new DomainError("label_only_order");
   const { reference, findings, built, lines } = await euOrderPreflight(
     actor.accountId,
     connection,

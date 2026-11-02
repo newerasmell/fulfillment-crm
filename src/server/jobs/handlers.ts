@@ -14,6 +14,7 @@ import { registerLineWorkers } from "@/server/lines/jobs";
 import { registerOverrideWorkers } from "@/server/override/jobs";
 import { registerStockWorkers } from "@/server/stock/jobs";
 import { registerReturnsCodWorkers } from "@/server/returns/jobs";
+import { registerLabelWorkers } from "@/server/labels/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -75,6 +76,7 @@ export async function registerWorkers(deps: WorkerDeps) {
   await registerOverrideWorkers(boss, opts, resolveTransport);
   await registerStockWorkers(boss, opts);
   await registerReturnsCodWorkers(boss, opts);
+  await registerLabelWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

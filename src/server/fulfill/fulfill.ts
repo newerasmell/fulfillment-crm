@@ -8,6 +8,7 @@ import { validateOrder, type Finding } from "@/server/checks";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { queueEuOrder } from "@/server/eushipments/write";
 import { FhbPreflightError, submitFhbOrder } from "@/server/fhb/orders";
+import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import { FINGERPRINT_SELECT, orderFingerprint, storedFingerprint, TransitionError } from "@/server/pipeline";
 import { isTwoActiveShipments } from "@/server/override/guards";
 import { routeOrder, type RoutingDecision } from "@/server/routing";
@@ -119,6 +120,8 @@ export async function fulfillOrder(
   if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? "")))
     return result("FAILED", "not_found");
   if (!FULFILLABLE.has(order.status)) return result("SKIPPED", `status_${order.status.toLowerCase()}`);
+  // Label-only manual shipments (Joy label / AWB / pre-AWB) are never a warehouse order.
+  if (await isLabelOnly(db, order.id)) return result("BLOCKED", "label_only_order");
 
   // The warehouse the order was approved for (its stored check) is the source of truth. A shipment still
   // queued at another warehouse (left over from before a re-check) is never sent silently instead.

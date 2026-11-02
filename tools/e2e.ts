@@ -63,6 +63,9 @@ try {
   // Returns + COD boards (wave 3, returns track): its own group and OWNER (tests/e2e/returns-cod.spec.ts).
   const { seedReturns } = await import("../tests/e2e/seed-returns");
   const returnsOwner = await seedReturns();
+  // Manual shipments and labels (wave 3, labels track): its own group and OWNER (tests/e2e/labels.spec.ts).
+  const { seedLabels } = await import("../tests/e2e/seed-labels");
+  const labelsOwner = await seedLabels();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -94,6 +97,10 @@ try {
       E2E_RETURNS_EMAIL: returnsOwner.email,
       E2E_RETURNS_PASSWORD: returnsOwner.password,
       E2E_RETURNS_TOTP: returnsOwner.totp,
+      E2E_LABELS_EMAIL: labelsOwner.email,
+      E2E_LABELS_PASSWORD: labelsOwner.password,
+      E2E_LABELS_TOTP: labelsOwner.totp,
+      E2E_LABELS_SEEDED: labelsOwner.seededNumber,
     },
   });
   status = run.status ?? 1;

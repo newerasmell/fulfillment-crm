@@ -1,4 +1,5 @@
 import { Prisma } from "@/generated/prisma/client";
+import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import {
   buildFhbOrderCreate,
   buildFhbOrderUpdate,
@@ -92,6 +93,13 @@ const toNumber = (d: Prisma.Decimal | null | undefined) => (d == null ? null : N
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 type Tx = Prisma.TransactionClient;
+
+/**
+ * The code in front of the FHB order id: the store code, or "M" for a manual order (Ръчни пратки, P7-03) whose
+ * number is already unique per group (M1001 → FHB id "M-M1001", the same id used at every vendor).
+ */
+const orderCode = (o: { source?: string | null; store?: { code: string } | null }) =>
+  o.store?.code ?? (o.source === "MANUAL" ? "M" : null);
 
 /**
  * Loads everything the pre-flight needs and runs the FHB validators. Pure reads inside the caller's tx; no
@@ -284,7 +292,7 @@ export async function nextFhbExternalId(tx: Tx, orderId: string, storeCode: stri
 async function loadScoped(tx: Tx, actor: ScopedActor, orderId: string, connectionId: string) {
   const order = await tx.order.findUnique({
     where: { id: orderId },
-    select: { id: true, companyId: true, number: true, store: { select: { code: true } } },
+    select: { id: true, companyId: true, number: true, source: true, store: { select: { code: true } } },
   });
   if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? ""))) {
     throw new DomainError("not_found");
@@ -305,7 +313,9 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
   const run = () =>
     withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
       const { order, connection } = await loadScoped(tx, actor, input.orderId, input.connectionId);
-      if (!order.store?.code) throw new DomainError("fhb_no_store_code");
+      if (await isLabelOnly(tx, order.id)) throw new DomainError("label_only_order");
+      const code = orderCode(order);
+      if (!code) throw new DomainError("fhb_no_store_code");
       // Serialises submissions per connection: the variable-symbol sequence and the duplicate checks below.
       await lockForUpdate("FulfillmentConnection", connection.id);
 
@@ -330,7 +340,7 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       if (!fulfillment) {
         // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, …, counted over the order's
         // shipments at EVERY FHB connection (a reroute FHB A → FHB B on one FHB account must not reuse A's id).
-        const externalId = await nextFhbExternalId(tx, order.id, order.store.code, order.number);
+        const externalId = await nextFhbExternalId(tx, order.id, code, order.number);
         // Allocated atomically AFTER the lock: the connection row read by loadScoped() may be stale by now
         // (a concurrent submit committed its increment while we waited for the lock).
         const bumped = await tx.fulfillmentConnection.update({
@@ -588,7 +598,7 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
   return withAccountTransaction(accountId, async (tx) => {
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
-      select: { id: true, number: true, store: { select: { code: true } } },
+      select: { id: true, number: true, source: true, store: { select: { code: true } } },
     });
     if (!order) throw new DomainError("not_found");
     const connection = await tx.fulfillmentConnection.findUnique({ where: { id: input.connectionId } });
@@ -602,7 +612,8 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
           "The warehouse connection is disabled.",
         ),
       );
-    if (!order.store?.code) {
+    const code = orderCode(order);
+    if (!code) {
       out.push(
         previewFinding(
           "fhb.order.no_store_code",
@@ -628,8 +639,7 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
         ),
       );
     const reuse = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED");
-    const externalId =
-      reuse?.externalId ?? (await nextFhbExternalId(tx, order.id, order.store.code, order.number));
+    const externalId = reuse?.externalId ?? (await nextFhbExternalId(tx, order.id, code, order.number));
     const variableSymbol = reuse?.variableSymbol ?? BigInt(connection.variableSymbolNext).toString();
     const duplicate = !!(await tx.fulfillment.findFirst({
       where: {

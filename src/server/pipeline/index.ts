@@ -12,3 +12,5 @@
 export * from "./rules";
 export * from "./transition";
 export * from "./fingerprint";
+// Label-only manual shipments never enter the generic check / approve / queue path (P7-03).
+import "@/server/labels/pipeline-guard";
