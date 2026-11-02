@@ -1639,7 +1639,7 @@ model ProductLine {
   accountId  String
   name       String
   /// Colour token (src/server/lines/colors.ts), never a status or warehouse colour.
-  color      String    @default("indigo")
+  color      String    @default("rose")
   sortOrder  Int       @default(0)
   archivedAt DateTime?
   createdAt  DateTime  @default(now())

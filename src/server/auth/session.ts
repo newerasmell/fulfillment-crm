@@ -7,7 +7,7 @@ import type { Role } from "@/generated/prisma/client";
 import { clientIp } from "@/lib/client-ip";
 import { companyScopeOf, type CompanyScope } from "@/server/companies";
 import { accountDb, systemDb } from "@/server/db/client";
-import { listLines, pickActiveLine, visibleLines } from "@/server/lines/lines";
+import { companiesForLine, listLines, pickActiveLine, visibleLines } from "@/server/lines/lines";
 import type { Actor } from "@/server/accounts";
 import { can, type Permission } from "./rbac";
 
@@ -112,9 +112,11 @@ export const getAccountContext = cache(async (): Promise<AccountContext | null> 
   );
   const activeLineId = pickActiveLine(lines, jar.get(LINE_COOKIE)?.value, seesAllLines);
   // With a line picked, the company menu and every company-owned list narrow to that line's companies.
-  const companies = (activeLineId ? allCompanies.filter((c) => c.lineId === activeLineId) : allCompanies).map(
-    ({ id, name }) => ({ id, name }),
-  );
+  // Restricted members also keep their companies without a line (partial rollout), see companiesForLine.
+  const companies = companiesForLine(allCompanies, activeLineId, seesAllLines).map(({ id, name }) => ({
+    id,
+    name,
+  }));
   const h = await headers();
   return {
     user,

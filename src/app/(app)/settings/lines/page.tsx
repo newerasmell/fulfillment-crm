@@ -26,7 +26,7 @@ export default async function LinesSettingsPage() {
     orderBy: { name: "asc" },
   });
   const active = lines.filter((l) => !l.archivedAt);
-  const coverage = await Promise.all(active.map((l) => lineCoverage(ctx.accountId, l.id)));
+  const coverage = await Promise.all(active.map((l) => lineCoverage(ctx.accountId, l.id, ctx.companyScope)));
   const lineless = companies.filter((c) => !c.lineId);
   return (
     <>

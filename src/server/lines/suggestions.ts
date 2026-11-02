@@ -159,7 +159,7 @@ export const SUGGESTIONS_PAGE = 50;
 export async function listSuggestions(actor: ScopedActor, lineId: string, page = 1) {
   await assertLineInScope(actor, lineId);
   const db = accountDb(actor.accountId);
-  const members = await lineMembers(actor.accountId, lineId);
+  const members = await lineMembers(actor.accountId, lineId, actor.companyScope);
   const connIds = members.connections.map((c) => c.id);
   const storeIds = members.stores.map((s) => s.id);
   const vpWhere = { connectionId: { in: connIds }, archived: false, productId: null };

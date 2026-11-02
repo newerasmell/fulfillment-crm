@@ -1,3 +1,4 @@
+import type { CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import { lineMembers } from "./lines";
 
@@ -29,9 +30,14 @@ export interface LineCoverage {
 
 export const ratioOf = (linked: number, total: number) => (total ? linked / total : 1);
 
-export async function lineCoverage(accountId: string, lineId: string): Promise<LineCoverage> {
+/** `scope`: a restricted member's companies — coverage then counts only their warehouses and stores. */
+export async function lineCoverage(
+  accountId: string,
+  lineId: string,
+  scope: CompanyScope = null,
+): Promise<LineCoverage> {
   const db = accountDb(accountId);
-  const m = await lineMembers(accountId, lineId);
+  const m = await lineMembers(accountId, lineId, scope);
   const connIds = m.connections.map((c) => c.id);
   const storeIds = m.stores.map((s) => s.id);
   const [vpAll, vpLinked, vlAll, vlLinked] = await Promise.all([

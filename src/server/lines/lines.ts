@@ -74,6 +74,20 @@ export function pickActiveLine(
   return lines[0]!.id;
 }
 
+/**
+ * Pure: companies shown while a line is active. Members who cannot pick "all lines" (restricted roles) also keep
+ * their companies that are not in any line yet — otherwise a partial rollout (one company put into a line) would
+ * hide every order, alert and stock row of their other companies with no way back.
+ */
+export function companiesForLine<T extends { lineId: string | null }>(
+  companies: T[],
+  activeLineId: string | null,
+  mayPickAll: boolean,
+): T[] {
+  if (!activeLineId) return companies;
+  return companies.filter((c) => c.lineId === activeLineId || (!mayPickAll && c.lineId === null));
+}
+
 async function audit(actor: Actor, action: string, entityId: string, before?: unknown, after?: unknown) {
   await recordAudit({
     accountId: actor.accountId,
@@ -161,10 +175,21 @@ export interface LineMembers {
   stores: { id: string; name: string; code: string; companyId: string | null; skuPrefix: string | null }[];
 }
 
-/** Companies, product-holding warehouse connections and stores of one line. */
-export async function lineMembers(accountId: string, lineId: string): Promise<LineMembers> {
+/**
+ * Companies, product-holding warehouse connections and stores of one line. With a company scope (restricted
+ * member) only the line's companies inside that scope count: another company of the same line stays invisible
+ * (its warehouse ids, variant SKUs, names) and untouchable (import, suggestions) for that member.
+ */
+export async function lineMembers(
+  accountId: string,
+  lineId: string,
+  scope: CompanyScope = null,
+): Promise<LineMembers> {
   const tx = accountDb(accountId);
-  const companies = await tx.company.findMany({ where: { lineId }, select: { id: true } });
+  const companies = await tx.company.findMany({
+    where: { lineId, ...(scope ? { id: { in: scope } } : {}) },
+    select: { id: true },
+  });
   const companyIds = companies.map((c) => c.id);
   const [connections, stores] = await Promise.all([
     tx.fulfillmentConnection.findMany({

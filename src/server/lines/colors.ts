@@ -16,5 +16,5 @@ export const LINE_COLOR_KEYS = Object.keys(LINE_COLORS) as LineColor[];
 export const isLineColor = (v: unknown): v is LineColor =>
   typeof v === "string" && (LINE_COLOR_KEYS as string[]).includes(v);
 
-/** Unknown or legacy values (the column default) fall back to the first token. */
+/** Unknown or legacy values (e.g. the first migration's "indigo" default) fall back to the first token. */
 export const lineColor = (v: string | null | undefined) => LINE_COLORS[isLineColor(v) ? v : "rose"];

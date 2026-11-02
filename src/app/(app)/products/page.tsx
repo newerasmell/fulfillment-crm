@@ -10,6 +10,7 @@ import { MatchVariant } from "./forms";
 import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
 import { LineChip } from "@/components/ui/LineChip";
 import { lineCoverage } from "@/server/lines/coverage";
+import { lineProductWhere } from "@/server/lines/lines";
 import { CoverageSummary } from "./lines/coverage";
 
 export default async function ProductsPage() {
@@ -18,7 +19,15 @@ export default async function ProductsPage() {
   const unmatched = await listUnmatchedVariants(ctx);
   const products = await accountDb(ctx.accountId).product.findMany({
     // Sidebar product line (P5-00): masters of that line only.
-    where: { archived: false, ...(ctx.activeLineId ? { lineId: ctx.activeLineId } : {}) },
+    // Members who cannot pick "all lines" also keep masters without a line (partial rollout, companiesForLine).
+    where: {
+      archived: false,
+      ...(ctx.activeLineId
+        ? ctx.role === "OWNER" || ctx.role === "ADMIN"
+          ? { lineId: ctx.activeLineId }
+          : lineProductWhere(ctx.activeLineId)
+        : {}),
+    },
     select: {
       id: true,
       sku: true,
@@ -32,7 +41,9 @@ export default async function ProductsPage() {
   const match = can(ctx.role, "products.match");
   const tl = await getTranslations("lines");
   const shownLines = ctx.activeLineId ? ctx.lines.filter((l) => l.id === ctx.activeLineId) : ctx.lines;
-  const coverage = await Promise.all(shownLines.map((l) => lineCoverage(ctx.accountId, l.id)));
+  const coverage = await Promise.all(
+    shownLines.map((l) => lineCoverage(ctx.accountId, l.id, ctx.companyScope)),
+  );
   return (
     <>
       <PageHeader

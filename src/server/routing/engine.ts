@@ -274,14 +274,17 @@ export function evaluateRouting(input: EvaluateInput): RoutingDecision {
   }
 
   // Stock fallback: a warehouse that can ship every line; the selling company's own first, then by name.
-  // Only warehouses of companies in the order's product line (P5-00): other lines sell other goods.
+  // Only warehouses of companies in the order's product line (P5-00): other lines sell other goods. A shared
+  // group-level warehouse (no company) stays eligible for every line — the stock check (every line's master
+  // in stock there) is what proves it carries the goods. A warehouse of a company not yet put into a line is
+  // NOT eligible for a lined order (its products may be matched group-wide, so its stock proves nothing).
   const orderLine = order.lineId ?? null;
   const candidates = input.connections
     .filter(
       (c) =>
         c.enabled &&
         STOCK_CONNECTION_TYPES.includes(c.type) &&
-        (c.lineId ?? null) === orderLine &&
+        (c.companyId === null || (c.lineId ?? null) === orderLine) &&
         input.stock.get(c.id)?.status === "ok",
     )
     .sort(

@@ -9,6 +9,14 @@ import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
 export const MAX_UNZIPPED_BYTES = 40 * 1024 * 1024;
 const MAX_ENTRIES = 200;
+/**
+ * Sheet limits: the row / column index comes from the file (`<row r="…">`, `<c r="…">`), so without a cap a 1 KB
+ * file could make us pad billions of empty rows. 5000 data rows (mapping MAX_ROWS) + header + 1 for the
+ * "too many rows" message; 500 columns is far above any line's warehouses + stores.
+ */
+export const MAX_SHEET_ROWS = 5002;
+export const MAX_SHEET_COLUMNS = 500;
+const MAX_SHEET_CELLS = 1_000_000;
 
 // ───────────── ZIP ─────────────
 
@@ -138,7 +146,7 @@ const unesc = (s: string) =>
     if (k === "quot") return '"';
     if (k === "apos") return "'";
     const code = k.startsWith("#x") ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
   });
 
 /** Text of every <t> inside a fragment (rich-text runs concatenated; phonetic runs ignored). */
@@ -209,8 +217,17 @@ export function writeXlsx(rows: string[][], sheetName = "Sheet1"): Buffer {
   return zip(files);
 }
 
-/** First sheet of a workbook as rows of trimmed-right text cells. */
+/** First sheet of a workbook as rows of trimmed-right text cells. Any parse failure is a SpreadsheetError. */
 export function readXlsx(buf: Buffer): string[][] {
+  try {
+    return parseXlsx(buf);
+  } catch (err) {
+    if (err instanceof SpreadsheetError) throw err;
+    throw new SpreadsheetError("bad_file");
+  }
+}
+
+function parseXlsx(buf: Buffer): string[][] {
   const files = unzip(buf);
   const get = (n: string) => files.get(n)?.toString("utf8");
   let sheetPath = "xl/worksheets/sheet1.xml";
@@ -218,9 +235,13 @@ export function readXlsx(buf: Buffer): string[][] {
   const rels = get("xl/_rels/workbook.xml.rels");
   if (wb && rels) {
     const rid = /<sheet\b[^>]*\br:id="([^"]+)"/.exec(wb)?.[1];
+    // Fixed patterns only (the id comes from the file): find the Relationship whose Id equals rid in code.
     const target = rid
-      ? (new RegExp(`<Relationship\\b[^>]*Id="${rid}"[^>]*Target="([^"]+)"`).exec(rels)?.[1] ??
-        new RegExp(`<Relationship\\b[^>]*Target="([^"]+)"[^>]*Id="${rid}"`).exec(rels)?.[1])
+      ? [...rels.matchAll(/<Relationship\b([^>]*)>/g)]
+          .map((m) => m[1] ?? "")
+          .filter((a) => /\bId="([^"]*)"/.exec(a)?.[1] === rid)
+          .map((a) => /\bTarget="([^"]+)"/.exec(a)?.[1])
+          .find((t) => !!t)
       : undefined;
     if (target) sheetPath = target.startsWith("/") ? target.slice(1) : `xl/${target.replace(/^\.\//, "")}`;
   }
@@ -235,9 +256,11 @@ export function readXlsx(buf: Buffer): string[][] {
     ...(get("xl/sharedStrings.xml") ?? "").matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g),
   ].map((m) => textOf(m[1] ?? ""));
   const rows: string[][] = [];
+  let cellCount = 0;
   for (const rm of sheet.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
     const attrs = rm[1] ?? rm[3] ?? "";
     const rIdx = Number(/\br="(\d+)"/.exec(attrs)?.[1] ?? rows.length + 1) - 1;
+    if (rIdx >= MAX_SHEET_ROWS || rows.length >= MAX_SHEET_ROWS) throw new SpreadsheetError("too_many_rows");
     const cells: string[] = [];
     let next = 0;
     for (const cm of (rm[2] ?? "").matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
@@ -253,10 +276,13 @@ export function readXlsx(buf: Buffer): string[][] {
       else if (t === "inlineStr") value = textOf(/<is>([\s\S]*?)<\/is>/.exec(body)?.[1] ?? "");
       else if (t === "b") value = v === "1" ? "TRUE" : v === "0" ? "FALSE" : "";
       else value = unesc(v ?? "");
-      if (ci > 10_000) throw new SpreadsheetError("too_many_columns");
+      if (ci >= MAX_SHEET_COLUMNS) throw new SpreadsheetError("too_many_columns");
+      cellCount += Math.max(1, ci + 1 - cells.length);
+      if (cellCount > MAX_SHEET_CELLS) throw new SpreadsheetError("too_many_cells");
       while (cells.length < ci) cells.push("");
       cells[ci] = value;
     }
+    if (rIdx < 0) continue;
     while (rows.length < rIdx) rows.push([]);
     rows[rIdx] = cells;
   }
@@ -267,9 +293,21 @@ export function readXlsx(buf: Buffer): string[][] {
 
 const BOM = String.fromCharCode(0xfeff);
 
-/** CSV with ";" (what Excel with a Bulgarian locale expects) and a BOM so Cyrillic opens correctly. */
+/** A cell Excel would run as a formula (CSV injection): = + - @ or a leading tab / CR. */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/**
+ * CSV with ";" (what Excel with a Bulgarian locale expects) and a BOM so Cyrillic opens correctly. Cells that
+ * would start a formula (names come from vendor data and Shopify titles) get a leading apostrophe; readCsv
+ * strips it again, so an export round-trips.
+ */
 export function writeCsv(rows: string[][], sep = ";"): string {
-  const cell = (v: string) => (/[";,\n\r]/.test(v) || /^\s|\s$/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const cell = (raw: string) => {
+    const v = FORMULA_START.test(raw) ? `'${raw}` : raw;
+    return /[";,\n\r\t]/.test(v) || /^\s|\s$/.test(v) || FORMULA_START.test(raw)
+      ? `"${v.replace(/"/g, '""')}"`
+      : v;
+  };
   return BOM + rows.map((r) => r.map(cell).join(sep)).join("\r\n") + "\r\n";
 }
 
@@ -308,7 +346,10 @@ export function readCsv(text: string): string[][] {
     row.push(cell);
     rows.push(row);
   }
-  return rows;
+  // Undo writeCsv's formula guard: "'=x" → "=x" (only before a formula character, so "'abc" stays).
+  return rows.map((r) =>
+    r.map((c) => (c.startsWith("'") && FORMULA_START.test(c.slice(1)) ? c.slice(1) : c)),
+  );
 }
 
 /** Reads an uploaded table: .xlsx by its ZIP signature, otherwise UTF-8 CSV. */

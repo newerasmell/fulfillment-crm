@@ -4,6 +4,7 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
+import type { CompanyScope } from "@/server/companies";
 import { assertLineInScope, lineMembers, lockLine, type LineMembers, type ScopedActor } from "./lines";
 import { linkItemInTx, type ItemKind } from "./suggestions";
 
@@ -69,7 +70,7 @@ export async function exportMapping(
   assertCan(actor.role, "lines.catalogue");
   const line = await assertLineInScope(actor, lineId);
   const db = accountDb(actor.accountId);
-  const m = await lineMembers(actor.accountId, lineId);
+  const m = await lineMembers(actor.accountId, lineId, actor.companyScope);
   const cols = columnsOf(m);
   const [masters, vps, vls] = await Promise.all([
     db.product.findMany({
@@ -165,9 +166,11 @@ export async function planImport(
   accountId: string,
   lineId: string,
   table: string[][],
+  scope: CompanyScope = null,
 ): Promise<{ plan: ImportPlan; errors: ImportError[] }> {
   const db = accountDb(accountId);
-  const m = await lineMembers(accountId, lineId);
+  // A restricted member's file may only name warehouses / stores of their own companies.
+  const m = await lineMembers(accountId, lineId, scope);
   const cols = columnsOf(m);
   const errors: ImportError[] = [];
   const plan: ImportPlan = { creates: [], adopts: [], links: [], unchanged: 0, rows: 0 };
@@ -338,7 +341,7 @@ export async function previewImport(actor: ScopedActor, raw: z.input<typeof Impo
   assertCan(actor.role, "lines.catalogue");
   const input = ImportFile.parse(raw);
   await assertLineInScope(actor, input.lineId);
-  const { plan, errors } = await planImport(actor.accountId, input.lineId, table);
+  const { plan, errors } = await planImport(actor.accountId, input.lineId, table, actor.companyScope);
   return accountDb(actor.accountId).productMappingImport.create({
     data: {
       accountId: actor.accountId,
@@ -366,26 +369,44 @@ export async function applyImport(actor: ScopedActor, importId: string) {
   if (imp.status !== "PREVIEW") throw new DomainError("import_not_ready");
   const { plan, lineId } = imp;
   const db = accountDb(actor.accountId);
-  // Stale check first: every link's current state must still be what the preview showed.
-  const vendorIds = plan.links.filter((l) => l.kind === "vendor").map((l) => l.itemId);
-  const variantIds = plan.links.filter((l) => l.kind === "variant").map((l) => l.itemId);
-  const [vpNow, vlNow] = await Promise.all([
-    db.vendorProduct.findMany({ where: { id: { in: vendorIds } }, select: { id: true, productId: true } }),
-    db.storeVariantLink.findMany({
-      where: { id: { in: variantIds } },
-      select: { id: true, productId: true },
-    }),
-  ]);
-  const now = new Map([...vpNow, ...vlNow].map((r) => [r.id, r.productId]));
-  if (plan.links.some((l) => !now.has(l.itemId) || now.get(l.itemId) !== l.fromProductId)) {
-    throw new DomainError("import_stale");
-  }
+  // Scope re-check: every item must still belong to a warehouse / store of the line inside the actor's scope
+  // (a plan stored by someone else, or a company moved meanwhile, never writes outside it).
+  const members = await lineMembers(actor.accountId, lineId, actor.companyScope);
+  const connIds = new Set(members.connections.map((c) => c.id));
+  const storeIds = new Set(members.stores.map((s) => s.id));
+  // Claim first: a double click (or two people) applies the plan once; the other gets import_not_ready.
   const claimed = await db.productMappingImport.updateMany({
     where: { id: importId, status: "PREVIEW" },
     data: { status: "APPLYING" },
   });
   if (claimed.count !== 1) throw new DomainError("import_not_ready");
-
+  const release = () =>
+    db.productMappingImport.updateMany({
+      where: { id: importId, status: "APPLYING" },
+      data: { status: "PREVIEW" },
+    });
+  // Stale check: every link's current state must still be what the preview showed (nothing written yet,
+  // so the import goes back to PREVIEW and a person can upload a fresh file).
+  const vendorIds = plan.links.filter((l) => l.kind === "vendor").map((l) => l.itemId);
+  const variantIds = plan.links.filter((l) => l.kind === "variant").map((l) => l.itemId);
+  const [vpNow, vlNow] = await Promise.all([
+    db.vendorProduct.findMany({
+      where: { id: { in: vendorIds }, connectionId: { in: [...connIds] } },
+      select: { id: true, productId: true },
+    }),
+    db.storeVariantLink.findMany({
+      where: { id: { in: variantIds }, storeId: { in: [...storeIds] } },
+      select: { id: true, productId: true },
+    }),
+  ]).catch(async (err: unknown) => {
+    await release().catch(() => undefined);
+    throw err;
+  });
+  const now = new Map([...vpNow, ...vlNow].map((r) => [r.id, r.productId]));
+  if (plan.links.some((l) => !now.has(l.itemId) || now.get(l.itemId) !== l.fromProductId)) {
+    await release();
+    throw new DomainError("import_stale");
+  }
   try {
     // Masters first (create / adopt), then the links in batches.
     for (let i = 0; i < Math.max(plan.creates.length, plan.adopts.length); i += APPLY_BATCH) {

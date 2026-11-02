@@ -49,10 +49,9 @@ export default async function ProductLinesPage({ searchParams }: { searchParams:
   }
   const actor = actorFrom(ctx);
   const page = Math.max(1, Number(one(sp.page)) || 1);
-  const members = await lineMembers(ctx.accountId, line.id);
-  const myConnections = members.connections.filter(
-    (c) => !ctx.companyScope || ctx.companyScope.includes(c.companyId ?? ""),
-  );
+  // Restricted members see only their own companies' warehouses and stores of the line.
+  const members = await lineMembers(ctx.accountId, line.id, ctx.companyScope);
+  const myConnections = members.connections;
   const counts = myConnections.length
     ? await accountDb(ctx.accountId).vendorProduct.groupBy({
         by: ["connectionId"],
@@ -62,8 +61,8 @@ export default async function ProductLinesPage({ searchParams }: { searchParams:
     : [];
   const countOf = new Map(counts.map((c) => [c.connectionId, c._count._all]));
   const [coverage, runs, suggestions] = await Promise.all([
-    lineCoverage(ctx.accountId, line.id),
-    listCatalogueRuns(ctx.accountId, line.id),
+    lineCoverage(ctx.accountId, line.id, ctx.companyScope),
+    listCatalogueRuns(ctx.accountId, line.id, { scope: ctx.companyScope }),
     listSuggestions(actor, line.id, page),
   ]);
   const running = runs.some((r) => r.status === "QUEUED" || r.status === "RUNNING");

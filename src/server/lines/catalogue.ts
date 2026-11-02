@@ -5,6 +5,7 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction, type AccountTxHelpers } from "@/server/db/client";
+import type { CompanyScope } from "@/server/companies";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
 import {
   assertLineInScope,
@@ -61,20 +62,24 @@ export async function startMasterCatalogue(
   if (actor.companyScope && !actor.companyScope.includes(connection.companyId ?? "")) {
     throw new DomainError("not_found");
   }
-  const open = await db.masterCatalogueRun.findFirst({
-    where: { lineId: input.lineId, connectionId: connection.id, status: { in: ["QUEUED", "RUNNING"] } },
-  });
-  const run =
-    open ??
-    (await db.masterCatalogueRun.create({
+  // Find-or-create under an advisory lock: a double click or two operators get the same run.
+  const { run, open } = await withAccountTransaction(actor.accountId, async (tx, helpers) => {
+    await helpers.lockKey(`catalogue-start:${input.lineId}:${connection.id}`);
+    const existing = await tx.masterCatalogueRun.findFirst({
+      where: { lineId: input.lineId, connectionId: connection.id, status: { in: ["QUEUED", "RUNNING"] } },
+    });
+    if (existing) return { run: existing, open: true };
+    const created = await tx.masterCatalogueRun.create({
       data: {
         accountId: actor.accountId,
         lineId: input.lineId,
         connectionId: connection.id,
         createdById: actor.userId,
-        total: await db.vendorProduct.count({ where: { connectionId: connection.id, archived: false } }),
+        total: await tx.vendorProduct.count({ where: { connectionId: connection.id, archived: false } }),
       },
-    }));
+    });
+    return { run: created, open: false };
+  });
   await enqueue({ accountId: actor.accountId, runId: run.id, lineId: input.lineId });
   if (!open) {
     await recordAudit({
@@ -115,8 +120,8 @@ async function mastersBySku(tx: Tx, skus: string[]) {
   });
 }
 
-/** One batch of the "masters" phase: create / adopt / link for up to BATCH vendor products. */
-async function mastersBatch(
+/** One batch of the "masters" phase: create / adopt / link for up to BATCH vendor products. Exported for tests. */
+export async function mastersBatch(
   tx: Tx,
   helpers: AccountTxHelpers,
   accountId: string,
@@ -181,8 +186,13 @@ async function mastersBatch(
       if (c.samples.length < MAX_CONFLICT_SAMPLES) c.samples.push(sku);
       continue;
     }
-    await tx.vendorProduct.update({ where: { id: r.id }, data: { productId } });
-    c.linked++;
+    // Conditional: the batch was read before this transaction; a link a person or a sync made meanwhile wins.
+    const res = await tx.vendorProduct.updateMany({
+      where: { id: r.id, productId: null },
+      data: { productId },
+    });
+    if (res.count === 1) c.linked++;
+    else c.alreadyLinked++;
   }
 }
 
@@ -367,9 +377,15 @@ export async function processCatalogueRun(
   }
 }
 
-export async function listCatalogueRuns(accountId: string, lineId: string, take = 10) {
+export async function listCatalogueRuns(
+  accountId: string,
+  lineId: string,
+  opts: { take?: number; scope?: CompanyScope } = {},
+) {
+  const take = opts.take ?? 10;
   return accountDb(accountId).masterCatalogueRun.findMany({
-    where: { lineId },
+    // Restricted members see only runs of their own companies' warehouses.
+    where: { lineId, ...(opts.scope ? { connection: { companyId: { in: opts.scope } } } : {}) },
     include: { connection: { select: { name: true, type: true } } },
     orderBy: { createdAt: "desc" },
     take,

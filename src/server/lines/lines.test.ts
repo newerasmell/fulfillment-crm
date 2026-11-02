@@ -6,10 +6,11 @@ import { accountDb, systemDb } from "@/server/db/client";
 import { evaluateRouting, type RoutingConnection } from "@/server/routing/engine";
 import { matchBySku } from "@/server/shopify/products";
 import { withAccountTransaction } from "@/server/db/client";
-import { readCsv, readTable, readXlsx, writeCsv, writeXlsx } from "@/lib/xlsx";
-import { autoLinkLine, processCatalogueRun, startMasterCatalogue } from "./catalogue";
+import { SpreadsheetError, readCsv, readTable, readXlsx, writeCsv, writeXlsx, zip } from "@/lib/xlsx";
+import { autoLinkLine, mastersBatch, processCatalogueRun, startMasterCatalogue } from "./catalogue";
 import { lineCoverage } from "./coverage";
 import {
+  companiesForLine,
   createLine,
   pickActiveLine,
   setCompanyLine,
@@ -161,6 +162,115 @@ describe("pure helpers", () => {
       ["SKU", "Име"],
       ["A-1", "Крем"],
     ]);
+  });
+
+  const sheetXlsx = (sheetData: string, opts: { rid?: string; relsId?: string } = {}) =>
+    zip([
+      {
+        name: "xl/workbook.xml",
+        data: Buffer.from(
+          `<workbook xmlns:r="r"><sheets><sheet name="S" sheetId="1" r:id="${opts.rid ?? "rId1"}"/></sheets></workbook>`,
+        ),
+      },
+      {
+        name: "xl/_rels/workbook.xml.rels",
+        data: Buffer.from(
+          `<Relationships><Relationship Id="${opts.relsId ?? opts.rid ?? "rId1"}" Type="ws" Target="worksheets/sheet1.xml"/></Relationships>`,
+        ),
+      },
+      {
+        name: "xl/worksheets/sheet1.xml",
+        data: Buffer.from(`<worksheet><sheetData>${sheetData}</sheetData></worksheet>`),
+      },
+    ]);
+  const code = (fn: () => unknown) => {
+    try {
+      fn();
+      return "ok";
+    } catch (err) {
+      return err instanceof SpreadsheetError ? err.code : `other:${(err as Error).name}`;
+    }
+  };
+
+  it("xlsx: row / column indexes from the file are capped (no memory blow-up)", () => {
+    const cell = (ref: string) => `<c r="${ref}" t="inlineStr"><is><t>x</t></is></c>`;
+    expect(code(() => readXlsx(sheetXlsx(`<row r="99999999">${cell("A99999999")}</row>`)))).toBe(
+      "too_many_rows",
+    );
+    expect(code(() => readXlsx(sheetXlsx(`<row r="1">${cell("XFD1")}</row>`)))).toBe("too_many_columns");
+    // Many rows without an r attribute are counted too.
+    expect(code(() => readXlsx(sheetXlsx("<row><c><v>1</v></c></row>".repeat(6000))))).toBe("too_many_rows");
+    expect(readXlsx(sheetXlsx(`<row r="3">${cell("B3")}</row>`))).toEqual([[], [], ["", "x"]]);
+  });
+
+  it("xlsx: a crafted r:id or character reference is a bad file, never a crash", () => {
+    const ok = `<row r="1"><c r="A1" t="inlineStr"><is><t>a&#x110000;b</t></is></c></row>`;
+    expect(readXlsx(sheetXlsx(ok, { rid: "(a+)+$[" }))).toEqual([["ab"]]);
+    expect(code(() => readXlsx(sheetXlsx(ok, { rid: "rId1", relsId: "rId9" })))).toBe("ok");
+    expect(code(() => readXlsx(Buffer.from("PK\u0003\u0004garbage")))).not.toMatch(/^other:/);
+  });
+
+  it("csv: formula-like cells are neutralised on export and restored on import", () => {
+    const rows = [
+      ["SKU", "Име"],
+      ["A-1", '=HYPERLINK("http://x","y")'],
+      ["A-2", "+cmd|' /C calc'!A0"],
+      ["A-3", "-5"],
+      ["A-4", "@SUM(1)"],
+      ["A-5", "'quoted"],
+    ];
+    const csv = writeCsv(rows);
+    for (const line of csv.split("\r\n").slice(1, 5)) expect(line).toMatch(/^A-\d;"'[=+\-@]/);
+    expect(readCsv(csv)).toEqual(rows);
+  });
+
+  it("partial rollout: restricted members keep their companies without a line", () => {
+    const cos = [
+      { id: "a", lineId: "L" },
+      { id: "c", lineId: null },
+      { id: "t", lineId: "T" },
+    ];
+    expect(companiesForLine(cos, "L", false).map((c) => c.id)).toEqual(["a", "c"]);
+    expect(companiesForLine(cos, "L", true).map((c) => c.id)).toEqual(["a"]);
+    expect(companiesForLine(cos, null, false)).toHaveLength(3);
+  });
+
+  it("routing stock fallback keeps shared (company-less) warehouses for every line", () => {
+    const ok = { status: "ok" as const, lines: [] };
+    const order = {
+      companyId: "c1",
+      lineId: "L1",
+      storeId: null,
+      countryCode: "BG",
+      paymentMethod: "COD" as const,
+      tags: [],
+      lines: [{ productId: "p", quantity: 1, title: "x" }],
+    };
+    const shared: RoutingConnection = {
+      id: "shared",
+      name: "Shared",
+      type: "FHB_V3",
+      companyId: null,
+      lineId: null,
+      enabled: true,
+    };
+    const unassigned: RoutingConnection = {
+      ...shared,
+      id: "unassigned",
+      name: "A-unassigned",
+      companyId: "c9",
+    };
+    const d = evaluateRouting({
+      order,
+      rules: [],
+      connections: [unassigned, shared],
+      stock: new Map([
+        ["shared", ok],
+        ["unassigned", ok],
+      ]),
+      storeCodes: new Map(),
+    });
+    expect(d).toMatchObject({ connectionId: "shared", via: "stock_fallback" });
   });
 });
 
@@ -465,7 +575,129 @@ describe("product lines (database)", () => {
     const restricted: ScopedActor = { ...owner, role: "OPERATOR", companyScope: [coT] };
     await expect(listSuggestions(restricted, cosmetics)).rejects.toMatchObject({ code: "not_found" });
     await expect(exportMapping(restricted, cosmetics)).rejects.toMatchObject({ code: "not_found" });
-    expect((await listSuggestions(restricted, textiles)).total).toBeGreaterThanOrEqual(0);
+    const s = await listSuggestions(restricted, textiles);
+    const unlinkedT = await accountDb(owner.accountId).vendorProduct.findMany({
+      where: { connectionId: fhbT, archived: false, productId: null },
+      orderBy: { vendorId: "asc" },
+    });
+    expect(unlinkedT.length).toBeGreaterThan(0);
+    expect(s.total).toBe(unlinkedT.length);
+    expect(s.items.map((i) => i.code).sort()).toEqual(unlinkedT.map((v) => v.vendorId).sort());
+    expect(s.items.every((i) => i.source === "FHB Т")).toBe(true);
+  });
+
+  it("restricted member inside a multi-company line sees and touches only their own companies", async () => {
+    const db = systemDb();
+    const newVp = (connectionId: string, vendorId: string) =>
+      db.vendorProduct.create({
+        data: { accountId: owner.accountId, connectionId, vendorId, raw: { name: `Нов ${vendorId}` } },
+      });
+    const raNew = await newVp(fhbA, "RA-NEW");
+    const ebNew = await newVp(euB, "EB-NEW");
+    const onlyA: ScopedActor = { ...owner, role: "OPERATOR", companyScope: [coA] };
+
+    // Export: no column, id or code of company B.
+    const exp = await exportMapping(onlyA, cosmetics);
+    expect(exp.rows[0]).toHaveLength(2 + 1 + 1);
+    expect(exp.rows.flat().some((c) => c.includes(euB) || c.includes("EB-"))).toBe(false);
+    const ownerHeader = (await exportMapping(owner, cosmetics)).rows[0]!;
+    const euCol = ownerHeader.find((h) => h.includes(euB))!;
+
+    // Import naming B's column is refused before anything is planned.
+    const { errors } = await planImport(
+      owner.accountId,
+      cosmetics,
+      [[...exp.rows[0]!, euCol], ["K1"]],
+      [coA],
+    );
+    expect(errors.map((e) => e.code)).toEqual(["unknown_column"]);
+    const inv = await previewImport(onlyA, { lineId: cosmetics, fileName: "b.csv" }, [
+      ["SKU", "Име", euCol],
+      ["K1", "", "EB-NEW"],
+    ]);
+    expect(inv.status).toBe("INVALID");
+
+    // Suggestions and coverage: A only.
+    const sug = await listSuggestions(onlyA, cosmetics);
+    expect(sug.items.map((i) => i.code)).toEqual(["RA-NEW"]);
+    expect(sug.total).toBe(1);
+    expect((await listSuggestions(owner, cosmetics)).items.map((i) => i.code).sort()).toEqual([
+      "EB-NEW",
+      "RA-NEW",
+    ]);
+    const cov = await lineCoverage(owner.accountId, cosmetics, [coA]);
+    expect(cov.parts.map((p) => p.id).sort()).toEqual([fhbA, storeA].sort());
+
+    // A plan that touches B (previewed by the owner) is refused when a member scoped to A applies it.
+    const ownerPlan = await previewImport(owner, { lineId: cosmetics, fileName: "o.csv" }, [
+      ["SKU", "Име", euCol],
+      ["K1", "", "EB-NEW"],
+    ]);
+    expect(ownerPlan.status).toBe("PREVIEW");
+    await expect(applyImport(onlyA, ownerPlan.id)).rejects.toMatchObject({ code: "import_stale" });
+    expect((await db.vendorProduct.findUniqueOrThrow({ where: { id: ebNew.id } })).productId).toBeNull();
+    expect((await db.productMappingImport.findUniqueOrThrow({ where: { id: ownerPlan.id } })).status).toBe(
+      "PREVIEW",
+    );
+
+    // Double click on Apply: one applies, the other is not ready.
+    const fhbHeader = exp.rows[0]!.find((h) => h.includes(fhbA))!;
+    const mine = await previewImport(onlyA, { lineId: cosmetics, fileName: "a.csv" }, [
+      ["SKU", "Име", fhbHeader],
+      ["K1", "", "RA-NEW"],
+    ]);
+    expect(mine.status).toBe("PREVIEW");
+    const results = await Promise.allSettled([applyImport(onlyA, mine.id), applyImport(onlyA, mine.id)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "import_not_ready" });
+    const k1 = await accountDb(owner.accountId).product.findFirstOrThrow({
+      where: { sku: "K1", lineId: cosmetics },
+    });
+    expect((await db.vendorProduct.findUniqueOrThrow({ where: { id: raNew.id } })).productId).toBe(k1.id);
+  });
+
+  it("catalogue batch never overwrites a link made after the batch was read", async () => {
+    const db = accountDb(owner.accountId);
+    const k1 = await db.product.findFirstOrThrow({ where: { sku: "K1", lineId: cosmetics } });
+    // "Ra-K2" maps to master K2 by SKU after prefix …
+    const vp = await systemDb().vendorProduct.create({
+      data: { accountId: owner.accountId, connectionId: fhbA, vendorId: "Ra-K2", raw: { name: "late" } },
+    });
+    // … but after the batch read it as unlinked, a person linked it by hand to K1.
+    await db.vendorProduct.update({ where: { id: vp.id }, data: { productId: k1.id } });
+    const c = {
+      processed: 0,
+      created: 0,
+      linked: 0,
+      adopted: 0,
+      alreadyLinked: 0,
+      conflicts: 0,
+      samples: [],
+    };
+    const stale = [{ id: vp.id, vendorId: "Ra-K2", productId: null, raw: { name: "late" } }];
+    await withAccountTransaction(owner.accountId, (tx, helpers) =>
+      mastersBatch(tx, helpers, owner.accountId, cosmetics, "RA-", stale, c),
+    );
+    expect(c).toMatchObject({ processed: 1, linked: 0, alreadyLinked: 1, created: 0 });
+    expect((await db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } })).productId).toBe(k1.id);
+  });
+
+  it("starting the catalogue twice at once creates one run", async () => {
+    const enq = async () => 0;
+    const [a, b] = await Promise.all([
+      startMasterCatalogue(owner, { lineId: cosmetics, connectionId: euB }, enq),
+      startMasterCatalogue(owner, { lineId: cosmetics, connectionId: euB }, enq),
+    ]);
+    expect(a.id).toBe(b.id);
+    expect(await accountDb(owner.accountId).masterCatalogueRun.count({ where: { connectionId: euB } })).toBe(
+      1,
+    );
+    expect(
+      await accountDb(owner.accountId).auditLog.count({
+        where: { action: "line.catalogue_started", entityId: a.id },
+      }),
+    ).toBe(1);
   });
 
   it("autoLinkLine is safe to run again", async () => {
