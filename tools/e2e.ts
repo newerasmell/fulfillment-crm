@@ -66,6 +66,9 @@ try {
   // Manual shipments and labels (wave 3, labels track): its own group and OWNER (tests/e2e/labels.spec.ts).
   const { seedLabels } = await import("../tests/e2e/seed-labels");
   const labelsOwner = await seedLabels();
+  // AI assistant (wave 3, AI track): its own group and OWNER, reviewer run against a mocked transport (ai.spec.ts).
+  const { seedAi } = await import("../tests/e2e/seed-ai");
+  const aiOwner = await seedAi();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -101,6 +104,9 @@ try {
       E2E_LABELS_PASSWORD: labelsOwner.password,
       E2E_LABELS_TOTP: labelsOwner.totp,
       E2E_LABELS_SEEDED: labelsOwner.seededNumber,
+      E2E_AI_EMAIL: aiOwner.email,
+      E2E_AI_PASSWORD: aiOwner.password,
+      E2E_AI_TOTP: aiOwner.totp,
     },
   });
   status = run.status ?? 1;

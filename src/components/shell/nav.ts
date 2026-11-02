@@ -49,7 +49,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/warehouses", key: "warehouses", icon: "warehouse" },
       { href: "/stores", key: "stores", icon: "store" },
       { href: "/routing", key: "routing", icon: "route" },
-      { href: "/ai", key: "ai", icon: "sparkle" },
+      { href: "/ai", key: "ai", icon: "sparkle", permission: "ai.read" },
       { href: "/directory", key: "directory", icon: "pin" },
       { href: "/settings/members", key: "members", icon: "users" },
       { href: "/settings/credentials", key: "credentials", icon: "key", permission: "credentials.write" },

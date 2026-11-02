@@ -255,4 +255,36 @@ export const QUEUES = {
     name: "labels.read",
     options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 300 },
   },
+  /**
+   * AI reviewer: one order (data: { accountId, orderId }); one queued + one running per order. The expiry is above
+   * the LLM client's overall deadline (src/ai/llm.ts LLM_DEADLINE_MS = 240 s) plus the DB work around it.
+   */
+  aiReview: {
+    name: "ai.review",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 600 },
+  },
+  /** Every 5 min: queue AI reviews for checked orders whose current version has no suggestion yet. */
+  aiSweep: {
+    name: "ai.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** Every 10 min: embed decided reviews, compare decisions with AI suggestions, automatic policy demotion. */
+  aiEvaluate: {
+    name: "ai.evaluate",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Daily: random audit sample of yesterday's autopilot approvals. */
+  aiAuditSample: {
+    name: "ai.auditSample",
+    options: { retryLimit: 2, policy: "stately", expireInSeconds: 600 },
+    cron: "21 4 * * *",
+  },
+  /** Weekly (Monday): cluster repeated operator corrections into validator proposals. */
+  aiRuleMining: {
+    name: "ai.ruleMining",
+    options: { retryLimit: 1, policy: "stately", expireInSeconds: 1800 },
+    cron: "37 5 * * 1",
+  },
 } satisfies Record<string, QueueDef>;

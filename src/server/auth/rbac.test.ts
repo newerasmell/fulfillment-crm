@@ -44,6 +44,11 @@ const EXPECTED: Record<Permission, string> = {
   "inventory.push": "11000",
   "returns.manage": "11110",
   "cod.read": "11100",
+  "ai.read": "11100",
+  "ai.manage": "10000",
+  "ai.audit": "11100",
+  "ai.rules": "11000",
+  "ai.log": "11000",
 };
 
 describe("role matrix", () => {

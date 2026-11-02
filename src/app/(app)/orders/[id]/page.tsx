@@ -23,6 +23,7 @@ import { CHOICE_STATUSES, rerouteView, warehouseOptions, warehouseReasonCodes } 
 import type { StockCheck } from "@/server/routing";
 import { CancelCanaryConfirm, RerouteForm, WarehouseChooser, type OptionView } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
+import { AiCard } from "./ai-card";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
 
@@ -321,6 +322,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
         </div>
 
         <div className="flex min-w-0 flex-col gap-4">
+          <AiCard actor={actorFrom(ctx)} orderId={order.id} />
           <Card>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="m-0 text-base font-semibold">{r("findings.title")}</h2>

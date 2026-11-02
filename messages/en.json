@@ -2343,5 +2343,229 @@
       "client_request_id_required": "The form has no submission id — reload the page and try again.",
       "label_only_order": "This is a label-only shipment — it is never sent to a warehouse."
     }
+  },
+  "ai": {
+    "title": "AI assistant",
+    "subtitle": "Suggests decisions on orders, learns from the operators' decisions and takes over routine work only once it has earned trust.",
+    "status": {
+      "off_no_api_key": "AI is off: ANTHROPIC_API_KEY is not set. No suggestions are made — people decide every order. The owner turns it on at GATE P8-G1.",
+      "off_global_kill_switch": "AI is stopped for every group (AI_KILL_SWITCH=1 on the server).",
+      "stopped": "AI is stopped for this group. No suggestions are made and the AI approves nothing.",
+      "on": "AI is on. Models: {reviewer} (orders with findings), {cheap} (clean orders).",
+      "neverSends": "The AI never sends, cancels, deletes or changes COD or the recipient — it only fills in suggestions."
+    },
+    "tabs": {
+      "overview": "Overview",
+      "audit": "Autopilot audit",
+      "rules": "Proposed rules",
+      "log": "Request log",
+      "label": "AI assistant sections"
+    },
+    "kill": {
+      "title": "AI emergency stop",
+      "on": "Stop AI for the group",
+      "off": "Start AI again",
+      "prompt": "Are you sure? The AI stops immediately for the whole group.",
+      "promptOff": "Start the AI again for the group?",
+      "confirm": "Yes",
+      "cancel": "Cancel",
+      "note": "Reason (optional)",
+      "state": "Stopped since {at}",
+      "running": "The AI runs normally for the group."
+    },
+    "type": {
+      "order_approval": "Order approval",
+      "address_fix": "Address and phone fixes"
+    },
+    "typeHint": {
+      "order_approval": "L0 shadow → L1 assist → L2 autopilot for clean orders",
+      "address_fix": "L0 shadow → L1 one-click fixes (never automatic)"
+    },
+    "level": {
+      "L0": "L0 · Shadow",
+      "L1": "L1 · Assist",
+      "L2": "L2 · Autopilot"
+    },
+    "levelHelp": {
+      "L0": "The AI suggests, people decide; agreement is measured.",
+      "L1": "The AI pre-fills fixes, a person clicks Approve.",
+      "L2": "Clean, confident orders are approved by the AI; everything else goes to people."
+    },
+    "enabled": "On",
+    "disabled": "Off",
+    "enable": "Turn on in shadow mode",
+    "disable": "Turn off",
+    "promote": "Promote to {level}",
+    "demote": "Demote to L0",
+    "stats": {
+      "window": "Last {days} days",
+      "decisions": "Compared decisions",
+      "agreement": "Agreement",
+      "critical": "Critical misses",
+      "autopilot": "Approved by autopilot",
+      "none": "—"
+    },
+    "rule": {
+      "title": "Promotion rule",
+      "decisions": "≥ {min} compared decisions (now {n})",
+      "agreement": "≥ {min} agreement (now {value})",
+      "critical": "0 critical misses in the window (now {n})",
+      "maxLevel": "This is the highest level for this decision type.",
+      "disabled": "Turn the decision type on first.",
+      "stopped": "The AI is stopped.",
+      "eligible": "The rule holds — the owner can promote.",
+      "demotion": "Automatic demotion to L0 on a critical miss or agreement below the threshold."
+    },
+    "thresholds": {
+      "title": "Thresholds",
+      "windowDays": "Window (days)",
+      "minDecisions": "Min. decisions",
+      "minAgreement": "Min. agreement (%)",
+      "autoConfidence": "Autopilot confidence (%)",
+      "auditRate": "Daily audit share (%)",
+      "demoteMinSample": "Min. decisions for demotion",
+      "highValue": "High value — always a person (currency: amount)",
+      "save": "Save thresholds",
+      "hint": "The SPEC rule can only be made stricter: at least 300 decisions and 98% agreement."
+    },
+    "trend": {
+      "title": "Weekly agreement (approval)",
+      "week": "Week",
+      "decisions": "Decisions",
+      "agreement": "Agreement"
+    },
+    "usage": {
+      "title": "Last 24 hours",
+      "suggestions": "Suggestions",
+      "calls": "Model calls",
+      "failed": "Failed",
+      "tokens": "Tokens (in / out)",
+      "embeddings": "Review vectors",
+      "providers": "Embedding provider"
+    },
+    "audit": {
+      "title": "Daily autopilot audit",
+      "subtitle": "A random sample ({rate}) of yesterday's AI approvals. A rejection is a critical miss and demotes to L0.",
+      "empty": "Nothing to audit.",
+      "day": "Day",
+      "order": "Order",
+      "confidence": "Confidence",
+      "explanation": "AI explanation",
+      "status": "Status",
+      "confirm": "Confirm",
+      "reject": "Reject",
+      "note": "Why is it wrong? (required)",
+      "send": "Reject with note",
+      "cancel": "Cancel",
+      "state": {
+        "PENDING": "Pending",
+        "CONFIRMED": "Confirmed",
+        "REJECTED": "Rejected"
+      }
+    },
+    "rules": {
+      "title": "Validators proposed from repeated corrections",
+      "subtitle": "Every week the AI clusters the operators' corrections. An accepted proposal becomes a developer task — the code is written and tested in Claude Code; nothing is generated automatically.",
+      "empty": "No proposals yet (at least 5 orders with the same correction are needed).",
+      "rule": "Rule",
+      "evidence": "Evidence",
+      "evidenceValue": "{support} corrections on {orders} orders",
+      "lastSeen": "Last seen",
+      "status": "Status",
+      "accept": "Accept",
+      "reject": "Reject",
+      "note": "Note (optional)",
+      "brief": "Developer brief",
+      "state": {
+        "PROPOSED": "Proposed",
+        "ACCEPTED": "Accepted",
+        "REJECTED": "Rejected"
+      }
+    },
+    "log": {
+      "title": "Every model request",
+      "subtitle": "The full request and response text (contains customer data — admins only).",
+      "empty": "No requests yet.",
+      "time": "Time",
+      "order": "Order",
+      "model": "Model",
+      "status": "Result",
+      "tokens": "Tokens",
+      "latency": "Latency",
+      "show": "Show request and response",
+      "hide": "Hide",
+      "request": "Request",
+      "response": "Response"
+    },
+    "card": {
+      "title": "AI suggestion",
+      "none": "No suggestion for this order yet.",
+      "off": "The AI is off (no ANTHROPIC_API_KEY).",
+      "stopped": "The AI is stopped for the group.",
+      "policyOff": "The AI is not turned on for the group (Settings → AI assistant).",
+      "confidence": "Confidence {value}",
+      "fixes": "Suggested fixes",
+      "flags": "To note",
+      "guardrails": "Guardrails",
+      "model": "{model} · {at}",
+      "similar": "Compared with {n} similar decisions",
+      "stale": "The order changed after this suggestion — it no longer applies.",
+      "autopilot": "Approved by the AI autopilot ({at}).",
+      "outcome": "Human decision: {decision} · {agreed}",
+      "agreed": "agreed",
+      "disagreed": "disagreed",
+      "request": "Request an AI review",
+      "requested": "The review was queued.",
+      "apply": "Apply the AI's fixes",
+      "applied": "Fixes applied and the order re-checked.",
+      "fixLine": "{field}: {from} → {to}"
+    },
+    "decision": {
+      "APPROVE": "Approve",
+      "EDIT_AND_APPROVE": "Fix and approve",
+      "HOLD": "Hold",
+      "CANCEL": "Block",
+      "REROUTE": "Reroute"
+    },
+    "flag": {
+      "address_unclear": "unclear address",
+      "phone_unclear": "unclear phone",
+      "possible_duplicate": "possible duplicate",
+      "customer_history_risk": "risky customer history",
+      "fraud_risk": "fraud risk",
+      "cod_amount_question": "COD question",
+      "recipient_question": "recipient question",
+      "stock_question": "stock question",
+      "other": "other"
+    },
+    "guardrail": {
+      "high_value": "high value — always a person",
+      "hard_findings_hold": "blocking findings",
+      "fixes_dropped_hold": "fixes not allowed",
+      "fix_dropped": "rejected fix of {field}"
+    },
+    "callStatus": {
+      "ok": "ok",
+      "api_error": "API error",
+      "network_error": "network error",
+      "refusal": "model declined",
+      "max_tokens": "truncated",
+      "no_tool_call": "no structured answer",
+      "invalid_output": "invalid answer"
+    },
+    "error": {
+      "forbidden": "You are not allowed to do this.",
+      "not_eligible": "The promotion rule does not hold.",
+      "stale": "The data changed — refresh the page.",
+      "not_lower": "Choose a lower level.",
+      "invalid": "Invalid values.",
+      "note_required": "Write a note.",
+      "already_decided": "Already decided.",
+      "ai_off": "The AI is off.",
+      "not_reviewable": "The order is not in a reviewable status.",
+      "not_allowed": "The fixes cannot be applied.",
+      "not_found": "Not found.",
+      "not_editable": "The address can no longer be changed."
+    }
   }
 }

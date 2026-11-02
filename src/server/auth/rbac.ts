@@ -62,6 +62,16 @@ export const PERMISSIONS = {
   "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   /** COD board and its CSV export (amounts per shipment and company). */
   "cod.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** AI assistant (Настройки → AI асистент): agreement dashboard, suggestions on the order detail. */
+  "ai.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Change AI autonomy (enable shadow mode, promote/demote, thresholds) and the group's AI stop switch. */
+  "ai.manage": ["OWNER"],
+  /** Confirm or reject the daily audit sample of autopilot approvals. */
+  "ai.audit": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Accept or reject validator proposals from the weekly rule mining. */
+  "ai.rules": ["OWNER", "ADMIN"],
+  /** The full prompt/response log (it carries customer data). */
+  "ai.log": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
