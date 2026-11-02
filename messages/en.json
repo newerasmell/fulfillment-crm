@@ -317,7 +317,8 @@
       "domain_mismatch": "These credentials belong to another shop.",
       "app_uninstalled": "The app was uninstalled from the store.",
       "unexpected": "Unexpected error.",
-      "invalid_credential": "The selected credential is not a Shopify app."
+      "invalid_credential": "The selected credential is not a Shopify app.",
+      "no_callback_url": "The CRM's public URL is unknown (RENDER_EXTERNAL_URL/APP_URL)."
     },
     "writeModes": {
       "READ_ONLY": "Read only",
@@ -328,7 +329,9 @@
       "DISABLED": "Disabled",
       "DRY_RUN": "Dry run",
       "LIVE": "Live"
-    }
+    },
+    "jobQueued": "Queued in the background — the result appears here within a minute.",
+    "jobAlready": "Already waiting in the queue — the result appears here within a minute."
   },
   "products": {
     "title": "Products & stock",

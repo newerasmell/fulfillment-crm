@@ -39,6 +39,10 @@ test("stores and the matching queue: create the master product from a variant", 
   await expect(page.getByText("e2e-demo.myshopify.com")).toBeVisible();
   await expect(page.getByText("Не е тествано").first()).toBeVisible();
   await expect(page.getByText("Записани (криптирани)")).toBeVisible();
+  // Background jobs say they were queued (the worker is not running in e2e).
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Синхронизирай поръчки" }).click();
+  await expect(page.getByRole("status").filter({ hasText: /Пуснато|Вече чака/ })).toBeVisible();
   // The secret is never rendered back.
   await expect(page.locator("body")).not.toContainText("e2e-client-secret-not-real");
 
