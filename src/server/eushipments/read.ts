@@ -39,6 +39,9 @@ const text = (v: unknown, max = 300) =>
   v === null || v === undefined || v === "" ? null : String(v).slice(0, max);
 
 /** Runs one sync and records start / success / scrubbed error. The error is re-thrown for the job's retry. */
+/** Rows per transaction when a mirror list is replaced (offices, cities). */
+const SYNC_BATCH = 500;
+
 async function tracked<T extends Record<string, unknown>>(
   accountId: string,
   connectionId: string,
@@ -65,8 +68,16 @@ async function tracked<T extends Record<string, unknown>>(
     });
     return info;
   } catch (err) {
+    // Database errors carry internals (queries, timeouts) that mean nothing on the screen: log them, show a code.
+    const dbError = /^PrismaClient/.test((err as Error)?.constructor?.name ?? "");
+    if (dbError)
+      logger.error({ connectionId, kind, err: (err as Error).message }, "euShipments sync: database error");
     const message =
-      err instanceof DomainError ? err.code : scrubText(String((err as Error)?.message ?? err), 500);
+      err instanceof DomainError
+        ? err.code
+        : dbError
+          ? "db_error"
+          : scrubText(String((err as Error)?.message ?? err), 500);
     await db.eushipmentsSync.update({ where: key, data: { lastError: message } });
     throw err;
   }
@@ -235,17 +246,21 @@ async function syncOfficesOfCourier(
     }
     if (page >= res.pagination.last_page || res.offices.length === 0) break;
   }
-  // The courier's list is replaced as a whole (one atomic swap), so a half-read list never shows.
-  await withAccountTransaction(
-    accountId,
-    async (tx, { lockKey }) => {
-      await lockKey(`eushipments:offices:${connectionId}:${courierId}`);
-      await tx.eushipmentsOffice.deleteMany({ where: { connectionId, courierId } });
-      for (let i = 0; i < rows.length; i += 1000)
-        await tx.eushipmentsOffice.createMany({ data: rows.slice(i, i + 1000), skipDuplicates: true });
-    },
-    { timeout: 60_000 },
-  );
+  // Thousands of offices per courier: one transaction for all of them outlived the timeout in production.
+  // Replace in small batches instead (each atomic), then drop what this run did not see — the list is never
+  // empty while it is being refreshed, only briefly a mix of old and new rows.
+  for (let i = 0; i < rows.length; i += SYNC_BATCH) {
+    const batch = rows.slice(i, i + SYNC_BATCH);
+    await withAccountTransaction(accountId, async (tx) => {
+      await tx.eushipmentsOffice.deleteMany({
+        where: { connectionId, officeId: { in: batch.map((r) => r.officeId) } },
+      });
+      await tx.eushipmentsOffice.createMany({ data: batch, skipDuplicates: true });
+    });
+  }
+  await accountDb(accountId).eushipmentsOffice.deleteMany({
+    where: { connectionId, courierId, syncedAt: { lt: now } },
+  });
   return rows.length;
 }
 
@@ -286,16 +301,19 @@ export async function syncEuCities(
       }
       if (chunk.length < CITIES_PAGE) break;
     }
-    await withAccountTransaction(
-      accountId,
-      async (tx, { lockKey }) => {
-        await lockKey(`eushipments:cities:${connectionId}:${countryId}`);
-        await tx.eushipmentsCity.deleteMany({ where: { connectionId, countryId } });
-        for (let i = 0; i < rows.length; i += 1000)
-          await tx.eushipmentsCity.createMany({ data: rows.slice(i, i + 1000), skipDuplicates: true });
-      },
-      { timeout: 60_000 },
-    );
+    // Same batching as the offices (a country can have tens of thousands of cities).
+    for (let i = 0; i < rows.length; i += SYNC_BATCH) {
+      const batch = rows.slice(i, i + SYNC_BATCH);
+      await withAccountTransaction(accountId, async (tx) => {
+        await tx.eushipmentsCity.deleteMany({
+          where: { connectionId, cityId: { in: batch.map((r) => r.cityId) } },
+        });
+        await tx.eushipmentsCity.createMany({ data: batch, skipDuplicates: true });
+      });
+    }
+    await accountDb(accountId).eushipmentsCity.deleteMany({
+      where: { connectionId, countryId, syncedAt: { lt: now } },
+    });
     return { countryId, cities: rows.length };
   });
 }

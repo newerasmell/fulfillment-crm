@@ -906,7 +906,8 @@
       "token_changed": "The token changed — a new test is needed.",
       "cities_unsupported": "euShipments has no city list for this country.",
       "unknown_sku": "None of our products has this SKU.",
-      "ambiguous_sku": "More than one product matches this SKU."
+      "ambiguous_sku": "More than one product matches this SKU.",
+      "db_error": "Database error while saving — try again; if it repeats, check the worker logs."
     }
   },
   "apiWatch": {
