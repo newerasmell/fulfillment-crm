@@ -56,7 +56,7 @@ async function companiesOf(
   const ids = (t: string) => [
     ...new Set(alerts.filter((a) => a.entityType === t && a.entityId).map((a) => a.entityId!)),
   ];
-  const [orders, fulfillments, requests, stores, connections] = await Promise.all([
+  const [orders, fulfillments, requests, stores, connections, stockEntities] = await Promise.all([
     db.order.findMany({
       where: { id: { in: ids("Order") } },
       select: { id: true, companyId: true, number: true },
@@ -78,6 +78,7 @@ async function companiesOf(
       where: { id: { in: ids("FulfillmentConnection") } },
       select: { id: true, companyId: true },
     }),
+    stockAlertCompanies(accountId, ids),
   ]);
   const out = new Map<string, { companyId: string | null; orderId?: string; orderNumber?: string }>();
   for (const o of orders)
@@ -96,7 +97,33 @@ async function companiesOf(
     });
   for (const s of stores) out.set(`Store:${s.id}`, { companyId: s.companyId });
   for (const c of connections) out.set(`FulfillmentConnection:${c.id}`, { companyId: c.companyId });
+  for (const [k, companyId] of stockEntities) out.set(k, { companyId });
   return out;
+}
+
+/** Stock track (P5-01/P5-02): company of stock and inbound alert entities (variant → store, vendor product /
+ * inbound → warehouse connection). */
+async function stockAlertCompanies(accountId: string, ids: (t: string) => string[]) {
+  const db = accountDb(accountId);
+  const [links, vps, inbounds] = await Promise.all([
+    db.storeVariantLink.findMany({
+      where: { id: { in: ids("StoreVariantLink") } },
+      select: { id: true, store: { select: { companyId: true } } },
+    }),
+    db.vendorProduct.findMany({
+      where: { id: { in: ids("VendorProduct") } },
+      select: { id: true, connection: { select: { companyId: true } } },
+    }),
+    db.inboundShipment.findMany({
+      where: { id: { in: ids("InboundShipment") } },
+      select: { id: true, connection: { select: { companyId: true } } },
+    }),
+  ]);
+  return new Map<string, string | null>([
+    ...links.map((l) => [`StoreVariantLink:${l.id}`, l.store.companyId] as const),
+    ...vps.map((v) => [`VendorProduct:${v.id}`, v.connection.companyId] as const),
+    ...inbounds.map((i) => [`InboundShipment:${i.id}`, i.connection.companyId] as const),
+  ]);
 }
 
 /** Restricted members see alerts of their companies only; the sidebar company filter narrows further. */
