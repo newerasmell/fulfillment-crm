@@ -80,4 +80,15 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 240 },
     cron: "*/5 * * * *",
   },
+  /** FHB: one read resource of one connection (data: { accountId, connectionId, resource, service?, country? }). */
+  fhbSync: {
+    name: "fhb.sync",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
+  },
+  /** Every 30 min: queue the read sync of every FHB connection (SPEC §6.3 reconcile). */
+  fhbReconcile: {
+    name: "fhb.reconcile",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/30 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

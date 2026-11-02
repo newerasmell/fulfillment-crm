@@ -303,6 +303,100 @@ export const FhbDeliveryPoints = z.array(
 );
 export type FhbDeliveryPoints = z.infer<typeof FhbDeliveryPoints>;
 
+// ───────────── stock levels and movements ─────────────
+
+/** GET /stock/all (array, no paging) and GET /stock/history/{date}: physical `quantity` only. */
+export const FhbStockLevel = z.looseObject({ id: Id, ean: str, name: str, quantity: num });
+export const FhbStockLevels = z.array(FhbStockLevel);
+export type FhbStockLevel = z.infer<typeof FhbStockLevel>;
+
+/** GET /stock/movements (500 per page). `type` in|out is kept as a plain string (unknown values stay raw). */
+export const FhbStockMovement = z.looseObject({
+  id: Id,
+  product: str,
+  type: str,
+  change: num,
+  quantity: num,
+  date: str,
+  reason: str,
+  order: str,
+  stock_receipt: str,
+});
+export type FhbStockMovement = z.infer<typeof FhbStockMovement>;
+export const FhbStockMovementPage = z.looseObject({
+  page: z.number(),
+  total: z.number(),
+  movements: z.array(FhbStockMovement),
+});
+export type FhbStockMovementPage = z.infer<typeof FhbStockMovementPage>;
+
+// ───────────── returns from the carrier (RMA) and local returns ─────────────
+
+/** GET /rma/list (100 per page): items have the order structure with `returned_at` / `return_type`. */
+export const FhbRmaPage = z.looseObject({
+  page: z.number(),
+  total: z.number(),
+  items: z.array(FhbOrderView),
+});
+export type FhbRmaPage = z.infer<typeof FhbRmaPage>;
+
+/** One local return (GET /return/list item and GET /return/{uid}). `type` basic|complex kept raw. */
+export const FhbReturn = z.looseObject({
+  id: Id.nullish(),
+  uid: z.string().min(1),
+  depot_id: Id.nullish(),
+  type: str,
+  status: str,
+  weight: num,
+  created_at: str,
+  barcodes: z.array(z.string()).nullish(),
+  items: z
+    .array(
+      z.looseObject({
+        id: Id.nullish(),
+        barcode: str,
+        description: str,
+        condition: str,
+        quantity: num,
+        action: str,
+      }),
+    )
+    .nullish(),
+  photos: z.array(z.looseObject({ id: Id, type: str })).nullish(),
+});
+export type FhbReturn = z.infer<typeof FhbReturn>;
+export const FhbReturnPage = z.looseObject({
+  page: z.number(),
+  total: z.number(),
+  items: z.array(FhbReturn),
+});
+export type FhbReturnPage = z.infer<typeof FhbReturnPage>;
+
+// ───────────── cash on delivery ─────────────
+
+/** Documented COD statuses; anything else is stored raw and alerted. */
+export const FHB_COD_STATUSES = ["waiting", "received", "paid"] as const;
+
+/** GET /cod?id= and GET /cod/list items. `cod` is in the destination's local currency. */
+export const FhbCod = z.looseObject({
+  id: Id,
+  uid: str,
+  variable_symbol: Id.nullish(),
+  parcel_service: str,
+  cod: num,
+  status: str,
+  received_at: str,
+  paid_at: str,
+  created_at: str,
+});
+export type FhbCod = z.infer<typeof FhbCod>;
+export const FhbCodPage = z.looseObject({
+  page: z.number(),
+  total: z.number(),
+  items: z.array(FhbCod),
+});
+export type FhbCodPage = z.infer<typeof FhbCodPage>;
+
 // ───────────── stock receipts (inbound) ─────────────
 
 const ReceiptItem = z.object({ id: z.string().min(1), quantity: z.number().int().min(1) }).strict();

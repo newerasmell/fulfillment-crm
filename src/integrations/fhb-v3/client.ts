@@ -2,6 +2,8 @@ import { z } from "zod";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import {
+  FhbCod,
+  FhbCodPage,
   FhbDeliveryPoints,
   FhbErrorBody,
   FhbLoginResponse,
@@ -14,6 +16,12 @@ import {
   FhbProductPage,
   FhbProductUpdate,
   FhbProductView,
+  FhbReturn,
+  FhbReturnPage,
+  FhbRmaPage,
+  FhbStockLevel,
+  FhbStockLevels,
+  FhbStockMovementPage,
   FhbStockReceiptCreate,
   FhbStockReceiptUpdate,
   FhbStockReceiptView,
@@ -413,6 +421,40 @@ export class FhbClient {
       }),
     );
     return rows ?? [];
+  }
+
+  // ── stock, returns, COD (read side, P2-02) ──
+  /** GET /stock/all — physical quantity of every product (one response, no paging documented). */
+  stockAll() {
+    return this.request("GET", "/stock/all", { schema: FhbStockLevels });
+  }
+  /** GET /stock?id= — null on 404 (unknown product). */
+  stock(id: string) {
+    return this.orNull(this.request("GET", "/stock", { query: { id }, schema: FhbStockLevel }));
+  }
+  /** GET /stock/movements (500/page). `from`/`to` are timestamps, e.g. 2019-01-01T00:00:00.000Z (spec example). */
+  stockMovements(q: { product?: string; receipt?: string; from?: string; to?: string; page?: number }) {
+    return this.request("GET", "/stock/movements", { query: q, schema: FhbStockMovementPage });
+  }
+  /** GET /rma/list (100/page): `from`/`to` (ISO date) filter the RETURN date; sorted by order creation. */
+  rmaList(q: { from?: string; to?: string; page?: number }) {
+    return this.request("GET", "/rma/list", { query: q, schema: FhbRmaPage });
+  }
+  /** GET /return/list (100/page): local depot returns; empty unless the extra service is active. */
+  returnList(q: { from?: string; to?: string; uid?: string; barcode?: string; page?: number }) {
+    return this.request("GET", "/return/list", { query: q, schema: FhbReturnPage });
+  }
+  /** GET /return/{uid} — null on 404. */
+  getReturn(uid: string) {
+    return this.orNull(this.request("GET", `/return/${encodeURIComponent(uid)}`, { schema: FhbReturn }));
+  }
+  /** GET /cod/list (100/page), status waiting|received|paid, `from`/`to` ISO dates on order creation. */
+  codList(q: { status?: string; from?: string; to?: string; page?: number }) {
+    return this.request("GET", "/cod/list", { query: q, schema: FhbCodPage });
+  }
+  /** GET /cod?id= — null on 404 (no COD on that order). */
+  cod(id: string) {
+    return this.orNull(this.request("GET", "/cod", { query: { id }, schema: FhbCod }));
   }
 
   // ── stock receipts ──
