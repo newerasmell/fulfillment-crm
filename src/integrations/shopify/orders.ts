@@ -10,8 +10,8 @@ const MONEY = `shopMoney { amount currencyCode } presentmentMoney { amount curre
  * Page sizes are bounded by Shopify's 1000-point single-query cost cap (connections cost first × node cost).
  * Lines beyond the first page are fetched with ORDER_LINES_QUERY. The cost test keeps these honest.
  */
-export const ORDERS_PAGE_SIZE = 4;
-export const ORDER_LINES_FIRST = 20;
+export const ORDERS_PAGE_SIZE = 10;
+export const ORDER_LINES_FIRST = 5;
 export const ORDER_LINES_PAGE_SIZE = 100;
 
 const LINE_FIELDS = `
@@ -84,6 +84,7 @@ export const ORDER_BY_ID_QUERY = /* GraphQL */ `
 export const ORDER_LINES_QUERY = /* GraphQL */ `
   query OrderLines($id: ID!, $after: String) {
     order(id: $id) {
+      updatedAt
       lineItems(first: ${ORDER_LINES_PAGE_SIZE}, after: $after) {
         nodes {${LINE_FIELDS}
         }
@@ -175,5 +176,7 @@ export const OrdersPage = z.object({
 export const OrderById = z.object({ order: ShopifyOrder.nullable() });
 
 export const OrderLines = z.object({
-  order: z.object({ lineItems: z.object({ nodes: z.array(LineItem), pageInfo: PageInfo }) }).nullable(),
+  order: z
+    .object({ updatedAt: z.string(), lineItems: z.object({ nodes: z.array(LineItem), pageInfo: PageInfo }) })
+    .nullable(),
 });

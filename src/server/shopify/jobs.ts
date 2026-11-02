@@ -15,7 +15,9 @@ export interface StoreJob {
 }
 export interface SyncOrdersJob extends StoreJob {
   mode: "reconcile" | "backfill";
-  days?: number;
+  /** Backfill window (created_at), ISO. */
+  from?: string;
+  to?: string;
 }
 export interface WebhookJob {
   accountId: string;
@@ -28,7 +30,9 @@ export const enqueueShopify = {
   registerWebhooks: (boss: PgBoss, d: StoreJob) =>
     boss.send(QUEUES.shopifyRegisterWebhooks.name, d, { singletonKey: d.storeId }),
   syncOrders: (boss: PgBoss, d: SyncOrdersJob) =>
-    boss.send(QUEUES.shopifySyncOrders.name, d, { singletonKey: `${d.storeId}:${d.mode}` }),
+    boss.send(QUEUES.shopifySyncOrders.name, d, {
+      singletonKey: d.mode === "backfill" ? `${d.storeId}:backfill:${d.from}` : `${d.storeId}:reconcile`,
+    }),
   syncProducts: (boss: PgBoss, d: StoreJob) =>
     boss.send(QUEUES.shopifySyncProducts.name, d, { singletonKey: d.storeId }),
   webhook: (boss: PgBoss, d: WebhookJob) =>
@@ -72,9 +76,10 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
     for (const { data } of jobs) {
       if (!(await connectedStore(data.accountId, data.storeId))) continue;
       const { store, client } = await shopifyClientForStore(data.accountId, data.storeId);
+      if (data.mode === "backfill" && !(data.from && data.to)) continue;
       const mode =
         data.mode === "backfill"
-          ? { kind: "backfill" as const, days: Math.min(Math.max(data.days ?? 30, 1), 365) }
+          ? { kind: "backfill" as const, from: data.from!, to: data.to! }
           : { kind: "reconcile" as const };
       await syncStoreOrders(data.accountId, store, client, mode);
     }

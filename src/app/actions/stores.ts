@@ -9,6 +9,7 @@ import { ForbiddenError, assertCan } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
+import { backfillWindows } from "@/server/shopify/orders";
 import { createStore, getStore, replaceStoreCredentials, updateStoreSettings } from "@/server/stores";
 
 type Result = { ok?: boolean; error?: string } | undefined;
@@ -119,12 +120,10 @@ export async function backfillOrdersAction(storeId: string, _prev: Result, form:
     assertCan(ctx.role, "stores.manage");
     await getStore(actorFrom(ctx), storeId);
     const days = z.coerce.number().int().min(1).max(365).parse(form.get("days"));
-    await enqueueShopify.syncOrders(await webBoss(), {
-      accountId: ctx.accountId,
-      storeId,
-      mode: "backfill",
-      days,
-    });
+    const boss = await webBoss();
+    for (const w of backfillWindows(days)) {
+      await enqueueShopify.syncOrders(boss, { accountId: ctx.accountId, storeId, mode: "backfill", ...w });
+    }
     await recordAudit({
       accountId: ctx.accountId,
       userId: ctx.user.id,

@@ -123,7 +123,14 @@ describe("store job deduplication (stately queues)", () => {
     const data = { accountId: "acc-dedupe", storeId: `store-${Date.now()}`, mode: "reconcile" as const };
     expect(await enqueueShopify.syncOrders(boss, data)).toBeTruthy();
     expect(await enqueueShopify.syncOrders(boss, data)).toBeNull();
-    expect(await enqueueShopify.syncOrders(boss, { ...data, mode: "backfill", days: 3 })).toBeTruthy();
+    expect(
+      await enqueueShopify.syncOrders(boss, {
+        ...data,
+        mode: "backfill",
+        from: "2026-10-01T00:00:00.000Z",
+        to: "2026-10-08T00:00:00.000Z",
+      }),
+    ).toBeTruthy();
     const ev = { accountId: "acc-dedupe", eventId: `ev-${Date.now()}` };
     expect(await enqueueShopify.webhook(boss, ev)).toBeTruthy();
     expect(await enqueueShopify.webhook(boss, ev)).toBeNull();

@@ -30,20 +30,22 @@ export function webhookCallbackUrl(env: NodeJS.ProcessEnv = process.env) {
 }
 
 /**
- * Decrypted client secrets, briefly cached per credential so a flood of (forged) webhooks for a known shop
- * does not decrypt the vault entry on every request. A rotated credential has a new id, so no stale hits.
+ * Decrypted client secrets, briefly cached so a flood of (forged) webhooks for a known shop does not decrypt
+ * the vault entry on every request. Keyed by credential id AND its updatedAt: a secret rotated in place
+ * (same id) is a cache miss immediately.
  */
 const SECRET_TTL_MS = 5 * 60_000;
 const secretCache = new Map<string, { secret: string; until: number }>();
 
-async function webhookSecret(accountId: string, credentialId: string) {
-  const hit = secretCache.get(credentialId);
+async function webhookSecret(accountId: string, credentialId: string, version: Date) {
+  const key = `${credentialId}@${version.getTime()}`;
+  const hit = secretCache.get(key);
   if (hit && hit.until > Date.now()) return hit.secret;
   const { clientSecret } = parseAppCredentials(
     await readCredentialSecret(accountDb(accountId), accountId, credentialId),
   );
   if (secretCache.size > 500) secretCache.clear();
-  secretCache.set(credentialId, { secret: clientSecret, until: Date.now() + SECRET_TTL_MS });
+  secretCache.set(key, { secret: clientSecret, until: Date.now() + SECRET_TTL_MS });
   return clientSecret;
 }
 
@@ -80,12 +82,18 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
   // The same shop may be connected in more than one group; the signature decides which one sent it.
   const stores = await systemDb().store.findMany({
     where: { domain, credentialId: { not: null } },
-    select: { id: true, accountId: true, credentialId: true },
+    select: { id: true, accountId: true, credentialId: true, credential: { select: { updatedAt: true } } },
   });
   let store: (typeof stores)[number] | null = null;
   for (const s of stores) {
     try {
-      if (verifyWebhookHmac(rawBody, hmac, await webhookSecret(s.accountId, s.credentialId!))) {
+      if (
+        verifyWebhookHmac(
+          rawBody,
+          hmac,
+          await webhookSecret(s.accountId, s.credentialId!, s.credential!.updatedAt),
+        )
+      ) {
         store = s;
         break;
       }

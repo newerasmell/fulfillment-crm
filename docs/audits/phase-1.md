@@ -28,3 +28,15 @@ was fixed with a test; LOW items are fixed or recorded below.
 
 Also found by the e2e suite before the audit: the "operator left the address untouched" check compared JSON text,
 which Postgres `jsonb` reorders — fixed with a key-order-insensitive comparison and a regression test.
+
+## Round 2 (fixes re-audited)
+
+| Severity | Finding | Fix |
+|---|---|---|
+| HIGH | `BLOCKED` was treated as pre-approval, but it is a vendor-reported state of an order the warehouse already holds — Shopify edits would rewrite COD, recipient and lines there | `BLOCKED` removed from the pre-approval and re-linkable sets (shared in `src/server/shopify/statuses.ts`); test |
+| MEDIUM | 4 orders per page and an unbounded backfill could outlive the 1 h job expiry | 10 orders × 5 lines per page (rest paged); backfill split into week windows, one job each |
+| MEDIUM | One failing order aborted the whole sync and froze the cursor; Prisma's 5 s transaction default too short | Per-order failure → task `shopify_import_failed`, sync continues; import transaction 30 s / wait 15 s; tests |
+| LOW | Secret cache missed in-place rotation (same credential id) | Cache keyed by credential id + `updatedAt` |
+| LOW | Stately + retries: a second failing sync job may skip its retries and dead-letter (pg-boss inserts the retry with `ON CONFLICT DO NOTHING`) | Accepted and documented: sync jobs are re-created by the 15-minute cron; a dead-lettered sync is informational |
+| LOW | Policy mismatch on an existing queue only warned | Empty queue is recreated with the right policy; a queue holding pending jobs stops the start |
+| LOW | Line pages could mix two versions of an order edited mid-read | Each page's `updatedAt` is compared; on change the order is re-read (3 attempts); test |

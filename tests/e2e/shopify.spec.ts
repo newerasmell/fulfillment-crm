@@ -16,6 +16,8 @@ test("orders: tabs with counts, filters and a read-only detail", async ({ page }
   await expect(page.getByText("тест", { exact: true })).toBeVisible();
   await expect(page.getByText("Задържана")).toBeVisible();
   await tabs.getByRole("link", { name: /За преглед/ }).click();
+  await expect(page).toHaveURL(/tab=review/);
+  await expect(page.getByRole("row")).toHaveCount(3);
 
   await page.getByRole("textbox", { name: "Държава" }).fill("RO");
   await page.getByRole("button", { name: "Филтрирай" }).click();

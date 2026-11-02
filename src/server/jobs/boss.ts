@@ -27,10 +27,24 @@ export async function ensureQueues(boss: PgBoss, defs: QueueDef[] = Object.value
     if (existing) {
       const { policy, ...rest } = q.options as typeof q.options & { policy?: string };
       if (policy && existing.policy !== policy) {
+        // A policy cannot be changed in place. An empty queue is recreated; one holding jobs stops the start,
+        // because running without the deduplication the code relies on is worse than not running.
+        const pending = (await boss.findJobs(q.name, { limit: 100_000 })).filter((j) =>
+          ["created", "retry", "active"].includes(j.state),
+        );
+        if (pending.length) {
+          throw new Error(
+            `queue ${q.name} has policy ${existing.policy}, needs ${policy}; drain it and restart`,
+          );
+        }
         logger.warn(
           { queue: q.name, has: existing.policy, wants: policy },
-          "queue policy differs; recreate it to change",
+          "recreating empty queue with new policy",
         );
+        await boss.deleteQueue(q.name);
+        await boss.createQueue(q.name, q.options);
+        if (q.cron) await boss.schedule(q.name, q.cron);
+        continue;
       }
       await boss.updateQueue(q.name, rest);
     } else await boss.createQueue(q.name, q.options);

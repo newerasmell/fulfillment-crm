@@ -15,6 +15,7 @@ import { assertCan } from "@/server/auth/rbac";
 import type { CompanyScope } from "@/server/companies";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
+import { PRE_APPROVAL } from "./statuses";
 
 /**
  * Shopify variants → StoreVariantLink, matched to the group's master Product (SPEC §3). One physical product
@@ -25,7 +26,7 @@ import { logger } from "@/lib/logger";
  */
 
 /** Orders whose lines may still be re-pointed to another product (nothing sent to a warehouse yet). */
-const RELINKABLE: CrmOrderStatus[] = ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY", "ON_HOLD", "BLOCKED"];
+const RELINKABLE: CrmOrderStatus[] = [...PRE_APPROVAL];
 
 export function stripSkuPrefix(
   sku: string | null | undefined,

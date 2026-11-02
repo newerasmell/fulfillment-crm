@@ -8,7 +8,7 @@ import { verifyWebhookHmac, webhookTarget } from "@/integrations/shopify/webhook
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createStore, type ScopedActor } from "@/server/stores";
-import { importShopifyOrder, isCod, refreshShopifyOrder, syncStoreOrders } from "./orders";
+import { backfillWindows, importShopifyOrder, isCod, refreshShopifyOrder, syncStoreOrders } from "./orders";
 import { createProductFromVariant, linkVariant, stripSkuPrefix, upsertVariant } from "./products";
 import { testStoreConnection } from "./connection";
 import { processShopifyWebhook, receiveShopifyWebhook, registerStoreWebhooks } from "./webhooks";
@@ -328,6 +328,97 @@ describe("Shopify import (DB)", () => {
     expect(await tasks()).toEqual(["shopify_cancelled_after_approval", "shopify_changed_after_approval"]);
   });
 
+  it("an order the warehouse reported BLOCKED keeps its COD, recipient and lines", async () => {
+    const s = await store();
+    const db = accountDb(accountId);
+    const o = order({ id: "gid://shopify/Order/2102", name: "#2102" });
+    const { orderId } = await importShopifyOrder(accountId, s, o);
+    await db.order.update({ where: { id: orderId }, data: { status: "BLOCKED" } });
+    await importShopifyOrder(accountId, s, {
+      ...o,
+      updatedAt: "2026-11-01T11:00:00Z",
+      totalOutstandingSet: money("1.00"),
+      lineItems: { nodes: [] },
+    });
+    const after = await db.order.findUniqueOrThrow({ where: { id: orderId }, include: { lines: true } });
+    expect(Number(after.codAmount)).toBe(45);
+    expect(after.lines).toHaveLength(1);
+    expect((await db.alert.findMany({ where: { entityId: orderId } })).map((a) => a.kind)).toEqual([
+      "shopify_changed_after_approval",
+    ]);
+  });
+
+  it("one failing order does not stop the sync: it becomes a task and the cursor still advances", async () => {
+    const good = order({ id: "gid://shopify/Order/9301", name: "#9301", updatedAt: "2026-10-30T08:00:00Z" });
+    const bad = order({
+      id: "gid://shopify/Order/9302",
+      name: "#9302",
+      updatedAt: "2026-10-30T09:00:00Z",
+      lineItems: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "x" } },
+    });
+    const fake = fakeShopify({
+      OrdersPage: () => ({
+        orders: { nodes: [bad, good], pageInfo: { hasNextPage: false, endCursor: null } },
+      }),
+      OrderLines: () => ({ order: null }),
+    });
+    const counts = await syncStoreOrders(accountId, await store(), fake.client, { kind: "reconcile" });
+    expect(counts).toMatchObject({ created: 1, failed: 1 });
+    expect(((await store()).syncCursors as { ordersUpdatedAt: string }).ordersUpdatedAt).toBe(
+      "2026-10-30T09:00:00.000Z",
+    );
+    const alert = await accountDb(accountId).alert.findFirstOrThrow({ where: { entityId: bad.id } });
+    expect(alert.kind).toBe("shopify_import_failed");
+  });
+
+  it("re-reads the order when it changes while its lines are paged", async () => {
+    const line = (n: number) => ({
+      ...order().lineItems.nodes[0]!,
+      id: `gid://shopify/LineItem/95${n}`,
+      sku: `XX-C${n}`,
+    });
+    const v1 = order({
+      id: "gid://shopify/Order/9500",
+      name: "#9500",
+      updatedAt: "2026-11-03T10:00:00Z",
+      lineItems: { nodes: [line(1)], pageInfo: { hasNextPage: true, endCursor: "p" } },
+    });
+    const v2 = {
+      ...v1,
+      updatedAt: "2026-11-03T10:05:00Z",
+      lineItems: { nodes: [line(1)], pageInfo: { hasNextPage: true, endCursor: "p" } },
+    };
+    let calls = 0;
+    const fake = fakeShopify({
+      OrderById: () => ({ order: calls === 0 ? v1 : v2 }),
+      OrderLines: () => {
+        calls++;
+        return {
+          order: {
+            updatedAt: v2.updatedAt,
+            lineItems: { nodes: [line(calls + 1)], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        };
+      },
+    });
+    const r = await refreshShopifyOrder(accountId, await store(), fake.client, v1.id);
+    const o = await accountDb(accountId).order.findUniqueOrThrow({
+      where: { id: r!.orderId },
+      include: { lines: true },
+    });
+    expect(o.shopifyUpdatedAt?.toISOString()).toBe("2026-11-03T10:05:00.000Z");
+    expect(o.lines.map((l) => l.sku).sort()).toEqual(["XX-C1", "XX-C3"]);
+  });
+
+  it("backfill is split into week windows covering exactly N days", () => {
+    const now = new Date("2026-11-02T00:00:00Z");
+    const w = backfillWindows(10, now);
+    expect(w).toEqual([
+      { from: "2026-10-26T00:00:00.000Z", to: "2026-11-02T00:00:00.000Z" },
+      { from: "2026-10-23T00:00:00.000Z", to: "2026-10-26T00:00:00.000Z" },
+    ]);
+  });
+
   it("COD only when money is owed; Shopify test orders are held", async () => {
     const s = await store();
     const db = accountDb(accountId);
@@ -392,6 +483,7 @@ describe("Shopify import (DB)", () => {
         expect(vars.after).toBe("l1");
         return {
           order: {
+            updatedAt: first.updatedAt,
             lineItems: { nodes: [line(2), line(3)], pageInfo: { hasNextPage: false, endCursor: null } },
           },
         };
