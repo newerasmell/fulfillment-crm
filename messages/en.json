@@ -1117,6 +1117,22 @@
       "fhb_variable_symbol_exhausted": "Variable symbols are exhausted.",
       "error": "Unexpected error.",
       "notFulfillable": "The order is not approved (status {status})."
+    },
+    "writeBack": {
+      "title": "Shopify: fulfillment with tracking",
+      "request": "Exact data (fulfillmentCreate)",
+      "status": {
+        "PENDING": "waiting",
+        "PAUSED": "paused",
+        "HELD": "held",
+        "REFUSED": "not sent (read only)",
+        "DRY_RUN_RECORDED": "recorded (dry run — would be sent)",
+        "AWAITING_CONFIRMATION": "awaiting confirmation",
+        "SENDING": "sending",
+        "SENT": "created in Shopify",
+        "FAILED": "failed",
+        "UNCERTAIN": "unknown outcome"
+      }
     }
   }
 }

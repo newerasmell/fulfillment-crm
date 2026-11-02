@@ -164,4 +164,10 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 240 },
     cron: "*/5 * * * *",
   },
+  /** Every 2 min: Shopify fulfillment write-back of shipped shipments (store writeBackMode gate in the sender). */
+  shopifyWriteBack: {
+    name: "shopify.writeBack",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
+    cron: "*/2 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

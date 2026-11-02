@@ -198,6 +198,7 @@ model Account {
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
   fulfillBatches            FulfillBatch[]
+  shopifyWriteBacks         ShopifyWriteBack[]
 }
 
 model User {
@@ -378,6 +379,7 @@ model Store {
   credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   variantLinks StoreVariantLink[]
   orders       Order[]
+  writeBacks   ShopifyWriteBack[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -701,6 +703,7 @@ model Order {
   events       OrderEvent[]
   check        OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
+  shopifyWriteBacks ShopifyWriteBack[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -762,6 +765,7 @@ model Fulfillment {
   events           FulfillmentEvent[]
   lines            FulfillmentLine[]
   outboundRequests OutboundRequest[]
+  shopifyWriteBack ShopifyWriteBack?
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -1512,4 +1516,41 @@ model FulfillBatchItem {
   @@unique([accountId, id])
   @@unique([batchId, orderId])
   @@index([accountId, orderId])
+}
+
+/// Shopify fulfillment write-back for one shipment (P4-07): the store-side outbox. One row per shipment (never
+/// two Shopify fulfillments for one shipment); the sender gates on Store.writeBackMode at send time (READ_ONLY:
+/// nothing, DRY_RUN: the exact mutation is recorded, LIVE: sent) and reads the order's fulfillments back by
+/// tracking number before every send and retry.
+model ShopifyWriteBack {
+  id                    String          @id @default(cuid())
+  accountId             String
+  storeId               String
+  orderId               String
+  fulfillmentId         String
+  status                OutboundStatus  @default(PENDING)
+  /// writeBackMode the sender evaluated last time.
+  evaluatedMode         StoreWriteMode?
+  trackingNumber        String
+  /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
+  request               Json?
+  attempts              Int             @default(0)
+  lastResponse          Json?
+  lastError             String?
+  shopifyFulfillmentGid String?
+  lockedAt              DateTime?
+  nextAttemptAt         DateTime?
+  sentAt                DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store       Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  order       Order       @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, fulfillmentId])
+  @@index([accountId, orderId])
+  @@index([status, nextAttemptAt])
 }

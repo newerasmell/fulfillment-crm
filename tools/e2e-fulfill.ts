@@ -4,6 +4,7 @@ import { checkOrder } from "@/server/checks";
 import { systemDb } from "@/server/db/client";
 import { transitionOrder } from "@/server/pipeline";
 
+export const E2E_SHIPPED_ORDER = "#93004";
 export const E2E_FULFILL_ORDERS = { a: "#93001", b: "#93002", notApproved: "#93003" } as const;
 
 export async function seedFulfill(owner: { userId: string; accountId: string }, companyId: string) {
@@ -102,5 +103,56 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
         meta: { connectionId: connection.id },
       });
   }
-  return { connectionId: connection.id, orders };
+  // A shipped shipment whose Shopify write-back was recorded in DRY_RUN (what the worker stores).
+  const shipped = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      shopifyOrderGid: "gid://shopify/Order/93004",
+      number: E2E_SHIPPED_ORDER,
+      status: "SHIPPED",
+      customerName: "Тест Получател",
+      currency: "EUR",
+      subtotal: "20.00",
+      total: "20.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+    },
+  });
+  const f = await db.fulfillment.create({
+    data: {
+      accountId,
+      orderId: shipped.id,
+      connectionId: connection.id,
+      externalId: "DM-93004",
+      status: "SHIPPED",
+      trackingNumbers: ["E2E-TRK-93004"],
+      shippedAt: new Date(),
+    },
+  });
+  await db.shopifyWriteBack.create({
+    data: {
+      accountId,
+      storeId: store.id,
+      orderId: shipped.id,
+      fulfillmentId: f.id,
+      trackingNumber: "E2E-TRK-93004",
+      status: "DRY_RUN_RECORDED",
+      evaluatedMode: "DRY_RUN",
+      request: {
+        mutation: "mutation FulfillmentWriteBack(...)",
+        variables: {
+          fulfillment: {
+            lineItemsByFulfillmentOrder: [{ fulfillmentOrderId: "gid://shopify/FulfillmentOrder/93004" }],
+            notifyCustomer: true,
+            trackingInfo: { number: "E2E-TRK-93004" },
+          },
+        },
+      },
+    },
+  });
+  return { connectionId: connection.id, orders, shippedOrderId: shipped.id };
 }

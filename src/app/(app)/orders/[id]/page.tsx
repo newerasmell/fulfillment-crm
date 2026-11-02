@@ -7,6 +7,7 @@ import { DomainError } from "@/server/accounts";
 import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { jsonEqual } from "@/lib/json-equal";
+import { orderWriteBacks } from "@/server/fulfill";
 import { getOrder } from "@/server/orders";
 import { normaliseAddress } from "@/server/shopify/orders";
 import { FulfillButton } from "../selection";
@@ -46,6 +47,8 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
     if (err instanceof DomainError) notFound();
     throw err;
   }
+  const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
+  const tw = await getTranslations("fulfill.writeBack");
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
   const original = order.shippingAddressOriginal as Record<string, string | null> | null;
   const corrected = order.shippingAddress as Addr;
@@ -165,6 +168,32 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           </dd>
         </dl>
       </Card>
+      {writeBacks.length > 0 && (
+        <Card>
+          <h2 className="mt-0 text-base font-semibold">{tw("title")}</h2>
+          <ul className="m-0 flex list-none flex-col gap-2 p-0">
+            {writeBacks.map((w) => (
+              <li key={w.id} data-testid="writeback" className="flex flex-col gap-1">
+                <span className="flex flex-wrap items-center gap-3">
+                  <span className="font-mono text-[13px]">{w.trackingNumber}</span>
+                  <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
+                    {tw(`status.${w.status}`)}
+                  </span>
+                  {w.lastError && <span className="text-sm text-warn">{w.lastError}</span>}
+                </span>
+                {w.request && can(ctx.role, "outbox.payloads") && (
+                  <details>
+                    <summary className="text-sm text-muted">{tw("request")}</summary>
+                    <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
+                      {JSON.stringify((w.request as { variables?: unknown }).variables ?? w.request, null, 2)}
+                    </pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {risk?.recommendation && (
         <Card>
           <h2 className="mt-0 text-base font-semibold">{t("risk")}</h2>

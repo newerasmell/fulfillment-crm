@@ -47,3 +47,17 @@ test("bulk Fulfill: selection, sticky bar, per-order result, CANARY confirmation
   await expect(page.getByTestId("fulfill-row-#93001")).toContainText("Пропусната", { timeout: 60_000 });
   await expect(page.getByTestId("fulfill-row-#93001")).toContainText("без дубликат");
 });
+
+test("Shopify write-back: a DRY_RUN record shows the exact fulfillmentCreate data on the order", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=93004");
+  await page.getByRole("link", { name: "#93004" }).click();
+  const wb = page.getByTestId("writeback");
+  await expect(wb).toContainText("E2E-TRK-93004", { timeout: 60_000 });
+  await expect(wb).toContainText("записано (пробно — би се изпратило)");
+  await wb.getByText("Точни данни (fulfillmentCreate)").click();
+  await expect(wb.locator("pre")).toContainText('"notifyCustomer": true');
+});

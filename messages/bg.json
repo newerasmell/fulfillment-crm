@@ -1117,6 +1117,22 @@
       "fhb_variable_symbol_exhausted": "Свършиха вариабилните символи.",
       "error": "Неочаквана грешка.",
       "notFulfillable": "Поръчката не е одобрена (статус {status})."
+    },
+    "writeBack": {
+      "title": "Shopify: изпълнение с проследяване",
+      "request": "Точни данни (fulfillmentCreate)",
+      "status": {
+        "PENDING": "чака",
+        "PAUSED": "на пауза",
+        "HELD": "задържано",
+        "REFUSED": "не се изпраща (само четене)",
+        "DRY_RUN_RECORDED": "записано (пробно — би се изпратило)",
+        "AWAITING_CONFIRMATION": "чака потвърждение",
+        "SENDING": "изпраща се",
+        "SENT": "създадено в Shopify",
+        "FAILED": "неуспешно",
+        "UNCERTAIN": "неясен резултат"
+      }
     }
   }
 }
