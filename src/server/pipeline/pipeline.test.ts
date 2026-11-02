@@ -96,6 +96,12 @@ async function orderIn(status: CrmOrderStatus, tags: string[] = []) {
   });
 }
 
+/** A passed pre-flight check (the approve guard needs one). */
+const cleanCheck = (orderId: string, hardCount = 0) =>
+  accountDb(g.accountId).orderCheck.create({
+    data: { accountId: g.accountId, orderId, routing: {}, hardCount },
+  });
+
 const actorOf = (kind: "user" | "system" | "ai"): PipelineActor =>
   kind === "user" ? { kind, userId: g.userId } : kind === "ai" ? { kind, level: "L2" } : { kind };
 
@@ -163,6 +169,7 @@ describe("every allowed transition", () => {
     "%s",
     async (_name, t) => {
       const order = await orderIn(t.from);
+      if (t.cause === "approve") await cleanCheck(order.id);
       const kind = t.actors[0]!;
       const r = await transitionOrder(g.accountId, {
         orderId: order.id,
@@ -224,8 +231,20 @@ describe("refusals and guards", () => {
     expect(await accountDb(g.accountId).orderEvent.count({ where: { orderId: o.id } })).toBe(0);
   });
 
+  it("approval needs a check without hard findings", async () => {
+    const o = await orderIn("NEEDS_REVIEW");
+    const approve = () =>
+      transitionOrder(g.accountId, { orderId: o.id, to: "APPROVED", cause: "approve", actor: user() });
+    await expect(approve()).rejects.toMatchObject({ code: "transition_guard:no_check" });
+    await cleanCheck(o.id, 2);
+    await expect(approve()).rejects.toMatchObject({ code: "transition_guard:hard_findings" });
+    await accountDb(g.accountId).orderCheck.updateMany({ where: { orderId: o.id }, data: { hardCount: 0 } });
+    await expect(approve()).resolves.toMatchObject({ changed: true });
+  });
+
   it("AI approval needs an L2 policy; AI can never cancel", async () => {
     const o = await orderIn("READY");
+    await cleanCheck(o.id);
     await expect(
       transitionOrder(g.accountId, {
         orderId: o.id,

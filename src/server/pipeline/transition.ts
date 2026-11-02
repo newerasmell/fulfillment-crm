@@ -94,6 +94,16 @@ export const SHOPIFY_TEST_TAG = "shopify-test";
 const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
   approve: [
     async (_tx, { actor }) => (actor.kind === "ai" && actor.level !== "L2" ? "ai_policy_not_l2" : null),
+    // Validate before sending: the latest pre-flight check (src/server/checks) must exist and have no hard
+    // finding. Editing an order must run the check again (checkOrder) before it can be approved.
+    async (tx, { order }) => {
+      const check = await tx.orderCheck.findFirst({
+        where: { orderId: order.id },
+        select: { hardCount: true },
+      });
+      if (!check) return "no_check";
+      return check.hardCount > 0 ? "hard_findings" : null;
+    },
   ],
   cancel: [
     async (tx, { order }) => {

@@ -257,21 +257,24 @@ async function stockFindings(
   return out;
 }
 
-export async function queueEuOrder(
-  actor: ScopedActor,
-  raw: z.input<typeof QueueOrderInput>,
-  now: Date = new Date(),
-): Promise<QueueOrderResult> {
-  assertCan(actor.role, "orders.fulfill");
-  const input = QueueOrderInput.parse(raw);
-  const { connection, companyId } = await euConnectionFor(actor, input.connectionId);
-  const db = accountDb(actor.accountId);
-  const order = await db.order.findUnique({
-    where: { id: input.orderId },
-    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
-  });
-  if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
-    throw new DomainError("not_found");
+type EuPreflightOrder = Prisma.OrderGetPayload<{
+  include: { lines: { include: { product: true } }; store: { select: { code: true } } };
+}>;
+
+/**
+ * Every pre-flight finding for one order at one euShipments connection (mapping, weights, COD in local
+ * currency, stock, the vendor validators) plus the built body. Reads only; no permission or scope check —
+ * the callers do that (queueEuOrder, and the validator engine's preview via previewEuOrderFindings).
+ */
+async function euOrderPreflight(
+  accountId: string,
+  connection: { id: string },
+  companyId: number,
+  order: EuPreflightOrder,
+  input: z.output<typeof QueueOrderInput>,
+  now: Date,
+) {
+  const db = accountDb(accountId);
   const reference = referenceFor(order, order.store?.code ?? null);
   const findings: Finding[] = [];
 
@@ -279,7 +282,7 @@ export async function queueEuOrder(
   if (!lines.length)
     findings.push(block("no_lines", "products", "Поръчката няма редове.", "The order has no lines."));
   const vps = await vendorProductsFor(
-    actor.accountId,
+    accountId,
     connection.id,
     lines.map((l) => l.productId).filter((p): p is string => !!p),
   );
@@ -313,7 +316,7 @@ export async function queueEuOrder(
     );
   if (cod && order.codLocalCurrency && order.countryCode) {
     const cs = await db.countrySetting.findUnique({
-      where: { accountId_country: { accountId: actor.accountId, country: order.countryCode } },
+      where: { accountId_country: { accountId: accountId, country: order.countryCode } },
     });
     if (cs && cs.currency !== order.codLocalCurrency)
       findings.push(
@@ -331,11 +334,11 @@ export async function queueEuOrder(
     );
 
   const settings = await db.eushipmentsSettings.findUnique({
-    where: { accountId_connectionId: { accountId: actor.accountId, connectionId: connection.id } },
+    where: { accountId_connectionId: { accountId: accountId, connectionId: connection.id } },
   });
   findings.push(
     ...(await stockFindings(
-      actor.accountId,
+      accountId,
       lines,
       vps,
       settings?.stockStaleHours ?? DEFAULT_STOCK_STALE_HOURS,
@@ -366,6 +369,60 @@ export async function queueEuOrder(
   });
   findings.push(...validateEuOrder(built, { cashReceiptCod, today }));
 
+  return { reference, findings, built, lines };
+}
+
+/**
+ * The findings queueEuOrder would report for this order, without queueing anything (P4-01 validator engine).
+ * A connection without an euShipments companyId reports that as a block.
+ */
+export async function previewEuOrderFindings(
+  accountId: string,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+): Promise<Finding[]> {
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await loadEuConnection(accountId, input.connectionId);
+  if (!companyId)
+    return [
+      block(
+        "no_company_id",
+        "senderId",
+        "Връзката няма euShipments фирма (companyId).",
+        "The connection has no euShipments company (companyId).",
+      ),
+    ];
+  const order = await accountDb(accountId).order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order) throw new DomainError("not_found");
+  return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).findings;
+}
+
+export async function queueEuOrder(
+  actor: ScopedActor,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+): Promise<QueueOrderResult> {
+  assertCan(actor.role, "orders.fulfill");
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await euConnectionFor(actor, input.connectionId);
+  const db = accountDb(actor.accountId);
+  const order = await db.order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
+    throw new DomainError("not_found");
+  const { reference, findings, built, lines } = await euOrderPreflight(
+    actor.accountId,
+    connection,
+    companyId,
+    order,
+    input,
+    now,
+  );
   if (hasBlocks(findings)) return { status: "blocked", findings };
   const unacked = findings.filter((f) => f.severity === "warn" && !input.acknowledged.includes(f.code));
   if (unacked.length) return { status: "needs_ack", findings };

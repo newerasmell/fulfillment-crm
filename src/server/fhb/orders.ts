@@ -91,10 +91,14 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 
 type Tx = Prisma.TransactionClient;
 
-/** Loads everything the pre-flight needs and builds the FHB draft. Pure reads inside the caller's tx. */
-async function prepare(
+/**
+ * Loads everything the pre-flight needs and runs the FHB validators. Pure reads inside the caller's tx; no
+ * permission or scope check (callers do that). Never throws on findings: prepare() and the validator engine's
+ * preview (previewFhbOrderFindings) decide what a finding means.
+ */
+async function fhbPreflight(
   tx: Tx,
-  actor: ScopedActor,
+  accountId: string,
   input: SubmitFhbOrderInput,
   ids: { externalId: string; variableSymbol: string; fulfillmentId: string },
   opts: {
@@ -118,7 +122,7 @@ async function prepare(
   const country = addr.countryCode?.toUpperCase() ?? order.countryCode ?? null;
   const setting = country
     ? await tx.countrySetting.findUnique({
-        where: { accountId_country: { accountId: actor.accountId, country } },
+        where: { accountId_country: { accountId: accountId, country } },
       })
     : null;
   const localCurrency = setting?.currency?.toUpperCase() ?? null;
@@ -198,6 +202,19 @@ async function prepare(
     valueNotConverted,
     stockMaxAgeMs: input.stockMaxAgeMs,
   });
+  return { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value };
+}
+
+/** Pre-flight + the FHB draft. A hard finding (or an unacknowledged soft one) aborts with FhbPreflightError. */
+async function prepare(
+  tx: Tx,
+  actor: ScopedActor,
+  input: SubmitFhbOrderInput,
+  ids: { externalId: string; variableSymbol: string; fulfillmentId: string },
+  opts: Parameters<typeof fhbPreflight>[4],
+) {
+  const { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value } =
+    await fhbPreflight(tx, actor.accountId, input, ids, opts);
   if (hasHardBlock(findings)) throw new FhbPreflightError("fhb_preflight_failed", findings);
   if (findings.length && !input.acknowledgeWarnings)
     throw new FhbPreflightError("fhb_preflight_needs_ack", findings);
@@ -511,4 +528,86 @@ export async function cancelFhbOrder(actor: ScopedActor, fulfillmentId: string) 
     userAgent: actor.userAgent,
   });
   return result;
+}
+
+const previewFinding = (code: string, bg: string, en: string): ValidationFinding => ({
+  code,
+  severity: "hard",
+  field: null,
+  message_bg: bg,
+  message_en: en,
+});
+
+/**
+ * The findings submitFhbOrder would report for this order, without consuming a variable symbol or queueing
+ * anything (P4-01 validator engine). Uses the external id the next submission would get and a placeholder
+ * variable symbol from the connection's sequence (validated for shape only).
+ */
+export async function previewFhbOrderFindings(
+  accountId: string,
+  input: Omit<SubmitFhbOrderInput, "acknowledgeWarnings">,
+): Promise<ValidationFinding[]> {
+  return withAccountTransaction(accountId, async (tx) => {
+    const order = await tx.order.findUnique({
+      where: { id: input.orderId },
+      select: { id: true, number: true, store: { select: { code: true } } },
+    });
+    if (!order) throw new DomainError("not_found");
+    const connection = await tx.fulfillmentConnection.findUnique({ where: { id: input.connectionId } });
+    if (!connection || connection.type !== "FHB_V3") throw new DomainError("not_found");
+    const out: ValidationFinding[] = [];
+    if (!connection.enabled)
+      out.push(
+        previewFinding(
+          "fhb.connection.disabled",
+          "Връзката към склада е изключена.",
+          "The warehouse connection is disabled.",
+        ),
+      );
+    if (!order.store?.code) {
+      out.push(
+        previewFinding(
+          "fhb.order.no_store_code",
+          "Поръчката няма магазин с код — не може да получи номер за склада.",
+          "The order has no store code, so it cannot get a warehouse order id.",
+        ),
+      );
+      return out;
+    }
+    const previous = await tx.fulfillment.findMany({
+      where: { orderId: order.id, connectionId: connection.id },
+      orderBy: { createdAt: "asc" },
+    });
+    const active = previous.find(
+      (p) => (ACTIVE as readonly string[]).includes(p.status) && p.status !== "QUEUED",
+    );
+    if (active)
+      out.push(
+        previewFinding(
+          "fhb.order.already_submitted",
+          "Поръчката вече е изпратена към този склад.",
+          "The order was already sent to this warehouse.",
+        ),
+      );
+    const reuse = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED");
+    const externalId =
+      reuse?.externalId ?? fhbOrderExternalId(order.store.code, order.number, previous.length + 1);
+    const variableSymbol = reuse?.variableSymbol ?? BigInt(connection.variableSymbolNext).toString();
+    const duplicate = !!(await tx.fulfillment.findFirst({
+      where: {
+        connectionId: connection.id,
+        ...(reuse ? { id: { not: reuse.id } } : {}),
+        OR: [{ externalId }, ...(reuse?.variableSymbol ? [{ variableSymbol }] : [])],
+      },
+      select: { id: true },
+    }));
+    const { findings } = await fhbPreflight(
+      tx,
+      accountId,
+      input,
+      { externalId, variableSymbol, fulfillmentId: reuse?.id ?? "preview" },
+      { duplicate },
+    );
+    return [...out, ...findings];
+  });
 }

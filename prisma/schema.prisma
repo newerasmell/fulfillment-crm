@@ -698,6 +698,7 @@ model Order {
   fulfillments Fulfillment[]
   reviews      Review[]
   events       OrderEvent[]
+  check        OrderCheck?
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -1434,4 +1435,31 @@ model OrderEvent {
   order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, orderId, createdAt])
+}
+
+/// Latest pre-flight result of an order (P4-01 validator engine, src/server/checks): the routing decision and
+/// every finding (order-level + the chosen warehouse's validators). One row per order, replaced on each check.
+/// connectionId / ruleId are snapshots (no relation): deleting a rule or connection keeps the history.
+model OrderCheck {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String
+  connectionId String?
+  ruleId       String?
+  /// RoutingDecision (src/server/routing/engine.ts), incl. the human-readable explanation.
+  routing      Json
+  /// [{code, severity: hard|soft, source, field, message_bg, message_en, suggestedFix?}]
+  findings     Json     @default("[]")
+  hardCount    Int      @default(0)
+  softCount    Int      @default(0)
+  /// Normalised values the senders will use (e.g. {phone: "+359…"}), shown next to the original.
+  normalised   Json     @default("{}")
+  checkedById  String?
+  checkedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, orderId])
+  @@index([accountId, checkedAt])
 }

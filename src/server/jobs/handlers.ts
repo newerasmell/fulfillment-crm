@@ -7,6 +7,7 @@ import { registerShopifyWorkers } from "@/server/shopify/jobs";
 import { registerFhbWorkers } from "@/server/fhb/jobs";
 import { registerEushipmentsWorkers } from "@/server/eushipments/jobs";
 import { registerApiWatcherWorkers } from "@/server/api-watcher/jobs";
+import { registerCheckWorkers } from "@/server/checks/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -61,6 +62,7 @@ export async function registerWorkers(deps: WorkerDeps) {
   await registerFhbWorkers(boss, opts);
   await registerEushipmentsWorkers(boss, opts);
   await registerApiWatcherWorkers(boss, opts);
+  await registerCheckWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();
