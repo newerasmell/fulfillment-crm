@@ -3,7 +3,7 @@ import type { Role } from "@/generated/prisma/client";
 import { bootstrapOwner, createUser } from "@/server/auth/users";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { systemDb } from "@/server/db/client";
-import { changeMemberRole, createAccount, listMembers, removeMember, type Actor } from "./accounts";
+import { changeMemberRole, listMembers, removeMember, type Actor } from "./accounts";
 
 const PASSWORD = "correct horse battery staple";
 let n = 0;
@@ -28,24 +28,6 @@ describe("accounts and memberships", () => {
       password: PASSWORD,
     });
     owner = { userId: r.user.id, accountId: r.account.id, role: "OWNER" };
-  });
-
-  it("an owner can create a second account (two memberships to switch between)", async () => {
-    const second = await createAccount(owner, { name: "Company Two" });
-    const ms = await systemDb().membership.findMany({
-      where: { userId: owner.userId },
-      orderBy: { createdAt: "asc" },
-    });
-    expect(ms.map((m) => [m.accountId, m.role])).toEqual([
-      [owner.accountId, "OWNER"],
-      [second.id, "OWNER"],
-    ]);
-  });
-
-  it("non-owners cannot create accounts", async () => {
-    await expect(createAccount({ ...owner, role: "ADMIN" }, { name: "Nope" })).rejects.toBeInstanceOf(
-      ForbiddenError,
-    );
   });
 
   it("admins manage members but cannot touch owners", async () => {
@@ -76,12 +58,18 @@ describe("accounts and memberships", () => {
   });
 
   it("two owners demoting each other at the same time leave at least one owner", async () => {
-    const acc = await createAccount(owner, { name: "Race Co" });
+    const race = await bootstrapOwner({
+      email: `race-${Date.now()}@example.com`,
+      name: "R",
+      accountName: "Race Co",
+      password: PASSWORD,
+    });
+    const acc = race.account;
     const a = await systemDb().membership.findFirstOrThrow({
-      where: { accountId: acc.id, userId: owner.userId },
+      where: { accountId: acc.id, userId: race.user.id },
     });
     const b = await addUser(acc.id, "OWNER");
-    const actorA: Actor = { userId: owner.userId, accountId: acc.id, role: "OWNER" };
+    const actorA: Actor = { userId: race.user.id, accountId: acc.id, role: "OWNER" };
     const actorB: Actor = { userId: b.userId, accountId: acc.id, role: "OWNER" };
     const results = await Promise.allSettled([
       changeMemberRole(actorA, b.membershipId, "ADMIN"),

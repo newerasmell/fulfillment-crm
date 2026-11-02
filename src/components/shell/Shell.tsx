@@ -4,8 +4,10 @@ import { getLocale, getTranslations } from "next-intl/server";
 import type { ConnectionType, LiveMode } from "@/generated/prisma/client";
 import { can } from "@/server/auth/rbac";
 import type { AccountContext } from "@/server/auth/session";
+import { companyFilter } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import { AccountSwitcher } from "./AccountSwitcher";
+import { CompanySwitcher } from "./CompanySwitcher";
 import { CreateMenu, ProfileMenu, ScopeControl, SearchBox } from "./HeaderControls";
 import { Icon } from "@/components/icons";
 import { NAV_GROUPS, NAV_HOME } from "./nav";
@@ -21,10 +23,10 @@ const MODE_COLOR: Record<LiveMode, string> = {
 
 const isFhb = (t: ConnectionType) => t === "FHB_V3" || t === "FHB_JOY";
 
-async function ModeCard({ accountId }: { accountId: string }) {
+async function ModeCard({ ctx }: { ctx: AccountContext }) {
   const t = await getTranslations();
-  const connections = await accountDb(accountId).fulfillmentConnection.findMany({
-    where: { enabled: true },
+  const connections = await accountDb(ctx.accountId).fulfillmentConnection.findMany({
+    where: { enabled: true, ...companyFilter(ctx) },
     select: { id: true, name: true, type: true, liveMode: true },
     orderBy: { name: "asc" },
   });
@@ -71,7 +73,15 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
           </span>
           <span className="font-bold tracking-tight">Fulfillment CRM</span>
         </div>
-        <AccountSwitcher label={t("account")} current={ctx.accountId} accounts={ctx.memberships} />
+        {ctx.memberships.length > 1 && (
+          <AccountSwitcher label={t("group")} current={ctx.accountId} accounts={ctx.memberships} />
+        )}
+        <CompanySwitcher
+          label={t("account")}
+          allLabel={t("allCompanies")}
+          current={ctx.activeCompanyId}
+          companies={ctx.companies}
+        />
         <NavLink href={NAV_HOME.href} icon={NAV_HOME.icon} label={t(NAV_HOME.key)} />
         {NAV_GROUPS.map((g) => (
           <div key={g.key} className="flex flex-col gap-0.5">
@@ -86,7 +96,7 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
           </div>
         ))}
         <div className="min-h-4 flex-1" />
-        <ModeCard accountId={ctx.accountId} />
+        <ModeCard ctx={ctx} />
       </nav>
       <div className="flex min-w-0 flex-[999_1_640px] flex-col">
         <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-7 py-3">

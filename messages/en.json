@@ -32,7 +32,9 @@
     "audit": "Audit log",
     "jobs": "System jobs",
     "modeCard": "Warehouse mode",
-    "noConnections": "No warehouses connected"
+    "noConnections": "No warehouses connected",
+    "group": "Group",
+    "allCompanies": "All companies"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -112,10 +114,6 @@
   },
   "members": {
     "title": "Companies and users",
-    "accounts": "My companies",
-    "newAccount": "New company",
-    "accountName": "Company name",
-    "createAccount": "Create company",
     "people": "Users in {account}",
     "name": "Name",
     "email": "Email",
@@ -132,13 +130,31 @@
       "last_owner": "A company needs at least one owner.",
       "forbidden": "You are not allowed to do this.",
       "not_found": "Not found.",
-      "invalid": "Check the fields."
+      "invalid": "Check the fields.",
+      "company_exists": "A company with this name already exists.",
+      "role_sees_all": "Owners and admins always see every company.",
+      "pick_company": "Pick at least one company, or “All companies”."
     },
     "inviteTitle": "Invitation link for {email} — shown only once",
     "inviteBody": "Send the link to the person. It is valid for 72 hours and works once. If they already have a profile they log in and accept; if they are new they choose a password and add 2FA themselves.",
     "openInvitations": "Pending invitations",
     "expires": "valid until {date}",
-    "revoke": "Revoke"
+    "revoke": "Revoke",
+    "companies": "Companies in the group",
+    "newCompany": "New company",
+    "companyName": "Company name",
+    "createCompany": "Create company",
+    "archived": "archived",
+    "archive": "Archive",
+    "unarchive": "Restore",
+    "groups": "My groups",
+    "companiesCol": "Companies",
+    "allCompanies": "All companies",
+    "scopeHint": "Owners and admins always see every company.",
+    "editScope": "Change",
+    "inviteCompanies": "Company access",
+    "onlySelected": "Only these companies:",
+    "inviteScopeHint": "Applies to Operator, Warehouse and Viewer only. No ticks = all companies; owners and admins always see all."
   },
   "roles": {
     "OWNER": "Owner",

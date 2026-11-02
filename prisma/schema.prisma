@@ -163,7 +163,9 @@ enum AiLevel {
 
 // ───────────────────────── tenancy & access ─────────────────────────
 
-/// A legal entity (company). Everything business-related hangs off an Account.
+/// The tenant: one business GROUP (all its companies). Row-level security isolates groups from each other.
+/// Inside a group, companies share the product catalogue and stock; who sees which company is a
+/// permission (MembershipCompany), not a database wall.
 model Account {
   id              String    @id @default(cuid())
   name            String
@@ -178,6 +180,7 @@ model Account {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  companies       Company[]
   memberships     Membership[]
   invitations     Invitation[]
   credentials     Credential[]
@@ -214,6 +217,28 @@ model User {
   memberships Membership[]
 }
 
+/// A legal entity (фирма) inside the group. Owns stores, warehouse connections and orders. Never hard-deleted:
+/// archived companies keep their history (orders, shipments, audit) and disappear from the menus.
+model Company {
+  id           String    @id @default(cuid())
+  accountId    String
+  name         String
+  legalDetails Json?
+  archivedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  account     Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  stores      Store[]
+  connections FulfillmentConnection[]
+  orders      Order[]
+  memberScope MembershipCompany[]
+  inviteScope InvitationCompany[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, name])
+}
+
 model Membership {
   id        String   @id @default(cuid())
   accountId String
@@ -221,10 +246,25 @@ model Membership {
   role      Role
   createdAt DateTime @default(now())
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companies MembershipCompany[]
 
+  @@unique([accountId, id])
   @@unique([userId, accountId])
+  @@index([accountId])
+}
+
+/// Company restriction of a member. No rows = the member sees every company of the group (owners always do).
+model MembershipCompany {
+  accountId    String
+  membershipId String
+  companyId    String
+
+  membership Membership @relation(fields: [accountId, membershipId], references: [accountId, id], onDelete: Cascade)
+  company    Company    @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: Cascade)
+
+  @@id([membershipId, companyId])
   @@index([accountId])
 }
 
@@ -245,9 +285,24 @@ model Invitation {
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account   Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  companies InvitationCompany[]
 
+  @@unique([accountId, id])
   @@index([accountId, email])
+}
+
+/// Company restriction carried by an invitation; copied to MembershipCompany on acceptance.
+model InvitationCompany {
+  accountId    String
+  invitationId String
+  companyId    String
+
+  invitation Invitation @relation(fields: [accountId, invitationId], references: [accountId, id], onDelete: Cascade)
+  company    Company    @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: Cascade)
+
+  @@id([invitationId, companyId])
+  @@index([accountId])
 }
 
 /// Login rate limiting (per email and per IP), shared by all web instances.
@@ -288,6 +343,8 @@ model Credential {
 model Store {
   id                String            @id @default(cuid())
   accountId         String
+  /// Owning company. Nullable only until the backfill migration has run everywhere.
+  companyId         String?
   domain            String
   /// Short permanent code used in external ids (e.g. order id {CODE}-{number}).
   code              String
@@ -305,6 +362,7 @@ model Store {
   updatedAt         DateTime          @updatedAt
 
   account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company      Company?           @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
   credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   variantLinks StoreVariantLink[]
   orders       Order[]
@@ -317,6 +375,8 @@ model Store {
 model FulfillmentConnection {
   id                 String         @id @default(cuid())
   accountId          String
+  /// Owning company (whose warehouse account this is). Nullable only until the backfill has run everywhere.
+  companyId          String?
   type               ConnectionType
   name               String
   liveMode           LiveMode       @default(READ_ONLY)
@@ -336,6 +396,7 @@ model FulfillmentConnection {
   updatedAt          DateTime       @updatedAt
 
   account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company          Company?          @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
   credential       Credential?       @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   vendorProducts   VendorProduct[]
   stockMovements   StockMovement[]
@@ -562,6 +623,9 @@ model InboundLine {
 model Order {
   id                      String         @id @default(cuid())
   accountId               String
+  /// Selling company (the store's company, or chosen for a manual order). Shipping may come from another
+  /// company's warehouse (see Fulfillment.connection.companyId) — recorded in the CRM only.
+  companyId               String?
   source                  OrderSource
   storeId                 String?
   shopifyOrderGid         String?
@@ -593,6 +657,7 @@ model Order {
   updatedAt               DateTime       @updatedAt
 
   account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company      Company?      @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
   store        Store?        @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
   lines        OrderLine[]
   fulfillments Fulfillment[]
