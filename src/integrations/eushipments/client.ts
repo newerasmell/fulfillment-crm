@@ -18,8 +18,24 @@ import {
   ErrorBody,
   GetProductsResponse,
   OrdersHistoryResponse,
+  BookingStatusResponse,
+  CitiesResponse,
+  CodInfo,
+  CountriesResponse,
+  CouriersResponse,
+  OfficesPageResponse,
+  ProdAvailsResponse,
+  RequestStatusResponse,
+  UserCompaniesResponse,
+  WarehousesResponse,
   type HistoryItem,
 } from "./schemas";
+
+/** Path ids must be positive integers (never a free-form string in a URL). */
+function positive(n: number) {
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`expected a positive integer id, got ${n}`);
+  return n;
+}
 
 /**
  * euShipments HTTP client (static `Authorization: Bearer <token>`).
@@ -32,6 +48,14 @@ import {
  * Reads retry a few times on network errors / 429 / 5xx and throw on anything they cannot parse.
  * The token is never logged; error texts go through `scrubText` (they can echo customer data).
  */
+
+interface ReadOptions {
+  /** HTTP statuses the spec documents as "no data": parsed as `empty` instead of throwing. */
+  emptyOn?: number[];
+  empty?: unknown;
+  /** Returned for a 2xx with an empty body (COD "nothing found" is HTTP 200 with a null body). */
+  emptyBody?: null;
+}
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -162,6 +186,7 @@ export class EuShipmentsClient {
     path: string,
     body: unknown,
     schema: S,
+    opts: ReadOptions = {},
   ): Promise<z.infer<S>> {
     let attempt = 0;
     for (;;) {
@@ -181,6 +206,16 @@ export class EuShipmentsClient {
         continue;
       }
       if (r.status === 401) throw new EuShipmentsError("auth_failed", `${op}: unauthenticated`, 401);
+      // Documented "nothing there" answers (e.g. 404 "You do not have access to countries!") are an empty result.
+      if (opts.emptyOn?.includes(r.status)) return schema.parse(opts.empty);
+      if (
+        r.status >= 200 &&
+        r.status < 300 &&
+        r.json === undefined &&
+        opts.emptyBody !== undefined &&
+        !r.text.trim()
+      )
+        return opts.emptyBody as z.infer<S>;
       if (r.status < 200 || r.status >= 300)
         throw new EuShipmentsError("http_error", `${op}: ${errorText(r.json ?? r.text, r.status)}`, r.status);
       const parsed = schema.safeParse(r.json);
@@ -273,6 +308,106 @@ export class EuShipmentsClient {
       { testMode, orders: refNums.map((refNum) => ({ refNum })) },
       OrdersHistoryResponse,
     );
+  }
+
+  /** Companies (client accounts) the token can see — `ID` is the companyId / senderId. */
+  async getUserCompanies() {
+    return this.read("get-user-companies", "GET", "/get-user-companies", undefined, UserCompaniesResponse);
+  }
+
+  /** Couriers activated for the company; an empty array means none are activated yet. */
+  async getCouriers(companyId: number) {
+    return this.read("couriers", "GET", `/couriers/${positive(companyId)}`, undefined, CouriersResponse);
+  }
+
+  /** Warehouses assigned to the company (POST, but a read). */
+  async getWarehouses(companyId: number) {
+    const res = await this.read(
+      "fulfilment/warehouses",
+      "POST",
+      "/fulfilment/warehouses",
+      { companyId: positive(companyId) },
+      WarehousesResponse,
+    );
+    return res.data;
+  }
+
+  /** Countries covered by the token's couriers. 404 = no couriers activated (documented) → empty. */
+  async getCountries() {
+    return this.read("get-countries", "GET", "/get-countries", undefined, CountriesResponse, {
+      emptyOn: [404],
+      empty: [],
+    });
+  }
+
+  /** One page of cities (`paging=1`, `first` records after `skip`). Not available for Great Britain (23). */
+  async getCities(countryId: number, first: number, skip: number) {
+    const q = new URLSearchParams({ paging: "1", first: String(first), skip: String(skip) });
+    return this.read(
+      "get-cities",
+      "GET",
+      `/get-cities/${positive(countryId)}?${q}`,
+      undefined,
+      CitiesResponse,
+    );
+  }
+
+  /** One page of a courier's offices (paginated mode). 404 = the courier has no offices → empty page. */
+  async getOfficesPage(courierId: number, page: number, perPage: number) {
+    const q = new URLSearchParams({ per_page: String(perPage), page: String(page) });
+    return this.read(
+      "offices-by-courier",
+      "GET",
+      `/offices-by-courier/${positive(courierId)}?${q}`,
+      undefined,
+      OfficesPageResponse,
+      { emptyOn: [404], empty: { offices: [], pagination: { current_page: page, last_page: page } } },
+    );
+  }
+
+  /** Stock per product per warehouse for every company of the token (no parameters). */
+  async getProdAvails() {
+    return this.read("get-prod-avails", "GET", "/fulfilment/get-prod-avails", undefined, ProdAvailsResponse);
+  }
+
+  async getRequestStatus(requestId: number) {
+    return this.read(
+      "get-request-status",
+      "GET",
+      `/fulfilment/get-request-status/${positive(requestId)}`,
+      undefined,
+      RequestStatusResponse,
+    );
+  }
+
+  /** Lifecycle + booked vs accepted per product. 404 = booking request not found. */
+  async bookingRequestStatus(companyId: number, bookingId: number) {
+    return this.read(
+      "booking-request-status",
+      "POST",
+      "/fulfilment/booking-request-status",
+      { companyId: positive(companyId), bookingId: positive(bookingId) },
+      BookingStatusResponse,
+    );
+  }
+
+  /**
+   * COD by our referenceNumber. "Nothing found" is HTTP 200 with an empty (null) body → null.
+   * testMode is required by the spec and always sent explicitly.
+   */
+  async checkCodByOrder(referenceNumber: string, testMode = false): Promise<CodInfo | null> {
+    if (!referenceNumber) throw new Error("referenceNumber is required");
+    const res = await this.read(
+      "check-cod-by-order",
+      "GET",
+      `/check-cod-by-order/${encodeURIComponent(referenceNumber)}?testMode=${testMode ? 1 : 0}`,
+      undefined,
+      CodInfo.nullable(),
+      { emptyBody: null },
+    );
+    if (!res) return null;
+    const empty = res.awbNumber == null && res.COD == null && res.referenceNumber == null;
+    return empty ? null : res;
   }
 
   async getProducts(companyId: number) {

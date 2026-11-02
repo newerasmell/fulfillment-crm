@@ -63,6 +63,51 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 600 },
     cron: "*/15 * * * *",
   },
+  /** euShipments read side (data: { accountId, connectionId[, countryId] }); every call is a GET/list. */
+  eushipmentsTestConnection: {
+    name: "eushipments.testConnection",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 120 },
+  },
+  eushipmentsSyncReference: {
+    name: "eushipments.syncReference",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncCities: {
+    name: "eushipments.syncCities",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncProducts: {
+    name: "eushipments.syncProducts",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsSyncStock: {
+    name: "eushipments.syncStock",
+    options: { ...retry, policy: "stately", expireInSeconds: 900 },
+  },
+  eushipmentsPollOrders: {
+    name: "eushipments.pollOrders",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  eushipmentsPollBookings: {
+    name: "eushipments.pollBookings",
+    options: { ...retry, policy: "stately", expireInSeconds: 900 },
+  },
+  eushipmentsPollCod: {
+    name: "eushipments.pollCod",
+    options: { ...retry, policy: "stately", expireInSeconds: 1800 },
+  },
+  /** Every 15 min: products, stock, open shipments and bookings of every usable euShipments connection. */
+  eushipmentsTick: {
+    name: "eushipments.tick",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/15 * * * *",
+  },
+  /** Daily: couriers / warehouses / countries / offices and COD payouts. */
+  eushipmentsDaily: {
+    name: "eushipments.daily",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "41 3 * * *",
+  },
   /** Hourly housekeeping: old login attempts. */
   housekeeping: {
     name: "system.housekeeping",

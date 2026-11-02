@@ -31,3 +31,19 @@ export async function euClientFor(
   const token = (await readCredentialSecret(accountDb(accountId), accountId, connection.credentialId)).trim();
   return { connection, companyId, client: new EuShipmentsClient(token, opts) };
 }
+
+/**
+ * A client for read calls that do not need the euShipments companyId yet (the connection test lists the
+ * companies the token can see, so an operator can pick one). Disabled connections are not read.
+ */
+export async function euReadClientFor(
+  accountId: string,
+  connectionId: string,
+  opts: EuShipmentsClientOptions = {},
+) {
+  const { connection, companyId } = await loadEuConnection(accountId, connectionId);
+  if (!connection.enabled) throw new DomainError("connection_disabled");
+  if (!connection.credentialId) throw new DomainError("no_credentials");
+  const token = (await readCredentialSecret(accountDb(accountId), accountId, connection.credentialId)).trim();
+  return { connection, companyId, client: new EuShipmentsClient(token, opts) };
+}

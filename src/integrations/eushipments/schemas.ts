@@ -303,3 +303,171 @@ export const ErrorBody = z
     code: z.union([z.number(), z.string()]).optional(),
   })
   .passthrough();
+
+// ───────────────────────── read side (P3-02) ─────────────────────────
+// Field lists from: Companies_Web_Service_v1.0, Couriers_Web_Service_v1.0, Warehouses_List_Web_Service-v1.0,
+// Countries_Web_Service_v1.0, Cities_Web_Service_v1.0, Courier_Offices_Web_Service_v1.2,
+// Product_Availability_Web_Service-v1.0, Request_Status_Web_Service-v1.1, Booking_Request_Status_Web_Service-v1.1,
+// COD_Information_Web_Service_v1.0. Lenient like the rest: numbers may arrive as strings, extra fields pass.
+
+const numLike = z.union([z.number(), z.string()]);
+const optText = z.string().nullable().optional();
+/** Booleans the vendor may send as true/false, 1/0 or "1"/"0". */
+const boolLike = z
+  .union([z.boolean(), z.number(), z.string()])
+  .nullable()
+  .optional()
+  .transform((v) => v === true || v === 1 || v === "1" || v === "true");
+
+export const UserCompany = z
+  .object({ ID: numLike, NAME: z.string(), BULSTAT: optText, ADDRESS: optText, MOL: optText })
+  .passthrough();
+export type UserCompany = z.infer<typeof UserCompany>;
+export const UserCompaniesResponse = z.array(UserCompany);
+
+export const Courier = z
+  .object({
+    ID: numLike,
+    NAME: z.string(),
+    TO_OFFICE: boolLike,
+    TO_ADDRESS: boolLike,
+    COUNTRY: optText,
+    CURRENCY: optText,
+  })
+  .passthrough();
+export type Courier = z.infer<typeof Courier>;
+export const CouriersResponse = z.array(Courier);
+
+export const Warehouse = z
+  .object({
+    id: numLike,
+    name: z.string(),
+    country: z
+      .object({ id: numLike.nullable().optional(), iso: optText, name: optText })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type Warehouse = z.infer<typeof Warehouse>;
+export const WarehousesResponse = z.object({ data: z.array(Warehouse) }).passthrough();
+
+export const Country = z
+  .object({ ID: numLike, NAME: z.string(), CYRILLIC_NAME: optText, ISO_CODE: optText })
+  .passthrough();
+export type Country = z.infer<typeof Country>;
+export const CountriesResponse = z.array(Country);
+
+export const City = z
+  .object({
+    ID: numLike,
+    POSTAL_CODE: optText,
+    CITY_NAME_LOCAL: z.string(),
+    CITY_NAME_EN: optText,
+    COUNTY: optText,
+    COUNTY_ID: numLike.nullable().optional(),
+    COUNTY_EN: optText,
+    MUNICIPALITY: optText,
+    STATE: optText,
+    STATE_EN: optText,
+    MANUAL_EDIT: numLike.nullable().optional(),
+    RAPIDO_SITEID: numLike.nullable().optional(),
+  })
+  .passthrough();
+export type City = z.infer<typeof City>;
+export const CitiesResponse = z.array(City);
+
+export const Office = z
+  .object({
+    ID: numLike,
+    CITY_ID: numLike.nullable().optional(),
+    COURIER_ID: numLike.nullable().optional(),
+    COURIER_OFFICE_ID: numLike.nullable().optional(),
+    OFFICE_NAME: z.string(),
+    COURIER_OFFICE_CODE: numLike.nullable().optional(),
+    CITY_NAME: optText,
+    ADDRESS: optText,
+    LATITUDE: numLike.nullable().optional(),
+    LONGITUDE: numLike.nullable().optional(),
+    WORK_BEGIN: optText,
+    WORK_END: optText,
+    WORK_BEGIN_SATURDAY: optText,
+    WORK_END_SATURDAY: optText,
+    GROUP_CITY_ID: numLike.nullable().optional(),
+    POST_CODE: optText,
+    REGION: optText,
+    IS_STATION: boolLike,
+    COD_SUPPORT: boolLike,
+  })
+  .passthrough();
+export type Office = z.infer<typeof Office>;
+/** Paginated mode (per_page + page): `{offices, pagination}`. */
+export const OfficesPageResponse = z
+  .object({
+    offices: z.array(Office),
+    pagination: z
+      .object({
+        current_page: z.number(),
+        per_page: z.number().optional(),
+        total: z.number().optional(),
+        last_page: z.number(),
+        has_more_pages: z.boolean().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export const ProdAvail = z
+  .object({
+    AVAIL_DATE: optText,
+    STORE_NAME: z.string(),
+    ART_NAME: optText,
+    ART_LNG_DESC: optText,
+    ART_SH_DESC: optText,
+    CUST_NAME: optText,
+    REFERENCE_NUMBER: z.string(),
+    COURIER_ITEM_CODE: numLike.nullable().optional(),
+    AVAIL_QTY: numLike,
+  })
+  .passthrough();
+export type ProdAvail = z.infer<typeof ProdAvail>;
+export const ProdAvailsResponse = z.array(ProdAvail);
+
+const refs = { clientReference: optText, ref1: optText, ref2: optText, ref3: optText };
+export const RequestStatusResponse = z.object({ accepted: boolLike, date: optText, ...refs }).passthrough();
+
+export const BookingStatusResponse = z
+  .object({
+    bookingId: numLike,
+    ...refs,
+    statuses: z
+      .object({ created: optText, received: optText, closed: optText, deleted: optText })
+      .passthrough(),
+    products: z
+      .array(
+        z
+          .object({
+            name: optText,
+            referenceNumber: z.string(),
+            booked: numLike,
+            accepted: numLike.nullable().optional(),
+            comment: optText,
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type BookingStatusResponse = z.infer<typeof BookingStatusResponse>;
+
+/** "Nothing found" is HTTP 200 with an empty (null) body — the client returns null for it. */
+export const CodInfo = z
+  .object({
+    awbNumber: numLike.nullable().optional(),
+    referenceNumber: numLike.nullable().optional(),
+    COD: numLike.nullable().optional(),
+    payedNumber: numLike.nullable().optional(),
+    payedDate: optText,
+  })
+  .passthrough();
+export type CodInfo = z.infer<typeof CodInfo>;
