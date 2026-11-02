@@ -78,6 +78,19 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   WebhookSubscriptionInput uses `uri` in 2026-10. Stores outside the organisation would need the
   authorization-code flow — not built until a store needs it.
 
+- 2026-11-02 (P1-02..06): Shopify 2026-10 schema checks — Customer has no email/phone (use
+  `defaultEmailAddress.emailAddress` / `defaultPhoneNumber.phoneNumber`); ProductVariant has no `barcode`
+  (use `barcodes(first:N){nodes{value}}`); `Order.risk` is `OrderRiskSummary!` {recommendation, assessments};
+  webhook topics ORDERS_CREATE/UPDATED/CANCELLED/EDITED, REFUNDS_CREATE, PRODUCTS_UPDATE, APP_UNINSTALLED;
+  `orders/edited` carries `order_edit.order_id`, `refunds/create` carries `order_id`.
+  Decisions: webhook bodies are only pointers — the worker re-reads the order/product from Shopify; dedupe key
+  is `<storeId>:<X-Shopify-Webhook-Id>`; when one shop is connected in two groups, the HMAC decides which store
+  sent it. Webhooks are registered by the worker against `https://$APP_HOST/api/webhooks/shopify` (APP_HOST comes
+  from the web service in render.yaml). Order lines of not-yet-synced variants get a stub StoreVariantLink so the
+  product sync / matching queue can attach them later. Manual variant links are never overwritten by auto-match.
+  Before approval Shopify edits apply directly (lines, untouched address, cancellation); after approval they
+  open operator tasks. Saved views in the orders list are URL-based for now (filters live in the query string).
+
 ## Open questions
 See SPEC.md §11.
 
@@ -98,10 +111,23 @@ See SPEC.md §11.
 - P0-12 render.yaml (web, worker, Postgres) validated against Render's schema (`pnpm render:validate`), health
   endpoints `/api/health` and `/api/health/ready`; GitHub Actions CI (typecheck, lint, tests).
 
+- P1-01 Shopify GraphQL client (client credentials token, cost-based throttling, retries, Zod).
+- P1-02 Магазини: add store (company, domain, code, currency, countries, app credentials → vault), settings
+  (COD gateways, SKU prefix, write-back / stock push modes — raising them is OWNER-only), credential rotation,
+  connection test job, manual sync buttons.
+- P1-03 `/api/webhooks/shopify` (raw-body HMAC, size cap, dedupe, fast 200) + processing and registration jobs.
+- P1-04 order import (idempotent, out-of-order safe, COD detection, normalised + original address, risk, tags),
+  15-minute reconcile cron (also re-queues stuck webhook events), backfill N days (audited).
+- P1-05 variant import + SKU auto-match with prefix stripping; matching queue (Продукти): link to a master SKU or
+  create the master product from the variant.
+- P1-06 orders list (tabs with counts, search, store/country/payment filters, paging), read-only order detail,
+  Начало with attention numbers, today vs yesterday KPIs, COD by currency, recent orders. E2E with synthetic
+  fixtures (tests/e2e/shopify.spec.ts, seed in tools/e2e.ts).
+
 ## Next
-- GATE P0-G1 (owner): Render → New → Blueprint → this repo; set CREDENTIALS_KEY in the `crm-secrets` group; after the
-  first deploy run `pnpm owner:create --email … --account "…"` in the web service **Shell** (not a One-Off Job),
-  open the printed link, choose a password and scan the 2FA key; add the other companies in Настройки → Фирми и
-  потребители. Then check one "login request" line in the web logs: `xffEntries` should be ≥ 1, and
-  TRUSTED_PROXY_HOPS (render.yaml, default 1) must equal the number of proxies Render puts in front of the app.
-- Then phase 1 (Shopify).
+- GATE P1-G1 (owner): Shopify Dev Dashboard → create one app in the organisation that owns the stores, the scopes
+  in SPEC §4 plus protected customer data access (otherwise addresses come back empty), release a version and install it on every store; then in
+  the CRM Магазини → Добави магазин enter domain, code, currency, countries and the app's client ID + secret.
+  The connection test, webhook registration, product sync and first order sync start automatically. Then set the
+  SKU prefix and the COD gateway names per store and clear the matching queue in Продукти.
+- Then phase 2 (FHB).

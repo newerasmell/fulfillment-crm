@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { purgeOldLoginAttempts } from "@/server/auth/rate-limit";
 import { processOutbound, sweepOutbox } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
+import { registerShopifyWorkers } from "@/server/shopify/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -52,6 +53,8 @@ export async function registerWorkers(deps: WorkerDeps) {
     const purged = await purgeOldLoginAttempts();
     if (purged) logger.info({ purged }, "old login attempts purged");
   });
+
+  await registerShopifyWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

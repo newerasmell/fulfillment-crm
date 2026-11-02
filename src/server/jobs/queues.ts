@@ -25,6 +25,25 @@ export const QUEUES = {
   outboxSend: { name: "outbox.send", options: { ...retry, expireInSeconds: 300 } },
   /** Every minute: picks due outbox rows, turns crashed sends into UNCERTAIN tasks. */
   outboxSweep: { name: "outbox.sweep", options: { retryLimit: 0, expireInSeconds: 120 }, cron: "* * * * *" },
+  /** Shopify: connection test for one store (data: { accountId, storeId }). */
+  shopifyTestConnection: {
+    name: "shopify.testConnection",
+    options: { ...retry, retryLimit: 1, expireInSeconds: 120 },
+  },
+  /** Shopify: subscribe the store's webhooks to our URL (idempotent). */
+  shopifyRegisterWebhooks: { name: "shopify.registerWebhooks", options: { ...retry, expireInSeconds: 300 } },
+  /** Shopify: pull orders (data: { accountId, storeId, mode: "reconcile" | "backfill", days? }). */
+  shopifySyncOrders: { name: "shopify.syncOrders", options: { ...retry, expireInSeconds: 3600 } },
+  /** Shopify: pull all variants and auto-match them to master products. */
+  shopifySyncProducts: { name: "shopify.syncProducts", options: { ...retry, expireInSeconds: 3600 } },
+  /** Shopify: act on one stored webhook event (data: { accountId, eventId }). */
+  shopifyWebhook: { name: "shopify.webhook", options: { ...retry, expireInSeconds: 300 } },
+  /** Every 15 min: reconcile orders of every connected store, re-queue stuck webhook events. */
+  shopifyReconcile: {
+    name: "shopify.reconcile",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/15 * * * *",
+  },
   /** Hourly housekeeping: old login attempts. */
   housekeeping: {
     name: "system.housekeeping",
