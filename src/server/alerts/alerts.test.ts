@@ -218,8 +218,9 @@ describe("alerts and tasks (DB)", () => {
       },
     };
     const off: NotificationProvider = { channel: "off", disabledReason: "not configured", send: vi.fn() };
+    // Other test files share this database and create CRITICAL alerts too: drain them all so ours is included.
     const env = { APP_URL: "https://crm.example.test" };
-    const r1 = await dispatchNotifications([fake, broken, off], { env, take: 500 });
+    const r1 = await dispatchNotifications([fake, broken, off], { env, take: 100_000 });
     expect(r1.disabled).toBe(1);
     expect(sent.map((m) => m.alertId)).toContain(critical.id);
     expect(sent.map((m) => m.alertId)).not.toContain(warning.id);
@@ -231,14 +232,14 @@ describe("alerts and tasks (DB)", () => {
     });
     expect(off.send).not.toHaveBeenCalled();
     const count = sent.length;
-    await dispatchNotifications([fake, broken], { env, take: 500 });
+    await dispatchNotifications([fake, broken], { env, take: 100_000 });
     expect(sent.length).toBe(count); // never twice
     const failed = await db().alertNotification.findUnique({
       where: { alertId_channel: { alertId: critical.id, channel: "broken" } },
     });
     expect(failed).toMatchObject({ status: "FAILED", error: "relay down" });
     // WARNING and above when configured so.
-    await dispatchNotifications([fake], { env: { ...env, NOTIFY_MIN_SEVERITY: "WARNING" }, take: 500 });
+    await dispatchNotifications([fake], { env: { ...env, NOTIFY_MIN_SEVERITY: "WARNING" }, take: 100_000 });
     expect(sent.map((m) => m.alertId)).toContain(warning.id);
   });
 });
