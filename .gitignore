@@ -9,3 +9,11 @@ node_modules/
 
 # Real vendor-panel screenshots (contain real business data) stay local
 docs/reference-screens/**/*.png
+.next/
+src/generated/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+next-env.d.ts
+__pycache__/

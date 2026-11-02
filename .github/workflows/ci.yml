@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U crm" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Same roles as docker/db-init.sql. Test-only values, not secrets.
+      DATABASE_URL: postgresql://crm_app:crm_app@localhost:5432/crm_dev
+      TEST_DATABASE_ADMIN_URL: postgresql://crm:crm@localhost:5432/postgres
+      TEST_DATABASE_URL: postgresql://crm_app:crm_app@localhost:5432/crm_test
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare database roles (as in docker/db-init.sql)
+        run: psql postgresql://crm:crm@localhost:5432/postgres -v ON_ERROR_STOP=1 -f docker/db-init.sql
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test

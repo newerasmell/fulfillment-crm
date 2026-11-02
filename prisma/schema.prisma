@@ -1,0 +1,845 @@
+// Fulfillment CRM domain model (docs/SPEC.md §3).
+//
+// Tenant integrity: every business table carries accountId and is protected by RLS (see the init
+// migration). Every relation between business tables is a COMPOSITE foreign key (accountId, xId) →
+// (accountId, id), so a row can never point at a parent of another account (FK checks ignore RLS).
+// Optional/secondary relations use onDelete: NoAction (checked at end of statement), so deleting a parent
+// that is still referenced fails, while an account-wide cascade still works. Accounts are never hard-deleted
+// in production (audit log is append-only).
+//
+// ERD (main relations):
+//
+//   Account ─┬─< Membership >── User
+//            ├─< Credential            (encrypted secrets; referenced by Store / FulfillmentConnection)
+//            ├─< Store ─────────< StoreVariantLink >── Product ─< ProductEan
+//            ├─< FulfillmentConnection ─< VendorProduct ── StockLevel
+//            │                         ├─< StockMovement
+//            │                         ├─< InboundShipment ─< InboundLine >── Product
+//            │                         ├─< RoutingRule
+//            │                         └─< OutboundRequest (outbox)
+//            ├─< CountrySetting
+//            ├─< Order ─┬─< OrderLine >── Product
+//            │          ├─< Fulfillment ─┬─< FulfillmentEvent
+//            │          │                └─< FulfillmentLine >── OrderLine
+//            │          └─< Review
+//            ├─< Alert, AuditLog, WebhookEvent, AiPolicy
+//   ApiSpecVersion (global, not per account)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────── enums ─────────────────────────
+
+enum Role {
+  OWNER
+  ADMIN
+  OPERATOR
+  WAREHOUSE
+  VIEWER
+}
+
+enum ConnectionType {
+  FHB_V3
+  FHB_JOY
+  EUSHIPMENTS
+}
+
+/// Production-only staged rollout, INTEGRATION_NOTES §6. Enforced in the outbox sender.
+enum LiveMode {
+  READ_ONLY
+  DRY_RUN
+  CANARY
+  LIVE
+}
+
+/// Shopify write-back / inventory push follow the same staging (INTEGRATION_NOTES §6).
+enum StoreWriteMode {
+  READ_ONLY
+  DRY_RUN
+  LIVE
+}
+
+enum InventoryPushMode {
+  DISABLED
+  DRY_RUN
+  LIVE
+}
+
+enum CrmOrderStatus {
+  IMPORTED
+  CHECKING
+  NEEDS_REVIEW
+  READY
+  APPROVED
+  QUEUED
+  SUBMITTING
+  SUBMIT_FAILED
+  ACCEPTED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  COD_PAID
+  RETURNING
+  RETURN_RECEIVED
+  EXCEPTION
+  ON_HOLD
+  BLOCKED
+  CANCELLED
+  UNKNOWN
+}
+
+enum OrderSource {
+  SHOPIFY
+  MANUAL
+}
+
+enum PaymentMethod {
+  COD
+  PREPAID
+}
+
+enum StockSource {
+  PUSH
+  POLL
+}
+
+enum ReviewDecision {
+  APPROVE
+  EDIT_AND_APPROVE
+  HOLD
+  CANCEL
+  REROUTE
+}
+
+enum OutboundStatus {
+  PENDING // queued, not yet processed by the sender
+  PAUSED // account or global pause active; re-evaluated once the pause is lifted
+  HELD // parked by the kill switch; released only by an explicit OWNER action (then re-confirmed in CANARY)
+  REFUSED // connection in READ_ONLY
+  DRY_RUN_RECORDED // DRY_RUN: payload recorded, nothing sent
+  AWAITING_CONFIRMATION // CANARY: needs an operator click (or daily cap reached)
+  SENDING
+  SENT
+  FAILED // vendor rejected; definitely not created
+  UNCERTAIN // outcome unknown and no read-back possible: operator task, never auto-retried
+}
+
+enum WebhookSource {
+  SHOPIFY
+  FHB
+  EUSHIPMENTS
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum AiLevel {
+  L0
+  L1
+  L2
+}
+
+// ───────────────────────── tenancy & access ─────────────────────────
+
+/// A legal entity (company). Everything business-related hangs off an Account.
+model Account {
+  id              String    @id @default(cuid())
+  name            String
+  legalDetails    Json?
+  defaultCurrency String    @default("EUR")
+  timezone        String    @default("Europe/Sofia")
+  settings        Json      @default("{}")
+  /// Kill switch: pauses the outbox for this account (INTEGRATION_NOTES §6).
+  outboxPaused    Boolean   @default(false)
+  /// Last kill switch (informational; held requests carry status HELD).
+  killSwitchAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships     Membership[]
+  invitations     Invitation[]
+  credentials     Credential[]
+  stores          Store[]
+  connections     FulfillmentConnection[]
+  routingRules    RoutingRule[]
+  countrySettings CountrySetting[]
+  products        Product[]
+  orders          Order[]
+  alerts          Alert[]
+  auditLogs       AuditLog[]
+  webhookEvents   WebhookEvent[]
+  aiPolicies      AiPolicy[]
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String
+  /// TOTP secret, encrypted with the credentials vault key (never stored in clear).
+  totpSecretEnc  String?
+  totpEnabled    Boolean   @default(false)
+  /// Last accepted TOTP time step (replay protection).
+  totpLastStep   Int?
+  /// Bumped to invalidate all sessions of the user.
+  sessionVersion Int       @default(0)
+  locale         String    @default("bg")
+  disabled       Boolean   @default(false)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  memberships Membership[]
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  accountId String
+  userId    String
+  role      Role
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, accountId])
+  @@index([accountId])
+}
+
+/// Single-use, expiring invitation to join an account. Admins never see anyone's password or 2FA key:
+/// a new person sets both when opening the link; an existing user must log in and accept.
+model Invitation {
+  id          String    @id @default(cuid())
+  accountId   String
+  email       String
+  role        Role
+  /// Suggested display name for a new user.
+  name        String?
+  /// sha256 of the token; the token itself is shown once to the inviter.
+  tokenHash   String    @unique
+  invitedById String?
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, email])
+}
+
+/// Login rate limiting (per email and per IP), shared by all web instances.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  key       String
+  success   Boolean
+  createdAt DateTime @default(now())
+
+  @@index([key, createdAt])
+}
+
+/// Encrypted secret (AES-256-GCM). Never returned to the browser after save.
+model Credential {
+  id          String   @id @default(cuid())
+  accountId   String
+  label       String
+  ciphertext  String
+  iv          String
+  authTag     String
+  keyVersion  Int      @default(1)
+  /// Safe hint for the UI, e.g. "••••3f9a".
+  hint        String
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account     Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  stores      Store[]
+  connections FulfillmentConnection[]
+
+  @@unique([accountId, id])
+  @@index([accountId])
+}
+
+// ───────────────────────── channels & warehouses ─────────────────────────
+
+model Store {
+  id                String            @id @default(cuid())
+  accountId         String
+  domain            String
+  /// Short permanent code used in external ids (e.g. order id {CODE}-{number}).
+  code              String
+  name              String
+  currency          String
+  countries         String[]
+  credentialId      String?
+  webhookStatus     Json              @default("{}")
+  syncCursors       Json              @default("{}")
+  writeBackMode     StoreWriteMode    @default(READ_ONLY)
+  inventoryPushMode InventoryPushMode @default(DISABLED)
+  inventoryBuffer   Int               @default(0)
+  notifyCustomer    Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  variantLinks StoreVariantLink[]
+  orders       Order[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, code])
+  @@unique([accountId, domain])
+}
+
+model FulfillmentConnection {
+  id                 String         @id @default(cuid())
+  accountId          String
+  type               ConnectionType
+  name               String
+  liveMode           LiveMode       @default(READ_ONLY)
+  credentialId       String?
+  /// Vendor-side ids, e.g. euShipments companyId/senderId, FHB client id.
+  vendorIds          Json           @default("{}")
+  warehouseIds       String[]
+  /// e.g. {"prefix":"R"} — applied to product ids sent to the vendor.
+  skuPrefixRule      Json           @default("{}")
+  defaultSender      Json?
+  /// Next FHB variable symbol (per-connection numeric sequence).
+  variableSymbolNext BigInt         @default(1)
+  features           String[]
+  canaryDailyCap     Int            @default(10)
+  enabled            Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  credential       Credential?       @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  vendorProducts   VendorProduct[]
+  stockMovements   StockMovement[]
+  inbounds         InboundShipment[]
+  routingRules     RoutingRule[]
+  fulfillments     Fulfillment[]
+  outboundRequests OutboundRequest[]
+
+  @@unique([accountId, id])
+  @@index([accountId])
+}
+
+model RoutingRule {
+  id                  String   @id @default(cuid())
+  accountId           String
+  name                String
+  priority            Int
+  enabled             Boolean  @default(true)
+  /// {storeIds?, countries?, payment?, tags?, productIds?, requireStock?}
+  match               Json     @default("{}")
+  connectionId        String
+  parcelService       String?
+  courierId           String?
+  serviceName         String?
+  deliveryPointPolicy String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  account    Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, priority])
+}
+
+model CountrySetting {
+  id              String @id @default(cuid())
+  accountId       String
+  country         String
+  currency        String
+  phoneRules      Json   @default("{}")
+  defaultCouriers Json   @default("{}")
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, country])
+}
+
+// ───────────────────────── catalog & stock ─────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  accountId       String
+  sku             String
+  name            String
+  brand           String?
+  /// EDT / EDP / Parfum / Elixir / Intense … — distinct products.
+  type            String?
+  attributes      Json     @default("{}")
+  isTester        Boolean  @default(false)
+  /// A tester points to its original (for "Тестерите под оригинала").
+  parentProductId String?
+  weightGrams     Int?
+  lengthMm        Int?
+  widthMm         Int?
+  heightMm        Int?
+  hsCode          String?
+  countryOfOrigin String?
+  images          String[]
+  archived        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  account        Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  parent         Product?           @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
+  testers        Product[]          @relation("TesterOf")
+  eans           ProductEan[]
+  variantLinks   StoreVariantLink[]
+  vendorProducts VendorProduct[]
+  orderLines     OrderLine[]
+  inboundLines   InboundLine[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, sku])
+}
+
+/// Known EANs of a product with batch notes. Never a join key.
+model ProductEan {
+  id        String   @id @default(cuid())
+  accountId String
+  productId String
+  ean       String
+  note      String?
+  source    String?
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [accountId, productId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, ean])
+}
+
+model StoreVariantLink {
+  id                String    @id @default(cuid())
+  accountId         String
+  storeId           String
+  shopifyVariantGid String
+  shopifyProductGid String
+  sku               String?
+  title             String
+  productId         String?
+  matchMethod       String?
+  matchedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  store      Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  product    Product?    @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  orderLines OrderLine[]
+
+  @@unique([accountId, id])
+  @@unique([storeId, shopifyVariantGid])
+  @@index([accountId, productId])
+}
+
+model VendorProduct {
+  id           String    @id @default(cuid())
+  accountId    String
+  connectionId String
+  productId    String?
+  /// Vendor product id / refNumber (what we send).
+  vendorId     String
+  vendorCode   String?
+  /// Read-only mirror of the vendor's EAN; never overwritten from our data.
+  vendorEan    String?
+  archived     Boolean   @default(false)
+  lastSyncAt   DateTime?
+  raw          Json?
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  product    Product?              @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  stockLevel StockLevel?
+  movements  StockMovement[]
+
+  @@unique([accountId, id])
+  @@unique([connectionId, vendorId])
+  @@index([accountId, productId])
+}
+
+model StockLevel {
+  id              String      @id @default(cuid())
+  accountId       String
+  vendorProductId String      @unique
+  physical        Int         @default(0)
+  free            Int         @default(0)
+  reserved        Int         @default(0)
+  sellable        Int         @default(0)
+  snapshotAt      DateTime
+  source          StockSource
+
+  vendorProduct VendorProduct @relation(fields: [accountId, vendorProductId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, vendorProductId])
+  @@index([accountId])
+}
+
+model StockMovement {
+  id              String   @id @default(cuid())
+  accountId       String
+  connectionId    String
+  vendorProductId String?
+  /// vendor movement id, or "res:<orderId>" for our reservations
+  externalId      String
+  kind            String
+  quantity        Int
+  occurredAt      DateTime
+  raw             Json?
+
+  connection    FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  vendorProduct VendorProduct?        @relation(fields: [accountId, vendorProductId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([connectionId, externalId])
+  @@index([accountId, occurredAt])
+}
+
+/// FHB stock receipt or euShipments booking request.
+model InboundShipment {
+  id           String    @id @default(cuid())
+  accountId    String
+  connectionId String
+  /// Deterministic id we send (idempotency).
+  externalRef  String
+  vendorId     String?
+  status       String
+  tracking     String?
+  expectedAt   DateTime?
+  raw          Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  lines      InboundLine[]
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalRef])
+  @@index([accountId])
+}
+
+model InboundLine {
+  id          String  @id @default(cuid())
+  accountId   String
+  inboundId   String
+  productId   String
+  expectedQty Int
+  receivedQty Int?
+  comment     String?
+
+  inbound InboundShipment @relation(fields: [accountId, inboundId], references: [accountId, id], onDelete: Cascade)
+  product Product         @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+
+  @@index([accountId])
+}
+
+// ───────────────────────── orders & shipments ─────────────────────────
+
+model Order {
+  id                      String         @id @default(cuid())
+  accountId               String
+  source                  OrderSource
+  storeId                 String?
+  shopifyOrderGid         String?
+  /// Human order number as shown in Shopify (e.g. #1234) or manual sequence.
+  number                  String
+  status                  CrmOrderStatus @default(IMPORTED)
+  customerName            String?
+  email                   String?
+  phone                   String?
+  shippingAddressOriginal Json?
+  shippingAddress         Json?
+  billingAddress          Json?
+  currency                String
+  subtotal                Decimal        @db.Decimal(12, 2)
+  total                   Decimal        @db.Decimal(12, 2)
+  paymentMethod           PaymentMethod
+  codAmount               Decimal?       @db.Decimal(12, 2)
+  /// COD in the destination country's local currency + the rate used.
+  codLocalAmount          Decimal?       @db.Decimal(12, 2)
+  codLocalCurrency        String?
+  codRate                 Decimal?       @db.Decimal(14, 6)
+  tags                    String[]
+  note                    String?
+  risk                    Json?
+  placedAt                DateTime
+  cancelledAt             DateTime?
+  raw                     Json?
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store        Store?        @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  lines        OrderLine[]
+  fulfillments Fulfillment[]
+  reviews      Review[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, storeId, shopifyOrderGid])
+  @@index([accountId, status, placedAt])
+}
+
+model OrderLine {
+  id            String  @id @default(cuid())
+  accountId     String
+  orderId       String
+  variantLinkId String?
+  productId     String?
+  sku           String?
+  title         String
+  quantity      Int
+  /// Unit price after discounts, order currency.
+  unitPrice     Decimal @db.Decimal(12, 2)
+
+  order            Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  variantLink      StoreVariantLink? @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: NoAction)
+  product          Product?          @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  fulfillmentLines FulfillmentLine[]
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId])
+}
+
+/// A shipment of (part of) an order at one connection. An order can have several (split / reship).
+model Fulfillment {
+  id              String         @id @default(cuid())
+  accountId       String
+  orderId         String
+  connectionId    String
+  /// Deterministic id we send, e.g. {STORECODE}-{number}[-n]. Unique per connection: duplicate guard.
+  externalId      String
+  variableSymbol  String?
+  vendorUid       String?
+  vendorOrderId   String?
+  carrier         String?
+  deliveryPoint   Json?
+  status          CrmOrderStatus
+  rawStatus       String?
+  trackingNumbers String[]
+  trackingUrls    String[]
+  labelFileKey    String?
+  codStatus       String?
+  returnInfo      Json?
+  submittedAt     DateTime?
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  order            Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection       FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  events           FulfillmentEvent[]
+  lines            FulfillmentLine[]
+  outboundRequests OutboundRequest[]
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalId])
+  @@unique([connectionId, variableSymbol])
+  @@index([accountId, status])
+}
+
+model FulfillmentEvent {
+  id            String          @id @default(cuid())
+  accountId     String
+  fulfillmentId String
+  occurredAt    DateTime
+  source        String
+  rawStatus     String?
+  status        CrmOrderStatus?
+  payload       Json?
+
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, fulfillmentId, occurredAt])
+}
+
+/// Which order lines (and how many) a fulfillment ships — needed for split shipments and reships.
+model FulfillmentLine {
+  id            String @id @default(cuid())
+  accountId     String
+  fulfillmentId String
+  orderLineId   String
+  quantity      Int
+
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+  orderLine   OrderLine   @relation(fields: [accountId, orderLineId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([fulfillmentId, orderLineId])
+  @@index([accountId])
+}
+
+/// Pre-flight results + the human (or AI) decision. This is the AI training data.
+model Review {
+  id           String                       @id @default(cuid())
+  accountId    String
+  orderId      String
+  findings     Json                         @default("[]")
+  aiSuggestion Json?
+  aiConfidence Float?
+  decision     ReviewDecision?
+  /// Field-level diff of operator edits: [{field, from, to}]
+  diff         Json?
+  reasonCode   String?
+  reasonText   String?
+  reviewerId   String?
+  timeSpentMs  Int?
+  /// 1024 dimensions (Voyage voyage-3.5 default size); decided in PROGRESS.md before P8-01.
+  embedding    Unsupported("vector(1024)")?
+  createdAt    DateTime                     @default(now())
+  decidedAt    DateTime?
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
+
+// ───────────────────────── outbox, inbound events, ops ─────────────────────────
+
+/// Outbox: every vendor write goes through here (CLAUDE.md non-negotiables).
+model OutboundRequest {
+  id             String         @id @default(cuid())
+  accountId      String
+  connectionId   String
+  operation      String
+  /// Deterministic key; a second enqueue with the same key is rejected by the DB.
+  idempotencyKey String
+  payload        Json
+  status         OutboundStatus @default(PENDING)
+  /// liveMode the sender evaluated last time (audit trail).
+  evaluatedMode  LiveMode?
+  attempts       Int            @default(0)
+  lastResponse   Json?
+  lastError      String?
+  /// The shipment this request is for (if any).
+  fulfillmentId  String?
+  /// Sender lease: a request is processed by one worker at a time.
+  lockedAt       DateTime?
+  nextAttemptAt  DateTime?
+  confirmedById  String?
+  confirmedAt    DateTime?
+  sentAt         DateTime?
+  createdById    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([connectionId, idempotencyKey])
+  @@index([accountId, status])
+}
+
+model WebhookEvent {
+  id          String        @id @default(cuid())
+  /// Null until the event is attributed to an account.
+  accountId   String?
+  source      WebhookSource
+  /// Vendor event id, or a payload hash when the vendor sends none.
+  dedupeKey   String
+  topic       String
+  headers     Json?
+  payload     Json
+  status      WebhookStatus @default(RECEIVED)
+  attempts    Int           @default(0)
+  error       String?
+  receivedAt  DateTime      @default(now())
+  processedAt DateTime?
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([source, dedupeKey])
+  @@index([accountId, receivedAt])
+}
+
+/// Alerts and operator tasks (blocked orders, unknown statuses, UNCERTAIN sends, API changes…).
+model Alert {
+  id         String        @id @default(cuid())
+  accountId  String
+  kind       String
+  isTask     Boolean       @default(false)
+  severity   AlertSeverity @default(WARNING)
+  status     AlertStatus   @default(OPEN)
+  title      String
+  body       String?
+  entityType String?
+  entityId   String?
+  assigneeId String?
+  dueAt      DateTime?
+  createdAt  DateTime      @default(now())
+  resolvedAt DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, status, createdAt])
+}
+
+/// Append-only: UPDATE and DELETE are rejected by a trigger (see the init migration).
+model AuditLog {
+  id         String   @id @default(cuid())
+  /// Null for system-level events (e.g. login of a user without an active account).
+  accountId  String?
+  userId     String?
+  action     String
+  entityType String?
+  entityId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: NoAction)
+
+  @@index([accountId, createdAt])
+}
+
+/// Vendor API spec snapshots for the change watcher (global).
+model ApiSpecVersion {
+  id         String   @id @default(cuid())
+  vendor     String
+  sourceUrl  String
+  fetchedAt  DateTime @default(now())
+  hash       String
+  normalised Json
+  diff       Json?
+
+  @@index([vendor, fetchedAt])
+}
+
+model AiPolicy {
+  id           String   @id @default(cuid())
+  accountId    String
+  decisionType String
+  level        AiLevel  @default(L0)
+  thresholds   Json     @default("{}")
+  enabled      Boolean  @default(false)
+  updatedAt    DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, decisionType])
+}

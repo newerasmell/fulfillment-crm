@@ -1,0 +1,12 @@
+node_modules
+.next
+src/generated
+pnpm-lock.yaml
+docs
+autopilot
+.claude
+prisma/migrations
+playwright-report
+test-results
+coverage
+*.md
