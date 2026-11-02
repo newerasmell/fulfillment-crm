@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
-import { requireAccountContext } from "@/server/auth/session";
+import { alertCounts } from "@/server/alerts";
+import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { dashboardSummary } from "@/server/orders";
 import { StatusChip } from "./orders/status";
 
@@ -13,6 +14,7 @@ const ATTENTION = [
   { key: "returns", href: "/returns" },
   { key: "tickets", href: "/tickets" },
   { key: "stockouts", href: "/products" },
+  { key: "alerts", href: "/alerts" },
 ] as const;
 
 export default async function HomePage() {
@@ -21,8 +23,12 @@ export default async function HomePage() {
   const format = await getFormatter();
   const today = format.dateTime(new Date(), { weekday: "long", day: "numeric", month: "long" });
   const scopeName = ctx.companies.find((c) => c.id === ctx.activeCompanyId)?.name ?? t("nav.allCompanies");
-  const summary = await dashboardSummary(ctx);
-  const value = (k: string) => (summary.attention as Record<string, number>)[k];
+  const [summary, alerts] = await Promise.all([
+    dashboardSummary(ctx),
+    alertCounts({ ...actorFrom(ctx), activeCompanyId: ctx.activeCompanyId }),
+  ]);
+  const value = (k: string) =>
+    k === "alerts" ? alerts.total : (summary.attention as Record<string, number>)[k];
   const delta = (a: number, b: number) => (a === b ? "=" : a > b ? `+${a - b}` : `−${b - a}`);
   const kpis = [
     { key: "orders", now: summary.today.orders, before: summary.yesterday.orders },

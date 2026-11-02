@@ -197,6 +197,10 @@ model Account {
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
+  fulfillBatches            FulfillBatch[]
+  shopifyWriteBacks         ShopifyWriteBack[]
+  alertNotes                AlertNote[]
+  alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
 }
 
@@ -378,6 +382,7 @@ model Store {
   credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   variantLinks StoreVariantLink[]
   orders       Order[]
+  writeBacks   ShopifyWriteBack[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -700,6 +705,8 @@ model Order {
   reviews      Review[]
   events       OrderEvent[]
   check        OrderCheck?
+  fulfillBatchItems FulfillBatchItem[]
+  shopifyWriteBacks ShopifyWriteBack[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -761,6 +768,7 @@ model Fulfillment {
   events           FulfillmentEvent[]
   lines            FulfillmentLine[]
   outboundRequests OutboundRequest[]
+  shopifyWriteBack ShopifyWriteBack?
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -898,7 +906,9 @@ model Alert {
   createdAt  DateTime      @default(now())
   resolvedAt DateTime?
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  notes         AlertNote[]
+  notifications AlertNotification[]
 
   @@index([accountId, status, createdAt])
 }
@@ -1488,4 +1498,125 @@ model ReviewReasonCode {
 
   @@unique([accountId, code])
   @@index([accountId, sortOrder])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Wave 2 · track "fulfill" (P4-06 Fulfill, P4-07 Shopify write-back, P4-08 alerts/tasks)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One Fulfill action (a single order or a bulk selection). Every order gets a visible result row, so nothing
+/// is partial-silent (SPEC §6.1); the batch page can be reopened and resumed.
+model FulfillBatch {
+  id          String    @id @default(cuid())
+  accountId   String
+  createdById String
+  total       Int
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  account Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  items   FulfillBatchItem[]
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+/// Result of one order in a FulfillBatch. status: PENDING | RUNNING | QUEUED | BLOCKED | NEEDS_ACK | SKIPPED | FAILED.
+model FulfillBatchItem {
+  id           String    @id @default(cuid())
+  accountId    String
+  batchId      String
+  orderId      String
+  position     Int
+  status       String    @default("PENDING")
+  /// Machine-readable reason (e.g. not_approved, check_stale, fhb_already_submitted).
+  code         String?
+  /// Findings that blocked it or need acknowledging (validator engine shape).
+  findings     Json?
+  connectionId String?
+  liveMode     LiveMode?
+  /// The outbox request created (or re-armed) for this order.
+  requestId    String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  batch FulfillBatch @relation(fields: [accountId, batchId], references: [accountId, id], onDelete: Cascade)
+  order Order        @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([batchId, orderId])
+  @@index([accountId, orderId])
+}
+
+/// Shopify fulfillment write-back for one shipment (P4-07): the store-side outbox. One row per shipment (never
+/// two Shopify fulfillments for one shipment); the sender gates on Store.writeBackMode at send time (READ_ONLY:
+/// nothing, DRY_RUN: the exact mutation is recorded, LIVE: sent) and reads the order's fulfillments back by
+/// tracking number before every send and retry.
+model ShopifyWriteBack {
+  id                    String          @id @default(cuid())
+  accountId             String
+  storeId               String
+  orderId               String
+  fulfillmentId         String
+  status                OutboundStatus  @default(PENDING)
+  /// writeBackMode the sender evaluated last time.
+  evaluatedMode         StoreWriteMode?
+  trackingNumber        String
+  /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
+  request               Json?
+  attempts              Int             @default(0)
+  lastResponse          Json?
+  lastError             String?
+  shopifyFulfillmentGid String?
+  lockedAt              DateTime?
+  nextAttemptAt         DateTime?
+  sentAt                DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store       Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  order       Order       @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, fulfillmentId])
+  @@index([accountId, orderId])
+  @@index([status, nextAttemptAt])
+}
+
+/// Alert/task history (P4-08): who assigned, resolved (with the note) or reopened it. Alert itself is unchanged.
+model AlertNote {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  userId    String?
+  /// assign | resolve | reopen | note | auto_resolve
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, alertId, createdAt])
+}
+
+/// One notification per alert and channel (email, telegram): the unique key makes sending idempotent.
+model AlertNotification {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  channel   String
+  /// SENDING | SENT | FAILED
+  status    String   @default("SENDING")
+  error     String?
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, channel])
+  @@index([accountId, createdAt])
 }

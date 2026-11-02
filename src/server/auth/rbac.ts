@@ -46,6 +46,8 @@ export const PERMISSIONS = {
   "reviews.read": ["OWNER", "ADMIN", "OPERATOR"],
   /** Configure the review reason codes. */
   "reviews.reasonCodes": ["OWNER", "ADMIN"],
+  /** Alerts and tasks: assign and resolve with a note (Сигнали и задачи). */
+  "alerts.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

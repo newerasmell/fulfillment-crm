@@ -16,6 +16,8 @@ import {
   type TimelineEntry,
 } from "@/server/review";
 import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
+import { orderWriteBacks } from "@/server/fulfill";
+import { FulfillButton } from "../selection";
 import { StatusChip } from "../status";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 
@@ -45,6 +47,8 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
     throw err;
   }
   const { order, check } = data;
+  const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
+  const tw = await getTranslations("fulfill.writeBack");
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
   const when = (d: Date) => format.dateTime(d, { dateStyle: "medium", timeStyle: "short" });
   const msg = (f: Finding) => (locale === "en" ? f.message_en : f.message_bg);
@@ -85,7 +89,11 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
         title={`${t("order")} ${order.number}`}
         subtitle={`${order.store?.name ?? "—"} · ${order.company?.name ?? "—"} · ${when(order.placedAt)}`}
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {can(ctx.role, "orders.fulfill") &&
+              ["APPROVED", "SUBMIT_FAILED", "QUEUED"].includes(order.status) && (
+                <FulfillButton orderId={order.id} />
+              )}
             {can(ctx.role, "reviews.read") && (
               <Link href="/orders/reviews" className={ghostButtonCls + " inline-flex items-center"}>
                 {r("reviewsLink")}
@@ -409,6 +417,33 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           )}
         </div>
       </div>
+
+      {writeBacks.length > 0 && (
+        <Card>
+          <h2 className="mt-0 text-base font-semibold">{tw("title")}</h2>
+          <ul className="m-0 flex list-none flex-col gap-2 p-0">
+            {writeBacks.map((w) => (
+              <li key={w.id} data-testid="writeback" className="flex flex-col gap-1">
+                <span className="flex flex-wrap items-center gap-3">
+                  <span className="font-mono text-[13px]">{w.trackingNumber}</span>
+                  <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
+                    {tw(`status.${w.status}`)}
+                  </span>
+                  {w.lastError && <span className="text-sm text-warn">{w.lastError}</span>}
+                </span>
+                {w.request && can(ctx.role, "outbox.payloads") && (
+                  <details>
+                    <summary className="text-sm text-muted">{tw("request")}</summary>
+                    <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
+                      {JSON.stringify((w.request as { variables?: unknown }).variables ?? w.request, null, 2)}
+                    </pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {data.canReview && (
         <DecisionBar

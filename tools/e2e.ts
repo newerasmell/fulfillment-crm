@@ -48,6 +48,9 @@ try {
   // Review queue (wave 2, review track): its own group and OWNER, so other specs' counts stay unchanged.
   const { seedReview } = await import("../tests/e2e/seed-review");
   const reviewer = await seedReview();
+  // Synthetic Fulfill / write-back / alerts data (wave 2, fulfill track): tests/e2e/fulfill.spec.ts.
+  const { seedFulfill } = await import("./e2e-fulfill");
+  await seedFulfill({ userId: owner.user.id, accountId: owner.account.id }, company.id);
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });

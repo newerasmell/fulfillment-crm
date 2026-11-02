@@ -36,6 +36,7 @@ const EXPECTED: Record<Permission, string> = {
   "orders.rawPayloads": "11000",
   "reviews.read": "11100",
   "reviews.reasonCodes": "11000",
+  "alerts.manage": "11110",
 };
 
 describe("role matrix", () => {
