@@ -36,6 +36,9 @@ try {
   );
   const seeded = await systemDb().store.update({ where: { id: store.id }, data: { skuPrefix: "DM-" } });
   for (const o of SYNTHETIC_ORDERS) await importShopifyOrder(owner.account.id, seeded, o);
+  // Synthetic FHB mirror (wave 1, FHB track).
+  const { seedFhb } = await import("../tests/e2e/seed-fhb");
+  await seedFhb({ userId: owner.user.id, accountId: owner.account.id }, company.id);
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });

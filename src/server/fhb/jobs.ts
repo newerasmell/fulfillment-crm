@@ -17,7 +17,7 @@ export interface FhbSyncJob extends FhbSyncRequest {
 }
 
 export const fhbSyncKey = (d: FhbSyncJob) =>
-  [d.connectionId, d.resource, d.service ?? "", d.country ?? ""].join(":");
+  [d.connectionId, d.resource, d.service ?? "", d.country ?? "", d.externalId ?? ""].join(":");
 
 export const enqueueFhb = {
   callback: (boss: PgBoss, d: FhbCallbackJob) =>

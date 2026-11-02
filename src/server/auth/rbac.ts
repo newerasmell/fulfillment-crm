@@ -30,6 +30,10 @@ export const PERMISSIONS = {
   "vendorProducts.write": ["OWNER", "ADMIN"],
   /** Edit or cancel an order at the warehouse while it is still editable there. */
   "orders.cancelAtWarehouse": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Queue a read-only refresh of a warehouse mirror (GET calls only). */
+  "connections.sync": ["OWNER", "ADMIN", "OPERATOR"],
+  /** See the exact vendor payloads in the outbox (they carry customer addresses). */
+  "outbox.payloads": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

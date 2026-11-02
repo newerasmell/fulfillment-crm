@@ -39,6 +39,7 @@ export const FHB_SYNC_RESOURCES = [
   "cod",
   "carriers",
   "pickupPoints",
+  "order",
 ] as const;
 export type FhbSyncResource = (typeof FHB_SYNC_RESOURCES)[number];
 /** What the 30-minute reconcile runs (pick-up points are loaded per service/country on request). */
@@ -523,6 +524,8 @@ export interface FhbSyncRequest {
   country?: string;
   /** Carriers: refresh even if fresh. */
   force?: boolean;
+  /** `order`: the FHB order id to re-read (GET /order?id=). */
+  externalId?: string;
 }
 
 /**
@@ -595,6 +598,11 @@ export async function runFhbSync(
         for (const l of await loadedPickupLists(accountId, connectionId)) {
           await syncFhbPickupPoints(ctx, l.service, l.country || null);
         }
+        break;
+      }
+      case "order": {
+        if (!req.externalId) throw new Error("order needs an externalId");
+        count = (await refreshFhbOrder(ctx, req.externalId)) ? 1 : 0;
         break;
       }
       case "pickupPoints": {
