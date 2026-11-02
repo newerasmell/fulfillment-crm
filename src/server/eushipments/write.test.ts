@@ -111,6 +111,25 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "order:TST-900" } })).toBe(0);
   });
 
+  it("the pipeline gates queueing: only APPROVED / SUBMIT_FAILED orders, nothing written otherwise", async () => {
+    const statuses = ["CANCELLED", "ON_HOLD", "NEEDS_REVIEW", "CHECKING", "READY", "IMPORTED"] as const;
+    for (const [i, status] of statuses.entries()) {
+      const { order, product } = await euTestOrder(g, { number: `#95${i}` });
+      await mapProduct(product.id, `ref-${product.sku}`);
+      await g.db.order.update({ where: { id: order.id }, data: { status } });
+      await expect(
+        queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id }),
+        status,
+      ).rejects.toMatchObject({ code: "transition_not_allowed" });
+      expect(await g.db.fulfillment.count({ where: { orderId: order.id } }), status).toBe(0);
+      expect(
+        await g.db.outboundRequest.count({ where: { fulfillment: { orderId: order.id } } }),
+        status,
+      ).toBe(0);
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(status);
+    }
+  });
+
   it("warnings need an acknowledgement before queueing", async () => {
     const { order, product } = await euTestOrder(g, { number: "#901" });
     await mapProduct(product.id, `ref-${product.sku}`);

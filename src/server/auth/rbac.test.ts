@@ -32,6 +32,10 @@ const EXPECTED: Record<Permission, string> = {
   "eushipments.sync": "11110",
   "apiWatch.read": "11000",
   "apiWatch.manage": "11000",
+  "routing.manage": "11000",
+  "orders.rawPayloads": "11000",
+  "reviews.read": "11100",
+  "reviews.reasonCodes": "11000",
 };
 
 describe("role matrix", () => {

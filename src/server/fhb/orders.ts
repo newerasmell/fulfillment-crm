@@ -19,6 +19,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { queueGate } from "@/server/pipeline";
 import { fhbOrderNotificationUrls, publicBaseUrl } from "./callback-token";
 import type { ScopedActor } from "./connection";
 import { updateRevisionKey } from "./revision";
@@ -90,10 +91,14 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 
 type Tx = Prisma.TransactionClient;
 
-/** Loads everything the pre-flight needs and builds the FHB draft. Pure reads inside the caller's tx. */
-async function prepare(
+/**
+ * Loads everything the pre-flight needs and runs the FHB validators. Pure reads inside the caller's tx; no
+ * permission or scope check (callers do that). Never throws on findings: prepare() and the validator engine's
+ * preview (previewFhbOrderFindings) decide what a finding means.
+ */
+async function fhbPreflight(
   tx: Tx,
-  actor: ScopedActor,
+  accountId: string,
   input: SubmitFhbOrderInput,
   ids: { externalId: string; variableSymbol: string; fulfillmentId: string },
   opts: {
@@ -117,7 +122,7 @@ async function prepare(
   const country = addr.countryCode?.toUpperCase() ?? order.countryCode ?? null;
   const setting = country
     ? await tx.countrySetting.findUnique({
-        where: { accountId_country: { accountId: actor.accountId, country } },
+        where: { accountId_country: { accountId: accountId, country } },
       })
     : null;
   const localCurrency = setting?.currency?.toUpperCase() ?? null;
@@ -197,11 +202,18 @@ async function prepare(
     valueNotConverted,
     stockMaxAgeMs: input.stockMaxAgeMs,
   });
-  if (hasHardBlock(findings)) throw new FhbPreflightError("fhb_preflight_failed", findings);
-  if (findings.length && !input.acknowledgeWarnings)
-    throw new FhbPreflightError("fhb_preflight_needs_ack", findings);
+  return { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value };
+}
 
-  const draft: FhbOrderDraft = {
+/** The FHB order draft from a pre-flight result (only valid when the pre-flight has no hard block). */
+function fhbDraft(
+  pre: Awaited<ReturnType<typeof fhbPreflight>>,
+  input: SubmitFhbOrderInput,
+  ids: { externalId: string; variableSymbol: string },
+  notification: FhbOrderDraft["notification"],
+): FhbOrderDraft {
+  const { order, addr, street, country, phone, lineChecks, isCod, codAmount, value } = pre;
+  return {
     externalId: ids.externalId,
     variableSymbol: ids.variableSymbol,
     address: {
@@ -220,8 +232,30 @@ async function prepare(
     parcelService: input.parcelService ?? null,
     deliveryPoint: input.deliveryPoint ?? null,
     note: input.note ?? null,
-    notification: fhbOrderNotificationUrls(connection.id, ids.fulfillmentId, publicBaseUrl()),
+    notification,
   };
+}
+
+/** Pre-flight + the FHB draft. A hard finding (or an unacknowledged soft one) aborts with FhbPreflightError. */
+async function prepare(
+  tx: Tx,
+  actor: ScopedActor,
+  input: SubmitFhbOrderInput,
+  ids: { externalId: string; variableSymbol: string; fulfillmentId: string },
+  opts: Parameters<typeof fhbPreflight>[4],
+) {
+  const pre = await fhbPreflight(tx, actor.accountId, input, ids, opts);
+  const { order, connection, findings } = pre;
+  if (hasHardBlock(findings)) throw new FhbPreflightError("fhb_preflight_failed", findings);
+  if (findings.length && !input.acknowledgeWarnings)
+    throw new FhbPreflightError("fhb_preflight_needs_ack", findings);
+
+  const draft = fhbDraft(
+    pre,
+    input,
+    ids,
+    fhbOrderNotificationUrls(connection.id, ids.fulfillmentId, publicBaseUrl()),
+  );
   return { order, connection, findings, draft };
 }
 
@@ -260,6 +294,16 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       const active = previous.find((p) => (ACTIVE as readonly string[]).includes(p.status));
       let fulfillment = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED") ?? null;
       if (active && active.status !== "QUEUED") throw new DomainError("fhb_already_submitted");
+      // The pipeline is the gate: only an APPROVED / SUBMIT_FAILED order is queued (strict, before anything is
+      // written). The order row lock serialises this with a concurrent cancel, hold or check.
+      await lockForUpdate("Order", order.id);
+      await queueGate(tx, {
+        orderId: order.id,
+        userId: actor.userId,
+        source: "fhb.submit",
+        connectionId: connection.id,
+        rearmQueued: fulfillment?.status === "QUEUED",
+      });
 
       if (!fulfillment) {
         // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, ….
@@ -500,4 +544,104 @@ export async function cancelFhbOrder(actor: ScopedActor, fulfillmentId: string) 
     userAgent: actor.userAgent,
   });
   return result;
+}
+
+const previewFinding = (code: string, bg: string, en: string): ValidationFinding => ({
+  code,
+  severity: "hard",
+  field: null,
+  message_bg: bg,
+  message_en: en,
+});
+
+/**
+ * What submitFhbOrder would do for this order, without consuming a variable symbol or queueing anything:
+ * its findings and, when nothing blocks, the POST /order body it would build (P4-01 validator engine, P4-04
+ * payload preview). Uses the external id the next submission would get and a placeholder variable symbol
+ * from the connection's sequence (validated for shape only). The preview body has no notification URLs:
+ * those carry callback tokens, are added at submit time and never go to the browser.
+ */
+async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "acknowledgeWarnings">) {
+  return withAccountTransaction(accountId, async (tx) => {
+    const order = await tx.order.findUnique({
+      where: { id: input.orderId },
+      select: { id: true, number: true, store: { select: { code: true } } },
+    });
+    if (!order) throw new DomainError("not_found");
+    const connection = await tx.fulfillmentConnection.findUnique({ where: { id: input.connectionId } });
+    if (!connection || connection.type !== "FHB_V3") throw new DomainError("not_found");
+    const out: ValidationFinding[] = [];
+    if (!connection.enabled)
+      out.push(
+        previewFinding(
+          "fhb.connection.disabled",
+          "Връзката към склада е изключена.",
+          "The warehouse connection is disabled.",
+        ),
+      );
+    if (!order.store?.code) {
+      out.push(
+        previewFinding(
+          "fhb.order.no_store_code",
+          "Поръчката няма магазин с код — не може да получи номер за склада.",
+          "The order has no store code, so it cannot get a warehouse order id.",
+        ),
+      );
+      return { findings: out, body: null };
+    }
+    const previous = await tx.fulfillment.findMany({
+      where: { orderId: order.id, connectionId: connection.id },
+      orderBy: { createdAt: "asc" },
+    });
+    const active = previous.find(
+      (p) => (ACTIVE as readonly string[]).includes(p.status) && p.status !== "QUEUED",
+    );
+    if (active)
+      out.push(
+        previewFinding(
+          "fhb.order.already_submitted",
+          "Поръчката вече е изпратена към този склад.",
+          "The order was already sent to this warehouse.",
+        ),
+      );
+    const reuse = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED");
+    const externalId =
+      reuse?.externalId ?? fhbOrderExternalId(order.store.code, order.number, previous.length + 1);
+    const variableSymbol = reuse?.variableSymbol ?? BigInt(connection.variableSymbolNext).toString();
+    const duplicate = !!(await tx.fulfillment.findFirst({
+      where: {
+        connectionId: connection.id,
+        ...(reuse ? { id: { not: reuse.id } } : {}),
+        OR: [{ externalId }, ...(reuse?.variableSymbol ? [{ variableSymbol }] : [])],
+      },
+      select: { id: true },
+    }));
+    const ids = { externalId, variableSymbol, fulfillmentId: reuse?.id ?? "preview" };
+    const pre = await fhbPreflight(tx, accountId, input, ids, { duplicate });
+    const findings = [...out, ...pre.findings];
+    let body: ReturnType<typeof buildFhbOrderCreate> | null = null;
+    if (!hasHardBlock(findings)) {
+      try {
+        body = buildFhbOrderCreate(fhbDraft(pre, input, ids, undefined));
+      } catch {
+        body = null; // the builder's own schema refused it: the findings say why
+      }
+    }
+    return { findings, body };
+  });
+}
+
+export async function previewFhbOrderFindings(
+  accountId: string,
+  input: Omit<SubmitFhbOrderInput, "acknowledgeWarnings">,
+): Promise<ValidationFinding[]> {
+  return (await fhbPreview(accountId, input)).findings;
+}
+
+/** The POST /order body submitFhbOrder would send now (null while a hard finding blocks it). Reads only. */
+export async function previewFhbOrderPayload(
+  accountId: string,
+  input: Omit<SubmitFhbOrderInput, "acknowledgeWarnings">,
+) {
+  return (await fhbPreview(accountId, input)).body;
 }

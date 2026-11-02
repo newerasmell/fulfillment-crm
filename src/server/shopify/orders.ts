@@ -14,6 +14,13 @@ import {
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { jsonEqual } from "@/lib/json-equal";
+import {
+  FINGERPRINT_SELECT,
+  currentOrderFingerprint,
+  orderFingerprint,
+  recordInitialStatus,
+  transition,
+} from "@/server/pipeline";
 import { matchBySku } from "./products";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -82,6 +89,12 @@ function meaningful(o: ShopifyOrder) {
   };
 }
 
+/** The phone the import stores as Order.phone (order, then shipping address, then customer). */
+export function shopifyPhone(o: ShopifyOrder | null | undefined): string | null {
+  if (!o) return null;
+  return o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null;
+}
+
 /** Shopify says every item is fulfilled (by someone else: before approval nothing was sent from the CRM). */
 const shopifyFulfilled = (o: ShopifyOrder) => o.displayFulfillmentStatus === "FULFILLED";
 
@@ -100,6 +113,7 @@ export async function importShopifyOrder(
       const existing = await tx.order.findUnique({
         where: { accountId_storeId_shopifyOrderGid: { accountId, storeId: store.id, shopifyOrderGid: o.id } },
         select: {
+          ...FINGERPRINT_SELECT,
           id: true,
           status: true,
           shopifyUpdatedAt: true,
@@ -160,13 +174,17 @@ export async function importShopifyOrder(
       const customerName =
         shipping?.name ?? ([o.customer?.firstName, o.customer?.lastName].filter(Boolean).join(" ") || null);
       const tags = o.test ? [...o.tags, "shopify-test"] : o.tags;
-      // Keep an operator's corrected address: only refresh the normalised copy if nobody edited it.
+      // Keep an operator's correction: only refresh the normalised copy if nobody edited it. "Untouched"
+      // covers the contact fields too — a phone-only fix can leave shippingAddress byte-identical (e.g. the
+      // order phone set to the value the address phone already had).
+      const previousOriginal = existing
+        ? normaliseAddress(existing.shippingAddressOriginal as Address | null)
+        : null;
       const addressUntouched =
         !existing ||
-        jsonEqual(
-          existing.shippingAddress,
-          normaliseAddress(existing.shippingAddressOriginal as Address | null),
-        );
+        (jsonEqual(existing.shippingAddress, previousOriginal) &&
+          existing.phone === shopifyPhone(existing.raw as ShopifyOrder | null) &&
+          existing.countryCode === (previousOriginal?.countryCode ?? null));
 
       const data = {
         ...shopifyState,
@@ -174,11 +192,17 @@ export async function importShopifyOrder(
         number: o.name,
         customerName,
         email: o.email ?? o.customer?.defaultEmailAddress?.emailAddress ?? null,
-        phone: o.phone ?? o.shippingAddress?.phone ?? o.customer?.defaultPhoneNumber?.phoneNumber ?? null,
         shippingAddressOriginal: json(o.shippingAddress),
-        ...(addressUntouched ? { shippingAddress: json(shipping) } : {}),
+        // An operator's correction (address, phone, country — src/server/review) is kept; the original is
+        // always refreshed above.
+        ...(addressUntouched
+          ? {
+              shippingAddress: json(shipping),
+              phone: shopifyPhone(o),
+              countryCode: shipping?.countryCode ?? null,
+            }
+          : {}),
         billingAddress: json(normaliseAddress(o.billingAddress)),
-        countryCode: shipping?.countryCode ?? null,
         currency: o.currencyCode,
         subtotal: money(o.subtotalPriceSet),
         total: money(o.totalPriceSet),
@@ -209,20 +233,28 @@ export async function importShopifyOrder(
         const created = await tx.order.create({
           data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
         });
+        await recordInitialStatus(tx, {
+          accountId,
+          orderId: created.id,
+          status,
+          actor: { kind: "system" },
+          source: "shopify.import",
+        });
         orderId = created.id;
         outcome = "created";
       } else {
-        await tx.order.update({
-          where: { id: existing.id },
-          data: {
-            ...data,
-            ...(o.cancelledAt && existing.status !== "CANCELLED"
-              ? { status: "CANCELLED" as const }
-              : shopifyFulfilled(o)
-                ? { status: "FULFILLED_EXTERNALLY" as const }
-                : {}),
-          },
-        });
+        await tx.order.update({ where: { id: existing.id }, data });
+        // Still before approval here (PRE_APPROVAL): Shopify's cancel / fulfil applies directly.
+        if (o.cancelledAt || shopifyFulfilled(o)) {
+          await transition(tx, {
+            orderId: existing.id,
+            ...(o.cancelledAt
+              ? { to: "CANCELLED" as const, cause: "shopify_cancelled" as const }
+              : { to: "FULFILLED_EXTERNALLY" as const, cause: "shopify_fulfilled" as const }),
+            actor: { kind: "system" },
+            source: "shopify.import",
+          });
+        }
         orderId = existing.id;
         outcome = "updated";
       }
@@ -236,6 +268,22 @@ export async function importShopifyOrder(
         );
       }
       await replaceLines(tx, accountId, store, orderId, o);
+      // The data a check validated changed (address, phone, COD, lines…): a check or review of the old data
+      // must not authorise it. The order starts over at IMPORTED and the check sweep validates it again
+      // (the approve guard also compares the check's fingerprint, for a check still running right now).
+      if (existing && !o.cancelledAt && !shopifyFulfilled(o)) {
+        const after = await currentOrderFingerprint(tx, orderId);
+        if (after !== orderFingerprint(existing)) {
+          await transition(tx, {
+            orderId,
+            to: "IMPORTED",
+            cause: "data_changed",
+            actor: { kind: "system" },
+            source: "shopify.import",
+            mode: "follow",
+          });
+        }
+      }
       return { orderId, outcome };
     },
     IMPORT_TX,

@@ -153,4 +153,15 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 600 },
     cron: "*/30 * * * *",
   },
+  /** Pre-flight checks of one order (data: { accountId, orderId }): routing + validators → READY / NEEDS_REVIEW. */
+  ordersCheck: {
+    name: "orders.check",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 300 },
+  },
+  /** Every 5 min: queue checks for IMPORTED orders and for orders left in CHECKING by a crashed check. */
+  ordersCheckSweep: {
+    name: "orders.checkSweep",
+    options: { retryLimit: 0, expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

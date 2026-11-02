@@ -197,6 +197,7 @@ model Account {
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
+  reviewReasonCodes         ReviewReasonCode[]
 }
 
 model User {
@@ -697,6 +698,8 @@ model Order {
   lines        OrderLine[]
   fulfillments Fulfillment[]
   reviews      Review[]
+  events       OrderEvent[]
+  check        OrderCheck?
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -1406,4 +1409,83 @@ model ApiWatchSource {
   /// Consecutive failed runs; an alert is raised when it reaches the threshold.
   failures      Int       @default(0)
   updatedAt     DateTime  @updatedAt
+}
+
+// ───────────────────────── wave 2 · core of phase 4 (pipeline, checks, routing) ─────────────────────────
+
+/// One CRM pipeline step of an order (SPEC §6.1). Written ONLY by src/server/pipeline (transition()), in the
+/// same transaction as the status change: the order timeline and the audit trail of every status move.
+model OrderEvent {
+  id         String          @id @default(cuid())
+  accountId  String
+  orderId    String
+  /// Null for the first event (the status the order was created with).
+  fromStatus CrmOrderStatus?
+  toStatus   CrmOrderStatus
+  /// Transition cause, e.g. check_result, approve, vendor, shopify_cancelled (src/server/pipeline/rules.ts).
+  cause      String
+  /// user | system | ai
+  actorType  String
+  userId     String?
+  /// Which code path moved it, e.g. "shopify.import", "eushipments.history", "fhb:callback".
+  source     String?
+  reason     String?
+  meta       Json?
+  createdAt  DateTime        @default(now())
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, orderId, createdAt])
+}
+
+/// Latest pre-flight result of an order (P4-01 validator engine, src/server/checks): the routing decision and
+/// every finding (order-level + the chosen warehouse's validators). One row per order, replaced on each check.
+/// connectionId / ruleId are snapshots (no relation): deleting a rule or connection keeps the history.
+model OrderCheck {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String
+  connectionId String?
+  ruleId       String?
+  /// RoutingDecision (src/server/routing/engine.ts), incl. the human-readable explanation.
+  routing      Json
+  /// [{code, severity: hard|soft, source, field, message_bg, message_en, suggestedFix?}]
+  findings     Json     @default("[]")
+  hardCount    Int      @default(0)
+  softCount    Int      @default(0)
+  /// Normalised values the senders will use (e.g. {phone: "+359…"}), shown next to the original.
+  normalised   Json     @default("{}")
+  checkedById  String?
+  checkedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, orderId])
+  @@index([accountId, checkedAt])
+}
+
+// ───────────────────────── wave 2 · review track (P4-04 / P4-05) ─────────────────────────
+
+/// Configurable reason codes for review decisions (SPEC §7.1: "a reason code from a fixed list"). An account
+/// without rows uses the built-in defaults (src/server/review/reasons.ts); the first change by an admin stores
+/// them. Codes are never deleted (old Review rows keep pointing at them), only deactivated.
+model ReviewReasonCode {
+  id        String   @id @default(cuid())
+  accountId String
+  /// Stable machine code stored on Review.reasonCode, e.g. "address_fixed".
+  code      String
+  labelBg   String
+  labelEn   String
+  /// Decisions this code is offered for: approve | hold | block.
+  decisions String[]
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, code])
+  @@index([accountId, sortOrder])
 }
