@@ -50,9 +50,14 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
         title={store.name}
         subtitle={`${company?.name ?? "—"} · ${store.domain} · ${store.code}`}
         actions={
-          <Link href="/stores" className={ghostButtonCls + " inline-flex items-center"}>
-            {t("back")}
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/stores/${id}/inventory`} className={ghostButtonCls + " inline-flex items-center"}>
+              {(await getTranslations("stock.push"))("title")}
+            </Link>
+            <Link href="/stores" className={ghostButtonCls + " inline-flex items-center"}>
+              {t("back")}
+            </Link>
+          </div>
         }
       />
       <Card>

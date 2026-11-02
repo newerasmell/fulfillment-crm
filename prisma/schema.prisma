@@ -203,6 +203,8 @@ model Account {
   alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
   productLines              ProductLine[]
+  stockSettings             StockSettings?
+  inventoryPushes           InventoryPush[]
 }
 
 model User {
@@ -387,6 +389,9 @@ model Store {
   variantLinks StoreVariantLink[]
   orders       Order[]
   writeBacks   ShopifyWriteBack[]
+  locations       StoreLocation[]
+  inventoryLevels ShopifyInventoryLevel[]
+  inventoryPushes InventoryPush[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -443,6 +448,7 @@ model FulfillmentConnection {
   eushipmentsTracking        EushipmentsTracking[]
   eushipmentsSyncs           EushipmentsSync[]
   masterCatalogueRuns        MasterCatalogueRun[]
+  storeLocations             StoreLocation[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -558,6 +564,7 @@ model StoreVariantLink {
   store      Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
   product    Product?    @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   orderLines OrderLine[]
+  inventoryLevels ShopifyInventoryLevel[]
 
   @@unique([accountId, id])
   @@unique([storeId, shopifyVariantGid])
@@ -1728,4 +1735,125 @@ model ProductMappingImport {
 
   @@unique([accountId, id])
   @@index([accountId, lineId, createdAt])
+}
+
+// ───────────────────────── wave 3 · stock track (P5-01 / P5-02 / P5-03) ─────────────────────────
+
+/// Stock board settings of a group (P5-01): when a number counts as a discrepancy or a snapshot as stale.
+model StockSettings {
+  id               String   @id @default(cuid())
+  accountId        String   @unique
+  /// Units Shopify may show above the CRM sellable quantity before "Разминаване със Shopify" is raised.
+  shopifyThreshold Int      @default(2)
+  /// A snapshot older than this is stale (FHB is pushed + reconciled every 30 min).
+  fhbStaleHours    Int      @default(2)
+  /// euShipments get-prod-avails is a daily snapshot (EushipmentsSettings.stockStaleHours default 30).
+  euStaleHours     Int      @default(30)
+  /// "Свършват до N дни": sellable ÷ average daily sales of the last 30 days.
+  runOutDays       Int      @default(7)
+  updatedAt        DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+/// Shopify locations of a store (read_locations) and the warehouse connection each one stands for (P5-03).
+model StoreLocation {
+  id                 String   @id @default(cuid())
+  accountId          String
+  storeId            String
+  shopifyLocationGid String
+  name               String
+  isActive           Boolean  @default(true)
+  /// Fulfillment service handle when Shopify reports the location as one (shown as a hint only).
+  fulfillmentService String?
+  /// The warehouse this location represents; null = not mapped (never pushed).
+  connectionId       String?
+  fetchedAt          DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  store      Store                  @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection? @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@unique([storeId, shopifyLocationGid])
+  @@unique([storeId, connectionId])
+  @@index([accountId])
+}
+
+/// Mirror of Shopify inventory per variant and location (read_inventory): stock board column + push compare value.
+model ShopifyInventoryLevel {
+  id               String   @id @default(cuid())
+  accountId        String
+  storeId          String
+  variantLinkId    String
+  locationGid      String
+  inventoryItemGid String
+  tracked          Boolean  @default(true)
+  available        Int
+  onHand           Int?
+  fetchedAt        DateTime
+
+  store       Store            @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  variantLink StoreVariantLink @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([variantLinkId, locationGid])
+  @@index([accountId, storeId])
+}
+
+/// One Shopify inventory push to one store (P5-03). The store's inventoryPushMode is evaluated by the sender at
+/// send time (DISABLED → REFUSED, DRY_RUN → request recorded, LIVE → inventorySetQuantities with @idempotent and
+/// compare-and-set). At most one open push per store.
+model InventoryPush {
+  id            String             @id @default(cuid())
+  accountId     String
+  storeId       String
+  /// manual | cron
+  trigger       String
+  status        OutboundStatus     @default(PENDING)
+  evaluatedMode InventoryPushMode?
+  buffer        Int
+  /// {mutation, batches:[{idempotencyKey, input, done?}]}: what DRY_RUN would send / what LIVE sends.
+  request       Json?
+  lastResponse  Json?
+  lastError     String?
+  attempts      Int                @default(0)
+  lockedAt      DateTime?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  account Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store   Store               @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  lines   InventoryPushLine[]
+
+  @@unique([accountId, id])
+  @@index([accountId, storeId, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+/// One variant at one location of a push: what the CRM had, what Shopify had, what was (or would be) set.
+model InventoryPushLine {
+  id               String  @id @default(cuid())
+  accountId        String
+  pushId           String
+  variantLinkId    String
+  productId        String?
+  connectionId     String
+  locationGid      String
+  inventoryItemGid String
+  sellable         Int
+  target           Int
+  /// Shopify "available" read right before the send (compare-and-set value).
+  shopifyBefore    Int?
+  /// planned | unchanged | dry_run | applied | stale | failed
+  status           String  @default("planned")
+  error            String?
+
+  push InventoryPush @relation(fields: [accountId, pushId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, pushId])
 }

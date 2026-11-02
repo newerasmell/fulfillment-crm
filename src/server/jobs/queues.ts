@@ -181,4 +181,38 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** Stock track (P5-01): stock discrepancy alerts (Shopify oversell, stale snapshots, negative sellable). */
+  stockDiscrepancies: {
+    name: "stock.discrepancies",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "25,55 * * * *",
+  },
+  /** Stock track (P5-02): FHB receipt read-back (GET only) per connection + inbound difference/overdue tasks. */
+  stockInboundSweep: {
+    name: "stock.inboundSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "10,40 * * * *",
+  },
+  /** Stock track (P5-03): read Shopify locations + inventory of one store (data: { accountId, storeId }). */
+  stockShopifyInventory: {
+    name: "stock.shopifyInventory",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 1800 },
+  },
+  /** Every 30 min: queue the Shopify inventory read of every connected store. */
+  stockShopifyInventoryTick: {
+    name: "stock.shopifyInventoryTick",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "5,35 * * * *",
+  },
+  /** Send one inventory push (data: { accountId, pushId }); the store's push mode is checked in the sender. */
+  stockInventoryPush: {
+    name: "stock.inventoryPush",
+    options: { ...retry, policy: "stately", retryLimit: 0, expireInSeconds: 900 },
+  },
+  /** Every 30 min: re-arm crashed pushes, create pushes for DRY_RUN/LIVE stores, queue the due ones. */
+  stockInventoryPushSweep: {
+    name: "stock.inventoryPushSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "20,50 * * * *",
+  },
 } satisfies Record<string, QueueDef>;
