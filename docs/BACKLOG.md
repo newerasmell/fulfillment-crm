@@ -22,7 +22,7 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [ ] GATE P0-G1 Owner: in the existing Render account create NEW services from render.yaml (Blueprint; do not touch any existing service), set env vars and CREDENTIALS_KEY, create the first OWNER user, add accounts (companies).
 
 ## Phase 1 — Shopify
-- [ ] P1-01 Shopify GraphQL client: pinned API version in config, cost-based throttling, retries, Zod for used queries; client-credentials token fetch + 24h refresh (verify current Shopify docs first, record findings in PROGRESS.md).
+- [x] P1-01 Shopify GraphQL client: pinned API version in config, cost-based throttling, retries, Zod for used queries; client-credentials token fetch + 24h refresh (verify current Shopify docs first, record findings in PROGRESS.md).
 - [ ] P1-02 Store connection screen + per-store settings (code, currency, countries, write-back mode, inventory push mode).
 - [ ] P1-03 Webhooks endpoint: HMAC verification, WebhookEvent dedupe, idempotent processing; registration job for the topics in SPEC §4.
 - [ ] P1-04 Order import (orders, lines, customer, addresses original+normalised, payment method/COD, risk, tags, notes) + 15-min reconcile + backfill N days.

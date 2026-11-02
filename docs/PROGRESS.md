@@ -69,6 +69,15 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   backfill migration has run everywhere; a later migration makes it NOT NULL.
 - 2026-11-02: GATE P0-G1 in progress: Render web + worker + Postgres live (Frankfurt); owner enrolment pending.
 
+- 2026-11-02 (P1-01, Shopify docs checked via the Shopify dev docs): client credentials grant confirmed —
+  POST https://{shop}/admin/oauth/access_token (form: client_id, client_secret, grant_type=client_credentials),
+  works only when the Dev Dashboard app and the store are in the same Shopify organisation (`shop_not_permitted`
+  otherwise), token valid 24 h (expires_in 86399), refreshed by repeating the request. Webhooks are signed with
+  HMAC-SHA256 of the raw body using the app's client secret (X-Shopify-Hmac-Sha256); deduplicate on
+  X-Shopify-Webhook-Id. API version pinned to 2026-10 (latest stable, supported until 2027-10-16).
+  WebhookSubscriptionInput uses `uri` in 2026-10. Stores outside the organisation would need the
+  authorization-code flow — not built until a store needs it.
+
 ## Open questions
 See SPEC.md §11.
 
