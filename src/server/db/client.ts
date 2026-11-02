@@ -17,7 +17,7 @@ import { Prisma, PrismaClient } from "@/generated/prisma/client";
  * `withSystemTransaction` for multi-statement atomic work.
  */
 
-const GLOBAL_MODELS = new Set<string>(["User", "LoginAttempt", "ApiSpecVersion"]);
+const GLOBAL_MODELS = new Set<string>(["User", "LoginAttempt", "ApiSpecVersion", "ApiWatchSource"]);
 
 const UNIQUE_WHERE_OPS = new Set(["findUnique", "findUniqueOrThrow", "update", "delete", "upsert"]);
 const WHERE_OPS = new Set([

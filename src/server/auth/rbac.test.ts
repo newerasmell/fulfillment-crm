@@ -30,6 +30,8 @@ const EXPECTED: Record<Permission, string> = {
   "connections.sync": "11100",
   "outbox.payloads": "11000",
   "eushipments.sync": "11110",
+  "apiWatch.read": "11000",
+  "apiWatch.manage": "11000",
 };
 
 describe("role matrix", () => {

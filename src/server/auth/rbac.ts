@@ -36,6 +36,8 @@ export const PERMISSIONS = {
   "outbox.payloads": ["OWNER", "ADMIN"],
   /** Start an euShipments read-side sync by hand (read calls only). */
   "eushipments.sync": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  "apiWatch.read": ["OWNER", "ADMIN"],
+  "apiWatch.manage": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

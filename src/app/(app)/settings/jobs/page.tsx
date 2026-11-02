@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { redriveAction } from "@/app/actions/jobs";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
@@ -6,10 +7,12 @@ import { requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { listDeadLetters, type DeadLetterView } from "@/server/jobs/dead-letters";
 import { logger } from "@/lib/logger";
+import { can } from "@/server/auth/rbac";
 
 export default async function JobsPage() {
   const ctx = await requireAccountContext("jobs.admin");
   const t = await getTranslations("jobs");
+  const tApi = await getTranslations("apiWatch");
   const format = await getFormatter();
   let rows: DeadLetterView[] = [];
   let unavailable = false;
@@ -23,6 +26,14 @@ export default async function JobsPage() {
   return (
     <>
       <PageHeader title={t("title")} subtitle={t("intro")} />
+      {can(ctx.role, "apiWatch.read") && (
+        <Card>
+          <Link href="/settings/api-changes" className="font-semibold text-accent hover:underline">
+            {tApi("linkCard")} →
+          </Link>
+          <p className="mt-1 mb-0 text-muted">{tApi("linkCardText")}</p>
+        </Card>
+      )}
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("deadLetters")}</h2>
         {rows.length === 0 ? (

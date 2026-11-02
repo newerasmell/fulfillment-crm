@@ -908,5 +908,44 @@
       "unknown_sku": "None of our products has this SKU.",
       "ambiguous_sku": "More than one product matches this SKU."
     }
+  },
+  "apiWatch": {
+    "title": "API changes",
+    "intro": "Daily check of the vendors' API documentation and of real responses from connected stores and warehouses. Nothing is deployed automatically; on a breaking change the affected connections drop to DRY_RUN.",
+    "linkCard": "API changes",
+    "linkCardText": "Vendor spec versions, upgrade briefs and open alerts.",
+    "sources": "Watched sources",
+    "source": "Source",
+    "lastChecked": "Last checked",
+    "state": "State",
+    "latest": "Latest version",
+    "never": "Not checked yet",
+    "ok": "OK",
+    "failing": "Failing ({count} times)",
+    "versions": "Version history",
+    "fetched": "Fetched",
+    "hash": "Hash",
+    "changes": "Changes",
+    "baseline": "Baseline",
+    "noVersions": "No versions fetched yet.",
+    "counts": "{breaking} breaking · {additive} additive · {info} informational",
+    "brief": "Upgrade brief",
+    "alerts": "Open alerts",
+    "noAlerts": "No open alerts.",
+    "severity": "Severity",
+    "created": "Created",
+    "resolve": "Resolve",
+    "severities": {
+      "INFO": "Info",
+      "WARNING": "Warning",
+      "CRITICAL": "Critical"
+    },
+    "kinds": {
+      "spec_change": "Spec change",
+      "spec_fetch_failed": "Spec cannot be fetched",
+      "shopify_version": "Shopify API version",
+      "live_check": "Live check",
+      "live_check_failed": "Live check could not run"
+    }
   }
 }
