@@ -221,7 +221,9 @@ export async function createProductFromVariant(actor: ScopedActor, linkId: strin
     ) {
       throw new DomainError("product_exists");
     }
-    const product = await tx.product.create({ data: { accountId: actor.accountId, sku, name: link.title } });
+    const product = await tx.product.create({
+      data: { accountId: actor.accountId, sku, name: cleanVariantTitle(link.title) },
+    });
     // Informational only (EAN is never a key).
     if (link.barcode) {
       await tx.productEan.create({
@@ -236,4 +238,9 @@ export async function createProductFromVariant(actor: ScopedActor, linkId: strin
   });
   await auditLink(actor, linkId, result.before, result.product.id, "created");
   return result.product;
+}
+
+/** "Sample EDP 50 ml - Default Title" → "Sample EDP 50 ml" (single-variant products carry Shopify's placeholder). */
+export function cleanVariantTitle(title: string) {
+  return title.replace(/\s+-\s+Default Title$/i, "").trim();
 }

@@ -82,6 +82,9 @@ function meaningful(o: ShopifyOrder) {
   };
 }
 
+/** Shopify says every item is fulfilled (by someone else: before approval nothing was sent from the CRM). */
+const shopifyFulfilled = (o: ShopifyOrder) => o.displayFulfillmentStatus === "FULFILLED";
+
 export async function importShopifyOrder(
   accountId: string,
   store: StoreForImport,
@@ -121,8 +124,12 @@ export async function importShopifyOrder(
       // possibly sent to the warehouse). Only Shopify's own status fields follow; real changes become a task.
       if (existing && !PRE_APPROVAL.has(existing.status)) {
         await tx.order.update({ where: { id: existing.id }, data: shopifyState });
+        // Shipped outside the CRM / already closed here: Shopify's later changes (refunds…) need no task.
+        if (existing.status === "FULFILLED_EXTERNALLY" || existing.status === "CANCELLED") {
+          return { orderId: existing.id, outcome: "updated" as const };
+        }
         const before = existing.raw ? meaningful(existing.raw as unknown as ShopifyOrder) : null;
-        if (o.cancelledAt && existing.status !== "CANCELLED" && !before?.cancelled) {
+        if (o.cancelledAt && !before?.cancelled) {
           await openTask(
             tx,
             accountId,
@@ -191,7 +198,14 @@ export async function importShopifyOrder(
       let outcome: ImportResult["outcome"];
       if (!existing) {
         // Shopify test orders are held: they must never reach a warehouse by accident.
-        const status: CrmOrderStatus = o.cancelledAt ? "CANCELLED" : o.test ? "ON_HOLD" : "IMPORTED";
+        // Already fulfilled in Shopify when we first see it (history, or shipped by hand): nothing to review.
+        const status: CrmOrderStatus = o.cancelledAt
+          ? "CANCELLED"
+          : shopifyFulfilled(o)
+            ? "FULFILLED_EXTERNALLY"
+            : o.test
+              ? "ON_HOLD"
+              : "IMPORTED";
         const created = await tx.order.create({
           data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
         });
@@ -202,7 +216,11 @@ export async function importShopifyOrder(
           where: { id: existing.id },
           data: {
             ...data,
-            ...(o.cancelledAt && existing.status !== "CANCELLED" ? { status: "CANCELLED" as const } : {}),
+            ...(o.cancelledAt && existing.status !== "CANCELLED"
+              ? { status: "CANCELLED" as const }
+              : shopifyFulfilled(o)
+                ? { status: "FULFILLED_EXTERNALLY" as const }
+                : {}),
           },
         });
         orderId = existing.id;
@@ -446,6 +464,16 @@ export async function syncStoreOrders(
     if (!res.orders.pageInfo.hasNextPage) break;
     after = res.orders.pageInfo.endCursor ?? null;
   }
+  // When the last run finished, whatever it found (the page shows it as "last sync").
+  const fresh = await accountDb(accountId).store.findUniqueOrThrow({
+    where: { id: store.id },
+    select: { syncCursors: true },
+  });
+  const key = mode.kind === "reconcile" ? "ordersSyncedAt" : "ordersBackfilledAt";
+  await accountDb(accountId).store.update({
+    where: { id: store.id },
+    data: { syncCursors: { ...((fresh.syncCursors ?? {}) as object), [key]: new Date().toISOString() } },
+  });
   logger.info({ storeId: store.id, mode: mode.kind, ...counts }, "shopify orders synced");
   return counts;
 }

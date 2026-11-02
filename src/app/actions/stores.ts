@@ -9,6 +9,7 @@ import { ForbiddenError, assertCan } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
+import { webhookCallbackUrl } from "@/server/shopify/webhooks";
 import { backfillWindows } from "@/server/shopify/orders";
 import { createStore, getStore, replaceStoreCredentials, updateStoreSettings } from "@/server/stores";
 
@@ -43,7 +44,11 @@ export async function createStoreAction(_prev: Result, form: FormData): Promise<
       clientSecret: String(form.get("clientSecret") ?? "").trim() || undefined,
     });
     id = store.id;
-    await enqueueShopify.testConnection(await webBoss(), { accountId: ctx.accountId, storeId: id });
+    await enqueueShopify.testConnection(await webBoss(), {
+      accountId: ctx.accountId,
+      storeId: id,
+      callbackUrl: webhookCallbackUrl(),
+    });
   } catch (err) {
     return toError(err);
   }
@@ -86,7 +91,11 @@ export async function replaceStoreCredentialsAction(
       clientId: String(form.get("clientId") ?? "").trim(),
       clientSecret: String(form.get("clientSecret") ?? "").trim(),
     });
-    await enqueueShopify.testConnection(await webBoss(), { accountId: ctx.accountId, storeId });
+    await enqueueShopify.testConnection(await webBoss(), {
+      accountId: ctx.accountId,
+      storeId,
+      callbackUrl: webhookCallbackUrl(),
+    });
   } catch (err) {
     return toError(err);
   }
@@ -103,7 +112,7 @@ export async function runStoreJobAction(storeId: string, kind: StoreJobKind) {
     assertCan(ctx.role, kind === "webhooks" ? "stores.manage" : "stores.sync");
     await getStore(actorFrom(ctx), storeId);
     const boss = await webBoss();
-    const data = { accountId: ctx.accountId, storeId };
+    const data = { accountId: ctx.accountId, storeId, callbackUrl: webhookCallbackUrl() };
     if (kind === "test") await enqueueShopify.testConnection(boss, data);
     else if (kind === "orders") await enqueueShopify.syncOrders(boss, { ...data, mode: "reconcile" });
     else if (kind === "products") await enqueueShopify.syncProducts(boss, data);

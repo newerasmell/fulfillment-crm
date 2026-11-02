@@ -34,7 +34,8 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       : null,
   ]);
   const webhook = store.webhookStatus as { ok?: boolean; at?: string; topics?: string[]; errors?: string[] };
-  const cursor = (store.syncCursors as { ordersUpdatedAt?: string }).ordersUpdatedAt;
+  const cursors = store.syncCursors as { ordersSyncedAt?: string; ordersBackfilledAt?: string };
+  const cursor = [cursors.ordersSyncedAt, cursors.ordersBackfilledAt].filter(Boolean).sort().pop();
   const manage = can(ctx.role, "stores.manage");
   const sync = can(ctx.role, "stores.sync");
   const job = (kind: "test" | "orders" | "products" | "webhooks", label: string) => (

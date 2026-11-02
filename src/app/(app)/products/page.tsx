@@ -28,6 +28,11 @@ export default async function ProductsPage() {
       <PageHeader title={t("title")} subtitle={t("intro")} />
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("unmatchedTitle", { count: unmatched.length })}</h2>
+        {products.length === 0 && unmatched.length > 0 && (
+          <p role="note" className="mt-0 rounded-lg bg-accent-soft px-3 py-2 text-sm text-accent-strong">
+            {t("waitWarehouses")}
+          </p>
+        )}
         {unmatched.length === 0 ? (
           <p className="m-0 text-muted">{t("unmatchedEmpty")}</p>
         ) : (
