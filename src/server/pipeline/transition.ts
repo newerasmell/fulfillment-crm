@@ -301,7 +301,7 @@ export async function followShipment(
   } = {},
 ) {
   const { fulfillmentId, ...rest } = opts;
-  if (fulfillmentId && (await isSupersededShipment(tx, fulfillmentId))) return false;
+  if (fulfillmentId && (await isRerouteOwnedShipment(tx, fulfillmentId))) return false;
   const r = await transition(tx, {
     orderId,
     to,
@@ -322,6 +322,21 @@ export async function followShipment(
 export async function isSupersededShipment(tx: Tx, fulfillmentId: string) {
   const r = await tx.orderReroute.findFirst({
     where: { fromFulfillmentId: fulfillmentId, status: "DONE" },
+    select: { id: true },
+  });
+  return !!r;
+}
+
+/**
+ * A shipment whose order status belongs to the reroute flow (P4-09): replaced by a confirmed reroute, OR with an
+ * open one (CANCEL_QUEUED). While the cancel is on its way the vendor may already report the shipment
+ * deleted/cancelled (euShipments "Deleted" → CANCELLED); following that would strand the order in CANCELLED, which
+ * the reroute can no longer move to APPROVED. The shipment row still records the vendor status; only the order
+ * waits for the reroute's outcome (DONE → APPROVED; REFUSED → it catches up with the shipment's status).
+ */
+export async function isRerouteOwnedShipment(tx: Tx, fulfillmentId: string) {
+  const r = await tx.orderReroute.findFirst({
+    where: { fromFulfillmentId: fulfillmentId, status: { in: ["CANCEL_QUEUED", "DONE"] } },
     select: { id: true },
   });
   return !!r;

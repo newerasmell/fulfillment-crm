@@ -40,8 +40,9 @@ export async function advanceOrderStatus(
   orderId: string,
   to: CrmOrderStatus,
   source = "eushipments",
+  fulfillmentId?: string,
 ): Promise<boolean> {
-  return followShipment(tx, orderId, to, source);
+  return followShipment(tx, orderId, to, source, { fulfillmentId });
 }
 
 /** Copies the spec list into the group's mapping table (idempotent; existing rows are never overwritten). */
@@ -314,7 +315,7 @@ export async function applyOrderHistory(
         ...(rule.category === "DELIVERED" && !f.deliveredAt ? { deliveredAt: latest.at ?? now } : {}),
       },
     });
-    if (!superseded) await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history");
+    if (!superseded) await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history", f.id);
 
     const body = `Shipment ${f.externalId}: "${scrubText(latest.record.STATUS, 200)}"${
       latest.record.COMMENT ? ` (${scrubText(latest.record.COMMENT, 200)})` : ""

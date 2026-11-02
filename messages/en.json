@@ -1589,7 +1589,8 @@
         "not_at_warehouse_yet_or_locked": "The shipment is not accepted by the warehouse yet, or already in progress.",
         "fhb_not_pending": "FHB allows cancelling only in status pending.",
         "eushipments_not_deletable": "euShipments deletes only in New / Information received / Awaiting pickup and within 14 days.",
-        "connection_type_unsupported": "This warehouse does not support cancelling."
+        "connection_type_unsupported": "This warehouse does not support cancelling.",
+        "order_status": "The order cannot be rerouted in its current status."
       },
       "onlyAdmins": "Rerouting after sending: owner or admin only.",
       "history": "Reroutes",
@@ -1626,7 +1627,8 @@
       "several_active_shipments": "More than one active shipment.",
       "not_cancellable": "The shipment can no longer be cancelled at the warehouse.",
       "same_connection": "Pick another warehouse.",
-      "reroute_target_used": "The order already had a shipment at this warehouse (euShipments does not allow the same reference).",
+      "reroute_target_used": "The order already had a shipment at this warehouse or another one on the same euShipments account (euShipments does not allow the same reference).",
+      "reroute_not_allowed": "The order cannot be rerouted in its current status.",
       "reroute_hard_findings": "The new warehouse has blocking findings:",
       "reroute_open": "A reroute is already in progress.",
       "shipment_changed": "The shipment changed — reload.",

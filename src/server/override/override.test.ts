@@ -1,5 +1,12 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import examples from "@/integrations/fhb-v3/__fixtures__/openapi-examples.json";
 import { ForbiddenError } from "@/server/auth/rbac";
+import { createFhbConnection } from "@/server/fhb/connection";
+import { nextFhbExternalId } from "@/server/fhb/orders";
+import { createFhbTransportResolver } from "@/server/fhb/transport";
+import { euShipmentsTransportFor } from "@/server/eushipments/transport";
+import { saveCredential } from "@/server/security/credentials";
+import { withAccountTransaction } from "@/server/db/client";
 import { checkOrder } from "@/server/checks";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { applyOrderHistory } from "@/server/eushipments/statuses";
@@ -9,6 +16,8 @@ import type { OutboundTransport, TransportResolver } from "@/server/outbox/trans
 import { transitionOrder } from "@/server/pipeline";
 import { decideOrder } from "@/server/review";
 import {
+  MAX_READBACKS,
+  WAITING_REMINDER_MS,
   clearWarehouseChoice,
   isTwoActiveShipments,
   processReroute,
@@ -19,9 +28,95 @@ import {
   warehouseReasonCodes,
 } from "./index";
 
-// Synthetic data only. No vendor is called: the outbox sender runs with fake transports.
+// Synthetic data only. No vendor is called: the outbox sender runs the REAL euShipments / FHB adapters against
+// mocked HTTP (so their effects — an accepted delete marks the shipment CANCELLED — run as in production), or a
+// fake transport where only the outbox outcome matters.
 
 type G = Awaited<ReturnType<typeof euTestGroup>>;
+
+const jsonRes = (body: unknown, status = 200) =>
+  new Response(body === undefined ? null : JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const histItem = (ref: string, status: string) => ({
+  refNum: ref,
+  awb: null,
+  error: null,
+  errorCode: null,
+  statusesHistory: [{ ID: 1, STATUS: status, DATE: "2026-11-02 10:00:00", DATE_CREATED: null }],
+  items: [],
+});
+const timeoutErr = () => {
+  throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+};
+
+/** Mocked euShipments: DELETE /orders-delete/{ref} and POST /fulfilment/orders-history (per reference). */
+function euVendor(
+  o: {
+    del?: () => Response;
+    /** What orders-history shows for a deleted reference (default "Deleted"); "down" throws. */
+    afterDelete?: string;
+    history?: "down";
+  } = {},
+) {
+  const deleted = new Set<string>();
+  const calls: string[] = [];
+  const fetchImpl = async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname.replace("/api/v1", "");
+    calls.push(path);
+    if (path.startsWith("/orders-delete/")) {
+      if (o.del) return o.del();
+      deleted.add(decodeURIComponent(path.slice("/orders-delete/".length)));
+      return jsonRes({ error: null, message: "deleted" });
+    }
+    if (path.startsWith("/fulfilment/orders-history")) {
+      if (o.history === "down") throw new Error("down");
+      const body = JSON.parse(String(init!.body)) as { orders: { refNum: string }[] };
+      return jsonRes(
+        body.orders.map(({ refNum }) =>
+          histItem(refNum, deleted.has(refNum) ? (o.afterDelete ?? "Deleted") : "Information received"),
+        ),
+      );
+    }
+    throw new Error(`unexpected call ${path}`);
+  };
+  const resolve: TransportResolver = (c) => euShipmentsTransportFor(c, { fetchImpl, sleep: async () => {} });
+  return { calls, resolve };
+}
+
+const ex = examples as unknown as Record<string, Record<string, unknown>>;
+
+/** Mocked FHB v3: login, DELETE /order (204) and GET /order (404 once deleted, or still the view). */
+function fhbVendor(o: { getAfterDelete?: "gone" | "still" } = {}) {
+  const deleted = new Set<string>();
+  const calls: string[] = [];
+  const fetchImpl = async (u: string, init: RequestInit = {}) => {
+    const url = new URL(u);
+    if (url.pathname === "/v3/login") return jsonRes({ token: "t", expiration: "2099-01-01T00:00:00+0000" });
+    const key = `${init.method ?? "GET"} ${url.pathname.replace("/v3", "")}`;
+    const id = url.searchParams.get("id") ?? "";
+    calls.push(`${key} ${id}`);
+    if (key === "DELETE /order") {
+      deleted.add(id);
+      return new Response(null, { status: 204 });
+    }
+    if (key === "GET /order") {
+      if (deleted.has(id) && (o.getAfterDelete ?? "gone") === "gone")
+        return jsonRes({ message: "Not found" }, 404);
+      return jsonRes({ ...ex["POST /order 200 response"], id, status: "pending" });
+    }
+    throw new Error(`unexpected ${key}`);
+  };
+  const resolve = createFhbTransportResolver({ fetchImpl, sleep: async () => {}, random: () => 0 });
+  return { calls, resolve };
+}
+
+/** Both real adapters with mocked HTTP. */
+const vendors =
+  (eu = euVendor(), fhb = fhbVendor()): TransportResolver =>
+  (c) =>
+    c.type === "FHB_V3" ? fhb.resolve(c) : eu.resolve(c);
 
 const fake =
   (t: Partial<OutboundTransport>): TransportResolver =>
@@ -37,13 +132,27 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
   let connB: { id: string };
   let connC: { id: string };
   let connOff: { id: string };
+  /** euShipments, sister company, SAME credential (token) as A but another companyId. */
+  let connShared: { id: string };
+  let fhb1: { id: string; credentialId: string | null };
+  /** FHB, another company, same FHB credential (account) as fhb1. */
+  let fhb2: { id: string };
   let operator: G["owner"];
   let viewer: G["owner"];
   let admin: G["owner"];
 
   async function stockAt(connectionId: string, productId: string, qty: number) {
+    const vendorId = `REF-${++n}`;
+    // FHB needs a synced, active product mirror (lastSyncAt + raw view); euShipments ignores it.
+    const fhb = connectionId === fhb1?.id || connectionId === fhb2?.id;
     const vp = await g.db.vendorProduct.create({
-      data: { accountId: g.accountId, connectionId, productId, vendorId: `REF-${++n}` },
+      data: {
+        accountId: g.accountId,
+        connectionId,
+        productId,
+        vendorId,
+        ...(fhb ? { lastSyncAt: new Date(), raw: { id: vendorId, type: "single" } } : {}),
+      },
     });
     await g.db.stockLevel.create({
       data: {
@@ -81,7 +190,7 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
 
   /** Sent and accepted at A (synthetic: as if the outbox had sent it and the vendor answered). */
   async function sentAtA(raw = "Information received") {
-    const { order } = await checkedOrder();
+    const { order, product } = await checkedOrder();
     await approve(order.id);
     const r = await fulfillOrder(g.owner, order.id);
     expect(r.status).toBe("QUEUED");
@@ -97,7 +206,7 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       cause: "vendor",
       actor: { kind: "system" },
     });
-    return { order, fulfillment: f };
+    return { order, fulfillment: f, product };
   }
 
   const setMode = (id: string, liveMode: "READ_ONLY" | "DRY_RUN" | "CANARY" | "LIVE") =>
@@ -118,15 +227,47 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
     const foreign = await g.db.company.create({
       data: { accountId: g.accountId, name: "Друга линия", lineId: other.id },
     });
+    // B is another euShipments account (its own token): the same reference is free there.
+    const credB = await saveCredential(g.db, g.accountId, {
+      label: "eu B",
+      secret: "test-token-not-real-0002",
+    });
     const base = {
       accountId: g.accountId,
       type: "EUSHIPMENTS" as const,
-      credentialId: g.connection.credentialId,
+      credentialId: credB.id,
       vendorIds: { companyId: 334 },
       liveMode: "LIVE" as const,
     };
     connB = await g.db.fulfillmentConnection.create({
       data: { ...base, companyId: sister.id, name: "euShipments сестра" },
+    });
+    connShared = await g.db.fulfillmentConnection.create({
+      data: {
+        ...base,
+        credentialId: g.connection.credentialId,
+        vendorIds: { companyId: 335 },
+        companyId: sister.id,
+        name: "euShipments сестра (общ акаунт)",
+      },
+    });
+    const f1 = await createFhbConnection(g.owner, {
+      companyId: sister.id,
+      name: "FHB сестра",
+      appId: "test-app",
+      secret: "test-secret",
+      skuPrefix: "R",
+    });
+    fhb1 = await g.db.fulfillmentConnection.update({ where: { id: f1.id }, data: { liveMode: "LIVE" } });
+    fhb2 = await g.db.fulfillmentConnection.create({
+      data: {
+        accountId: g.accountId,
+        type: "FHB_V3",
+        name: "FHB друга фирма (общ акаунт)",
+        companyId: g.company.id,
+        credentialId: fhb1.credentialId,
+        liveMode: "LIVE",
+      },
     });
     connC = await g.db.fulfillmentConnection.create({
       data: { ...base, companyId: foreign.id, name: "euShipments друга линия" },
@@ -304,17 +445,22 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       await expect(reroute(old.order.id)).rejects.toMatchObject({ code: "not_cancellable" });
       const view = await rerouteView(operator, order.id);
       expect(view.canReroute).toBe(false);
-      expect((await rerouteView(admin, order.id)).targets.map((t) => t.id)).toEqual([connB.id]);
+      const targets = (await rerouteView(admin, order.id)).targets.map((t) => t.id);
+      expect(targets).toContain(connB.id);
+      expect(targets).not.toContain(connShared.id); // same euShipments account as A: the reference is used
+      expect(targets).not.toContain(g.connection.id);
       expect(await g.db.orderReroute.count({ where: { orderId: packed.order.id } })).toBe(0);
     });
 
     it("cancel confirmed by read-back → old shipment CANCELLED, order APPROVED for the new warehouse, Fulfill sends once", async () => {
       const { order, fulfillment } = await sentAtA();
       const req = await reroute(order.id, admin);
+      const eu = euVendor();
       // Before the cancel is sent nothing changes.
-      expect(await processReroute(g.accountId, req.rerouteId, fake({}))).toBe("waiting");
-      expect(await processOutbound(req.requestId, fake({}))).toBe("SENT");
-      expect(await processReroute(g.accountId, req.rerouteId, fake({}))).toBe("DONE");
+      expect(await processReroute(g.accountId, req.rerouteId, vendors(eu))).toBe("waiting");
+      expect(await processOutbound(req.requestId, vendors(eu))).toBe("SENT");
+      expect(eu.calls).toEqual([`/orders-delete/${fulfillment.externalId}`]);
+      expect(await processReroute(g.accountId, req.rerouteId, vendors(eu))).toBe("DONE");
 
       expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
         "CANCELLED",
@@ -353,10 +499,11 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       const failed = both.find((x) => x.status === "rejected") as PromiseRejectedResult;
       expect(failed.reason).toMatchObject({ code: "reroute_open" });
       const r = await g.db.orderReroute.findFirstOrThrow({ where: { orderId: order.id } });
-      await processOutbound(r.cancelRequestId!, fake({}));
+      const v = vendors();
+      await processOutbound(r.cancelRequestId!, v);
       const results = await Promise.all([
-        processReroute(g.accountId, r.id, fake({})),
-        processReroute(g.accountId, r.id, fake({})),
+        processReroute(g.accountId, r.id, v),
+        processReroute(g.accountId, r.id, v),
       ]);
       expect(results.filter((x) => x === "DONE")).toHaveLength(1);
       expect(await g.db.orderEvent.count({ where: { orderId: order.id, cause: "reroute" } })).toBe(1);
@@ -395,9 +542,7 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
     it("refused at the warehouse: nothing changes, a task is opened", async () => {
       const { order, fulfillment } = await sentAtA();
       const req = await reroute(order.id);
-      const refusing = fake({
-        send: async () => ({ outcome: "rejected", response: null, error: "too late" }),
-      });
+      const refusing = vendors(euVendor({ del: () => jsonRes({ error: "Order cannot be deleted" }) }));
       expect(await processOutbound(req.requestId, refusing)).toBe("FAILED");
       expect(await processReroute(g.accountId, req.rerouteId, refusing)).toBe("REFUSED");
       expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
@@ -411,39 +556,124 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect(task.isTask).toBe(true);
     });
 
-    it("unknown outcome / unconfirmed cancel: nothing changes, a CRITICAL task", async () => {
+    it("unconfirmed cancel: the order is NOT moved; the task tells the shipment is already CANCELLED in the CRM", async () => {
       const { order, fulfillment } = await sentAtA();
       const req = await reroute(order.id);
-      const stillThere = fake({ readBack: async () => ({ found: false }) });
-      await processOutbound(req.requestId, fake({}));
+      // The vendor accepted the DELETE, but orders-history keeps showing the shipment.
+      const eu = euVendor({ afterDelete: "Information received" });
+      expect(await processOutbound(req.requestId, vendors(eu))).toBe("SENT");
+      // As in production: the adapter's orderDeleted effect already marked the old shipment CANCELLED.
+      expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
+        "CANCELLED",
+      );
       let now = Date.now();
       let last = "";
-      for (let i = 0; i < 12 && last !== "UNCERTAIN"; i++) {
+      for (let i = 0; i < MAX_READBACKS + 2 && last !== "UNCERTAIN"; i++) {
         now += 61_000;
-        last = await processReroute(g.accountId, req.rerouteId, stillThere, new Date(now));
+        last = await processReroute(g.accountId, req.rerouteId, vendors(eu), new Date(now));
       }
       expect(last).toBe("UNCERTAIN");
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
+      expect(await g.db.orderWarehouseChoice.count({ where: { orderId: order.id } })).toBe(0);
+      const task = await g.db.alert.findFirstOrThrow({
+        where: { entityId: order.id, kind: "reroute_uncertain" },
+      });
+      expect(task).toMatchObject({ severity: "CRITICAL", isTask: true });
+      expect(task.body).toContain("already marks the old shipment CANCELLED");
+      expect((await rerouteView(g.owner, order.id)).refusal).toBe("no_active_shipment");
+    });
+
+    it("unknown outcome (timeout, read-back down): nothing changes, a CRITICAL task naming the live status", async () => {
+      const { order, fulfillment } = await sentAtA();
+      const req = await reroute(order.id);
+      const broken = vendors(euVendor({ del: timeoutErr, history: "down" }));
+      expect(await processOutbound(req.requestId, broken)).toBe("UNCERTAIN");
+      expect(await processReroute(g.accountId, req.rerouteId, broken)).toBe("UNCERTAIN");
       expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
         "ACCEPTED",
       );
       expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
-      expect(
-        await g.db.alert.findFirst({ where: { entityId: order.id, kind: "reroute_uncertain" } }),
-      ).toMatchObject({ severity: "CRITICAL", isTask: true });
-
-      const other = await sentAtA();
-      const req2 = await reroute(other.order.id);
-      const broken = fake({
-        send: async () => {
-          throw new Error("timeout");
-        },
-        readBack: async () => {
-          throw new Error("down");
-        },
+      const task = await g.db.alert.findFirstOrThrow({
+        where: { entityId: order.id, kind: "reroute_uncertain" },
       });
-      expect(await processOutbound(req2.requestId, broken)).toBe("UNCERTAIN");
-      expect(await processReroute(g.accountId, req2.rerouteId, broken)).toBe("UNCERTAIN");
-      expect((await g.db.order.findUniqueOrThrow({ where: { id: other.order.id } })).status).toBe("ACCEPTED");
+      expect(task.body).toContain("still marks the old shipment ACCEPTED");
+    });
+
+    it("a vendor 'Deleted' status while the reroute is open does not cancel the order; the reroute then completes", async () => {
+      const { order, fulfillment } = await sentAtA();
+      const req = await reroute(order.id);
+      const eu = euVendor();
+      expect(await processOutbound(req.requestId, vendors(eu))).toBe("SENT");
+      // An orders-history poll that started before the delete applies "Deleted" now.
+      await applyOrderHistory(g.accountId, fulfillment.id, {
+        refNum: fulfillment.externalId,
+        statusesHistory: [{ ID: 2, STATUS: "Deleted", DATE: "2026-11-02 11:00:00" }],
+      } as never);
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
+      expect(await processReroute(g.accountId, req.rerouteId, vendors(eu))).toBe("DONE");
+      const o = await g.db.order.findUniqueOrThrow({ where: { id: order.id }, include: { check: true } });
+      expect(o.status).toBe("APPROVED");
+      expect(o.check!.connectionId).toBe(connB.id);
+    });
+
+    it("while the reroute is open the order waits; a refused cancel lets it catch up with its shipment", async () => {
+      const { order, fulfillment } = await sentAtA();
+      const req = await reroute(order.id);
+      await applyOrderHistory(g.accountId, fulfillment.id, {
+        refNum: fulfillment.externalId,
+        statusesHistory: [{ ID: 2, STATUS: "Packed", DATE: "2026-11-02 11:00:00" }],
+      } as never);
+      const shipment = await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+      expect(shipment.status).not.toBe("ACCEPTED"); // the shipment row records the vendor status
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
+      const refusing = vendors(euVendor({ del: () => jsonRes({ error: "Order cannot be deleted" }) }));
+      expect(await processOutbound(req.requestId, refusing)).toBe("FAILED");
+      expect(await processReroute(g.accountId, req.rerouteId, refusing)).toBe("REFUSED");
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(shipment.status);
+    });
+
+    it("an euShipments target on the same euShipments account (same token) is refused before any cancel", async () => {
+      const { order, product } = await sentAtA();
+      await stockAt(connShared.id, product.id, 50);
+      await expect(
+        requestReroute(g.owner, { orderId: order.id, toConnectionId: connShared.id, reasonCode: "no_stock" }),
+      ).rejects.toMatchObject({ code: "reroute_target_used" });
+      expect(await g.db.orderReroute.count({ where: { orderId: order.id } })).toBe(0);
+      expect(
+        await g.db.outboundRequest.count({
+          where: { fulfillment: { orderId: order.id }, operation: "eushipments.deleteOrder" },
+        }),
+      ).toBe(0);
+    });
+
+    it("refuses when the order's status could not return to APPROVED (checked before the cancel is queued)", async () => {
+      const { order } = await sentAtA();
+      await g.db.order.update({ where: { id: order.id }, data: { status: "PROCESSING" } });
+      await expect(reroute(order.id)).rejects.toMatchObject({ code: "reroute_not_allowed" });
+      expect(await g.db.orderReroute.count({ where: { orderId: order.id } })).toBe(0);
+      expect((await rerouteView(g.owner, order.id)).refusal).toBe("order_status");
+    });
+
+    it("a CANARY cancel waiting for confirmation opens one reminder task", async () => {
+      const { order } = await sentAtA();
+      await setMode(g.connection.id, "CANARY");
+      try {
+        const req = await reroute(order.id);
+        await g.db.outboundRequest.update({
+          where: { id: req.requestId },
+          data: { status: "AWAITING_CONFIRMATION" },
+        });
+        const later = new Date(Date.now() + WAITING_REMINDER_MS + 60_000);
+        expect(await processReroute(g.accountId, req.rerouteId, vendors())).toBe("waiting");
+        expect(await g.db.alert.count({ where: { entityId: order.id, kind: "reroute_waiting" } })).toBe(0);
+        expect(await processReroute(g.accountId, req.rerouteId, vendors(), later)).toBe("waiting");
+        expect(await processReroute(g.accountId, req.rerouteId, vendors(), later)).toBe("waiting");
+        const tasks = await g.db.alert.findMany({ where: { entityId: order.id, kind: "reroute_waiting" } });
+        expect(tasks).toHaveLength(1);
+        expect(tasks[0]).toMatchObject({ severity: "WARNING", isTask: true });
+      } finally {
+        await setMode(g.connection.id, "LIVE");
+      }
     });
 
     it("DRY_RUN: only records what would happen", async () => {
@@ -465,6 +695,119 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect(await g.db.orderEvent.count({ where: { orderId: order.id, cause: "reroute_simulated" } })).toBe(
         1,
       );
+    });
+
+    describe("FHB", () => {
+      /** An order whose single shipment sits at an FHB connection in raw status `pending` (cancellable). */
+      async function sentAtFhb(conn: { id: string }) {
+        const { order, product } = await checkedOrder();
+        await stockAt(fhb1.id, product.id, 50);
+        await stockAt(fhb2.id, product.id, 50);
+        await approve(order.id);
+        const externalId = await withAccountTransaction(g.accountId, (tx) =>
+          nextFhbExternalId(tx, order.id, "TST", order.number),
+        );
+        const fulfillment = await g.db.fulfillment.create({
+          data: {
+            accountId: g.accountId,
+            orderId: order.id,
+            connectionId: conn.id,
+            externalId,
+            variableSymbol: String(++n),
+            status: "ACCEPTED",
+            rawStatus: "pending",
+            submittedAt: new Date(),
+          },
+        });
+        await g.db.order.update({
+          where: { id: order.id },
+          data: { status: "ACCEPTED", email: "buyer@example.com" },
+        });
+        return { order, fulfillment };
+      }
+
+      it("FHB → euShipments: DELETE /order through the outbox, GET /order 404 confirms, order APPROVED for B", async () => {
+        const { order, fulfillment } = await sentAtFhb(fhb1);
+        const req = await reroute(order.id);
+        const cancel = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: req.requestId } });
+        expect(cancel).toMatchObject({
+          operation: "fhb.order.delete",
+          idempotencyKey: `fhb.order.delete:${fulfillment.externalId}`,
+          connectionId: fhb1.id,
+        });
+        expect(cancel.payload).toEqual({ id: fulfillment.externalId, meta: { rerouteId: req.rerouteId } });
+        const fhb = fhbVendor();
+        expect(await processOutbound(req.requestId, vendors(euVendor(), fhb))).toBe("SENT");
+        // The adapter's order_deleted effect, as in production.
+        expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
+          "CANCELLED",
+        );
+        expect(await processReroute(g.accountId, req.rerouteId, vendors(euVendor(), fhb))).toBe("DONE");
+        expect(fhb.calls).toEqual([
+          `DELETE /order ${fulfillment.externalId}`,
+          `GET /order ${fulfillment.externalId}`,
+        ]);
+        const o = await g.db.order.findUniqueOrThrow({ where: { id: order.id }, include: { check: true } });
+        expect(o.status).toBe("APPROVED");
+        expect(o.check!.connectionId).toBe(connB.id);
+      });
+
+      it("FHB read-back still returns the order: ends UNCERTAIN, the order is not switched", async () => {
+        const { order } = await sentAtFhb(fhb1);
+        const req = await reroute(order.id);
+        const fhb = fhbVendor({ getAfterDelete: "still" });
+        expect(await processOutbound(req.requestId, vendors(euVendor(), fhb))).toBe("SENT");
+        let now = Date.now();
+        let last = "";
+        for (let i = 0; i < MAX_READBACKS + 2 && last !== "UNCERTAIN"; i++) {
+          now += 61_000;
+          last = await processReroute(g.accountId, req.rerouteId, vendors(euVendor(), fhb), new Date(now));
+        }
+        expect(last).toBe("UNCERTAIN");
+        expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
+        expect(await g.db.orderWarehouseChoice.count({ where: { orderId: order.id } })).toBe(0);
+        const task = await g.db.alert.findFirstOrThrow({
+          where: { entityId: order.id, kind: "reroute_uncertain" },
+        });
+        expect(task.body).toContain("already marks the old shipment CANCELLED");
+      });
+
+      it("FHB → FHB on one FHB account: the new shipment never reuses the cancelled id", async () => {
+        const { order, fulfillment } = await sentAtFhb(fhb1);
+        const req = await requestReroute(g.owner, {
+          orderId: order.id,
+          toConnectionId: fhb2.id,
+          reasonCode: "no_stock",
+        });
+        const v = vendors(euVendor(), fhbVendor());
+        expect(await processOutbound(req.requestId, v)).toBe("SENT");
+        expect(await processReroute(g.accountId, req.rerouteId, v)).toBe("DONE");
+        const o = await g.db.order.findUniqueOrThrow({ where: { id: order.id }, include: { check: true } });
+        expect(o.status).toBe("APPROVED");
+        expect(o.check!.connectionId).toBe(fhb2.id);
+        const next = await withAccountTransaction(g.accountId, (tx) =>
+          nextFhbExternalId(tx, order.id, "TST", order.number),
+        );
+        expect(next).not.toBe(fulfillment.externalId);
+        expect(next).toBe(`${fulfillment.externalId}-2`);
+      });
+
+      it("euShipments → FHB target: allowed, confirmed, APPROVED for the FHB warehouse", async () => {
+        const { order, product } = await sentAtA();
+        await stockAt(fhb1.id, product.id, 50);
+        await g.db.order.update({ where: { id: order.id }, data: { email: "buyer@example.com" } });
+        const req = await requestReroute(g.owner, {
+          orderId: order.id,
+          toConnectionId: fhb1.id,
+          reasonCode: "no_stock",
+        });
+        const v = vendors();
+        expect(await processOutbound(req.requestId, v)).toBe("SENT");
+        expect(await processReroute(g.accountId, req.rerouteId, v)).toBe("DONE");
+        const o = await g.db.order.findUniqueOrThrow({ where: { id: order.id }, include: { check: true } });
+        expect(o.status).toBe("APPROVED");
+        expect(o.check!.connectionId).toBe(fhb1.id);
+      });
     });
 
     it("refuses a target with blocking findings (no stock) before anything is queued", async () => {

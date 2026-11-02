@@ -1589,7 +1589,8 @@
         "not_at_warehouse_yet_or_locked": "Пратката още не е приета от склада или вече е в обработка.",
         "fhb_not_pending": "FHB позволява отмяна само в статус pending.",
         "eushipments_not_deletable": "euShipments позволява изтриване само в New / Information received / Awaiting pickup и до 14 дни.",
-        "connection_type_unsupported": "Този склад не поддържа отмяна."
+        "connection_type_unsupported": "Този склад не поддържа отмяна.",
+        "order_status": "Поръчката не може да се пренасочи в текущия си статус."
       },
       "onlyAdmins": "Пренасочване след изпращане: само собственик или администратор.",
       "history": "Пренасочвания",
@@ -1626,7 +1627,8 @@
       "several_active_shipments": "Има повече от една активна пратка.",
       "not_cancellable": "Пратката вече не може да се отмени в склада.",
       "same_connection": "Изберете друг склад.",
-      "reroute_target_used": "Поръчката вече е имала пратка в този склад (euShipments не позволява същия номер).",
+      "reroute_target_used": "Поръчката вече е имала пратка в този или друг склад със същия euShipments акаунт (euShipments не позволява същия номер).",
+      "reroute_not_allowed": "Поръчката не може да се пренасочи в текущия статус.",
       "reroute_hard_findings": "Новият склад има блокиращи проблеми:",
       "reroute_open": "Вече има пренасочване в ход.",
       "shipment_changed": "Пратката се промени — презаредете.",

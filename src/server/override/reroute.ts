@@ -11,7 +11,7 @@ import { accountDb, isUniqueViolation, systemDb, withAccountTransaction } from "
 import { isEuOrderDeletable } from "@/server/eushipments/write";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
-import { transition } from "@/server/pipeline";
+import { followShipment, isAllowed, transition } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
 import { invalidateCheck, recordTimelineEvent } from "./choice";
 import { INACTIVE_SHIPMENT, isRerouteOpen } from "./guards";
@@ -33,7 +33,7 @@ import { assertWarehouseReason } from "./reasons";
  *                       task is opened. DRY_RUN / READ_ONLY: the flow only records what would happen.
  * Never two active shipments: the database refuses a second active Fulfillment per order and a second open reroute
  * per order (triggers, see the migration); the old shipment's late vendor statuses never move the order again
- * (pipeline isSupersededShipment).
+ * (pipeline isSupersededShipment), and while a reroute is open the order follows only the reroute (isRerouteOwnedShipment).
  */
 
 type Tx = Prisma.TransactionClient;
@@ -43,6 +43,8 @@ export type RerouteStatus = "CANCEL_QUEUED" | "DONE" | "REFUSED" | "UNCERTAIN" |
 
 /** Read-backs that may come back "still there" before the reroute is declared uncertain (one per sweep minute). */
 export const MAX_READBACKS = 10;
+/** A cancel waiting this long for a person (CANARY confirmation / paused connection) opens a reminder task. */
+export const WAITING_REMINDER_MS = 4 * 3600_000;
 /** Outbox states in which the cancel is still on its way (the reroute waits). */
 const WAITING: readonly OutboundStatus[] = ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING"];
 
@@ -91,6 +93,34 @@ function cancelWrite(f: { id: string; externalId: string }, type: ConnectionType
   };
 }
 
+/**
+ * Why a target warehouse cannot take this order again (null = it can). euShipments references are per order
+ * ({STORE}-{number}) and the same at every connection; the pre-send orders-history check is token-scoped (not per
+ * companyId) and refuses a reference that a deleted/cancelled shipment already used. So an euShipments target is
+ * refused when the order already had a shipment at that connection or at any euShipments connection sharing its
+ * credential: the reroute would cancel the old shipment for good and the new one could never be created.
+ * FHB targets get a fresh `-N` id across all FHB connections (fhb/orders nextFhbExternalId), so they are fine.
+ */
+export async function targetReuseRefusal(
+  accountId: string,
+  orderId: string,
+  target: { id: string; type: ConnectionType; credentialId: string | null },
+): Promise<string | null> {
+  if (target.type !== "EUSHIPMENTS") return null;
+  const used = await accountDb(accountId).fulfillment.count({
+    where: {
+      orderId,
+      OR: [
+        { connectionId: target.id },
+        ...(target.credentialId
+          ? [{ connection: { type: "EUSHIPMENTS" as const, credentialId: target.credentialId } }]
+          : []),
+      ],
+    },
+  });
+  return used ? "reroute_target_used" : null;
+}
+
 const activeShipments = (tx: Tx, orderId: string) =>
   tx.fulfillment.findMany({
     where: { orderId, status: { notIn: [...INACTIVE_SHIPMENT] } },
@@ -122,19 +152,30 @@ export async function rerouteView(actor: ScopedActor, orderId: string, now = new
     : [];
   const shipment = active.length === 1 ? active[0]! : null;
   const refusal = shipment
-    ? cancelRefusal(shipment, shipment.connection.type, now)
+    ? (cancelRefusal(shipment, shipment.connection.type, now) ??
+      (isAllowed("reroute", order.status, "APPROVED", "system") ? null : "order_status"))
     : active.length > 1
       ? "several_active_shipments"
       : "no_active_shipment";
   const open = history.find((h) => h.status === "CANCEL_QUEUED") ?? null;
   const allowedRole = can(actor.role, "orders.reroute");
-  let targets: WarehouseOption[] = [];
+  const targets: WarehouseOption[] = [];
   if (allowedRole && shipment && !refusal && !open) {
-    const previous = await db.fulfillment.findMany({ where: { orderId }, select: { connectionId: true } });
-    const used = new Set(previous.map((p) => p.connectionId));
-    targets = (await warehouseOptions(actor, orderId)).filter(
-      (c) => c.id !== shipment.connectionId && !(c.type === "EUSHIPMENTS" && used.has(c.id)),
-    );
+    const options = (await warehouseOptions(actor, orderId)).filter((c) => c.id !== shipment.connectionId);
+    const creds = await db.fulfillmentConnection.findMany({
+      where: { id: { in: options.map((c) => c.id) } },
+      select: { id: true, credentialId: true },
+    });
+    const credOf = new Map(creds.map((c) => [c.id, c.credentialId]));
+    for (const c of options)
+      if (
+        !(await targetReuseRefusal(actor.accountId, orderId, {
+          id: c.id,
+          type: c.type as ConnectionType,
+          credentialId: credOf.get(c.id) ?? null,
+        }))
+      )
+        targets.push(c);
   }
   return {
     orderStatus: order.status,
@@ -185,12 +226,12 @@ export async function requestReroute(actor: ScopedActor, raw: RerouteInput, now 
   });
   const target = eligible.find((c) => c.id === input.toConnectionId);
   if (!target) throw new DomainError("connection_not_eligible");
-  if (target.type === "EUSHIPMENTS") {
-    // euShipments references are per order ({STORE}-{number}), unique per connection: a second shipment of this
-    // order there would be a duplicate reference.
-    const used = await db.fulfillment.count({ where: { orderId: order.id, connectionId: target.id } });
-    if (used) throw new DomainError("reroute_target_used");
-  }
+  const targetRow = await db.fulfillmentConnection.findUniqueOrThrow({
+    where: { id: target.id },
+    select: { id: true, type: true, credentialId: true },
+  });
+  const reuse = await targetReuseRefusal(actor.accountId, order.id, targetRow);
+  if (reuse) throw new DomainError(reuse);
   const preview = await validateOrder(actor.accountId, order.id, {
     connectionId: target.id,
     persist: false,
@@ -208,6 +249,11 @@ export async function requestReroute(actor: ScopedActor, raw: RerouteInput, now 
       const [f] = await activeShipments(tx, order.id).then((xs) => (xs.length === 1 ? xs : [null]));
       if (!f || f.id !== current.id) throw new DomainError("shipment_changed");
       if (cancelRefusal(f, f.connection.type, now)) throw new DomainError("not_cancellable");
+      // The order must be able to return to APPROVED once the cancel is confirmed — checked BEFORE the
+      // irreversible cancel is queued (re-read under the lock).
+      const fresh = await tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { status: true } });
+      if (!isAllowed("reroute", fresh.status, "APPROVED", "system"))
+        throw new DomainError("reroute_not_allowed");
       const open = await tx.orderReroute.count({ where: { orderId: order.id, status: "CANCEL_QUEUED" } });
       if (open) throw new DomainError("reroute_open");
       const reroute = await tx.orderReroute.create({
@@ -344,6 +390,18 @@ async function finishWithout(
     if (moved.count !== 1) return "skipped" as const;
     const alertId = task ? await openTask(tx, r, task.kind, task.severity, task.title, task.body) : null;
     if (alertId) await tx.orderReroute.update({ where: { id: r.id }, data: { alertId } });
+    if (status === "REFUSED") {
+      // The cancel did not happen: the order follows its (still live) shipment again. Vendor statuses that
+      // arrived while the reroute was open were recorded on the shipment only (pipeline isRerouteOwnedShipment).
+      const f = await tx.fulfillment.findUnique({
+        where: { id: r.fromFulfillmentId },
+        select: { status: true },
+      });
+      if (f && !(INACTIVE_SHIPMENT as readonly string[]).includes(f.status))
+        await followShipment(tx, r.orderId, f.status, "override.reroute", {
+          fulfillmentId: r.fromFulfillmentId,
+        });
+    }
     const o = await tx.order.findUniqueOrThrow({ where: { id: r.orderId }, select: { status: true } });
     await recordTimelineEvent(tx, {
       accountId: r.accountId,
@@ -511,7 +569,37 @@ export async function processReroute(
       },
       now,
     );
-  if (WAITING.includes(req.status)) return "waiting";
+  if (WAITING.includes(req.status)) {
+    // A cancel that waits for a person (CANARY confirmation, paused connection) blocks every other reroute of
+    // the order: remind once.
+    if (
+      !r.alertId &&
+      (req.status === "AWAITING_CONFIRMATION" || req.status === "PAUSED") &&
+      now.getTime() - r.createdAt.getTime() >= WAITING_REMINDER_MS
+    )
+      await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
+        await lockForUpdate("Order", r.orderId);
+        const still = await tx.orderReroute.findFirst({
+          where: { id: r.id, status: "CANCEL_QUEUED", alertId: null },
+          select: { id: true },
+        });
+        if (!still) return;
+        const alertId = await openTask(
+          tx,
+          r,
+          "reroute_waiting",
+          "WARNING",
+          `Order ${r.order.number}: the cancel for the reroute to ${target} is waiting`,
+          req.status === "AWAITING_CONFIRMATION"
+            ? `The cancel of ${where} waits for a CANARY confirmation (Outbox → Confirm). Until it is confirmed ` +
+                `or refused the order cannot be rerouted again; nothing has been sent yet.`
+            : `The cancel of ${where} is paused (the connection is paused). Until it is sent or refused the order ` +
+                `cannot be rerouted again; nothing has been sent yet.`,
+        );
+        await tx.orderReroute.update({ where: { id: r.id }, data: { alertId } });
+      });
+    return "waiting";
+  }
   if (req.status === "DRY_RUN_RECORDED" || (req.status === "REFUSED" && req.lastError === "read_only"))
     return finishWithout(
       r,
@@ -540,6 +628,18 @@ export async function processReroute(
       },
       now,
     );
+  /** What the CRM itself now records for the old shipment (an accepted delete already marks it CANCELLED). */
+  const shipmentState = async () => {
+    const f = await accountDb(accountId).fulfillment.findUnique({
+      where: { id: r.fromFulfillmentId },
+      select: { status: true },
+    });
+    const st = f?.status ?? "?";
+    return st === "CANCELLED"
+      ? ` The CRM already marks the old shipment CANCELLED (the warehouse answered the delete), so the order ` +
+          `has no active shipment now: confirm at the warehouse, then send it again by hand.`
+      : ` The CRM still marks the old shipment ${st}.`;
+  };
   if (req.status === "UNCERTAIN")
     return finishWithout(
       r,
@@ -549,7 +649,9 @@ export async function processReroute(
         kind: "reroute_uncertain",
         severity: "CRITICAL",
         title: `Order ${r.order.number}: unknown whether ${r.fromFulfillment.connection.name} cancelled the shipment`,
-        body: `Check ${where} at the warehouse before doing anything. The order was NOT moved to ${target}.`,
+        body:
+          `Check ${where} at the warehouse before doing anything. The order was NOT moved to ${target}.` +
+          (await shipmentState()),
       },
       now,
     );
@@ -588,7 +690,8 @@ export async function processReroute(
         title: `Order ${r.order.number}: ${r.fromFulfillment.connection.name} did not confirm the cancellation`,
         body:
           `The cancel of ${where} was sent, but ${attempts} read-backs did not show it cancelled (${detail}). ` +
-          `The order was NOT moved to ${target}. Check it at the warehouse.`,
+          `The order was NOT moved to ${target}. Check it at the warehouse.` +
+          (await shipmentState()),
       },
       now,
     );
