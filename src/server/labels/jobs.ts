@@ -2,6 +2,7 @@ import type { PgBoss } from "pg-boss";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { QUEUES } from "@/server/jobs/queues";
+import { registerJoyLiveCheck } from "./joy-live-check";
 import {
   awbLabelsMissing,
   fetchLabel,
@@ -43,6 +44,7 @@ export async function handleLabelRead(d: LabelReadJob) {
 }
 
 export async function registerLabelWorkers(boss: PgBoss, opts: { pollingIntervalSeconds: number }) {
+  registerJoyLiveCheck();
   await boss.work<LabelReadJob>(QUEUES.labelsRead.name, opts, async (jobs) => {
     for (const job of jobs) {
       const r = await handleLabelRead(job.data);

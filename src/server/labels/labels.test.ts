@@ -20,6 +20,7 @@ import {
 } from "./index";
 import { withLabelTransports } from "./transport";
 import { applyJoyInfo, runLabelPrintJob, trackLabels } from "./worker";
+import { joyLiveCheck } from "./joy-live-check";
 
 // Synthetic data only. Vendor calls are mocked fetches; nothing leaves the test.
 
@@ -478,5 +479,19 @@ describe("manual shipments and labels (P7)", () => {
     await expect(getManualShipment(other.owner, r.manualShipmentId)).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+  it("Joy live check: GET calls only, schema-validates, flags unknown statuses", async () => {
+    const m = fetchMock((method, path) => {
+      if (method !== "GET") throw new Error(`write in a live check: ${method} ${path}`);
+      if (path === "/delivery-point") return json(ex["GET /delivery-point 200"]);
+      return json({ ...(ex["GET /shipment 200"] as object), status: "brand_new", extra: 1 });
+    });
+    const r = await joyLiveCheck.run(
+      { accountId: g.accountId, kind: "connection", id: joy.id, name: "Joy test", type: "FHB_JOY" },
+      { fetchImpl: m.fetchImpl as never },
+    );
+    expect(r.probes).toEqual(["POST /login", "GET /delivery-point", "GET /shipment"]);
+    expect(r.issues.filter((i) => i.breaking)).toEqual([]);
+    expect(r.issues.map((i) => i.code)).toContain("unknown_enum");
   });
 });

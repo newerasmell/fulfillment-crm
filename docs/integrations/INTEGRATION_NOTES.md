@@ -199,6 +199,13 @@ contracts. Separate base URL, separate auth call, camelCase.
   tracking numbers/links/events (`_embedded` may be `[]` when empty — handle array-vs-object).
 - 409 on create = id already exists → read back, never auto-retry with a new id.
 - Packing lists: `POST/GET/DELETE /packing-list`, `POST/DELETE /packing-list-item` (handover manifests).
+- As built (P7-01, `src/integrations/fhb-joy`): the outbox uses the synchronous `POST /shipments` only (packages
+  are in the client, unused; packing lists and anonymization are not built). Joy has **no endpoint listing the
+  parcel services enabled for an account**: their codes (and the pick-up-point-only ones) are entered on the
+  FHB_JOY connection. No test flag → DRY_RUN only records; labels leave in CANARY/LIVE. Every real create first
+  reads `GET /shipment?id=` (found → recovered, label re-fetched by reprint). The label PDF is stored in the CRM
+  (`ShipmentLabel`), never in the outbox row. Status `rejected` → CANCELLED (voided label); tracking is polled
+  (`GET /shipment`, every 30 min) — `notifyLinks` are not sent yet.
 
 ---
 
@@ -323,6 +330,13 @@ below (full list with "final" flags in `eushipments.md`); any unmapped text → 
 `createAWB` (incl. pallet and non-EU variants), `preAWB`, pickup AWB, `shipment-price` (quote),
 `print/{awb}`, `merged/print`, `delete/{awb}`, `waybills-history`, `expedited-shipments`.
 Used for manual shipments that do not leave the euShipments warehouse stock.
+As built (P7-02): createAWB / preAWB support `testMode` (DRY_RUN validates); **neither can be read back by
+reference** (waybills-history is strictly by AWB number) — an unknown outcome is UNCERTAIN + an operator task,
+never retried; our DB unique (connection, externalId) is the duplicate guard. delete reads back through
+waybills-history. Label: `print/{awb}` (printFileType 2) fetched after create and stored; bulk via
+`merged/print` (≤ 50). Tracking by AWB via waybills-history, mapped with the §4.5 status table. Not built:
+pallet / NON-EU variants, pickup AWB, INOUT label pre-AWBs, expedited-shipments. Pre-AWB orders are not tracked
+(no AWB until euShipments creates one; no documented lookup).
 
 ---
 
