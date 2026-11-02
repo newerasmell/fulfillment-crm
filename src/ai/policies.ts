@@ -188,12 +188,15 @@ export function promotionCheck(
   return { eligible: missing.length === 0, next, missing };
 }
 
-/** Automatic demotion rule (pure): returns the cause, or null to keep the level. */
+/**
+ * Automatic demotion rule (pure): returns the cause, or null to keep the level. A paused (disabled) policy is
+ * judged too — otherwise a critical miss during the pause would be forgotten and re-enabling would restore L2.
+ */
 export function demotionCause(
-  p: Pick<PolicyView, "level" | "enabled" | "thresholds">,
+  p: Pick<PolicyView, "level" | "thresholds"> & { enabled?: boolean },
   s: Pick<PolicyStats, "decisions" | "agreement" | "criticalSinceLevel">,
 ): "demote_critical" | "demote_agreement" | null {
-  if (p.level === "L0" || !p.enabled) return null;
+  if (p.level === "L0") return null;
   if (s.criticalSinceLevel > 0) return "demote_critical";
   if (s.decisions >= p.thresholds.demoteMinSample && (s.agreement ?? 0) < p.thresholds.minAgreement)
     return "demote_agreement";
@@ -212,24 +215,23 @@ async function writePolicy(
   event: { cause: string; userId: string | null; stats?: unknown },
 ) {
   const before = await tx.aiPolicy.findFirst({ where: { decisionType } });
-  const row = before
-    ? await tx.aiPolicy.update({
-        where: { id: before.id },
-        data: {
-          ...(change.level ? { level: change.level } : {}),
-          ...(change.enabled !== undefined ? { enabled: change.enabled } : {}),
-          ...(change.thresholds ? { thresholds: json(change.thresholds) } : {}),
-        },
-      })
-    : await tx.aiPolicy.create({
-        data: {
-          accountId,
-          decisionType,
-          level: change.level ?? "L0",
-          enabled: change.enabled ?? false,
-          thresholds: json(change.thresholds ?? Thresholds.parse({})),
-        },
-      });
+  const update = {
+    ...(change.level ? { level: change.level } : {}),
+    ...(change.enabled !== undefined ? { enabled: change.enabled } : {}),
+    ...(change.thresholds ? { thresholds: json(change.thresholds) } : {}),
+  };
+  // Upsert on the unique key: two owners creating the group's first row at once both succeed (no P2002 → 500).
+  const row = await tx.aiPolicy.upsert({
+    where: { accountId_decisionType: { accountId, decisionType } },
+    update,
+    create: {
+      accountId,
+      decisionType,
+      level: change.level ?? "L0",
+      enabled: change.enabled ?? false,
+      thresholds: json(change.thresholds ?? Thresholds.parse({})),
+    },
+  });
   const levelChanged = (before?.level ?? "L0") !== row.level;
   const enabledChanged = (before?.enabled ?? false) !== row.enabled;
   if (levelChanged || enabledChanged || event.cause === "thresholds") {
@@ -269,19 +271,33 @@ function decisionTypeOf(raw: string): DecisionType {
   return raw;
 }
 
-/** Switch a decision type on (at its current level; L0 shadow for a new one) or off. OWNER only. */
-export async function setPolicyEnabled(actor: Actor, rawType: string, enabled: boolean) {
+/**
+ * Switch a decision type on (at its current level; L0 shadow for a new one) or off. OWNER only. Switching on
+ * re-applies the demotion rule first: a level above L0 with a critical miss (or agreement below the threshold)
+ * since its last level change comes back at L0, never at the level it was paused at.
+ */
+export async function setPolicyEnabled(actor: Actor, rawType: string, enabled: boolean, now = new Date()) {
   assertCan(actor.role, "ai.manage");
   const decisionType = decisionTypeOf(rawType);
-  return withAccountTransaction(actor.accountId, (tx) =>
-    writePolicy(
+  const policy = enabled ? await loadPolicy(accountDb(actor.accountId), decisionType) : null;
+  const stats =
+    policy && policy.level !== "L0"
+      ? await policyStats(actor.accountId, decisionType, policy.thresholds, now)
+      : null;
+  return withAccountTransaction(actor.accountId, async (tx) => {
+    if (policy && stats) {
+      const current = await loadPolicy(tx, decisionType);
+      const cause = current.level !== "L0" ? demotionCause(current, stats) : null;
+      if (cause) await demoteToL0(tx, actor.accountId, decisionType, current.id, cause, stats);
+    }
+    return writePolicy(
       tx,
       actor.accountId,
       decisionType,
       { enabled },
       { cause: enabled ? "enable" : "disable", userId: actor.userId },
-    ),
-  );
+    );
+  });
 }
 
 /** One level up, only when the SPEC rule holds right now (re-evaluated here, not trusted from the UI). */
@@ -351,20 +367,13 @@ export async function setAiKillSwitch(actor: Actor, on: boolean, note?: string |
   return withAccountTransaction(actor.accountId, async (tx) => {
     const before = await tx.aiControl.findFirst();
     const now = new Date();
-    const row = before
-      ? await tx.aiControl.update({
-          where: { id: before.id },
-          data: { killSwitch: on, changedAt: now, changedById: actor.userId, note: text },
-        })
-      : await tx.aiControl.create({
-          data: {
-            accountId: actor.accountId,
-            killSwitch: on,
-            changedAt: now,
-            changedById: actor.userId,
-            note: text,
-          },
-        });
+    const data = { killSwitch: on, changedAt: now, changedById: actor.userId, note: text };
+    // Upsert on accountId: two owners pressing the stop at once both get it applied (never a 500).
+    const row = await tx.aiControl.upsert({
+      where: { accountId: actor.accountId },
+      update: data,
+      create: { accountId: actor.accountId, ...data },
+    });
     await tx.auditLog.create({
       data: {
         accountId: actor.accountId,
@@ -392,29 +401,42 @@ export async function enforcePolicies(accountId: string, now = new Date()) {
   const out: { decisionType: DecisionType; cause: string }[] = [];
   for (const decisionType of DECISION_TYPE_LIST) {
     const policy = await loadPolicy(accountDb(accountId), decisionType);
-    if (policy.level === "L0" || !policy.enabled) continue;
+    // Disabled policies are demoted too: a pause must not preserve L1/L2 across a critical miss.
+    if (policy.level === "L0") continue;
     const stats = await policyStats(accountId, decisionType, policy.thresholds, now);
     const cause = demotionCause(policy, stats);
     if (!cause) continue;
-    await withAccountTransaction(accountId, async (tx) => {
+    const done = await withAccountTransaction(accountId, async (tx) => {
       const current = await loadPolicy(tx, decisionType);
-      if (current.level === "L0") return;
-      await writePolicy(tx, accountId, decisionType, { level: "L0" }, { cause, userId: null, stats });
-      await tx.alert.create({
-        data: {
-          accountId,
-          kind: POLICY_DEMOTED_ALERT,
-          severity: "CRITICAL",
-          title:
-            cause === "demote_critical"
-              ? `AI policy ${decisionType} dropped to L0 (shadow): a critical miss`
-              : `AI policy ${decisionType} dropped to L0 (shadow): agreement below the threshold`,
-          entityType: "AiPolicy",
-          entityId: current.id,
-        },
-      });
+      if (current.level === "L0") return false;
+      await demoteToL0(tx, accountId, decisionType, current.id, cause, stats);
+      return true;
     });
-    out.push({ decisionType, cause });
+    if (done) out.push({ decisionType, cause });
   }
   return out;
+}
+
+async function demoteToL0(
+  tx: Prisma.TransactionClient,
+  accountId: string,
+  decisionType: DecisionType,
+  policyId: string | null,
+  cause: "demote_critical" | "demote_agreement",
+  stats: PolicyStats,
+) {
+  await writePolicy(tx, accountId, decisionType, { level: "L0" }, { cause, userId: null, stats });
+  await tx.alert.create({
+    data: {
+      accountId,
+      kind: POLICY_DEMOTED_ALERT,
+      severity: "CRITICAL",
+      title:
+        cause === "demote_critical"
+          ? `AI policy ${decisionType} dropped to L0 (shadow): a critical miss`
+          : `AI policy ${decisionType} dropped to L0 (shadow): agreement below the threshold`,
+      entityType: "AiPolicy",
+      entityId: policyId,
+    },
+  });
 }

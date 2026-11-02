@@ -6,11 +6,12 @@ import { z } from "zod";
  * and swapping in the official SDK later is a change to this file only. No vendor/model call happens without
  * ANTHROPIC_API_KEY: llmClient() is null then and the AI is off.
  *
- * API facts used (claude-api skill, cached 2026-10): header `anthropic-version: 2026-10-21` (no temperature /
- * top_p / top_k on this version), `x-api-key`; forced tool_choice is refused by claude-sonnet-5-5, so the caller
- * sends tool_choice auto + `strict: true` on the tool and asks for the tool in the prompt; a classifier decline
- * is HTTP 200 with stop_reason "refusal"; server-side `fallbacks: "default"` needs the beta header
- * server-side-fallback-2026-07-01 (not for Haiku).
+ * Every header and body field is quoted from the API reference in docs/integrations/anthropic.md (untouched
+ * excerpts: docs/integrations/raw/anthropic-messages-api.md); add a field there before sending it here.
+ * Header `anthropic-version: 2026-10-21` (no temperature / top_p / top_k on this version), `x-api-key`; forced
+ * tool_choice is refused by claude-sonnet-5-5, so the caller sends tool_choice auto + `strict: true` on the tool
+ * and asks for the tool in the prompt; a classifier decline is HTTP 200 with stop_reason "refusal"; server-side
+ * `fallbacks: "default"` needs the beta header server-side-fallback-2026-07-01 (not for Haiku).
  */
 
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -43,18 +44,37 @@ export function llmClient(): LlmClient | null {
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Messages API over fetch: 2 retries on 408/409/429/5xx/529 and network errors, honouring retry-after. */
+/**
+ * Overall wall-time budget of one send() (all attempts, waits included). Kept well below the ai.review job's
+ * expireInSeconds (queues.ts) so pg-boss never re-queues a review while the first run is still waiting on the model.
+ */
+export const LLM_DEADLINE_MS = 240_000;
+
+/**
+ * Messages API over fetch: 2 retries on 408/409/429/5xx/529 and network errors, honouring retry-after, all within
+ * one overall deadline (no new attempt or wait starts past it; each attempt's timeout is capped by what is left).
+ */
 export function anthropicHttpClient(
   apiKey: string,
-  opts: { fetchImpl?: typeof fetch; maxRetries?: number; timeoutMs?: number; baseDelayMs?: number } = {},
+  opts: {
+    fetchImpl?: typeof fetch;
+    maxRetries?: number;
+    timeoutMs?: number;
+    baseDelayMs?: number;
+    deadlineMs?: number;
+    now?: () => number;
+  } = {},
 ): LlmClient {
   const doFetch = opts.fetchImpl ?? fetch;
   const maxRetries = opts.maxRetries ?? 2;
   const baseDelay = opts.baseDelayMs ?? 1000;
+  const deadline = opts.deadlineMs ?? LLM_DEADLINE_MS;
+  const clock = opts.now ?? Date.now;
   return {
     provider: "anthropic",
     async send(body) {
-      const started = Date.now();
+      const started = clock();
+      const left = () => deadline - (clock() - started);
       let last: LlmResult | null = null;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const headers: Record<string, string> = {
@@ -69,7 +89,7 @@ export function anthropicHttpClient(
             method: "POST",
             headers,
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+            signal: AbortSignal.timeout(Math.max(1, Math.min(opts.timeoutMs ?? 120_000, left()))),
           });
           const text = await res.text();
           let parsed: unknown = text;
@@ -78,13 +98,13 @@ export function anthropicHttpClient(
           } catch {
             /* keep the text */
           }
-          if (res.ok) return { ok: true, status: res.status, body: parsed, latencyMs: Date.now() - started };
+          if (res.ok) return { ok: true, status: res.status, body: parsed, latencyMs: clock() - started };
           last = {
             ok: false,
             status: res.status,
             body: parsed,
             error: apiErrorMessage(parsed) ?? `HTTP ${res.status}`,
-            latencyMs: Date.now() - started,
+            latencyMs: clock() - started,
           };
           if (!RETRYABLE.has(res.status)) return last;
           const ra = Number(res.headers.get("retry-after"));
@@ -95,10 +115,14 @@ export function anthropicHttpClient(
             status: null,
             body: null,
             error: err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 300) : "network error",
-            latencyMs: Date.now() - started,
+            latencyMs: clock() - started,
           };
         }
-        if (attempt < maxRetries) await sleep(retryAfterMs ?? baseDelay * 2 ** attempt);
+        if (attempt >= maxRetries) break;
+        const wait = retryAfterMs ?? baseDelay * 2 ** attempt;
+        // Out of budget: return the last failure instead of starting a wait/attempt the job could outlive.
+        if (left() - wait < 1000) break;
+        await sleep(wait);
       }
       return last!;
     },

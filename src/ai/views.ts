@@ -23,6 +23,33 @@ import { proposalBrief } from "./rule-mining";
 const sampleScope = (actor: ScopedActor) =>
   actor.companyScope ? { suggestion: { order: { companyId: { in: actor.companyScope } } } } : {};
 
+/** Suggestions of orders in the member's companies. */
+const suggestionScope = (actor: ScopedActor) =>
+  actor.companyScope ? { order: { companyId: { in: actor.companyScope } } } : {};
+
+/**
+ * Logged calls of orders in the member's companies (AiInteraction has no order relation: the orders behind the
+ * window's calls are resolved first). Unrestricted members: no filter.
+ */
+async function interactionScope(actor: ScopedActor, since: Date) {
+  if (!actor.companyScope) return {};
+  const db = accountDb(actor.accountId);
+  const recent = await db.aiInteraction.findMany({
+    where: { createdAt: { gte: since }, orderId: { not: null } },
+    distinct: ["orderId"],
+    select: { orderId: true },
+    take: 50_000,
+  });
+  const ids = recent.map((r) => r.orderId!).filter(Boolean);
+  const allowed = ids.length
+    ? await db.order.findMany({
+        where: { id: { in: ids }, companyId: { in: actor.companyScope } },
+        select: { id: true },
+      })
+    : [];
+  return { orderId: { in: allowed.map((o) => o.id) } };
+}
+
 export async function aiDashboard(actor: ScopedActor, now = new Date()) {
   assertCan(actor.role, "ai.read");
   const db = accountDb(actor.accountId);
@@ -44,7 +71,11 @@ export async function aiDashboard(actor: ScopedActor, now = new Date()) {
   }).reverse();
   const trend = await Promise.all(
     weeks.map(async (w) => {
-      const where = { evaluatedAt: { gte: w.start, lt: w.end }, decisionAgreed: { not: null } };
+      const where = {
+        evaluatedAt: { gte: w.start, lt: w.end },
+        decisionAgreed: { not: null },
+        ...suggestionScope(actor),
+      };
       const [n, agreed] = await Promise.all([
         db.aiSuggestion.count({ where }),
         db.aiSuggestion.count({ where: { ...where, decisionAgreed: true } }),
@@ -53,13 +84,14 @@ export async function aiDashboard(actor: ScopedActor, now = new Date()) {
     }),
   );
   const dayAgo = new Date(now.getTime() - 86_400_000);
+  const calls = await interactionScope(actor, dayAgo);
   const [suggestions24h, calls24h, failed24h, tokens, pendingAudit, openProposals, embeddings] =
     await Promise.all([
-      db.aiSuggestion.count({ where: { createdAt: { gte: dayAgo } } }),
-      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo } } }),
-      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, status: { not: "ok" } } }),
+      db.aiSuggestion.count({ where: { createdAt: { gte: dayAgo }, ...suggestionScope(actor) } }),
+      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, ...calls } }),
+      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, status: { not: "ok" }, ...calls } }),
       db.aiInteraction.aggregate({
-        where: { createdAt: { gte: dayAgo } },
+        where: { createdAt: { gte: dayAgo }, ...calls },
         _sum: { inputTokens: true, outputTokens: true },
       }),
       db.aiAuditSample.count({ where: { status: "PENDING", ...sampleScope(actor) } }),

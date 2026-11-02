@@ -14,7 +14,10 @@ import {
 import { compare, decideAuditSample, drawAuditSample, evaluateDecisions } from "./evaluate";
 import { maskValue } from "./fields";
 import { applyGuardrails, isHighValue } from "./guardrails";
-import { anthropicHttpClient, ANTHROPIC_VERSION, setLlmClientForTests } from "./llm";
+import { anthropicHttpClient, ANTHROPIC_VERSION, MessageResponse, setLlmClientForTests } from "./llm";
+import toolUseFixture from "./__fixtures__/anthropic-messages-tool-use.json";
+import error400Fixture from "./__fixtures__/anthropic-error-400.json";
+import { ReviewOutput, REVIEW_TOOL_NAME } from "./reviewer-schema";
 import {
   ADDRESS_FIX_DECISION,
   AI_APPROVAL_DECISION,
@@ -33,6 +36,7 @@ import { REVIEWER_SYSTEM } from "./prompt";
 import { embedPendingReviews, similarCases } from "./retrieval";
 import { reviewOrder } from "./reviewer";
 import { REVIEW_TOOL } from "./reviewer-schema";
+import { reviewRequestBody } from "./prompt";
 import {
   decideProposal,
   mineCorrections,
@@ -161,6 +165,31 @@ describe("Anthropic HTTP client (mocked fetch)", () => {
     expect(r).toMatchObject({ ok: false, status: 400, error: "invalid_request_error: bad tool" });
   });
 
+  it("stops retrying once the overall deadline is spent (the ai.review job must never outlive a call)", async () => {
+    let clock = 0;
+    let n = 0;
+    const fetchImpl = (async () => {
+      n++;
+      clock += 120_000; // every attempt takes 120 s (a timeout)
+      return new Response("overloaded", { status: 529 });
+    }) as unknown as typeof fetch;
+    const r = await anthropicHttpClient("k", {
+      fetchImpl,
+      baseDelayMs: 1,
+      deadlineMs: 240_000,
+      now: () => clock,
+    }).send({});
+    expect(n).toBe(2); // not 3: the third attempt would start past the deadline
+    expect(r).toMatchObject({ ok: false, status: 529 });
+    expect(r.latencyMs).toBeLessThanOrEqual(240_000);
+  });
+
+  it("the ai.review job expiry is above the client's overall deadline", async () => {
+    const { QUEUES } = await import("@/server/jobs/queues");
+    const { LLM_DEADLINE_MS } = await import("./llm");
+    expect(QUEUES.aiReview.options.expireInSeconds * 1000).toBeGreaterThan(LLM_DEADLINE_MS + 60_000);
+  });
+
   it("the review tool is strict and the system prompt is frozen (cacheable)", () => {
     expect(REVIEW_TOOL.strict).toBe(true);
     expect(REVIEW_TOOL.input_schema.additionalProperties).toBe(false);
@@ -168,6 +197,57 @@ describe("Anthropic HTTP client (mocked fetch)", () => {
       "shippingAddress.name",
     );
     expect(REVIEWER_SYSTEM).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+});
+
+describe("Messages API reference shape (docs/integrations/anthropic.md)", () => {
+  it("the documented tool_use response parses and carries a valid review", () => {
+    const r = MessageResponse.parse(toolUseFixture);
+    expect(r.stop_reason).toBe("tool_use");
+    expect(r.usage).toMatchObject({ input_tokens: 2048, output_tokens: 156 });
+    const call = r.content.find((b) => b.type === "tool_use" && b.name === REVIEW_TOOL_NAME);
+    expect(ReviewOutput.safeParse((call as { input?: unknown }).input).success).toBe(true);
+  });
+
+  it("the documented error body becomes the logged error message, no retry", async () => {
+    let n = 0;
+    const fetchImpl = (async () => {
+      n++;
+      return new Response(JSON.stringify(error400Fixture), { status: 400 });
+    }) as unknown as typeof fetch;
+    const r = await anthropicHttpClient("k", { fetchImpl, baseDelayMs: 1 }).send({});
+    expect(n).toBe(1);
+    expect(r).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^invalid_request_error: tool_choice/),
+    });
+  });
+
+  it("the request body uses only the fields quoted in the reference", () => {
+    const ctx = {
+      order: {},
+      routing: {},
+      findings: [],
+      customerHistory: {},
+      similarCases: [],
+    } as unknown as Parameters<typeof reviewRequestBody>[1];
+    const allowed = [
+      "model",
+      "max_tokens",
+      "system",
+      "tools",
+      "tool_choice",
+      "output_config",
+      "fallbacks",
+      "messages",
+    ];
+    const sonnet = reviewRequestBody("claude-sonnet-5-5", ctx, { cheap: false });
+    const haiku = reviewRequestBody("claude-haiku-5-5", ctx, { cheap: true });
+    for (const b of [sonnet, haiku]) for (const k of Object.keys(b)) expect(allowed).toContain(k);
+    expect(sonnet).toMatchObject({ fallbacks: "default", output_config: { effort: "medium" } });
+    expect(haiku).not.toHaveProperty("fallbacks");
+    expect(haiku).toMatchObject({ output_config: { effort: "low" }, tool_choice: { type: "auto" } });
+    for (const k of ["temperature", "top_p", "top_k", "thinking"]) expect(sonnet).not.toHaveProperty(k);
   });
 });
 
@@ -263,6 +343,52 @@ describe("guardrails, comparison, policy rules (pure)", () => {
     ).toBe(false);
   });
 
+  it("AI-applied fixes (L1 one click) are not counted as the operator agreeing with the AI", () => {
+    const ai = {
+      decision: "EDIT_AND_APPROVE",
+      confidence: 0.9,
+      fixes: [{ field: "phone", to: "+36301234567" }],
+    };
+    // Only the AI's own fix, applied by the button: no independent evidence → not measured.
+    expect(
+      compare(
+        ai,
+        {
+          decision: "EDIT_AND_APPROVE",
+          diff: [
+            { field: "phone", from: "06301234567", to: "+36301234567", via: "suggested_fix:ai.reviewer" },
+          ],
+        },
+        0.95,
+      ).fixesAgreed,
+    ).toBeNull();
+    // The AI's fix applied, but the operator also had to correct another field the AI missed → disagreement.
+    expect(
+      compare(
+        ai,
+        {
+          decision: "EDIT_AND_APPROVE",
+          diff: [
+            { field: "phone", from: "06301234567", to: "+36301234567", via: "suggested_fix:ai.reviewer" },
+            { field: "shippingAddress.zip", from: null, to: "1000", via: "manual" },
+          ],
+        },
+        0.95,
+      ).fixesAgreed,
+    ).toBe(false);
+    // Typed by the operator with the same value: real agreement.
+    expect(
+      compare(
+        ai,
+        {
+          decision: "EDIT_AND_APPROVE",
+          diff: [{ field: "phone", from: "06301234567", to: "+36301234567", via: "manual" }],
+        },
+        0.95,
+      ).fixesAgreed,
+    ).toBe(true);
+  });
+
   it("promotion needs ≥300 decisions, ≥98% agreement and zero critical misses; L2 is the ceiling", () => {
     const p = { level: "L0" as const, enabled: true, maxLevel: "L2" as const, thresholds: defaults };
     expect(promotionCheck(p, { decisions: 300, agreement: 0.98, criticalMisses: 0 })).toEqual({
@@ -297,6 +423,10 @@ describe("guardrails, comparison, policy rules (pure)", () => {
     expect(
       demotionCause({ ...p, level: "L0" }, { decisions: 60, agreement: 0, criticalSinceLevel: 3 }),
     ).toBeNull();
+    // A paused policy is judged too (re-enabling must not restore L2 after a miss during the pause).
+    expect(
+      demotionCause({ ...p, enabled: false }, { decisions: 10, agreement: 1, criticalSinceLevel: 1 }),
+    ).toBe("demote_critical");
   });
 
   it("thresholds can be made stricter, never looser than the SPEC", () => {
@@ -388,6 +518,23 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
     // Nothing was approved or sent: L0 only suggests.
     expect((await g.db.order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("READY");
     expect(await reviewOrder(g.accountId, o.id)).toEqual({ status: "skipped", reason: "already_reviewed" });
+  });
+
+  it("two runs of the same order version at once store one suggestion (expired-and-requeued job)", async () => {
+    const m = mockLlm();
+    const slow = {
+      provider: "anthropic",
+      async send(body: Record<string, unknown>) {
+        await new Promise((r) => setTimeout(r, 50));
+        return m.client.send(body);
+      },
+    };
+    setLlmClientForTests(slow);
+    const o = await checkedOrder(g, "#7020");
+    const [r1, r2] = await Promise.all([reviewOrder(g.accountId, o.id), reviewOrder(g.accountId, o.id)]);
+    expect(m.requests).toHaveLength(2); // both were already waiting on the model
+    expect([r1.status, r2.status].sort()).toEqual(["skipped", "suggested"]);
+    expect(await g.db.aiSuggestion.count({ where: { orderId: o.id } })).toBe(1);
   });
 
   it("an order with findings goes to the reviewer model with server-side fallback; fixes are guarded", async () => {
@@ -722,6 +869,45 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
       });
     });
 
+    it("the pipeline guard refuses an AI approval of a high-value READY order", async () => {
+      const policy = await a.db.aiPolicy.findFirstOrThrow({ where: { decisionType: AI_APPROVAL_DECISION } });
+      const rich = await checkedOrder(a, "#7610", { total: "900.00" });
+      expect(rich.status).toBe("READY");
+      await expect(
+        transitionOrder(a.accountId, {
+          orderId: rich.id,
+          to: "APPROVED",
+          cause: "approve",
+          actor: { kind: "ai", level: "L2", policyId: policy.id },
+        }),
+      ).rejects.toMatchObject({ code: "transition_guard:ai_high_value" });
+      // The in-transaction check of tryAutopilot too (a suggestion without the high_value guardrail tag).
+      const s = await a.db.aiSuggestion.create({
+        data: {
+          ...autopilotSuggestionData(a.accountId, rich.id),
+          orderFingerprint: (rich.check!.normalised as { orderFingerprint: string }).orderFingerprint,
+        },
+      });
+      expect(await tryAutopilot(a.accountId, s.id)).toEqual({ approved: false, reason: "high_value" });
+      expect((await a.db.order.findUniqueOrThrow({ where: { id: rich.id } })).status).toBe("READY");
+    });
+
+    it("the same suggestion sent to autopilot twice at once approves once", async () => {
+      const o = await checkedOrder(a, "#7611");
+      const s = await a.db.aiSuggestion.create({
+        data: {
+          ...autopilotSuggestionData(a.accountId, o.id),
+          orderFingerprint: (o.check!.normalised as { orderFingerprint: string }).orderFingerprint,
+        },
+      });
+      const results = await Promise.all([tryAutopilot(a.accountId, s.id), tryAutopilot(a.accountId, s.id)]);
+      expect(results.filter((r) => r.approved)).toHaveLength(1);
+      expect(await a.db.orderEvent.count({ where: { orderId: o.id, cause: "approve" } })).toBe(1);
+      expect(await a.db.auditLog.count({ where: { action: "ai.autopilot_approved", entityId: o.id } })).toBe(
+        1,
+      );
+    });
+
     it("daily audit sample; a rejected sample is a critical miss and drops the policy to L0 with an alert", async () => {
       const yesterday = new Date(Date.now() - 86_400_000);
       await a.db.aiSuggestion.updateMany({
@@ -747,6 +933,75 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
     });
   });
 
+  it("pausing an L2 policy does not survive a critical miss: re-enabling brings it back at L0", async () => {
+    const p = await aiTestGroup("pause");
+    await setPolicyEnabled(p.owner, AI_APPROVAL_DECISION, true);
+    const seed = await checkedOrder(p, "#7900");
+    await p.db.aiSuggestion.createMany({
+      data: Array.from({ length: 300 }, () =>
+        autopilotSuggestionData(p.accountId, seed.id, { evaluatedAt: new Date(), decisionAgreed: true }),
+      ),
+    });
+    await promotePolicy(p.owner, AI_APPROVAL_DECISION);
+    await promotePolicy(p.owner, AI_APPROVAL_DECISION);
+    setLlmClientForTests(mockLlm().client);
+    const auto = await checkedOrder(p, "#7901");
+    expect(await reviewOrder(p.accountId, auto.id)).toMatchObject({ autopilot: { approved: true } });
+
+    // (a) paused, then an audit rejects the autopilot approval → demoted right away although disabled.
+    await setPolicyEnabled(p.owner, AI_APPROVAL_DECISION, false);
+    await p.db.aiSuggestion.updateMany({
+      where: { autoApprovedAt: { not: null } },
+      data: { autoApprovedAt: new Date(Date.now() - 86_400_000) },
+    });
+    await drawAuditSample(p.accountId);
+    const sample = await p.db.aiAuditSample.findFirstOrThrow();
+    await decideAuditSample(p.owner, sample.id, "reject", "Грешен адрес");
+    expect((await listPolicies(p.accountId))[0]).toMatchObject({ level: "L0", enabled: false });
+    await setPolicyEnabled(p.owner, AI_APPROVAL_DECISION, true);
+    expect((await listPolicies(p.accountId))[0]).toMatchObject({ level: "L0", enabled: true });
+    const o = await checkedOrder(p, "#7902");
+    const s = await p.db.aiSuggestion.create({
+      data: {
+        ...autopilotSuggestionData(p.accountId, o.id),
+        orderFingerprint: (o.check!.normalised as { orderFingerprint: string }).orderFingerprint,
+      },
+    });
+    expect(await tryAutopilot(p.accountId, s.id)).toEqual({ approved: false, reason: "policy_not_l2" });
+
+    // (b) a critical miss recorded while paused without any sweep: enabling itself re-checks and demotes.
+    const q = await aiTestGroup("pause2");
+    await setPolicyEnabled(q.owner, AI_APPROVAL_DECISION, true);
+    const qs = await checkedOrder(q, "#7910");
+    await q.db.aiSuggestion.createMany({
+      data: Array.from({ length: 300 }, () =>
+        autopilotSuggestionData(q.accountId, qs.id, { evaluatedAt: new Date(), decisionAgreed: true }),
+      ),
+    });
+    await promotePolicy(q.owner, AI_APPROVAL_DECISION);
+    await setPolicyEnabled(q.owner, AI_APPROVAL_DECISION, false);
+    await new Promise((r) => setTimeout(r, 5));
+    await q.db.aiSuggestion.create({
+      data: autopilotSuggestionData(q.accountId, qs.id, { evaluatedAt: new Date(), criticalMiss: true }),
+    });
+    await setPolicyEnabled(q.owner, AI_APPROVAL_DECISION, true);
+    expect((await listPolicies(q.accountId))[0]).toMatchObject({ level: "L0", enabled: true });
+    expect(await q.db.aiPolicyEvent.count({ where: { cause: "demote_critical" } })).toBe(1);
+    expect(await q.db.alert.count({ where: { kind: "ai_policy_demoted" } })).toBe(1);
+  });
+
+  it("two owners creating the first policy row / pressing the stop at once both succeed (upsert)", async () => {
+    const c = await aiTestGroup("race");
+    await Promise.all([
+      setPolicyEnabled(c.owner, ADDRESS_FIX_DECISION, true),
+      setPolicyEnabled(c.owner, ADDRESS_FIX_DECISION, true),
+    ]);
+    expect(await c.db.aiPolicy.count({ where: { decisionType: ADDRESS_FIX_DECISION } })).toBe(1);
+    await Promise.all([setAiKillSwitch(c.owner, true, "a"), setAiKillSwitch(c.owner, true, "b")]);
+    expect(await c.db.aiControl.count()).toBe(1);
+    expect((await c.db.aiControl.findFirstOrThrow()).killSwitch).toBe(true);
+  });
+
   it("views: the AI card and the log respect company scope and permissions", async () => {
     const o = await g.db.aiSuggestion.findFirstOrThrow({ select: { orderId: true } });
     const card = await orderAiCard(g.owner, o.orderId);
@@ -763,6 +1018,12 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
     expect(d.policies.map((p) => p.decisionType)).toEqual([AI_APPROVAL_DECISION, ADDRESS_FIX_DECISION]);
     expect(d.embeddings["local-hash"]).toBeGreaterThan(0);
     await expect(aiDashboard({ ...g.owner, role: "VIEWER" })).rejects.toThrow(/ai.read/);
+    // A company-restricted member sees no activity of other companies in the usage block or the trend.
+    expect(d.usage.suggestions24h).toBeGreaterThan(0);
+    expect(d.usage.calls24h).toBeGreaterThan(0);
+    const scoped = await aiDashboard(outsider);
+    expect(scoped.usage).toMatchObject({ suggestions24h: 0, calls24h: 0, failed24h: 0, inputTokens: 0 });
+    expect(scoped.trend.every((w) => w.decisions === 0)).toBe(true);
   });
 
   it("rule mining turns repeated corrections into proposals; accepting records a developer task", async () => {
@@ -780,6 +1041,28 @@ describe("AI reviewer, retrieval, policies, autopilot (database)", () => {
         },
       });
       await r.db.order.update({ where: { id: o.id }, data: { countryCode: "HU" } });
+    }
+    // AI-applied and one-click validator changes are not operator corrections: never mined.
+    for (let i = 0; i < 5; i++) {
+      const o = await checkedOrder(r, `#79${i}5`);
+      await r.db.review.create({
+        data: {
+          accountId: r.accountId,
+          orderId: o.id,
+          decision: "EDIT_AND_APPROVE",
+          decidedAt: new Date(),
+          reviewerId: r.owner.userId,
+          diff: [
+            {
+              field: "shippingAddress.zip",
+              from: `1${i}345`,
+              to: `1${i}3 45`,
+              via: i % 2 ? "suggested_fix:ai.reviewer" : "suggested_fix:order.address.zip_format",
+            },
+          ],
+        },
+      });
+      await r.db.order.update({ where: { id: o.id }, data: { countryCode: "CZ" } });
     }
     expect(await mineRules(r.accountId)).toBe(1);
     const p = await r.db.aiRuleProposal.findFirstOrThrow();

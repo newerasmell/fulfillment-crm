@@ -181,10 +181,13 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
-  /** AI reviewer: one order (data: { accountId, orderId }); one queued + one running per order. */
+  /**
+   * AI reviewer: one order (data: { accountId, orderId }); one queued + one running per order. The expiry is above
+   * the LLM client's overall deadline (src/ai/llm.ts LLM_DEADLINE_MS = 240 s) plus the DB work around it.
+   */
   aiReview: {
     name: "ai.review",
-    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 300 },
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 600 },
   },
   /** Every 5 min: queue AI reviews for checked orders whose current version has no suggestion yet. */
   aiSweep: {

@@ -27,6 +27,9 @@ export function decisionClass(d: string | null | undefined) {
   return null;
 }
 
+/** A change the AI made itself (L1 "apply the AI's corrections"), not an operator's correction. */
+export const isAiApplied = (via: string | null | undefined) => !!via && via.startsWith("suggested_fix:ai.");
+
 const norm = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /** Pure comparison of one suggestion with one human decision. */
@@ -38,20 +41,23 @@ export function compare(
   const aiClass = decisionClass(ai.decision);
   const humanClass = decisionClass(human.decision);
   const decisionAgreed = aiClass !== null && aiClass === humanClass;
+  const changes = parseDiff(human.diff).filter((c) => isAiFixable(c.field));
+  // Fields whose final value is the AI's own fix applied with one click (L1) are not independent evidence: the
+  // AI cannot agree with itself. They are left out on both sides; a field the operator then edited again is
+  // "manual" (mergeDiff keeps the latest via) and is compared like any other correction.
+  const aiApplied = new Set(changes.filter((c) => isAiApplied(c.via)).map((c) => c.field as string));
   const humanFixes = new Map(
-    parseDiff(human.diff)
-      .filter((c) => isAiFixable(c.field))
-      .map((c) => [c.field as string, norm(c.to)]),
+    changes.filter((c) => !aiApplied.has(c.field)).map((c) => [c.field as string, norm(c.to)]),
   );
   const aiFixes = new Map(
     (Array.isArray(ai.fixes) ? (ai.fixes as { field?: unknown; to?: unknown }[]) : [])
-      .filter((f) => typeof f?.field === "string")
+      .filter((f) => typeof f?.field === "string" && !aiApplied.has(String(f.field)))
       .map((f) => [String(f.field), norm(typeof f.to === "string" ? f.to : null)]),
   );
   const fixesAgreed =
-    humanClass === "approve"
-      ? humanFixes.size === aiFixes.size && [...humanFixes].every(([k, v]) => aiFixes.get(k) === v)
-      : null;
+    humanClass !== "approve" || (aiApplied.size > 0 && humanFixes.size === 0 && aiFixes.size === 0)
+      ? null
+      : humanFixes.size === aiFixes.size && [...humanFixes].every(([k, v]) => aiFixes.get(k) === v);
   const criticalMiss =
     ai.decision === "APPROVE" &&
     ai.confidence >= autoConfidence &&

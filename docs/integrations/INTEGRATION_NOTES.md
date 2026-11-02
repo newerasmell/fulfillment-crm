@@ -377,3 +377,11 @@ Rules per vendor in production:
 - Kill switch: one OWNER action sets every connection of an account back to READ_ONLY and pauses the
   outbox; queued requests stay queued, nothing is dropped.
 - Every production write is logged with request, response, user and mode, and visible on the order timeline.
+
+---
+
+## 7. Anthropic Messages API (AI reviewer, P8-02)
+
+Reference: `anthropic.md` (every header and body field we send, with the quoted reference line); untouched
+excerpts in `raw/anthropic-messages-api.md`. Not a warehouse vendor and no outbox: one read-style call per order
+version that only fills an AiSuggestion. No key in the build environment; tests mock the transport.

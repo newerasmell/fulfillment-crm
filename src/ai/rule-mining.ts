@@ -168,12 +168,16 @@ export async function mineRules(
     take: 20_000,
   });
   const rows: CorrectionRow[] = reviews.flatMap((r) =>
-    parseDiff(r.diff).map((change) => ({
-      orderId: r.orderId,
-      countryCode: r.order.countryCode,
-      decidedAt: r.decidedAt!,
-      change,
-    })),
+    // Only what an operator typed: AI-applied fixes and one-click validator suggestions are not corrections
+    // people made (SPEC §7.3), so the AI never proposes rules from its own (or a validator's) output.
+    parseDiff(r.diff)
+      .filter((change) => change.via == null || change.via === "manual")
+      .map((change) => ({
+        orderId: r.orderId,
+        countryCode: r.order.countryCode,
+        decidedAt: r.decidedAt!,
+        change,
+      })),
   );
   const clusters = mineCorrections(rows, opts.minOrders ?? 5);
   for (const c of clusters) {

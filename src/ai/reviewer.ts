@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { logger } from "@/lib/logger";
 import type { Finding } from "@/server/checks/findings";
-import { accountDb } from "@/server/db/client";
+import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { FINGERPRINT_SELECT, orderFingerprint, storedFingerprint } from "@/server/pipeline";
 import { editorValues } from "@/server/review/diff";
 import type { RoutingDecision } from "@/server/routing";
@@ -257,26 +257,40 @@ export async function reviewOrder(
     },
     policy.thresholds,
   );
-  const suggestion = await db.aiSuggestion.create({
-    data: {
-      accountId,
-      orderId,
-      interactionId: interaction.id,
-      model: parsed?.model ?? model,
-      decision: guarded.decision,
-      confidence: output.confidence,
-      fixes: json(guarded.fixes),
-      flags: guarded.flags,
-      explanationBg: output.explanation_bg,
-      guardrails: guarded.guardrails,
-      similarReviewIds: similar.cases.map((c) => c.reviewId),
-      orderStatus: order.status,
-      orderFingerprint: fingerprint,
-      checkHardCount: check.hardCount,
-      checkSoftCount: check.softCount,
-    },
-    select: { id: true },
+  // Serialised per order and re-checked right before the write: a second run of the same order version (an
+  // expired-and-requeued job, or the sweep racing a manual run) never stores a second suggestion for it.
+  const suggestion = await withAccountTransaction(accountId, async (tx, { lockKey }) => {
+    await lockKey(`ai.suggestion:${orderId}`);
+    if (!opts.force) {
+      const latest = await tx.aiSuggestion.findFirst({
+        where: { orderId },
+        orderBy: { createdAt: "desc" },
+        select: { orderFingerprint: true },
+      });
+      if (latest?.orderFingerprint === fingerprint) return null;
+    }
+    return tx.aiSuggestion.create({
+      data: {
+        accountId,
+        orderId,
+        interactionId: interaction.id,
+        model: parsed?.model ?? model,
+        decision: guarded.decision,
+        confidence: output.confidence,
+        fixes: json(guarded.fixes),
+        flags: guarded.flags,
+        explanationBg: output.explanation_bg,
+        guardrails: guarded.guardrails,
+        similarReviewIds: similar.cases.map((c) => c.reviewId),
+        orderStatus: order.status,
+        orderFingerprint: fingerprint,
+        checkHardCount: check.hardCount,
+        checkSoftCount: check.softCount,
+      },
+      select: { id: true },
+    });
   });
+  if (!suggestion) return { status: "skipped", reason: "already_reviewed" };
   const autopilot = policy.level === "L2" ? await tryAutopilot(accountId, suggestion.id, now) : null;
   return { status: "suggested", suggestionId: suggestion.id, autopilot };
 }
