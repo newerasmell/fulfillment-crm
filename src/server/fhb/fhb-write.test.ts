@@ -1,0 +1,654 @@
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { LiveMode } from "@/generated/prisma/client";
+import examples from "@/integrations/fhb-v3/__fixtures__/openapi-examples.json";
+import type { FetchLike } from "@/integrations/fhb-v3/client";
+import type { Actor } from "@/server/accounts";
+import { ForbiddenError } from "@/server/auth/rbac";
+import { accountDb, systemDb } from "@/server/db/client";
+import { processOutbound } from "@/server/outbox/outbox";
+import { applyFhbOrderView } from "./apply";
+import { authenticateFhbCallbackPath } from "./callback-token";
+import { createFhbConnection } from "./connection";
+import { createFhbStockReceipt, deleteFhbStockReceipt } from "./inbound";
+import { cancelFhbOrder, FhbPreflightError, submitFhbOrder, updateFhbOrder } from "./orders";
+import { queueFhbProduct } from "./products";
+import { createFhbTransportResolver } from "./transport";
+
+// Synthetic data only; FHB answers are built from the vendor's documentation examples.
+const ex = examples as unknown as Record<string, Record<string, unknown>>;
+const json = (body: unknown, status = 200) =>
+  new Response(body === undefined ? null : JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+beforeAll(() => {
+  process.env.APP_URL = "https://crm.example.test";
+});
+
+type Route = (url: URL, body: unknown) => Response | Promise<Response>;
+
+/** Fake FHB: login + handlers keyed "METHOD /path", consumed in order (last one repeats). */
+function fakeFhb(routes: Record<string, Route[]>) {
+  const calls: { key: string; url: URL; body: unknown }[] = [];
+  const fetchImpl = vi.fn<FetchLike>(async (u, init = {}) => {
+    const url = new URL(u);
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    if (url.pathname === "/v3/login") return json({ token: "t", expiration: "2099-01-01T00:00:00+0000" });
+    const key = `${init.method ?? "GET"} ${url.pathname.replace("/v3", "")}`;
+    calls.push({ key, url, body });
+    const list = routes[key];
+    if (!list?.length) throw new Error(`unexpected ${key}`);
+    const h = list.length > 1 ? list.shift()! : list[0]!;
+    return h(url, body);
+  });
+  const resolve = createFhbTransportResolver({ fetchImpl, sleep: async () => {}, random: () => 0 });
+  return { fetchImpl, calls, resolve, count: (key: string) => calls.filter((c) => c.key === key).length };
+}
+
+let seq = 0;
+async function setup(mode: LiveMode = "LIVE") {
+  const n = ++seq;
+  const sys = systemDb();
+  const account = await sys.account.create({ data: { name: `FHB write ${n}` } });
+  const company = await sys.company.create({ data: { accountId: account.id, name: "Demo Co" } });
+  const other = await sys.company.create({ data: { accountId: account.id, name: "Other Co" } });
+  const owner: Actor = { userId: "u-owner", accountId: account.id, role: "OWNER" };
+  const connection = await createFhbConnection(owner, {
+    companyId: company.id,
+    name: "FHB test",
+    appId: "test-app",
+    secret: "test-secret",
+    skuPrefix: "R",
+  });
+  await sys.fulfillmentConnection.update({ where: { id: connection.id }, data: { liveMode: mode } });
+  const store = await sys.store.create({
+    data: {
+      accountId: account.id,
+      companyId: company.id,
+      domain: `t${n}.myshopify.com`,
+      code: "TST",
+      name: "T",
+      currency: "EUR",
+      countries: ["SK"],
+    },
+  });
+  await sys.countrySetting.create({ data: { accountId: account.id, country: "SK", currency: "EUR" } });
+  const product = await sys.product.create({
+    data: { accountId: account.id, sku: "SKU-1", name: "Sample Perfume 50ml" },
+  });
+  await sys.productEan.create({
+    data: { accountId: account.id, productId: product.id, ean: "0000000000017" },
+  });
+  const vp = await sys.vendorProduct.create({
+    data: {
+      accountId: account.id,
+      connectionId: connection.id,
+      productId: product.id,
+      vendorId: "RSKU-1",
+      lastSyncAt: new Date(),
+      raw: { id: "RSKU-1", type: "single" },
+    },
+  });
+  await sys.stockLevel.create({
+    data: {
+      accountId: account.id,
+      vendorProductId: vp.id,
+      physical: 10,
+      free: 8,
+      sellable: 8,
+      snapshotAt: new Date(),
+      source: "POLL",
+    },
+  });
+  const order = await sys.order.create({
+    data: {
+      accountId: account.id,
+      companyId: company.id,
+      source: "SHOPIFY",
+      storeId: store.id,
+      number: "#1001",
+      email: "buyer@example.com",
+      phone: "0900 000 000",
+      customerName: "Test Buyer",
+      shippingAddress: {
+        name: "Test Buyer",
+        address1: "Example street 1",
+        city: "Testville",
+        zip: "00000",
+        countryCode: "SK",
+      },
+      countryCode: "SK",
+      currency: "EUR",
+      subtotal: "40.00",
+      total: "45.00",
+      paymentMethod: "COD",
+      codAmount: "45.00",
+      placedAt: new Date(),
+      status: "APPROVED",
+      lines: {
+        create: [{ productId: product.id, sku: "SKU-1", title: "Sample", quantity: 2, unitPrice: "20.00" }],
+      },
+    },
+  });
+  return { account, company, other, owner, connection, store, product, vp, order };
+}
+
+const orderView = (over: Record<string, unknown> = {}) => ({ ...ex["POST /order 200 response"], ...over });
+
+describe("FHB order create through the outbox", () => {
+  it("queues a validated payload: deterministic id, variable symbol sequence, local COD, validate:true, signed URLs", async () => {
+    const s = await setup("LIVE");
+    const res = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    expect(res.fulfillment.externalId).toBe("TST-1001");
+    expect(res.fulfillment.variableSymbol).toBe("1");
+    const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
+    expect(conn.variableSymbolNext).toBe(2n);
+
+    const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: res.request.id } });
+    expect(req.operation).toBe("fhb.order.create");
+    expect(req.idempotencyKey).toBe("fhb.order.create:TST-1001");
+    const body = (req.payload as { body: Record<string, unknown> }).body;
+    expect(body).toMatchObject({
+      id: "TST-1001",
+      variable_symbol: "1",
+      validate: true,
+      cod: 45,
+      value: 45,
+      items: [{ id: "RSKU-1", quantity: 2 }],
+      recipient: { address: { country: "SK" }, contact: { phone: "+421900000000" } },
+    });
+    const urls = body.notification as Record<string, string>;
+    expect(Object.keys(urls)).toHaveLength(7);
+    for (const url of Object.values(urls)) {
+      expect(url.length).toBeLessThanOrEqual(255);
+      const segments = new URL(url).pathname.split("/").slice(4);
+      expect(authenticateFhbCallbackPath(segments)).not.toBeNull();
+    }
+
+    // The worker sends it; FHB's answer is applied to the shipment.
+    const fhb = fakeFhb({
+      "POST /order": [() => json(orderView({ id: "TST-1001", variable_symbol: "1", status: "pending" }))],
+    });
+    expect(await processOutbound(req.id, fhb.resolve)).toBe("SENT");
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: res.fulfillment.id } });
+    expect(f).toMatchObject({ status: "ACCEPTED", rawStatus: "pending", vendorUid: "3c7ac0f0ab" });
+
+    // A second submit of the same order is refused (no second request, no second symbol).
+    await expect(
+      submitFhbOrder(s.owner, {
+        orderId: s.order.id,
+        connectionId: s.connection.id,
+        acknowledgeWarnings: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "fhb_already_submitted",
+    });
+    expect(await systemDb().outboundRequest.count({ where: { connectionId: s.connection.id } })).toBe(1);
+  });
+
+  it("duplicate-submit: a timed-out create that FHB did receive is recovered by read-back, never re-sent", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [
+        () => {
+          throw new Error("The operation was aborted due to timeout");
+        },
+      ],
+      "GET /order": [
+        (url) =>
+          json(orderView({ id: url.searchParams.get("id"), variable_symbol: "1", status: "imported" })),
+      ],
+    });
+    expect(await processOutbound(request.id, fhb.resolve)).toBe("SENT");
+    expect(fhb.count("POST /order")).toBe(1);
+    expect(fhb.calls.find((c) => c.key === "GET /order")?.url.searchParams.get("id")).toBe("TST-1001");
+    const f = await systemDb().fulfillment.findFirstOrThrow({ where: { connectionId: s.connection.id } });
+    expect(f).toMatchObject({ status: "ACCEPTED", rawStatus: "imported" });
+    // Re-processing the same request does nothing.
+    expect(await processOutbound(request.id, fhb.resolve)).toBe("skipped");
+    expect(fhb.count("POST /order")).toBe(1);
+  });
+
+  it("duplicate-submit: 5xx with the order absent at FHB is retried later with the same id", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [
+        () => json({ message: "Bad gateway" }, 502),
+        () => json(orderView({ id: "TST-1001", status: "pending" })),
+      ],
+      "GET /order": [() => json({ message: "Order not found" }, 404)],
+    });
+    expect(await processOutbound(request.id, fhb.resolve)).toBe("PENDING");
+    const later = new Date(Date.now() + 2 * 3600_000);
+    expect(await processOutbound(request.id, fhb.resolve, later)).toBe("SENT");
+    const posts = fhb.calls.filter((c) => c.key === "POST /order");
+    expect(posts).toHaveLength(2);
+    expect(posts.map((p) => (p.body as { id: string }).id)).toEqual(["TST-1001", "TST-1001"]);
+  });
+
+  it("duplicate-submit: read-back failing too makes it UNCERTAIN with an operator task", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [() => json({}, 503)],
+      "GET /order": [() => json({ message: "down" }, 503)],
+    });
+    expect(await processOutbound(request.id, fhb.resolve)).toBe("UNCERTAIN");
+    const task = await systemDb().alert.findFirst({
+      where: { accountId: s.account.id, kind: "outbox_uncertain" },
+    });
+    expect(task?.isTask).toBe(true);
+    expect(await processOutbound(request.id, fhb.resolve, new Date(Date.now() + 86400_000))).toBe("skipped");
+    expect(fhb.count("POST /order")).toBe(1);
+  });
+
+  it("a vendor 400 fails the shipment visibly and allows a corrected re-submit with the same id and symbol", async () => {
+    const s = await setup("LIVE");
+    const first = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [
+        () =>
+          json(
+            {
+              message: "Invalid request",
+              violations: { "recipient.address.zip": [{ code: "IS_BLANK_ERROR", message: "x" }] },
+            },
+            400,
+          ),
+      ],
+    });
+    expect(await processOutbound(first.request.id, fhb.resolve)).toBe("FAILED");
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: first.fulfillment.id } });
+    expect(f.status).toBe("SUBMIT_FAILED");
+    expect(
+      await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_rejected_request" } }),
+    ).toBe(1);
+
+    const again = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    expect(again.fulfillment.id).toBe(first.fulfillment.id);
+    expect(again.request.id).toBe(first.request.id);
+    expect(again.request.status).toBe("PENDING");
+    expect(again.fulfillment.variableSymbol).toBe("1");
+  });
+
+  it("READ_ONLY refuses and DRY_RUN only records — nothing reaches FHB", async () => {
+    const ro = await setup("READ_ONLY");
+    const a = await submitFhbOrder(ro.owner, {
+      orderId: ro.order.id,
+      connectionId: ro.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({});
+    expect(await processOutbound(a.request.id, fhb.resolve)).toBe("REFUSED");
+    const dry = await setup("DRY_RUN");
+    const b = await submitFhbOrder(dry.owner, {
+      orderId: dry.order.id,
+      connectionId: dry.connection.id,
+      acknowledgeWarnings: true,
+    });
+    expect(await processOutbound(b.request.id, fhb.resolve)).toBe("DRY_RUN_RECORDED");
+    expect(fhb.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("pre-flight hard blocks abort everything: no shipment, no symbol, no request", async () => {
+    const s = await setup("LIVE");
+    await systemDb().vendorProduct.update({ where: { id: s.vp.id }, data: { productId: null } });
+    const err = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FhbPreflightError);
+    expect((err as FhbPreflightError).findings.map((f) => f.code)).toContain("fhb.line.unmapped");
+    expect(await systemDb().fulfillment.count({ where: { connectionId: s.connection.id } })).toBe(0);
+    const conn = await systemDb().fulfillmentConnection.findUniqueOrThrow({ where: { id: s.connection.id } });
+    expect(conn.variableSymbolNext).toBe(1n);
+  });
+
+  it("soft warnings need an explicit acknowledgement", async () => {
+    const s = await setup("LIVE");
+    const err = await submitFhbOrder(s.owner, { orderId: s.order.id, connectionId: s.connection.id }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as FhbPreflightError).code).toBe("fhb_preflight_needs_ack");
+    expect((err as FhbPreflightError).findings.map((f) => f.code)).toEqual(["fhb.contact.phone_normalised"]);
+  });
+
+  it("COD in another currency is blocked unless a local-currency amount is stored", async () => {
+    const s = await setup("LIVE");
+    await systemDb().order.update({ where: { id: s.order.id }, data: { currency: "CZK" } });
+    const err = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    }).catch((e: unknown) => e);
+    expect((err as FhbPreflightError).findings.map((f) => f.code)).toContain("fhb.cod.not_convertible");
+    await systemDb().order.update({
+      where: { id: s.order.id },
+      data: { codLocalAmount: "1.80", codLocalCurrency: "EUR", codRate: "0.04" },
+    });
+    const ok = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: ok.request.id } });
+    expect((req.payload as { body: { cod: number; value: number } }).body).toMatchObject({
+      cod: 1.8,
+      value: 1.8,
+    });
+  });
+
+  it("permissions and company scope", async () => {
+    const s = await setup("LIVE");
+    await expect(
+      submitFhbOrder({ ...s.owner, role: "VIEWER" }, { orderId: s.order.id, connectionId: s.connection.id }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      submitFhbOrder(
+        { ...s.owner, role: "OPERATOR", companyScope: [s.other.id] },
+        { orderId: s.order.id, connectionId: s.connection.id },
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("FHB order update / cancel only while pending", () => {
+  it("cancel is refused unless the raw status is pending, then deletes and marks the shipment cancelled", async () => {
+    const s = await setup("LIVE");
+    const { fulfillment, request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [() => json(orderView({ id: "TST-1001", status: "imported" }))],
+      "DELETE /order": [() => new Response(null, { status: 204 })],
+    });
+    await processOutbound(request.id, fhb.resolve);
+    await expect(cancelFhbOrder(s.owner, fulfillment.id)).rejects.toMatchObject({ code: "fhb_order_locked" });
+    await expect(
+      updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true }),
+    ).rejects.toMatchObject({ code: "fhb_order_locked" });
+
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      (await import("@/integrations/fhb-v3/schemas")).FhbOrderView.parse(
+        orderView({ id: "TST-1001", status: "pending" }),
+      ),
+      "test",
+    );
+    await expect(cancelFhbOrder({ ...s.owner, role: "VIEWER" }, fulfillment.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+    const del = await cancelFhbOrder(s.owner, fulfillment.id);
+    expect(await processOutbound(del.request.id, fhb.resolve)).toBe("SENT");
+    expect(fhb.calls.find((c) => c.key === "DELETE /order")?.url.searchParams.get("id")).toBe("TST-1001");
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+    expect(f.status).toBe("CANCELLED");
+  });
+
+  it("update sends PUT /order without id/validate and treats a 400 NOT_UPDATABLE as refused", async () => {
+    const s = await setup("LIVE");
+    const { fulfillment, request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({
+      "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))],
+      "PUT /order": [() => json(ex["DELETE /order 400 response"], 400)],
+    });
+    await processOutbound(request.id, fhb.resolve);
+    const upd = await updateFhbOrder(s.owner, fulfillment.id, { acknowledgeWarnings: true });
+    const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: upd.request.id } });
+    expect(req.idempotencyKey).toMatch(/^fhb\.order\.update:TST-1001:[0-9a-f]{16}$/);
+    const body = (req.payload as { body: Record<string, unknown> }).body;
+    expect(body).not.toHaveProperty("id");
+    expect(body).not.toHaveProperty("validate");
+    expect(await processOutbound(upd.request.id, fhb.resolve)).toBe("FAILED");
+    const after = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: upd.request.id } });
+    expect(after.lastError).toContain("NOT_UPDATABLE_ORDER_ERROR");
+  });
+});
+
+describe("FHB products", () => {
+  it("create sends the EAN and signed notify_url; update never sends the EAN unless a person typed one", async () => {
+    const s = await setup("LIVE");
+    const p2 = await systemDb().product.create({
+      data: {
+        accountId: s.account.id,
+        sku: "SKU-2",
+        name: "Second",
+        hsCode: "330300",
+        countryOfOrigin: "fr",
+      },
+    });
+    await systemDb().productEan.create({
+      data: { accountId: s.account.id, productId: p2.id, ean: "0000000000024" },
+    });
+    const created = await queueFhbProduct(s.owner, { connectionId: s.connection.id, productId: p2.id });
+    expect(created.operation).toBe("fhb.product.create");
+    const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: created.request.id } });
+    const body = (req.payload as { body: Record<string, unknown> }).body;
+    expect(body).toMatchObject({
+      id: "RSKU-2",
+      name: "Second",
+      ean: "0000000000024",
+      customs_information: { hs_code: "330300", country_of_origin: "FR" },
+    });
+    expect(String(body.notify_url)).toMatch(
+      /^https:\/\/crm\.example\.test\/api\/webhooks\/fhb\/.+\/stock\/.{32}$/,
+    );
+
+    const fhb = fakeFhb({
+      "POST /product": [
+        (_u, b) =>
+          json({
+            ...ex["POST /product 200 response"],
+            id: (b as { id: string }).id,
+            ean: "0000000000031",
+            stock_quantity: 4,
+            free_quantity: 3,
+          }),
+      ],
+    });
+    expect(await processOutbound(req.id, fhb.resolve)).toBe("SENT");
+    const vp = await systemDb().vendorProduct.findFirstOrThrow({
+      where: { connectionId: s.connection.id, vendorId: "RSKU-2" },
+      include: { stockLevel: true },
+    });
+    expect(vp.productId).toBe(p2.id);
+    expect(vp.vendorEan).toBe("0000000000031"); // FHB's corrected EAN is mirrored, read-only
+    expect(vp.stockLevel).toMatchObject({ physical: 4, free: 3, sellable: 3 });
+
+    const upd = await queueFhbProduct(s.owner, { connectionId: s.connection.id, productId: p2.id });
+    expect(upd.operation).toBe("fhb.product.update");
+    const ureq = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: upd.request.id } });
+    expect((ureq.payload as { body: Record<string, unknown> }).body).not.toHaveProperty("ean");
+    // Same change twice = one request.
+    const again = await queueFhbProduct(s.owner, { connectionId: s.connection.id, productId: p2.id });
+    expect(again.request.id).toBe(upd.request.id);
+
+    const human = await queueFhbProduct(s.owner, {
+      connectionId: s.connection.id,
+      productId: p2.id,
+      explicitEan: "0000000000048",
+    });
+    const hreq = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: human.request.id } });
+    expect((hreq.payload as { body: Record<string, unknown> }).body).toMatchObject({ ean: "0000000000048" });
+  });
+
+  it("multi-products need existing single components at FHB", async () => {
+    const s = await setup("LIVE");
+    const set = await systemDb().product.create({
+      data: { accountId: s.account.id, sku: "SET-1", name: "Gift set" },
+    });
+    const missing = await systemDb().product.create({
+      data: { accountId: s.account.id, sku: "SKU-X", name: "Not at FHB" },
+    });
+    const bad = await queueFhbProduct(s.owner, {
+      connectionId: s.connection.id,
+      productId: set.id,
+      components: [{ productId: missing.id, quantity: 1 }],
+    }).catch((e: unknown) => e);
+    expect((bad as FhbPreflightError).findings.map((f) => f.code)).toContain(
+      "fhb.product.multi_component_missing",
+    );
+
+    const ok = await queueFhbProduct(s.owner, {
+      connectionId: s.connection.id,
+      productId: set.id,
+      components: [{ productId: s.product.id, quantity: 2 }],
+    });
+    const req = await systemDb().outboundRequest.findUniqueOrThrow({ where: { id: ok.request.id } });
+    expect((req.payload as { body: Record<string, unknown> }).body).toMatchObject({
+      id: "RSET-1",
+      type: "multi",
+      items: [{ id: "RSKU-1", quantity: 2 }],
+    });
+    expect((req.payload as { body: Record<string, unknown> }).body).not.toHaveProperty("ean");
+  });
+
+  it("only owners/admins write products", async () => {
+    const s = await setup("LIVE");
+    await expect(
+      queueFhbProduct(
+        { ...s.owner, role: "OPERATOR" },
+        { connectionId: s.connection.id, productId: s.product.id },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+describe("FHB stock receipts", () => {
+  it("creates with a stored deterministic id, reads back after a timeout, deletes only in `created`", async () => {
+    const s = await setup("LIVE");
+    const { inbound, request } = await createFhbStockReceipt(s.owner, {
+      connectionId: s.connection.id,
+      name: "Inbound 1",
+      lines: [{ productId: s.product.id, quantity: 10 }],
+      expectedDate: "2026-11-10",
+    });
+    expect(inbound.externalRef).toMatch(/^IN-\d{8}-[0-9A-F]{10}$/);
+    await expect(deleteFhbStockReceipt(s.owner, inbound.id)).rejects.toMatchObject({
+      code: "fhb_receipt_locked",
+    });
+    const view = {
+      ...ex["POST /stock-receipt 200 response"],
+      id: inbound.externalRef,
+      items: [{ id: "RSKU-1", quantity: 10, received: 0 }],
+    };
+    const fhb = fakeFhb({
+      "POST /stock-receipt": [
+        () => {
+          throw new Error("socket hang up");
+        },
+      ],
+      "GET /stock-receipt": [() => json(view), () => json({ message: "Stock receipt not found" }, 404)],
+      "DELETE /stock-receipt": [() => new Response(null, { status: 204 })],
+    });
+    expect(await processOutbound(request.id, fhb.resolve)).toBe("SENT");
+    expect(fhb.count("POST /stock-receipt")).toBe(1);
+    const after = await systemDb().inboundShipment.findUniqueOrThrow({
+      where: { id: inbound.id },
+      include: { lines: true },
+    });
+    expect(after.status).toBe("created");
+    expect(after.lines[0]?.receivedQty).toBe(0);
+
+    const del = await deleteFhbStockReceipt(s.owner, inbound.id);
+    expect(await processOutbound(del.request.id, fhb.resolve)).toBe("SENT");
+    expect((await systemDb().inboundShipment.findUniqueOrThrow({ where: { id: inbound.id } })).status).toBe(
+      "deleted",
+    );
+  });
+
+  it("refuses unmapped products before anything is stored", async () => {
+    const s = await setup("LIVE");
+    const lone = await systemDb().product.create({
+      data: { accountId: s.account.id, sku: "SKU-9", name: "Lone" },
+    });
+    const err = await createFhbStockReceipt(s.owner, {
+      connectionId: s.connection.id,
+      name: "x",
+      lines: [{ productId: lone.id, quantity: 1 }],
+    }).catch((e: unknown) => e);
+    expect((err as FhbPreflightError).findings.map((f) => f.code)).toContain("fhb.receipt.unmapped");
+    expect(await accountDb(s.account.id).inboundShipment.count()).toBe(0);
+  });
+});
+
+describe("status apply", () => {
+  it("unknown status → UNKNOWN + one alert, raw kept; rejected → BLOCKED + task", async () => {
+    const s = await setup("LIVE");
+    const { request, fulfillment } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    await processOutbound(
+      request.id,
+      fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
+    );
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    for (let i = 0; i < 2; i++)
+      await applyFhbOrderView(
+        s.account.id,
+        s.connection.id,
+        FhbOrderView.parse(orderView({ id: "TST-1001", status: "on_the_moon" })),
+        "test",
+      );
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+    expect(f).toMatchObject({ status: "UNKNOWN", rawStatus: "on_the_moon" });
+    expect(
+      await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_unknown_status" } }),
+    ).toBe(1);
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      FhbOrderView.parse(orderView({ id: "TST-1001", status: "rejected" })),
+      "test",
+    );
+    expect((await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
+      "BLOCKED",
+    );
+    expect(
+      await systemDb().alert.count({
+        where: { accountId: s.account.id, kind: "fhb_order_rejected", isTask: true },
+      }),
+    ).toBe(1);
+    const events = await systemDb().fulfillmentEvent.findMany({ where: { fulfillmentId: fulfillment.id } });
+    expect(events.map((e) => e.rawStatus)).toEqual(
+      expect.arrayContaining(["pending", "on_the_moon", "rejected"]),
+    );
+  });
+});

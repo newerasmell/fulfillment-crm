@@ -26,6 +26,10 @@ export const PERMISSIONS = {
   "inbound.manage": ["OWNER", "ADMIN", "WAREHOUSE"],
   "audit.read": ["OWNER", "ADMIN"],
   "jobs.admin": ["OWNER", "ADMIN"],
+  /** Create/update products at a warehouse (an FHB product id is permanent). */
+  "vendorProducts.write": ["OWNER", "ADMIN"],
+  /** Edit or cancel an order at the warehouse while it is still editable there. */
+  "orders.cancelAtWarehouse": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
