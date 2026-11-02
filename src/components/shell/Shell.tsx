@@ -6,6 +6,7 @@ import { can } from "@/server/auth/rbac";
 import type { AccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
 import { AccountSwitcher } from "./AccountSwitcher";
+import { CompanySwitcher } from "./CompanySwitcher";
 import { CreateMenu, ProfileMenu, ScopeControl, SearchBox } from "./HeaderControls";
 import { Icon } from "@/components/icons";
 import { NAV_GROUPS, NAV_HOME } from "./nav";
@@ -71,7 +72,15 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
           </span>
           <span className="font-bold tracking-tight">Fulfillment CRM</span>
         </div>
-        <AccountSwitcher label={t("account")} current={ctx.accountId} accounts={ctx.memberships} />
+        {ctx.memberships.length > 1 && (
+          <AccountSwitcher label={t("group")} current={ctx.accountId} accounts={ctx.memberships} />
+        )}
+        <CompanySwitcher
+          label={t("account")}
+          allLabel={t("allCompanies")}
+          current={ctx.activeCompanyId}
+          companies={ctx.companies}
+        />
         <NavLink href={NAV_HOME.href} icon={NAV_HOME.icon} label={t(NAV_HOME.key)} />
         {NAV_GROUPS.map((g) => (
           <div key={g.key} className="flex flex-col gap-0.5">

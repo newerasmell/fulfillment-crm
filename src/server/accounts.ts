@@ -54,6 +54,7 @@ export async function listMembers(actor: Actor) {
       id: true,
       role: true,
       createdAt: true,
+      companies: { select: { companyId: true } },
       user: { select: { id: true, email: true, name: true, disabled: true } },
     },
     orderBy: { createdAt: "asc" },

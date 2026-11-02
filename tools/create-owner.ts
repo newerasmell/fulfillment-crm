@@ -1,4 +1,5 @@
-// GATE P0-G1: creates a company and a single-use OWNER invitation link (valid 24 h).
+// GATE P0-G1: creates the business group with its first company, and a single-use OWNER invitation link
+// (valid 24 h). More companies are added later in the CRM (Настройки → Фирми и потребители).
 // Run in the Render web service's Shell (not as a One-Off Job, whose output stays in the logs):
 //   pnpm owner:create --email you@example.com --account "Company name"
 // Open the printed link, choose your password and scan the 2FA key. Nobody else ever sees either.
@@ -18,7 +19,7 @@ const base = (process.env.APP_URL ?? process.env.RENDER_EXTERNAL_URL ?? "http://
   "",
 );
 const r = await createOwnerInvitation({ email: values.email, accountName: values.account });
-console.log(`\nCompany "${r.account.name}" created.`);
+console.log(`\nGroup "${r.account.name}" created, with its first company of the same name.`);
 console.log(`Owner invitation for ${values.email} (valid until ${r.expiresAt.toISOString()}):`);
 console.log(`${base}/invite/${r.token}\n`);
 await basePrisma().$disconnect();

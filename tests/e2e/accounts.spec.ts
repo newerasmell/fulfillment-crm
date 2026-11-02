@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { freshCode, login } from "./helpers";
 
-test("an owner creates a second company and switches between the two", async ({ page }) => {
+test("an owner adds a second company to the group and filters by company", async ({ page }) => {
   await login(page);
   await page.goto("/settings/members");
   await page.getByLabel("Име на фирмата").fill("Тест фирма Б");
@@ -9,20 +9,32 @@ test("an owner creates a second company and switches between the two", async ({ 
   await expect(page.getByRole("listitem").filter({ hasText: "Тест фирма Б" })).toBeVisible();
 
   const switcher = page.getByRole("combobox", { name: "Фирма" });
+  await expect(switcher.locator("option")).toHaveText(["Всички фирми", "Тест фирма А", "Тест фирма Б"]);
+  const saved = page.waitForResponse((r) => r.request().method() === "POST"); // server action sets the cookie
   await switcher.selectOption({ label: "Тест фирма Б" });
-  await expect(page).toHaveURL("/");
-  await expect(page.getByRole("combobox", { name: "Фирма" }).locator("option:checked")).toHaveText(
-    "Тест фирма Б",
-  );
+  await saved;
+  await page.goto("/");
   await expect(page.getByText(/· Тест фирма Б$/)).toBeVisible();
+  const savedAll = page.waitForResponse((r) => r.request().method() === "POST");
+  await page.getByRole("combobox", { name: "Фирма" }).selectOption({ label: "Всички фирми" });
+  await savedAll;
+  await page.goto("/");
+  await expect(page.getByText(/· Всички фирми$/)).toBeVisible();
 
-  // Company B starts empty: its users list has only the owner, not A's members.
+  // archived companies leave the menu but stay listed (struck through) for the owner
   await page.goto("/settings/members");
-  await expect(page.getByRole("heading", { name: "Потребители в Тест фирма Б" })).toBeVisible();
-
-  await page.getByRole("combobox", { name: "Фирма" }).selectOption({ label: "Тест фирма А" });
-  await expect(page).toHaveURL("/");
-  await expect(page.getByText(/· Тест фирма А$/)).toBeVisible();
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Тест фирма Б" })
+    .getByRole("button", { name: "Архивирай" })
+    .click();
+  await expect(page.getByRole("combobox", { name: "Фирма" }).locator("option")).toHaveText(["Тест фирма А"]);
+  await page
+    .getByRole("listitem")
+    .filter({ hasText: "Тест фирма Б" })
+    .getByRole("button", { name: "Върни" })
+    .click();
+  await expect(page.getByRole("combobox", { name: "Фирма" }).locator("option")).toHaveCount(3);
 });
 
 test("invitation: the admin gets a link, the new person chooses their own password and 2FA, then signs in", async ({
@@ -58,7 +70,7 @@ test("invitation: the admin gets a link, the new person chooses their own passwo
   await invitee.getByRole("button", { name: "Създай профила" }).click();
   await expect(invitee).toHaveURL(/\/login\?joined=1/);
   await login(invitee, { email, password, totp: secret });
-  await expect(invitee.getByText(/· Тест фирма А$/)).toBeVisible();
+  await expect(invitee.getByText(/· Всички фирми$/)).toBeVisible(); // no company restriction given
   await expect(invitee.getByRole("link", { name: "Ключове за достъп" })).toHaveCount(0); // operator: no admin menu
   await invitee.goto(link);
   await expect(

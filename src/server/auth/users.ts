@@ -62,6 +62,7 @@ export async function bootstrapOwner(input: {
   const created = await createUser({ email: input.email, name: input.name, password: input.password });
   const db = systemDb();
   const account = await db.account.create({ data: { name: input.accountName } });
+  await db.company.create({ data: { accountId: account.id, name: input.accountName } });
   await db.membership.create({ data: { accountId: account.id, userId: created.user.id, role: "OWNER" } });
   return { ...created, account };
 }

@@ -62,6 +62,13 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   `preDeployCommand` on web AND worker (a failed migration stops the deploy instead of crash-looping); the worker
   also refuses to start if a migration is missing, and the web app refuses to start on an RLS-bypassing DB role.
 
+- 2026-11-02 (owner decision): the tenant is the business GROUP (Account); companies (Company) live inside it.
+  Products and stock are group-wide so another company's warehouse can serve an order — recorded in the CRM only
+  (no intercompany invoicing yet). Staff can be limited to companies (permission, not a DB wall); owners see all.
+  Companies are archived, never deleted. companyId on Store/FulfillmentConnection/Order is nullable until the
+  backfill migration has run everywhere; a later migration makes it NOT NULL.
+- 2026-11-02: GATE P0-G1 in progress: Render web + worker + Postgres live (Frankfurt); owner enrolment pending.
+
 ## Open questions
 See SPEC.md §11.
 

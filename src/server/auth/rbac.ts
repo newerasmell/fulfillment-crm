@@ -7,6 +7,8 @@ import type { Role } from "@/generated/prisma/client";
 export const PERMISSIONS = {
   "account.read": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE", "VIEWER"],
   "account.create": ["OWNER"],
+  "companies.manage": ["OWNER", "ADMIN"],
+  "companies.archive": ["OWNER"],
   "account.settings": ["OWNER", "ADMIN"],
   "members.manage": ["OWNER", "ADMIN"],
   "members.grantOwner": ["OWNER"],

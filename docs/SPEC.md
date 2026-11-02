@@ -69,8 +69,14 @@ storefront editing.
 Every business table carries `accountId` and every query is scoped by it (enforced in a repository layer
 + Postgres row-level security as a second line of defence).
 
-- **Account** — legal entity: name, legal details, default currency, timezone, settings JSON.
-- **User**, **Membership**(user, account, role: OWNER | ADMIN | OPERATOR | WAREHOUSE | VIEWER).
+- **Account** — the business **group** (the tenant; database isolation is between groups): name, default
+  currency, timezone, settings JSON.
+- **Company** — a legal entity (фирма) inside the group: name, legal details, archivedAt (never hard-deleted).
+  Stores, fulfillment connections and orders belong to a company. **Products and stock belong to the group**, so
+  stock held at another company's warehouse can serve an order (recorded in the CRM only; no intercompany
+  invoicing in v1).
+- **User**, **Membership**(user, account, role: OWNER | ADMIN | OPERATOR | WAREHOUSE | VIEWER) + optional
+  **MembershipCompany** rows limiting a member to some companies (none = all; OWNERs always see all).
 - **Store** — Shopify shop: domain, code (short, unique per account, used in external ids), currency,
   markets/countries, credentials ref, webhook status, last sync cursors.
 - **FulfillmentConnection** — one credential set at one vendor: type (FHB_V3 | FHB_JOY | EUSHIPMENTS),
@@ -86,7 +92,11 @@ Every business table carries `accountId` and every query is scoped by it (enforc
 - **StoreVariantLink** — Shopify variant (gid, SKU) ↔ Product. Auto-match on SKU after prefix stripping,
   fallback suggestions by title; unmatched variants show up in a work queue.
 - **VendorProduct** — Product ↔ FulfillmentConnection: vendor id/refNumber, vendor internal code, vendor
-  EAN (read-only mirror), archived, last sync, raw JSON.
+  EAN (read-only mirror), archived, last sync, raw JSON. Each warehouse knows the same physical product under its
+  own code (FHB `RSK…` in one, an euShipments `refNumber` in another); all of them point to ONE Product, which is
+  how the CRM knows "X at warehouse A" = "Y at warehouse B" and sums stock across warehouses and companies.
+  Links are made by rules (SKU with prefix stripping) or by an operator in the "unmatched" work queue; the EAN
+  is only a suggestion, never the join key.
 - **StockLevel** — per VendorProduct: physical, free/available, CRM-reserved (approved-not-shipped),
   sellable = min(vendor free, physical − reserved), snapshot time, source (push | poll).
 - **StockMovement** — mirror of vendor movements + our reservations.

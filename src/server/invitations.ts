@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import type { Role } from "@/generated/prisma/client";
+import type { Prisma, Role } from "@/generated/prisma/client";
 import { DomainError, type Actor } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { MIN_PASSWORD_LENGTH } from "@/server/auth/password";
@@ -38,6 +38,8 @@ export const InviteInput = z.object({
   email: z.email().transform((e) => e.trim().toLowerCase()),
   name: z.string().trim().max(200).optional(),
   role: z.enum(ROLES as [Role, ...Role[]]),
+  /** Companies the new member may see; empty = all companies of the group. Ignored for OWNER. */
+  companyIds: z.array(z.string().min(1).max(64)).max(200).default([]),
 });
 
 export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput>) {
@@ -52,7 +54,14 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
       where: { email: input.email, acceptedAt: null, revokedAt: null },
       data: { revokedAt: new Date() },
     });
-    return tx.invitation.create({
+    const companyIds = input.role === "OWNER" ? [] : [...new Set(input.companyIds)];
+    if (
+      companyIds.length &&
+      (await tx.company.count({ where: { id: { in: companyIds } } })) !== companyIds.length
+    ) {
+      throw new DomainError("not_found");
+    }
+    const created = await tx.invitation.create({
       data: {
         accountId: actor.accountId,
         email: input.email,
@@ -63,6 +72,16 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
         expiresAt: new Date(Date.now() + INVITE_TTL_MS),
       },
     });
+    if (companyIds.length) {
+      await tx.invitationCompany.createMany({
+        data: companyIds.map((companyId) => ({
+          accountId: actor.accountId,
+          invitationId: created.id,
+          companyId,
+        })),
+      });
+    }
+    return created;
   });
   await recordAudit({
     accountId: actor.accountId,
@@ -70,7 +89,7 @@ export async function inviteMember(actor: Actor, raw: z.input<typeof InviteInput
     action: "member.invite",
     entityType: "Invitation",
     entityId: invitation.id,
-    after: { email: input.email, role: input.role },
+    after: { email: input.email, role: input.role, companyIds: input.companyIds },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
@@ -106,13 +125,14 @@ export async function revokeInvitation(actor: Actor, invitationId: string) {
   });
 }
 
-/** GATE P0-G1: a new company and an OWNER invitation for it. The link is printed once by the CLI. */
+/** GATE P0-G1: a new group with its first company, and an OWNER invitation. The link is printed once by the CLI. */
 export async function createOwnerInvitation(input: { email: string; accountName: string }) {
   const email = z.email().parse(input.email.trim().toLowerCase());
   const accountName = z.string().trim().min(2).max(200).parse(input.accountName);
   const token = newToken();
   const { account, invitation } = await withSystemTransaction(async (tx) => {
     const account = await tx.account.create({ data: { name: accountName } });
+    await tx.company.create({ data: { accountId: account.id, name: accountName } });
     const invitation = await tx.invitation.create({
       data: {
         accountId: account.id,
@@ -181,6 +201,21 @@ function openSealedSecret(sealed: string, invitationId: string): string {
   return parsed.s;
 }
 
+/** The company restriction chosen at invitation time becomes the member's restriction. */
+async function copyInvitationScope(
+  tx: Prisma.TransactionClient,
+  accountId: string,
+  invitationId: string,
+  membershipId: string,
+) {
+  const scope = await tx.invitationCompany.findMany({ where: { invitationId }, select: { companyId: true } });
+  if (scope.length) {
+    await tx.membershipCompany.createMany({
+      data: scope.map((s) => ({ accountId, membershipId, companyId: s.companyId })),
+    });
+  }
+}
+
 export const EnrolInput = z
   .object({
     name: z.string().trim().min(1).max(200),
@@ -215,7 +250,10 @@ export async function completeEnrolment(token: string, raw: z.input<typeof Enrol
       totpSecret: secret,
       totpLastStep: step, // the code just typed cannot be replayed at login
     });
-    await tx.membership.create({ data: { accountId: inv.accountId, userId: user.id, role: inv.role } });
+    const membership = await tx.membership.create({
+      data: { accountId: inv.accountId, userId: user.id, role: inv.role },
+    });
+    await copyInvitationScope(tx, inv.accountId, inv.id, membership.id);
     return user;
   }).catch((err: unknown) => {
     // The same email got a profile elsewhere a moment ago: it now has to sign in and accept instead.
@@ -247,7 +285,12 @@ export async function acceptInvitation(token: string, userId: string) {
     const existing = await tx.membership.findUnique({
       where: { userId_accountId: { userId, accountId: inv.accountId } },
     });
-    if (!existing) await tx.membership.create({ data: { accountId: inv.accountId, userId, role: inv.role } });
+    if (!existing) {
+      const membership = await tx.membership.create({
+        data: { accountId: inv.accountId, userId, role: inv.role },
+      });
+      await copyInvitationScope(tx, inv.accountId, inv.id, membership.id);
+    }
   });
   await recordAudit({
     accountId: inv.accountId,

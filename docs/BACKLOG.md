@@ -18,6 +18,7 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 - [x] P0-10 Outbox (`OutboundRequest`) + sender skeleton with the **liveMode gate** (READ_ONLY/DRY_RUN/CANARY/LIVE) and global kill switch. Acceptance: tests prove writes are refused in READ_ONLY, recorded-not-sent in DRY_RUN, require confirmation + daily cap in CANARY.
 - [x] P0-11 i18n (bg default, en), base layout, navigation and design tokens exactly per docs/DESIGN.md (grouped sidebar per DESIGN.md Navigation, account switcher, header with Ctrl K search, warehouse scope control, "+ Създай" menu, alerts); Orders/Products/Stock/Warehouses/Settings empty pages. Acceptance: Playwright smoke + screenshots committed to docs/screens/.
 - [x] P0-12 `render.yaml` (web, worker, Postgres) + health endpoints. Acceptance: config validates; no deploy performed.
+- [x] P0-13 Group → companies (owner decision 2026-11-02): Account = business group (tenant), Company = legal entity inside it with archive instead of delete; stores/connections/orders belong to a company, products and stock to the group; members can be limited to companies (MembershipCompany, also via invitations); sidebar company filter. Acceptance: additive migration tested on a populated DB; scope/permission tests; e2e.
 - [ ] GATE P0-G1 Owner: in the existing Render account create NEW services from render.yaml (Blueprint; do not touch any existing service), set env vars and CREDENTIALS_KEY, create the first OWNER user, add accounts (companies).
 
 ## Phase 1 — Shopify

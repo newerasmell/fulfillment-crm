@@ -6,6 +6,8 @@ const EXPECTED: Record<Permission, string> = {
   //                      OWNER ADMIN OPER WARE VIEW
   "account.read": "11111",
   "account.create": "10000",
+  "companies.manage": "11000",
+  "companies.archive": "10000",
   "account.settings": "11000",
   "members.manage": "11000",
   "members.grantOwner": "10000",

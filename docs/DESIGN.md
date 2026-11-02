@@ -28,7 +28,8 @@ It is the visual reference for P0-11 and every UI task.
    original name under it (e.g. "Приемане на стока / Stock receipts").
 
 ## Navigation (sidebar)
-- Фирма (account switcher) on top.
+- Фирма on top: filter "Всички фирми" or one company of the group (only the companies the user may see); a
+  group switcher appears above it only for people in more than one group.
 - **Начало**
 - **Работа:** Поръчки (badge: за преглед) · Товарителници (incl. tracking) · Връщания · Тикети от склада
 - **Склад:** Продукти и наличности · Приемане на стока · Ръчни пратки и етикети

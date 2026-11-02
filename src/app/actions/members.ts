@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { Role } from "@/generated/prisma/client";
-import { changeMemberRole, createAccount, DomainError, removeMember } from "@/server/accounts";
+import { changeMemberRole, DomainError, removeMember } from "@/server/accounts";
 import { inviteMember, revokeInvitation } from "@/server/invitations";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
@@ -23,20 +23,6 @@ function toError(err: unknown): ActionResult {
   throw err;
 }
 
-export async function createAccountAction(
-  _prev: ActionResult | undefined,
-  form: FormData,
-): Promise<ActionResult> {
-  const ctx = await requireAccountContext();
-  try {
-    await createAccount(actorFrom(ctx), { name: String(form.get("name") ?? "") });
-  } catch (err) {
-    return toError(err);
-  }
-  revalidatePath("/", "layout");
-  return { ok: true };
-}
-
 export async function inviteMemberAction(
   _prev: ActionResult | undefined,
   form: FormData,
@@ -48,6 +34,7 @@ export async function inviteMemberAction(
       email,
       name: String(form.get("name") ?? ""),
       role: String(form.get("role") ?? "VIEWER") as Role,
+      companyIds: form.getAll("companyIds").map(String),
     });
     revalidatePath("/settings/members");
     return { ok: true, invitePath: `/invite/${r.token}`, inviteEmail: email };

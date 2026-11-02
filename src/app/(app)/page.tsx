@@ -10,9 +10,10 @@ export default async function HomePage() {
   const t = await getTranslations();
   const format = await getFormatter();
   const today = format.dateTime(new Date(), { weekday: "long", day: "numeric", month: "long" });
+  const scopeName = ctx.companies.find((c) => c.id === ctx.activeCompanyId)?.name ?? t("nav.allCompanies");
   return (
     <>
-      <PageHeader title={t("pages.home.title")} subtitle={`${today} · ${ctx.accountName}`} />
+      <PageHeader title={t("pages.home.title")} subtitle={`${today} · ${scopeName}`} />
       <section aria-labelledby="attention" className="flex flex-col gap-3">
         <h2 id="attention" className="m-0 text-base font-semibold">
           {t("pages.home.attention")}
