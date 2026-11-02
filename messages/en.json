@@ -1677,6 +1677,7 @@
       "nothing_to_push": "Nothing to change in Shopify.",
       "push_open": "A push is already in progress — it will be processed.",
       "location_connection_taken": "This warehouse is already mapped to another location of the store.",
+      "connection_other_company": "This warehouse belongs to another company — its stock cannot be shown in this shop.",
       "connection_disabled": "The warehouse connection is disabled.",
       "no_company_id": "The euShipments connection has no company selected.",
       "invalid_booking": "Invalid booking request.",

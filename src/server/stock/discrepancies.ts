@@ -188,6 +188,9 @@ export async function sweepStockAlerts(now: Date = new Date()) {
           entityId: f.entityId,
           status: "RESOLVED",
           resolvedAt: { gte: new Date(now.getTime() - SUPPRESS_HOURS * 3_600_000) },
+          // Only a person's resolution mutes it: one the sweep closed itself was never seen (a flapping
+          // condition must alert again).
+          notes: { none: { action: "auto_resolve" } },
         },
         select: { id: true },
       });

@@ -11,7 +11,7 @@ import { companyFilter } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import { STOCK_CONNECTION_TYPES } from "@/server/routing/engine";
 import { planInventoryPush, storePushes } from "@/server/stock/push";
-import { storeLocations } from "@/server/stock/shopify-inventory";
+import { storeConnectionCompanies, storeLocations } from "@/server/stock/shopify-inventory";
 import { getStore } from "@/server/stores";
 import { MapLocationForm, PushNowButton, ReadInventoryButton } from "./forms";
 
@@ -33,12 +33,16 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
     throw err;
   }
   const manage = can(ctx.role, "inventory.push");
+  const allowedCompanies = await storeConnectionCompanies(ctx.accountId, id);
   const [locations, connections, plan, pushes] = await Promise.all([
     storeLocations(ctx.accountId, id),
     accountDb(ctx.accountId).fulfillmentConnection.findMany({
       where: {
         type: { in: [...STOCK_CONNECTION_TYPES] },
-        ...companyFilter({ ...ctx, activeCompanyId: null, lineCompanyIds: null }),
+        AND: [
+          companyFilter({ ...ctx, activeCompanyId: null, lineCompanyIds: null }),
+          { companyId: { in: allowedCompanies } },
+        ],
       },
       select: { id: true, name: true, type: true },
       orderBy: { name: "asc" },

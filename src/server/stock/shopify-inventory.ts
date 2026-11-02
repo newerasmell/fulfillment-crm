@@ -12,7 +12,7 @@ import {
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb } from "@/server/db/client";
+import { accountDb, isUniqueViolation } from "@/server/db/client";
 import { STOCK_CONNECTION_TYPES } from "@/server/routing/engine";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
 import type { ScopedActor } from "@/server/stores";
@@ -134,6 +134,23 @@ export const LocationMappingInput = z.object({
   connectionId: z.string().min(1).max(64).nullable(),
 });
 
+/**
+ * Companies whose warehouses may stand for a location of this store: the store's own company and the companies of
+ * the same product line (the routing fallback's rule). A store without a company may map none.
+ */
+export async function storeConnectionCompanies(accountId: string, storeId: string): Promise<string[]> {
+  const db = accountDb(accountId);
+  const store = await db.store.findUnique({
+    where: { id: storeId },
+    select: { companyId: true, company: { select: { lineId: true } } },
+  });
+  if (!store?.companyId) return [];
+  const lineId = store.company?.lineId;
+  if (!lineId) return [store.companyId];
+  const peers = await db.company.findMany({ where: { lineId }, select: { id: true } });
+  return [...new Set([store.companyId, ...peers.map((c) => c.id)])];
+}
+
 /** Maps one Shopify location to one warehouse (one location per warehouse per store). Audited. */
 export async function setLocationConnection(actor: ScopedActor, raw: z.input<typeof LocationMappingInput>) {
   assertCan(actor.role, "inventory.push");
@@ -152,13 +169,22 @@ export async function setLocationConnection(actor: ScopedActor, raw: z.input<typ
     if (!c || !STOCK_CONNECTION_TYPES.includes(c.type)) throw new DomainError("not_found");
     if (actor.companyScope && (!c.companyId || !actor.companyScope.includes(c.companyId)))
       throw new DomainError("not_found");
+    // Never publish another company's warehouse stock in this shop.
+    const allowed = await storeConnectionCompanies(actor.accountId, input.storeId);
+    if (!c.companyId || !allowed.includes(c.companyId)) throw new DomainError("connection_other_company");
     const taken = await db.storeLocation.findFirst({
       where: { storeId: input.storeId, connectionId: input.connectionId, id: { not: loc.id } },
       select: { id: true },
     });
     if (taken) throw new DomainError("location_connection_taken");
   }
-  await db.storeLocation.update({ where: { id: loc.id }, data: { connectionId: input.connectionId } });
+  try {
+    await db.storeLocation.update({ where: { id: loc.id }, data: { connectionId: input.connectionId } });
+  } catch (err) {
+    // Two concurrent mappings to the same warehouse: the unique index decides.
+    if (isUniqueViolation(err)) throw new DomainError("location_connection_taken");
+    throw err;
+  }
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,

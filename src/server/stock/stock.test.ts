@@ -693,9 +693,13 @@ describe("Shopify inventory read + push", () => {
         },
       }),
     });
-    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("SENT");
+    // Nothing applied: not SENT (no misleading success); the next push starts from fresh numbers.
+    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("FAILED");
     expect((await g.db.inventoryPushLine.findFirstOrThrow({ where: { pushId: r.pushId! } })).status).toBe(
       "stale",
+    );
+    expect((await g.db.inventoryPush.findUniqueOrThrow({ where: { id: r.pushId! } })).lastError).toMatch(
+      /^stale_only/,
     );
 
     const r2 = await createInventoryPush(g.store.id, { kind: "system" });
@@ -705,5 +709,237 @@ describe("Shopify inventory read + push", () => {
     await systemDb().account.update({ where: { id: g.accountId }, data: { outboxPaused: false } });
     const sweep = await sweepInventoryPushes();
     expect(sweep.ready.map((x) => x.id)).toContain(r2.pushId);
+  });
+});
+
+// ───────────── audit fixes (wave 3 review) ─────────────
+
+async function order(
+  g: G,
+  productId: string,
+  qty: number,
+  status: "NEEDS_REVIEW" | "IMPORTED" | "ACCEPTED",
+  connectionId: string | null,
+) {
+  return g.db.order.create({
+    data: {
+      accountId: g.accountId,
+      companyId: g.company.id,
+      source: "MANUAL",
+      number: `M-${Math.random().toString(36).slice(2, 7)}`,
+      status,
+      currency: "EUR",
+      subtotal: 1,
+      total: 1,
+      paymentMethod: "PREPAID",
+      placedAt: new Date(),
+      lines: { create: [{ productId, title: "x", quantity: qty, unitPrice: 1 }] },
+      ...(status === "IMPORTED" ? {} : { check: { create: { connectionId, routing: {} } } }),
+    },
+    include: { lines: true },
+  });
+}
+
+/** A store location mapped to `connectionId` with the variant stocked at Shopify `available`. */
+async function mapped(g: G, productId: string, connectionId: string, available: number, n: number) {
+  const gid = `gid://shopify/Location/${n}`;
+  await g.db.storeLocation.create({
+    data: {
+      accountId: g.accountId,
+      storeId: g.store.id,
+      shopifyLocationGid: gid,
+      name: `L${n}`,
+      connectionId,
+      fetchedAt: new Date(),
+    },
+  });
+  const link = await g.link(productId, n, `SH-${n}`);
+  await g.db.shopifyInventoryLevel.create({
+    data: {
+      accountId: g.accountId,
+      storeId: g.store.id,
+      variantLinkId: link.id,
+      locationGid: gid,
+      inventoryItemGid: `gid://shopify/InventoryItem/${n}`,
+      available,
+      fetchedAt: new Date(),
+    },
+  });
+  return { gid, link };
+}
+
+const targetOf = async (g: G, gid: string) =>
+  (await planInventoryPush(g.accountId, g.store.id)).lines.find((l) => l.locationGid === gid)?.target;
+
+describe("reservations cover every order not inside the warehouse numbers yet", () => {
+  it("an order in NEEDS_REVIEW (routed or not) lowers the push target", async () => {
+    const g = await group("resv-review");
+    const p = await g.product("RSV-1");
+    await g.vp(g.fhb.id, p.id, "R-RSV-1", { physical: 10, free: 10 });
+    const { gid } = await mapped(g, p.id, g.fhb.id, 10, 8101);
+    expect(await targetOf(g, gid)).toBe(10);
+    // Shopify already took 2 as "committed" (available 8); the order waits in review, routed to FHB.
+    await order(g, p.id, 2, "NEEDS_REVIEW", g.fhb.id);
+    expect(await targetOf(g, gid)).toBe(8);
+    // Not routed yet: reserved at every warehouse carrying the product.
+    await order(g, p.id, 1, "IMPORTED", null);
+    expect(await targetOf(g, gid)).toBe(7);
+    expect((await crmReservations(g.accountId)).get(`${g.fhb.id}:${p.id}`)).toBe(3);
+  });
+
+  it("euShipments: an order accepted after the (daily) snapshot lowers the target, one before does not", async () => {
+    const g = await group("resv-eu");
+    const p = await g.product("RSV-EU");
+    const snapshotAt = new Date(Date.now() - 6 * 3_600_000);
+    await g.vp(g.eu.id, p.id, "EU-RSV", { physical: 10, free: 10, snapshotAt });
+    const { gid } = await mapped(g, p.id, g.eu.id, 10, 8201);
+    const ship = async (acceptedAt: Date, qty: number) => {
+      const o = await order(g, p.id, qty, "ACCEPTED", g.eu.id);
+      await g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: o.id,
+          connectionId: g.eu.id,
+          externalId: `ST-${o.number}`,
+          status: "ACCEPTED",
+          submittedAt: acceptedAt,
+          lines: { create: [{ orderLineId: o.lines[0]!.id, quantity: qty }] },
+        },
+      });
+    };
+    await ship(new Date(snapshotAt.getTime() - 3_600_000), 4); // already excluded from the vendor's free
+    expect(await targetOf(g, gid)).toBe(10);
+    await ship(new Date(), 3); // accepted this morning, the snapshot does not know it yet
+    expect(await targetOf(g, gid)).toBe(7);
+  });
+});
+
+describe("push plans expire", () => {
+  it("PAUSED, then warehouse free drops, then unpause: the old target is never sent", async () => {
+    const g = await group("push-expire");
+    const p = await g.product("EXP-1");
+    const v = await g.vp(g.fhb.id, p.id, "R-EXP-1", { physical: 10, free: 10 });
+    const { gid } = await mapped(g, p.id, g.fhb.id, 2, 8301);
+    await g.db.store.update({ where: { id: g.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const r = await createInventoryPush(g.store.id, { kind: "system" });
+    await systemDb().account.update({ where: { id: g.accountId }, data: { outboxPaused: true } });
+    const s = fakeShopify({
+      InventoryReadBack: () => ({
+        nodes: [
+          {
+            id: "gid://shopify/InventoryItem/8301",
+            tracked: true,
+            inventoryLevel: { quantities: [{ name: "available", quantity: 2 }] },
+          },
+        ],
+      }),
+      InventoryPush: () => ({
+        inventorySetQuantities: { inventoryAdjustmentGroup: { id: "g" }, userErrors: [] },
+      }),
+    });
+    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("PAUSED");
+    await g.db.stockLevel.update({ where: { vendorProductId: v.id }, data: { free: 4, physical: 4 } });
+    await systemDb().account.update({ where: { id: g.accountId }, data: { outboxPaused: false } });
+    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("FAILED");
+    expect(s.count("InventoryPush")).toBe(0);
+    expect(await g.db.inventoryPush.findUniqueOrThrow({ where: { id: r.pushId! } })).toMatchObject({
+      lastError: "plan_expired",
+    });
+    expect(await g.db.alert.count({ where: { kind: "inventory_push_failed" } })).toBe(0);
+    // The next push plans from today's numbers.
+    const r2 = await createInventoryPush(g.store.id, { kind: "system" });
+    expect(r2.created).toBe(true);
+    expect(await processInventoryPush(r2.pushId!, s.clients)).toBe("SENT");
+    const sent = s.calls.find((c) => c.op === "InventoryPush")!;
+    expect((sent.vars.input as { quantities: { quantity: number }[] }).quantities[0]!.quantity).toBe(4);
+    expect(await targetOf(g, gid)).toBe(4);
+  });
+
+  it("an unbuilt push older than the TTL is expired by the sweep and replaced", async () => {
+    const g = await group("push-ttl");
+    const p = await g.product("TTL-1");
+    await g.vp(g.fhb.id, p.id, "R-TTL-1", { physical: 5, free: 5 });
+    await mapped(g, p.id, g.fhb.id, 1, 8401);
+    await g.db.store.update({ where: { id: g.store.id }, data: { inventoryPushMode: "DRY_RUN" } });
+    const r = await createInventoryPush(g.store.id, { kind: "system" });
+    await g.db.inventoryPush.update({
+      where: { id: r.pushId! },
+      data: { status: "PAUSED", createdAt: new Date(Date.now() - 3 * 3_600_000) },
+    });
+    const sweep = await sweepInventoryPushes();
+    expect(await g.db.inventoryPush.findUniqueOrThrow({ where: { id: r.pushId! } })).toMatchObject({
+      status: "FAILED",
+      lastError: "plan_expired",
+    });
+    expect(sweep.ready.map((x) => x.id)).not.toContain(r.pushId);
+    expect(await g.db.inventoryPush.count({ where: { storeId: g.store.id, status: "PENDING" } })).toBe(1);
+  });
+});
+
+describe("location mapping guards", () => {
+  it("refuses another company's warehouse; concurrent mappings to one warehouse end in a domain error", async () => {
+    const g = await group("map-guard");
+    const other = await g.db.company.create({ data: { accountId: g.accountId, name: "Друга фирма" } });
+    const foreign = await g.db.fulfillmentConnection.create({
+      data: {
+        accountId: g.accountId,
+        companyId: other.id,
+        type: "FHB_V3",
+        name: "FHB other",
+        liveMode: "LIVE",
+      },
+    });
+    const loc = async (n: number) =>
+      g.db.storeLocation.create({
+        data: {
+          accountId: g.accountId,
+          storeId: g.store.id,
+          shopifyLocationGid: `gid://shopify/Location/${n}`,
+          name: `L${n}`,
+          fetchedAt: new Date(),
+        },
+      });
+    const a = await loc(8501);
+    const b = await loc(8502);
+    await expect(
+      setLocationConnection(g.owner, { storeId: g.store.id, locationId: a.id, connectionId: foreign.id }),
+    ).rejects.toMatchObject({ code: "connection_other_company" });
+    const results = await Promise.allSettled([
+      setLocationConnection(g.owner, { storeId: g.store.id, locationId: a.id, connectionId: g.fhb.id }),
+      setLocationConnection(g.owner, { storeId: g.store.id, locationId: b.id, connectionId: g.fhb.id }),
+    ]);
+    expect(results.filter((x) => x.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((x) => x.status === "rejected") as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: "location_connection_taken" });
+  });
+});
+
+describe("stock alert suppression", () => {
+  it("an auto-resolved alert does not mute the condition when it returns; a person's resolution does", async () => {
+    const g = await group("suppress");
+    const p = await g.product("SUP-1");
+    const v = await g.vp(g.fhb.id, p.id, "R-SUP-1", { physical: 2, free: 2 });
+    await approvedOrder(g, p.id, 5, g.fhb.id); // physical − reserved < 0
+    const open = () =>
+      g.db.alert.findMany({ where: { kind: "stock_negative_sellable", status: { not: "RESOLVED" } } });
+    await sweepStockAlerts();
+    expect(await open()).toHaveLength(1);
+    await g.db.stockLevel.update({ where: { vendorProductId: v.id }, data: { physical: 20, free: 20 } });
+    await sweepStockAlerts(); // auto-resolved
+    expect(await open()).toHaveLength(0);
+    await g.db.stockLevel.update({ where: { vendorProductId: v.id }, data: { physical: 2, free: 2 } });
+    await sweepStockAlerts(); // the condition is back: alerted again
+    const [again] = await open();
+    expect(again).toBeDefined();
+    // A person resolves it: muted for the suppression window.
+    await g.db.alert.update({
+      where: { id: again!.id },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    await g.db.alertNote.create({
+      data: { accountId: g.accountId, alertId: again!.id, userId: g.owner.userId, action: "resolve" },
+    });
+    await sweepStockAlerts();
+    expect(await open()).toHaveLength(0);
   });
 });

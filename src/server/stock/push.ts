@@ -1,4 +1,4 @@
-import type { OutboundStatus, Prisma } from "@/generated/prisma/client";
+import { Prisma, type OutboundStatus } from "@/generated/prisma/client";
 import type { ShopifyClient, ShopifyClientOptions } from "@/integrations/shopify/client";
 import { ShopifyError } from "@/integrations/shopify/errors";
 import { isDefiniteGraphqlRejection } from "@/integrations/shopify/fulfillments";
@@ -43,6 +43,13 @@ import { getStockSettings, staleHoursFor } from "./settings";
 
 export const PUSH_MAX_ATTEMPTS = 5;
 export const PUSH_STALE_MS = 10 * 60_000;
+/**
+ * A push whose request was not built yet carries targets computed when it was created. Older than this (e.g. parked
+ * PAUSED overnight behind the kill switch), or when a fresh plan gives other numbers, it is never sent: it ends
+ * FAILED with lastError "plan_expired" and the next sweep plans a fresh one.
+ */
+export const PUSH_PLAN_TTL_MS = 30 * 60_000;
+export const PLAN_EXPIRED = "plan_expired";
 const OPEN: OutboundStatus[] = ["PENDING", "SENDING", "PAUSED"];
 const backoffMs = (attempt: number) => Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, attempt - 1));
 const json = (v: unknown) => JSON.parse(JSON.stringify(v ?? null)) as Prisma.InputJsonValue;
@@ -324,6 +331,14 @@ export async function processInventoryPush(
     if (row.status !== "PENDING" && row.status !== "PAUSED") return { kind: "skip" };
     if (row.nextAttemptAt && row.nextAttemptAt > now) return { kind: "skip" };
     const mode = row.store.inventoryPushMode;
+    if (row.request === null && now.getTime() - row.createdAt.getTime() > PUSH_PLAN_TTL_MS) {
+      // Never re-arm old targets: the warehouse numbers may have moved since (re-planned by the next sweep).
+      await tx.inventoryPush.update({
+        where: { id },
+        data: { status: "FAILED", evaluatedMode: mode, lastError: PLAN_EXPIRED },
+      });
+      return { kind: "done", status: "FAILED" };
+    }
     if (globalOutboxPaused() || row.account.outboxPaused) {
       await tx.inventoryPush.update({
         where: { id },
@@ -424,6 +439,19 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
 
   let request = (row.request as StoredRequest | null) ?? null;
   if (!request) {
+    // The targets were computed at create time: they must still be what a plan gives now, or nothing is sent.
+    let fresh: Awaited<ReturnType<typeof planInventoryPush>>;
+    try {
+      fresh = await planInventoryPush(row.accountId, row.storeId, now);
+    } catch (err) {
+      return finalize({ lastError: `${PLAN_EXPIRED}: ${scrubText((err as Error).message)}` }, "FAILED");
+    }
+    const freshOf = new Map(fresh.lines.map((l) => [`${l.variantLinkId}|${l.locationGid}`, l]));
+    const moved = lines.some((l) => {
+      const f = freshOf.get(`${l.variantLinkId}|${l.locationGid}`);
+      return !f || f.target !== l.target || f.connectionId !== l.connectionId;
+    });
+    if (moved) return finalize({ lastError: PLAN_EXPIRED }, "FAILED");
     // First attempt: read what Shopify has right now; this becomes the compare-and-set value.
     let current: Map<string, number | null>;
     try {
@@ -493,6 +521,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
   }
 
   let pending = false;
+  let staleLines = 0;
   let failures: string[] = [];
   for (const b of request.batches) {
     if (b.done) continue;
@@ -568,6 +597,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
       data: { status: stale ? "stale" : "failed", error: message.slice(0, 500) },
     });
     b.done = true;
+    if (stale) staleLines += b.lineIds.length;
     if (!stale || codes.some((c) => DEFINITE_PUSH_ERRORS.has(c))) failures.push(message);
   }
   await db.inventoryPush.updateMany({
@@ -580,8 +610,17 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     await audit(row, "failed", { failures: failures.slice(0, 5) });
     return fail(failures.join("; ").slice(0, 2000));
   }
+  if (staleLines > 0) {
+    const applied = await db.inventoryPushLine.count({ where: { pushId: row.id, status: "applied" } });
+    if (applied === 0) {
+      // Nothing was set: Shopify moved under every batch. Not SENT; the next push starts from fresh numbers.
+      const s = await finalize({ lastError: `stale_only: ${staleLines} line(s)` }, "FAILED");
+      await audit(row, "stale", { lines: staleLines });
+      return s;
+    }
+  }
   const s = await finalize({ sentAt: now }, "SENT");
-  await audit(row, "sent", { batches: request.batches.length });
+  await audit(row, "sent", { batches: request.batches.length, ...(staleLines ? { staleLines } : {}) });
   return s;
 }
 
@@ -604,6 +643,15 @@ export async function sweepInventoryPushes(now: Date = new Date(), limit = 100) 
   const stale = await db.inventoryPush.updateMany({
     where: { status: "SENDING", lockedAt: { lt: new Date(now.getTime() - PUSH_STALE_MS) } },
     data: { status: "PENDING", lastError: "worker stopped during the Shopify call", nextAttemptAt: null },
+  });
+  // Old plans that were never built (parked PAUSED / backing off) give way to a fresh plan in this same sweep.
+  await db.inventoryPush.updateMany({
+    where: {
+      status: { in: ["PENDING", "PAUSED"] },
+      request: { equals: Prisma.DbNull },
+      createdAt: { lt: new Date(now.getTime() - PUSH_PLAN_TTL_MS) },
+    },
+    data: { status: "FAILED", lastError: PLAN_EXPIRED },
   });
   const stores = await db.store.findMany({
     where: {
