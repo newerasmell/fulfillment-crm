@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { assertSafeDatabaseRole, basePrisma } from "@/server/db/client";
 import { createBoss, ensureQueues } from "@/server/jobs/boss";
 import { registerWorkers } from "@/server/jobs/handlers";
+import { resolveFhbTransport } from "@/server/fhb/transport";
 import { assertSchemaUpToDate } from "./migrations";
 
 async function main() {
@@ -12,8 +13,8 @@ async function main() {
   boss.on("error", (err) => logger.error({ err }, "pg-boss error"));
   await boss.start();
   await ensureQueues(boss);
-  // No vendor adapters yet (phase 2+): every send stays PENDING with "no_transport".
-  await registerWorkers({ boss, resolveTransport: () => undefined });
+  // Vendor transports per connection type; a type without one stays PENDING with "no_transport".
+  await registerWorkers({ boss, resolveTransport: (c) => resolveFhbTransport(c) });
   logger.info("worker started");
 
   const shutdown = async (signal: string) => {

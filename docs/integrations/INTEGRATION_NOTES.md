@@ -74,7 +74,7 @@ status list "current as of July 2026".
 - Stock fields on product: `stock_quantity` (physical) and `free_quantity` (what remains after open orders).
   **Use `free_quantity` as sellable stock.** `/stock/all` only returns `quantity` (physical).
 - Stock push: set `notify_url` on every product to
-  `https://<crm>/webhooks/fhb/{connectionId}/stock/{signedToken}`. Body: `{id, type(in|out), qty,
+  `https://<crm>/api/webhooks/fhb/{connectionId}/stock/{signedToken}` (Next.js API route, hence `/api`). Body: `{id, type(in|out), qty,
   stockQuantity, reason, serialNumbers[]}`; reason codes `1` manual, `2` sent order, `3` receipt,
   `4` returned order, `5` cancelled order. No signature is documented → the secret lives in the URL path;
   validate it and still treat payload as a hint (re-read `GET /product?id=` before trusting numbers).
@@ -95,15 +95,37 @@ status list "current as of July 2026".
 - Email > 50 chars: block in pre-flight (FHB will reject). Phone: normalise to E.164 (`+…`), ≤20.
 - `PUT /order?id=` and `DELETE /order?id=` work **only while status is pending**. PUT replaces the line set
   (kept lines keep their reservation, omitted lines are removed).
+- PUT "rewrites order with that ID … parameters are the same as for the POST method" (raw spec): the body is
+  the POST body **without** `id`, `validate` and `invoice_number` (those three are not in the PUT schema).
+  Because it is a rewrite, every update must re-send what the order was created with — `parcel_service`,
+  `delivery_point`, `note` — or FHB drops them (a pick-up-point order would ship to the home address). The
+  CRM defaults them from the shipment (`Fulfillment.carrier` / `deliveryPoint`, the last queued body's note).
+- Free stock on an update: FHB's `free_quantity` already has this order's own reservation taken off, so the
+  update pre-flight credits back the shipment's own quantities (only against snapshots taken after the order
+  reached FHB).
+- Update idempotency: one outbox key per change (`fhb.order.update:{id}:r{n}`, same for products and stock
+  receipts). The same body as the latest revision reuses it (double click = one request); anything else is a
+  new revision, so A→B→A sends A again instead of silently matching the first, already-sent A.
 - `PUT /order/invoice?id=` customs only, allowed in raw statuses `new`, `imported`, `b2b_new`, `packed`.
 - `POST /order/files` attach files (e.g. invoice PDF).
+- Response bodies are **not wrapped**: the `response` key in the rendered reference is only the example's
+  name; the body is the object itself.
+- `GET /order?id=` answering 404 for an unknown id is **not documented** (only 200/401 are). The client treats a
+  404 there as "absent" (read-back before a retry); any other error still throws, and a failed read-back
+  makes the request UNCERTAIN.
 - `GET /order?id=` or `?tracking=` full detail incl. `tracking_numbers`, `tracking_links`, `tracking_events`,
   `packages[]`, `package_returns[]`, `proof_of_delivery`, `created_at/shipped_at/delivered_at/returned_at`,
   `return_type` (`return|claim|write_off`), `sscc`, `packing_packages`.
 - `GET /order/history?from&to&status&page` 100/page — the reconciliation sweep.
 - Order webhooks: put signed URLs in `notification.*` on create:
-  `https://<crm>/webhooks/fhb/{connectionId}/order/{event}/{signedToken}`. Payload format is not documented →
-  on any call, re-read `GET /order?id=` and update from that. Do not parse the body as truth.
+  `https://<crm>/api/webhooks/fhb/{connectionId}/order/{fulfillmentId}/{event}/{signedToken}` (≤255 chars).
+  The shipment id is in the path (and in the HMAC scope) because the payload format is not documented: the
+  URL itself must say which order to re-read. On any call, re-read `GET /order?id=` and update from that. Do
+  not parse the body as truth.
+- Rounding: per-country COD rounding rules are **not modelled yet** (gap). Amounts go out with 2 decimals;
+  until rules exist, a fractional COD in a whole-unit currency (HUF) is a soft pre-flight finding
+  (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked
+  unless a local-currency amount is stored on the order.
 
 ### 2.4 Status mapping (documented vs observed — handle both)
 Documented: `pending, confirmed, sent, delivered, rejected` (+ `returned` accepted as history filter).
@@ -120,9 +142,13 @@ Edit/Cancel in the UI only when raw status is `pending`, and treat a 400 on the 
 | confirmed, packed | PROCESSING (locked) |
 | sent | SHIPPED |
 | delivered | DELIVERED |
-| returned (or `returned_at` not null) | RETURNED |
-| rejected | REJECTED (needs operator) |
+| returned (or `returned_at` not null) | RETURN_RECEIVED |
+| rejected | BLOCKED + alert/task (needs operator) |
 | anything else | UNKNOWN + alert |
+
+`CrmOrderStatus` has no RETURNED or REJECTED value. `returned_at` is the date the shipment came back from the
+carrier (RMA = back at the warehouse), which is SPEC §6.5's RETURN_RECEIVED; a rejected order is a vendor-side
+problem that needs an operator, which is BLOCKED plus an operator task.
 
 ### 2.5 Stock, inbound, returns, COD, carriers
 - `GET /stock/all`, `GET /stock?id=`, `GET /stock/history/{date}`, `GET /stock/movements?product&receipt&reason&from&to&page` (500/page).

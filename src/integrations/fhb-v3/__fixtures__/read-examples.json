@@ -1,0 +1,144 @@
+{
+  "GET /stock/all 200 response": [
+    {
+      "id": "AB123",
+      "ean": "8580000001234",
+      "name": "Shampoo",
+      "quantity": 10
+    }
+  ],
+  "GET /stock 200 response": {
+    "id": "AB123",
+    "ean": "8580000001234",
+    "name": "Shampoo",
+    "quantity": 10
+  },
+  "GET /stock/movements 200 response": {
+    "page": 1,
+    "total": 245,
+    "movements": [
+      {
+        "id": 123,
+        "product": "P53225",
+        "type": "out",
+        "change": -1,
+        "quantity": 27,
+        "date": "2014-06-26T06:07:53+0200",
+        "reason": "arrival",
+        "order": null,
+        "stock_receipt": "S123455"
+      }
+    ]
+  },
+  "GET /cod 200 response": {
+    "id": "AB12345",
+    "uid": "2026040001",
+    "variable_symbol": "12345",
+    "parcel_service": "remax",
+    "cod": 42.5,
+    "status": "waiting",
+    "received_at": "2026-04-20T10:15:00+0200",
+    "paid_at": "2026-04-21T09:00:00+0200",
+    "created_at": "2026-04-18T14:00:00+0200"
+  },
+  "GET /cod/list 200 response": {
+    "page": 1,
+    "total": 42,
+    "items": [
+      {
+        "id": "AB12345",
+        "uid": "2026040001",
+        "variable_symbol": "12345",
+        "parcel_service": "remax",
+        "cod": 42.5,
+        "status": "waiting",
+        "received_at": "2026-04-20T10:15:00+0200",
+        "paid_at": "2026-04-21T09:00:00+0200",
+        "created_at": "2026-04-18T14:00:00+0200"
+      }
+    ]
+  },
+  "GET /rma/list 200 response": {
+    "page": 1,
+    "total": 8,
+    "items": [
+      {
+        "id": "69e73ce4deec1",
+        "uid": "KIK00012345",
+        "status": "returned",
+        "created_at": "2026-04-02T09:12:00+0200",
+        "shipped_at": "2026-04-03T16:40:00+0200",
+        "delivered_at": null,
+        "returned_at": "2026-04-22T10:10:44+0200",
+        "return_type": "return",
+        "parcel_service": "gls",
+        "cod": 0,
+        "value": 49.9,
+        "recipient": {
+          "address": {
+            "name": "Jan Novak",
+            "street": "Hlavna 1",
+            "city": "Bratislava",
+            "zip": "81101",
+            "country": "SK"
+          },
+          "contact": {
+            "email": "jan.novak@example.com",
+            "phone": "+421900123456"
+          }
+        },
+        "tracking_numbers": ["123456789"],
+        "items": [
+          {
+            "id": "SKU-001",
+            "quantity": 1
+          }
+        ]
+      }
+    ]
+  },
+  "GET /return/list 200 response": {
+    "page": 1,
+    "total": 42,
+    "items": [
+      {
+        "id": 1024,
+        "uid": "AB00001",
+        "depot_id": 1,
+        "type": "basic",
+        "status": "stored",
+        "weight": 1.25,
+        "created_at": "2026-05-10T09:15:00+0200",
+        "barcodes": ["CZ123456789", "CZ987654321"],
+        "items": [
+          {
+            "id": 17,
+            "barcode": "8594000000000",
+            "description": "Returned product",
+            "condition": "Damaged box",
+            "quantity": 1,
+            "action": "stock_in"
+          }
+        ],
+        "photos": [
+          {
+            "id": 51,
+            "type": "package"
+          }
+        ]
+      }
+    ]
+  },
+  "GET /return/{uid} 200 response": {
+    "id": 1024,
+    "uid": "AB00001",
+    "depot_id": 1,
+    "type": "complex",
+    "status": "stored",
+    "weight": 1.25,
+    "created_at": "2026-05-10T09:15:00+0200",
+    "barcodes": [],
+    "items": [],
+    "photos": []
+  }
+}

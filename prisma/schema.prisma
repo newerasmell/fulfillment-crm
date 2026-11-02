@@ -414,6 +414,12 @@ model FulfillmentConnection {
   routingRules     RoutingRule[]
   fulfillments     Fulfillment[]
   outboundRequests OutboundRequest[]
+  fhbSyncStates    FhbSyncState[]
+  fhbOrders        FhbOrderMirror[]
+  fhbCods          FhbCodMirror[]
+  fhbReturns       FhbReturnMirror[]
+  fhbCarriers      FhbCarrier[]
+  fhbPickupPoints  FhbPickupPoint[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -927,4 +933,160 @@ model AiPolicy {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, decisionType])
+}
+
+// ───────────────────────── wave 1 · FHB v3 read mirror (P2-02) ─────────────────────────
+// Local copies of what FHB shows in its own panel (SPEC §6.7). Written only by the read sync jobs
+// (src/server/fhb/sync.ts); screens read from here, never from the vendor. Products and stock use the
+// existing VendorProduct / StockLevel / StockMovement tables.
+
+/// Last run of one read resource per FHB connection (freshness on the screens, windows for the next run).
+model FhbSyncState {
+  id           String    @id @default(cuid())
+  accountId    String
+  connectionId String
+  /// products | stock | movements | orders | rma | returns | cod | carriers | deliveryPoints
+  resource     String
+  lastRunAt    DateTime?
+  lastOkAt     DateTime?
+  /// Scrubbed message of the last failure (null after a good run).
+  lastError    String?
+  /// Rows written by the last good run.
+  lastCount    Int       @default(0)
+  cursor       Json      @default("{}")
+  updatedAt    DateTime  @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, resource])
+  @@index([accountId])
+}
+
+/// Every order at the FHB account (order/history, GET /order, rma/list), also ones created outside the CRM.
+model FhbOrderMirror {
+  id              String         @id @default(cuid())
+  accountId       String
+  connectionId    String
+  /// FHB order id (ours: {STORECODE}-{number}).
+  externalId      String
+  uid             String?
+  variableSymbol  String?
+  /// As FHB sent it; `status` is the mapped value (UNKNOWN + alert for anything unmapped).
+  rawStatus       String?
+  status          CrmOrderStatus
+  parcelService   String?
+  deliveryPoint   String?
+  /// Local currency of the destination country (as FHB stores it).
+  cod             Decimal?       @db.Decimal(12, 2)
+  value           Decimal?       @db.Decimal(12, 2)
+  country         String?
+  recipientName   String?
+  trackingNumbers String[]
+  vendorCreatedAt DateTime?
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+  returnedAt      DateTime?
+  /// return | claim | write_off
+  returnType      String?
+  /// Seen in rma/list (came back from the carrier).
+  inRma           Boolean        @default(false)
+  raw             Json
+  lastSyncAt      DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalId])
+  @@index([accountId, connectionId, vendorCreatedAt])
+}
+
+/// GET /cod/list: COD per order (waiting | received | paid), amounts in local currency.
+model FhbCodMirror {
+  id              String    @id @default(cuid())
+  accountId       String
+  connectionId    String
+  externalId      String
+  uid             String?
+  variableSymbol  String?
+  parcelService   String?
+  cod             Decimal?  @db.Decimal(12, 2)
+  /// Raw status; unknown values are kept and alerted.
+  status          String?
+  receivedAt      DateTime?
+  paidAt          DateTime?
+  vendorCreatedAt DateTime?
+  raw             Json
+  lastSyncAt      DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, externalId])
+  @@index([accountId, connectionId, status])
+}
+
+/// GET /return/list: "local" returns processed at an FHB depot (paid extra service; may stay empty).
+model FhbReturnMirror {
+  id              String    @id @default(cuid())
+  accountId       String
+  connectionId    String
+  uid             String
+  vendorId        String?
+  depotId         String?
+  /// basic | complex
+  type            String?
+  status          String?
+  weight          Float?
+  barcodes        String[]
+  items           Json      @default("[]")
+  photos          Json      @default("[]")
+  vendorCreatedAt DateTime?
+  raw             Json
+  lastSyncAt      DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, uid])
+  @@index([accountId, connectionId, vendorCreatedAt])
+}
+
+/// GET /parcel-service: carrier codes available on this FHB account (never hard-coded).
+model FhbCarrier {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  code         String
+  name         String?
+  lastSyncAt   DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, code])
+}
+
+/// GET /delivery-point/{service}?country=: pick-up points, loaded per (service, country) on request.
+model FhbPickupPoint {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  service      String
+  /// The country the list was requested for ("" = none); a refresh replaces exactly that list.
+  queryCountry String
+  vendorId     String
+  externalCode String?
+  name         String?
+  street       String?
+  city         String?
+  zip          String?
+  country      String?
+  lastSyncAt   DateTime
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([connectionId, service, queryCountry, vendorId])
+  @@index([accountId, connectionId, service])
 }

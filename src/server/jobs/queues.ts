@@ -69,4 +69,26 @@ export const QUEUES = {
     options: { retryLimit: 2, expireInSeconds: 300 },
     cron: "17 * * * *",
   },
+  /** FHB: re-read the order/product one stored callback points at (data: { accountId, eventId }). */
+  fhbCallback: {
+    name: "fhb.callback",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
+  /** Every 5 min: re-queue FHB callbacks whose job was lost or failed (bounded attempts). */
+  fhbCallbackSweep: {
+    name: "fhb.callbackSweep",
+    options: { retryLimit: 0, expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** FHB: one read resource of one connection (data: { accountId, connectionId, resource, service?, country? }). */
+  fhbSync: {
+    name: "fhb.sync",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
+  },
+  /** Every 30 min: queue the read sync of every FHB connection (SPEC §6.3 reconcile). */
+  fhbReconcile: {
+    name: "fhb.reconcile",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "*/30 * * * *",
+  },
 } satisfies Record<string, QueueDef>;

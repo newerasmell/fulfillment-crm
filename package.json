@@ -22,6 +22,7 @@
     "lint": "eslint . --max-warnings=0 && prettier --check .",
     "format": "prettier --write .",
     "check:live": "tsx tools/check-live.ts",
+    "fixtures:record": "tsx tools/fixtures-record.ts",
     "docs:refresh": "bash tools/fetch_specs.sh",
     "postinstall": "prisma generate",
     "owner:create": "tsx tools/create-owner.ts",
