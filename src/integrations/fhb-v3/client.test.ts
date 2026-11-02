@@ -195,6 +195,24 @@ describe("FhbClient", () => {
     expect(net.calls).toHaveLength(1);
   });
 
+  it("a write that never left (login down, or 429 until retries ran out) is not an unknown outcome", async () => {
+    const fetchImpl: FetchLike = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const client = new FhbClient(CREDS, { fetchImpl, sleep: async () => {} });
+    const err = (await client
+      .createOrder(ex["POST /order request"] as never)
+      .catch((e: unknown) => e)) as FhbError;
+    expect(err.code).toBe("network");
+    expect(err.outcomeUnknown).toBe(false);
+
+    const throttled = fake([() => json({ message: "slow down" }, 429)]);
+    const err2 = (await throttled.client
+      .createOrder(ex["POST /order request"] as never)
+      .catch((e: unknown) => e)) as FhbError;
+    expect(err2.outcomeUnknown).toBe(false);
+  });
+
   it("retries a write on 429 (not processed)", async () => {
     const { client, calls } = fake([
       () => json({ message: "slow down" }, 429),

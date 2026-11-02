@@ -261,6 +261,25 @@ describe("FHB order create through the outbox", () => {
     expect(fhb.count("POST /order")).toBe(1);
   });
 
+  it("a login failure is a definite refusal (nothing sent), not an UNCERTAIN task", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fetchImpl = vi.fn<FetchLike>(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    const resolve = createFhbTransportResolver({ fetchImpl, sleep: async () => {} });
+    expect(await processOutbound(request.id, resolve)).toBe("FAILED");
+    expect(
+      await systemDb().alert.count({ where: { accountId: s.account.id, kind: "outbox_uncertain" } }),
+    ).toBe(0);
+    // only the login was attempted
+    expect(fetchImpl.mock.calls.every(([u]) => String(u).endsWith("/login"))).toBe(true);
+  });
+
   it("a vendor 400 fails the shipment visibly and allows a corrected re-submit with the same id and symbol", async () => {
     const s = await setup("LIVE");
     const first = await submitFhbOrder(s.owner, {

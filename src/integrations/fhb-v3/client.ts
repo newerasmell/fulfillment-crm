@@ -61,6 +61,8 @@ export class FhbError extends Error {
     message: string,
     public readonly status?: number,
     public readonly body?: FhbErrorBody,
+    /** The call itself never left (login failed, or throttled with 429 until retries ran out). */
+    public readonly notSent = false,
   ) {
     super(message);
     this.name = "FhbError";
@@ -68,7 +70,10 @@ export class FhbError extends Error {
 
   /** For a write: did the vendor possibly act on it? (Then only a read-back may decide what happened.) */
   get outcomeUnknown() {
-    return this.code === "network" || this.code === "server_error" || this.code === "invalid_response";
+    return (
+      !this.notSent &&
+      (this.code === "network" || this.code === "server_error" || this.code === "invalid_response")
+    );
   }
 
   /** Violation codes by field path, e.g. {"recipient.address.zip": ["IS_BLANK_ERROR"]}. */
@@ -213,19 +218,28 @@ export class FhbClient {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (err) {
-      throw new FhbError("network", `login failed: ${scrubText((err as Error).message)}`);
+      throw new FhbError(
+        "network",
+        `login failed: ${scrubText((err as Error).message)}`,
+        undefined,
+        undefined,
+        true,
+      );
     }
     if (res.status === 400 || res.status === 401 || res.status === 403) {
-      throw new FhbError("auth_failed", "FHB refused the app id / secret", res.status);
+      throw new FhbError("auth_failed", "FHB refused the app id / secret", res.status, undefined, true);
     }
     if (!res.ok)
       throw new FhbError(
         res.status >= 500 ? "server_error" : "http_error",
         `login HTTP ${res.status}`,
         res.status,
+        undefined,
+        true,
       );
     const parsed = FhbLoginResponse.safeParse(await res.json().catch(() => null));
-    if (!parsed.success) throw new FhbError("invalid_response", "login response has no token");
+    if (!parsed.success)
+      throw new FhbError("invalid_response", "login response has no token", res.status, undefined, true);
     return parsed.data;
   }
 
@@ -284,7 +298,14 @@ export class FhbClient {
             await this.sleep(this.backoffMs(attempt++, res.headers.get("retry-after")));
             continue;
           }
-          throw new FhbError("server_error", `${method} ${path}: HTTP ${res.status}`, res.status);
+          // A final 429 was refused, not processed; a final 5xx on a read changes nothing either way.
+          throw new FhbError(
+            "server_error",
+            `${method} ${path}: HTTP ${res.status}`,
+            res.status,
+            undefined,
+            res.status === 429,
+          );
         }
         if (res.status >= 500)
           throw new FhbError("server_error", `${method} ${path}: HTTP ${res.status}`, res.status);

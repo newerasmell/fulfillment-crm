@@ -160,7 +160,13 @@ export class FhbV3Transport implements OutboundTransport {
     } catch {
       return { outcome: "rejected", response: null, error: "invalid_payload" };
     }
-    const client = await this.opts.client();
+    let client: FhbClient;
+    try {
+      client = await this.opts.client();
+    } catch (err) {
+      // Nothing left the building (no credentials / vault error): a definite, visible refusal.
+      return { outcome: "rejected", response: null, error: `no_client: ${(err as Error).message}` };
+    }
     try {
       switch (op) {
         case "fhb.order.create": {
