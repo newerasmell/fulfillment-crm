@@ -2,7 +2,6 @@ import { parseFhbDate } from "./client";
 import {
   FHB_COD_STATUSES,
   type FhbCod,
-  type FhbOrderView,
   type FhbReturn,
   type FhbStockMovement,
   type FhbOrderListItem,
