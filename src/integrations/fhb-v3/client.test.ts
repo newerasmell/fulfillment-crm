@@ -317,3 +317,26 @@ describe("FhbClient", () => {
     expect(parseFhbDate(null)).toBeNull();
   });
 });
+
+describe("describeIssues", () => {
+  it("names the differing fields and types without any values", async () => {
+    const { describeIssues } = await import("./client");
+    const { z } = await import("zod");
+    const schema = z.object({
+      total: z.number(),
+      items: z.array(z.object({ amount: z.string(), name: z.string() })),
+    });
+    const r = schema.safeParse({
+      items: [
+        { amount: 12.5, name: "Secret Customer" },
+        { amount: 3, name: "x" },
+      ],
+    });
+    expect(r.success).toBe(false);
+    const text = describeIssues(r.error!.issues);
+    expect(text).toContain("total: expected number, missing");
+    expect(text).toContain("items[].amount: expected string, got number");
+    expect(text).not.toContain("Secret Customer");
+    expect(text).not.toContain("12.5");
+  });
+});

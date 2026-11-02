@@ -351,9 +351,11 @@ export class FhbClient {
             },
             "fhb response failed schema",
           );
+          // Field paths + expected types only (never values: they may be customer data), so the screen tells
+          // exactly which part of the real response differs from the documented one.
           throw new FhbError(
             "invalid_response",
-            `${method} ${path}: response does not match the schema`,
+            `${method} ${path}: response does not match the schema (${describeIssues(parsed.error.issues)})`,
             res.status,
           );
         }
@@ -481,4 +483,28 @@ export class FhbClient {
   async deleteStockReceipt(id: string): Promise<void> {
     await this.request("DELETE", "/stock-receipt", { query: { id } });
   }
+}
+
+/** "items.0.amount: expected string, got number; total: required" — paths with indexes collapsed, no values. */
+export function describeIssues(issues: readonly z.core.$ZodIssue[], max = 4) {
+  const seen = new Set<string>();
+  for (const i of issues) {
+    const path =
+      i.path
+        .map((k) => (typeof k === "number" ? "[]" : String(k)))
+        .join(".")
+        .replace(/\.\[\]/g, "[]") || "(root)";
+    // Zod's own messages name types only ("expected string, received number" / "received undefined").
+    const detail =
+      i.code === "invalid_type"
+        ? i.message
+            .replace(/^Invalid input: /, "")
+            .replace("received undefined", "missing")
+            .replace("received", "got")
+        : i.code;
+    seen.add(`${path}: ${detail}`);
+    if (seen.size >= max) break;
+  }
+  const rest = issues.length - seen.size;
+  return [...seen].join("; ") + (rest > 0 ? ` (+${rest} more)` : "");
 }
