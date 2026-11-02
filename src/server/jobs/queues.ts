@@ -181,4 +181,33 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** AI reviewer: one order (data: { accountId, orderId }); one queued + one running per order. */
+  aiReview: {
+    name: "ai.review",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 300 },
+  },
+  /** Every 5 min: queue AI reviews for checked orders whose current version has no suggestion yet. */
+  aiSweep: {
+    name: "ai.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** Every 10 min: embed decided reviews, compare decisions with AI suggestions, automatic policy demotion. */
+  aiEvaluate: {
+    name: "ai.evaluate",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Daily: random audit sample of yesterday's autopilot approvals. */
+  aiAuditSample: {
+    name: "ai.auditSample",
+    options: { retryLimit: 2, policy: "stately", expireInSeconds: 600 },
+    cron: "21 4 * * *",
+  },
+  /** Weekly (Monday): cluster repeated operator corrections into validator proposals. */
+  aiRuleMining: {
+    name: "ai.ruleMining",
+    options: { retryLimit: 1, policy: "stately", expireInSeconds: 1800 },
+    cron: "37 5 * * 1",
+  },
 } satisfies Record<string, QueueDef>;

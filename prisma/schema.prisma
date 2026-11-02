@@ -203,6 +203,13 @@ model Account {
   alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
   productLines              ProductLine[]
+  aiControl                 AiControl?
+  aiInteractions            AiInteraction[]
+  aiSuggestions             AiSuggestion[]
+  aiAuditSamples            AiAuditSample[]
+  aiPolicyEvents            AiPolicyEvent[]
+  aiRuleProposals           AiRuleProposal[]
+  reviewEmbeddings          ReviewEmbedding[]
 }
 
 model User {
@@ -716,6 +723,7 @@ model Order {
   check        OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
+  aiSuggestions     AiSuggestion[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -835,7 +843,8 @@ model Review {
   createdAt    DateTime                     @default(now())
   decidedAt    DateTime?
 
-  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  order      Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  embeddings ReviewEmbedding[]
 
   @@index([accountId, createdAt])
 }
@@ -1728,4 +1737,199 @@ model ProductMappingImport {
 
   @@unique([accountId, id])
   @@index([accountId, lineId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Wave 3 · track "ai" (P8-01 similar cases, P8-02 AI reviewer, P8-03 autonomy policies, P8-04 rule mining)
+// The AI never sends anything: it writes suggestions, logs and proposals here; an L2 approval goes through the
+// pipeline's approve guard (AiPolicy loaded in the transaction). See src/ai/.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Group-level AI stop (kill switch). On: no AI review runs and no AI approval is accepted for this group,
+/// whatever the policies say. The env AI_KILL_SWITCH=1 is the global stop for every group.
+model AiControl {
+  id          String    @id @default(cuid())
+  accountId   String    @unique
+  killSwitch  Boolean   @default(false)
+  changedById String?
+  changedAt   DateTime?
+  note        String?
+  updatedAt   DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+/// Full prompt/response log of every model call (SPEC §7.5). Snapshot ids, no relations: the log outlives edits.
+model AiInteraction {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String?
+  /// order_review
+  purpose      String
+  /// anthropic
+  provider     String
+  model        String
+  /// The exact request body sent (no credentials).
+  request      Json
+  /// The raw response body (or the error body).
+  response     Json?
+  /// ok | api_error | network_error | refusal | max_tokens | no_tool_call | invalid_output
+  status       String
+  error        String?
+  httpStatus   Int?
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+  createdAt    DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@index([accountId, orderId, createdAt])
+}
+
+/// One AI review of one order (the tool output {decision, confidence, fixes, flags, explanation_bg}) and, once a
+/// person decided (or an audit confirmed an autopilot approval), how it compared — the agreement data of P8-03.
+model AiSuggestion {
+  id               String         @id @default(cuid())
+  accountId        String
+  orderId          String
+  interactionId    String?
+  model            String
+  /// APPROVE | EDIT_AND_APPROVE | HOLD | CANCEL
+  decision         String
+  confidence       Float
+  /// [{field, from, to, reason}] — only fields the AI may touch (guardrails applied)
+  fixes            Json           @default("[]")
+  flags            String[]
+  explanationBg    String
+  /// Guardrail notes, e.g. fix_dropped:shippingAddress.name, high_value
+  guardrails       String[]
+  /// Past reviews given to the model as similar cases (P8-01).
+  similarReviewIds String[]
+  orderStatus      CrmOrderStatus
+  /// OrderCheck fingerprint the suggestion was made on (stale once the order changes).
+  orderFingerprint String?
+  checkHardCount   Int            @default(0)
+  checkSoftCount   Int            @default(0)
+  /// Outcome: the human Review this was compared with.
+  reviewId         String?
+  humanDecision    String?
+  decisionAgreed   Boolean?
+  fixesAgreed      Boolean?
+  /// The AI said approve (confidently) where a person held/blocked, or an audit rejected an autopilot approval.
+  criticalMiss     Boolean        @default(false)
+  evaluatedAt      DateTime?
+  /// L2 autopilot approved the order on this suggestion.
+  autoApprovedAt   DateTime?
+  autoPolicyId     String?
+  createdAt        DateTime       @default(now())
+
+  account     Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order       Order          @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  auditSample AiAuditSample?
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([accountId, evaluatedAt])
+}
+
+/// Embedding of one decided Review for similar-case retrieval (P8-01). The vector is written and searched with
+/// raw SQL (src/server/db/vector.ts); vectors of different providers are never compared.
+model ReviewEmbedding {
+  id        String                       @id @default(cuid())
+  accountId String
+  reviewId  String
+  /// voyage | local-hash
+  provider  String
+  model     String
+  /// sha256 of the case text: unchanged text is not embedded again
+  textHash  String
+  embedding Unsupported("vector(1024)")?
+  createdAt DateTime                     @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  review  Review  @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, provider])
+  @@index([accountId, provider])
+}
+
+/// Daily random audit sample of autopilot approvals (P8-03): a person confirms or rejects each one.
+model AiAuditSample {
+  id           String    @id @default(cuid())
+  accountId    String
+  suggestionId String
+  orderId      String
+  day          DateTime  @db.Date
+  /// PENDING | CONFIRMED | REJECTED
+  status       String    @default("PENDING")
+  reviewerId   String?
+  note         String?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  suggestion AiSuggestion @relation(fields: [accountId, suggestionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, suggestionId])
+  @@index([accountId, status, day])
+}
+
+/// Every level / enabled change of an AiPolicy (promotion by an owner, automatic demotion, kill switch).
+model AiPolicyEvent {
+  id           String   @id @default(cuid())
+  accountId    String
+  policyId     String
+  decisionType String
+  fromLevel    AiLevel?
+  toLevel      AiLevel?
+  fromEnabled  Boolean?
+  toEnabled    Boolean?
+  /// enable | disable | promote | demote_manual | demote_critical | demote_agreement
+  cause        String
+  userId       String?
+  /// Window stats at the time of the change.
+  stats        Json?
+  createdAt    DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, decisionType, createdAt])
+}
+
+/// A deterministic validator / auto-fix proposed by the weekly rule mining (P8-04) from repeated operator
+/// corrections. Accepting only records it for a developer (Claude Code session); no code is generated at runtime.
+model AiRuleProposal {
+  id             String    @id @default(cuid())
+  accountId      String
+  /// Cluster key, e.g. phone_prefix:HU:06→+36
+  key            String
+  /// phone_prefix | zip_format | value_map | field_fill
+  kind           String
+  field          String
+  country        String?
+  pattern        Json
+  titleBg        String
+  titleEn        String
+  /// A few synthetic-safe examples {from, to} (values from Review diffs, shown to admins only).
+  examples       Json      @default("[]")
+  support        Int
+  distinctOrders Int
+  firstSeenAt    DateTime
+  lastSeenAt     DateTime
+  /// PROPOSED | ACCEPTED | REJECTED
+  status         String    @default("PROPOSED")
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionNote   String?
+  minedAt        DateTime
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, key])
+  @@index([accountId, status])
 }

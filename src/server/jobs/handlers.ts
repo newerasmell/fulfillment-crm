@@ -11,6 +11,7 @@ import { registerCheckWorkers } from "@/server/checks/jobs";
 import { registerFulfillWorkers } from "@/server/fulfill/jobs";
 import { registerAlertWorkers } from "@/server/alerts/jobs";
 import { registerLineWorkers } from "@/server/lines/jobs";
+import { registerAiWorkers } from "@/ai/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -69,6 +70,7 @@ export async function registerWorkers(deps: WorkerDeps) {
   await registerFulfillWorkers(boss, opts);
   await registerAlertWorkers(boss, opts);
   await registerLineWorkers(boss, opts);
+  await registerAiWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();
