@@ -355,7 +355,7 @@ export class FhbClient {
           // exactly which part of the real response differs from the documented one.
           throw new FhbError(
             "invalid_response",
-            `${method} ${path}: response does not match the schema (${describeIssues(parsed.error.issues)})`,
+            `${method} ${path}: response does not match the schema (${describeIssues(parsed.error.issues, json)})`,
             res.status,
           );
         }
@@ -486,7 +486,7 @@ export class FhbClient {
 }
 
 /** "items.0.amount: expected string, got number; total: required" — paths with indexes collapsed, no values. */
-export function describeIssues(issues: readonly z.core.$ZodIssue[], max = 4) {
+export function describeIssues(issues: readonly z.core.$ZodIssue[], input?: unknown, max = 4) {
   const seen = new Set<string>();
   for (const i of issues) {
     const path =
@@ -495,16 +495,35 @@ export function describeIssues(issues: readonly z.core.$ZodIssue[], max = 4) {
         .join(".")
         .replace(/\.\[\]/g, "[]") || "(root)";
     // Zod's own messages name types only ("expected string, received number" / "received undefined").
-    const detail =
-      i.code === "invalid_type"
-        ? i.message
-            .replace(/^Invalid input: /, "")
-            .replace("received undefined", "missing")
-            .replace("received", "got")
-        : i.code;
-    seen.add(`${path}: ${detail}`);
+    const typeText = (m: string) =>
+      m
+        .replace(/^Invalid input: /, "")
+        .replace("received undefined", "missing")
+        .replace("received", "got");
+    let detail: string;
+    if (i.code === "invalid_type") detail = typeText(i.message);
+    else if (i.code === "invalid_union") {
+      const first = (i as { errors?: z.core.$ZodIssue[][] }).errors?.[0]?.[0];
+      detail = first?.code === "invalid_type" ? typeText(first.message) : "invalid_union";
+    } else detail = i.code;
+    // The field NAMES present next to the failing one (never values) show what the vendor really sends.
+    const parent = at(input, i.path.slice(0, -1));
+    const keys =
+      parent && typeof parent === "object" && !Array.isArray(parent)
+        ? ` [has: ${Object.keys(parent).slice(0, 15).join(", ")}]`
+        : "";
+    seen.add(`${path}: ${detail}${keys}`);
     if (seen.size >= max) break;
   }
   const rest = issues.length - seen.size;
   return [...seen].join("; ") + (rest > 0 ? ` (+${rest} more)` : "");
+}
+
+function at(v: unknown, path: readonly PropertyKey[]): unknown {
+  let cur = v;
+  for (const k of path) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<PropertyKey, unknown>)[k];
+  }
+  return cur;
 }

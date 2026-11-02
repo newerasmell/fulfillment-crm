@@ -333,10 +333,21 @@ describe("describeIssues", () => {
       ],
     });
     expect(r.success).toBe(false);
-    const text = describeIssues(r.error!.issues);
+    const input = {
+      items: [
+        { amount: 12.5, name: "Secret Customer" },
+        { amount: 3, name: "x" },
+      ],
+    };
+    const text = describeIssues(r.error!.issues, input);
     expect(text).toContain("total: expected number, missing");
     expect(text).toContain("items[].amount: expected string, got number");
     expect(text).not.toContain("Secret Customer");
     expect(text).not.toContain("12.5");
+    expect(text).toContain("[has: amount, name]");
+    const u = z.object({ id: z.union([z.string(), z.number()]) }).safeParse({ order_id: 5 });
+    expect(describeIssues(u.error!.issues, { order_id: 5 })).toBe(
+      "id: expected string, missing [has: order_id]",
+    );
   });
 });

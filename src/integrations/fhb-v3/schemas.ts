@@ -109,8 +109,8 @@ export type FhbProductView = z.infer<typeof FhbProductView>;
 
 /** GET /product/all?page= (250 per page). */
 export const FhbProductPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   products: z.array(FhbProductView),
 });
 export type FhbProductPage = z.infer<typeof FhbProductPage>;
@@ -156,7 +156,7 @@ const Notification = z
 const InvoiceDetail = z
   .object({
     number: z.string().min(1).max(40),
-    total: z.number(),
+    total: z.coerce.number(),
     currency: z.string().length(3),
     date_of_issue: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     products: z
@@ -287,8 +287,8 @@ export type FhbOrderView = z.infer<typeof FhbOrderView>;
 
 /** GET /order/history (100 per page). */
 export const FhbOrderPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   orders: z.array(FhbOrderView),
 });
 export type FhbOrderPage = z.infer<typeof FhbOrderPage>;
@@ -324,8 +324,8 @@ export const FhbStockMovement = z.looseObject({
 });
 export type FhbStockMovement = z.infer<typeof FhbStockMovement>;
 export const FhbStockMovementPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   movements: z.array(FhbStockMovement),
 });
 export type FhbStockMovementPage = z.infer<typeof FhbStockMovementPage>;
@@ -334,8 +334,8 @@ export type FhbStockMovementPage = z.infer<typeof FhbStockMovementPage>;
 
 /** GET /rma/list (100 per page): items have the order structure with `returned_at` / `return_type`. */
 export const FhbRmaPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   items: z.array(FhbOrderView),
 });
 export type FhbRmaPage = z.infer<typeof FhbRmaPage>;
@@ -366,8 +366,8 @@ export const FhbReturn = z.looseObject({
 });
 export type FhbReturn = z.infer<typeof FhbReturn>;
 export const FhbReturnPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   items: z.array(FhbReturn),
 });
 export type FhbReturnPage = z.infer<typeof FhbReturnPage>;
@@ -391,8 +391,8 @@ export const FhbCod = z.looseObject({
 });
 export type FhbCod = z.infer<typeof FhbCod>;
 export const FhbCodPage = z.looseObject({
-  page: z.number(),
-  total: z.number(),
+  page: z.coerce.number(),
+  total: z.coerce.number(),
   items: z.array(FhbCod),
 });
 export type FhbCodPage = z.infer<typeof FhbCodPage>;

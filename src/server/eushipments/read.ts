@@ -215,9 +215,13 @@ async function syncOfficesOfCourier(
   courierId: number,
   now: Date,
 ) {
-  const rows: Prisma.EushipmentsOfficeCreateManyInput[] = [];
+  // Written page by page (never the whole courier list in memory or in one transaction: the worker has
+  // little memory and a large courier has tens of thousands of offices). Rows this run did not see are
+  // removed at the end, so the list is never empty while it is being refreshed.
+  let count = 0;
   for (let page = 1; page <= MAX_PAGES; page++) {
     const res = await client.getOfficesPage(courierId, page, OFFICES_PER_PAGE);
+    const rows: Prisma.EushipmentsOfficeCreateManyInput[] = [];
     for (const o of res.offices) {
       const officeId = int(o.ID);
       if (!officeId) continue;
@@ -244,24 +248,22 @@ async function syncOfficesOfCourier(
         syncedAt: now,
       });
     }
-    if (page >= res.pagination.last_page || res.offices.length === 0) break;
-  }
-  // Thousands of offices per courier: one transaction for all of them outlived the timeout in production.
-  // Replace in small batches instead (each atomic), then drop what this run did not see — the list is never
-  // empty while it is being refreshed, only briefly a mix of old and new rows.
-  for (let i = 0; i < rows.length; i += SYNC_BATCH) {
-    const batch = rows.slice(i, i + SYNC_BATCH);
-    await withAccountTransaction(accountId, async (tx) => {
-      await tx.eushipmentsOffice.deleteMany({
-        where: { connectionId, officeId: { in: batch.map((r) => r.officeId) } },
+    for (let i = 0; i < rows.length; i += SYNC_BATCH) {
+      const batch = rows.slice(i, i + SYNC_BATCH);
+      await withAccountTransaction(accountId, async (tx) => {
+        await tx.eushipmentsOffice.deleteMany({
+          where: { connectionId, officeId: { in: batch.map((r) => r.officeId) } },
+        });
+        await tx.eushipmentsOffice.createMany({ data: batch, skipDuplicates: true });
       });
-      await tx.eushipmentsOffice.createMany({ data: batch, skipDuplicates: true });
-    });
+    }
+    count += rows.length;
+    if (page >= res.pagination.last_page || res.offices.length === 0) break;
   }
   await accountDb(accountId).eushipmentsOffice.deleteMany({
     where: { connectionId, courierId, syncedAt: { lt: now } },
   });
-  return rows.length;
+  return count;
 }
 
 // ───────────────────────── cities (on demand, per country) ─────────────────────────
