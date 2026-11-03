@@ -98,7 +98,9 @@ describe("euShipments write side through the outbox (DB)", () => {
   });
 
   it("reference is {STORECODE}-{number}", () => {
-    expect(referenceFor({ number: "#1001" }, "TST")).toBe("TST-1001");
+    expect(referenceFor({ number: "#1001" }, { vendorIdPrefix: "TST" })).toBe("TST-1001");
+    expect(referenceFor({ number: "#1-EUR2848" }, { vendorIdPrefix: null })).toBe("1-EUR2848");
+    expect(referenceFor({ number: "1001" }, { vendorIdPrefix: "  " })).toBe("1001");
     expect(referenceFor({ number: "77" }, null)).toBe("M-77");
   });
 

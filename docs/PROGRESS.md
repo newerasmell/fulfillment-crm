@@ -128,6 +128,62 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   ShipmentBoardSettings, FhbTicket, FhbTicketEvent (+ report/directory indexes, pg_trgm for search). Audit:
   docs/audits/wave-4.md; notes: docs/wave-4-notes.md. Owner questions: euShipments cabinet URL for link-outs; FHB: does order
   delivery_point take the delivery-point id or external_code; euShipments per-AWB invoice fields could be read later.
+- 2026-11-03 (owner request: full store editing + delete): Магазини → store page has "Данни на магазина" (name, company,
+  currency, countries, domain, code; OWNER/ADMIN, audited before/after) and "Архив и изтриване" (OWNER only, new
+  permission `stores.archive`). Rules (src/server/store-lifecycle.ts): the code is editable only while the store has no
+  orders and no fulfillments (it is in every deterministic vendor id); the domain only while nothing was imported from or
+  written to the shop (a domain change clears variant links/locations/inventory mirror and re-runs the connection test →
+  webhook registration); a company move changes future orders only and, with matched variants, must stay in the same
+  product line. Archive = new nullable Store.archivedAt/archivedById (migration 20261103120000_store_archive, additive):
+  reconcile/backfill/sync/test/registration, Shopify inventory read + push (sweep, create, sender), and the API live
+  check skip archived stores; webhooks for them are acknowledged (200) and not stored, already stored events become
+  IGNORED; a `shopify.removeWebhooks` job deletes our subscriptions (webhookSubscriptionDelete, checked against Admin API
+  2026-10) — failures shown with a retry button; a shop still used by another live store keeps them. Archived stores are
+  hidden from pickers (routing — unless a rule already names them —, stock board) and listed under a collapsed
+  "Архивирани"; orders stay visible/searchable (orders filter shows them as "архивиран"). Restore re-runs the
+  connection test. Delete only without orders, fulfillments, write-backs, inventory pushes or routing rules, confirmed by
+  typing the code; removes variant links, locations, inventory levels and the vault credential if nothing else uses it.
+  A connected store with webhooks is archived first and deleted by the removal job after it succeeded (an OWNER may
+  force the delete after a failed removal). Decision: Shopify fulfillment write-backs of an archived store's already
+  shipped orders still run (they are not a sync job and keep Shopify's order status right).
+  Audit fixes: a domain change resets writeBackMode/inventoryPushMode to READ_ONLY/DISABLED (audited; only an OWNER
+  raises them again), marks the store's queued Shopify events IGNORED, and queues a removal of our webhooks on the old
+  shop (same credential, `oldDomain` job); events now carry `shopDomain` and the worker ignores one whose shop no
+  longer matches the store. The removal job decides the purge from the store (`deleteRequested` + archived), not the
+  job payload (jobs are coalesced per store). The intake tries live stores before archived ones; a shop counts as
+  shared only with another live store on the same app (same client id). Order imports take `store:<id>` as a shared
+  advisory lock, store edits/deletes exclusively, so the "no orders yet" re-check is serialised with a first import.
+
+- 2026-11-03 (fix at the source, owner request): per-country phone rules and master product weights.
+  Настройки → Държави lists every country: the euShipments guideline rules (BG RO GR PL CZ HU SK HR) read-only, our
+  own rules (CountrySetting.phoneRules, Zod-checked) for the others; normalisePhone / normalisePhoneE164 take the
+  group's rule through every caller (euShipments orders and AWBs, FHB orders, Joy labels, order checks, review
+  edits); built-in always wins. On the order screen a phone finding of an undocumented country offers
+  "Добави правило за <CC>" (pre-filled from the order's phone, live preview, warning to confirm with the warehouse);
+  saving re-checks every open (pre-approval) order of the group to that country (25 inline, the rest via
+  orders.check). euShipments weight_missing now names the product (`product:<id>.weightGrams`) and the order screen
+  offers "Въведи тегло"; the master weight is also editable on Продукти → product page (OWNER/ADMIN/OPERATOR,
+  `products.weight`), audited with source/author, and re-checks open orders with that product. Suggestions: euShipments
+  get-products WEIGHT (kg), FHB product weight (unit undocumented — shown, one click only), Shopify variant weight
+  (`inventoryItem.measurement.weight`, now read by the variant sync). "Попълни теглата от склада" fills only masters
+  without a weight from euShipments (conditional update, never overwrites). Optional "Обнови теглото и в Shopify":
+  ShopifyWeightWrite, one row per (variant, weight), gated in the sender by the new per-store "Тегло към Shopify"
+  mode (DISABLED default → DRY_RUN records the exact productVariantsBulkUpdate payload → LIVE reads back, sends,
+  reads back on an unclear answer; raising is OWNER-only). Migration additive (nullable columns, a defaulted column,
+  one new table with RLS). Shopify 2026-10 fields checked with the Shopify docs/schema tools. Owner to do: add the
+  `write_products` scope to the Shopify app (release + reinstall) before raising the weight mode to LIVE; confirm
+  the CY phone format (+357 + 8 digits) with euShipments; then DRY_RUN → check the recorded payload → LIVE.
+  Audit fixes (same day): the weight sender refuses a row whose weight is no longer the master weight
+  ("superseded") in the claim, right before the mutation and in the stale-SENDING sweep, so an older retry or a
+  crashed send can never put a stale weight back over a newer one; tests now cover 5xx/network + read-back,
+  backoff → FAILED + task, crash recovery and definite rejections. Weight actions respect company/line scope
+  (restricted members: their lines' masters + masters without a line). A custom phone rule must use the
+  country's ITU calling code (`calling_code_mismatch`; the form shows it read-only). Lower-case address country
+  codes are re-checked too. Decision for the owner to confirm before merge (CLAUDE.md "ask before changing the
+  data model of an existing table with data"): the additive columns on Product (weightSource/SetAt/SetById),
+  Store (weightWriteMode, default DISABLED) and StoreVariantLink (shopifyWeightGrams) — no existing value changes.
+  Before LIVE: run `pnpm check:live` with VARIANT_WEIGHT_READ_QUERY against one store (the mutation args/inputs were
+  re-checked in the Admin schema: productVariantsBulkUpdate(productId, variants), InventoryItemMeasurementInput.weight).
 
 ## Open questions
 See SPEC.md §11.

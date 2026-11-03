@@ -1,6 +1,6 @@
 import type { ValidationFinding } from "@/integrations/fhb-v3/validators";
 import { AWB_LIMITS, CreateAwbBody, PreAwbBody } from "./awb-schemas";
-import { normalisePhone } from "./phone";
+import { normalisePhone, type PhoneRule } from "./phone";
 import { addDays, BUILDING_NUMBER_KEPT, storedAddressText, WAYBILL_MAX_DAYS_AHEAD } from "./validators";
 
 /**
@@ -22,6 +22,8 @@ export interface AwbDraft {
   today: string;
   name: string | null;
   phone: string | null;
+  /** The group's own phone rule for the destination (only for a country without a built-in rule). */
+  phoneRule?: PhoneRule | null;
   email?: string | null;
   /** ISO-2 (any case). */
   country: string | null;
@@ -73,8 +75,8 @@ const PHONE: Record<string, [string, string]> = {
 }; // prettier-ignore
 
 /** The phone as it will be sent (euShipments per-country rules; unknown country → as typed). */
-export function awbPhone(phone: string | null, country: string | null) {
-  const r = normalisePhone(phone, country);
+export function awbPhone(phone: string | null, country: string | null, rule?: PhoneRule | null) {
+  const r = normalisePhone(phone, country, rule);
   if (r.ok) return r.value;
   if (r.reason === "no_rule" && t(phone)) return t(phone);
   return null;
@@ -278,7 +280,7 @@ export function validateAwb(d: AwbDraft): ValidationFinding[] {
       ),
     );
 
-  const ph = normalisePhone(d.phone, country);
+  const ph = normalisePhone(d.phone, country, d.phoneRule);
   if (!ph.ok) {
     if (ph.reason === "no_rule" && !blank(d.phone))
       out.push(
@@ -444,7 +446,7 @@ export function buildCreateAwb(d: AwbDraft): CreateAwbBody {
       ...(opt(d.buildingNumber) ? { buildingNumber: opt(d.buildingNumber) } : {}),
       ...(opt(d.addressText) ? { addressText: opt(d.addressText) } : {}),
       contactPerson: t(d.name).slice(0, 100),
-      phoneNumber: awbPhone(d.phone, country),
+      phoneNumber: awbPhone(d.phone, country, d.phoneRule),
       ...(opt(d.email) ? { email: opt(d.email) } : {}),
     },
     awb: {
@@ -482,7 +484,7 @@ export function buildPreAwb(d: AwbDraft): PreAwbBody {
       ...(opt(d.buildingNumber) ? { buildingNumber: Number(t(d.buildingNumber)) } : {}),
       ...(opt(d.addressText) ? { addressText: opt(d.addressText) } : {}),
       contactPerson: t(d.name).slice(0, 100),
-      phoneNumber: awbPhone(d.phone, country),
+      phoneNumber: awbPhone(d.phone, country, d.phoneRule),
       ...(opt(d.email) ? { email: opt(d.email) } : {}),
     },
     awb: {

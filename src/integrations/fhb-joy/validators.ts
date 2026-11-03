@@ -27,6 +27,8 @@ export interface JoyShipmentDraft {
   country: string | null;
   email: string | null;
   phone: string | null;
+  /** The group's own phone rule for the destination (used only for a country the ITU table lacks). */
+  phoneRule?: { cc: string; trunk: string } | null;
   /** COD amount in `codCurrency` (null / 0 = no COD). */
   cod: number | null;
   codCurrency: string | null;
@@ -181,7 +183,7 @@ export function validateJoyShipment(d: JoyShipmentDraft): ValidationFinding[] {
   else if (!EMAIL.test(d.email!.trim()))
     out.push(f("joy.email.invalid", "hard", "email", "Невалиден имейл.", "Invalid email."));
 
-  const e164 = normalisePhoneE164(d.phone, d.country);
+  const e164 = normalisePhoneE164(d.phone, d.country, d.phoneRule);
   if (blank(d.phone))
     out.push(
       f("joy.phone.missing", "hard", "phone", "Телефонът е задължителен.", "A phone number is required."),

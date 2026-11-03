@@ -235,6 +235,8 @@ contracts. Separate base URL, separate auth call, camelCase.
   blindly. After creation, read back via `get-products` and check the barcode actually stored.
 - `GET /fulfilment/get-products?companyId=` → `[{ID, NAME, DESCRIPTION, LENGTH_ITEM, WIDTH, HEIGHT, WEIGHT,
   REFERENCE_NUMBER}]` (503 = no access to that company).
+  The mirror keeps WEIGHT in `VendorProduct.raw.weight`; the CRM reads it as kg (the unit of create-product
+  `weight`) and offers it as a suggestion for the master weight (Product.weightGrams), never applied silently.
 
 ### 4.3 Orders (fulfilment)
 - `POST /fulfilment/create-order`. **An order is accepted only if stock is available in the warehouse**
@@ -278,6 +280,13 @@ contracts. Separate base URL, separate auth call, camelCase.
 | SK | `+421` / `00421` + 9 digits |
 | HR | `+385` / `00385` + 9 digits |
 Never send two prefixes. Store the original phone; send the normalised one; show both in the UI.
+
+**Countries the guideline does not document** (e.g. CY): the CRM refuses the phone (`no_rule`) until the group
+saves its OWN rule in Настройки → Държави (CountrySetting.phoneRules `{style, cc, trunk, lengths[]}`, OWNER/ADMIN,
+audited). The eight guideline countries above always use the built-in rule (a stored custom rule for them is
+ignored); a custom rule is our assumption, not vendor documentation — confirm it with euShipments before relying
+on it. FHB / Joy keep their E.164 conversion from the ITU table; a custom calling code is only used for a country
+that table does not know.
 
 ### 4.5 Status tracking (polling, no webhooks)
 - `POST /fulfilment/orders-history {testMode, orders:[{refNum}] (1–100)}` → per order `awb`,

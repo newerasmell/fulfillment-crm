@@ -32,8 +32,10 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const [result, counts, stores] = await Promise.all([
     listOrders(ctx, { ...filters, tab, page }),
     orderTabCounts(ctx, filters),
-    listStores(ctx),
+    // Archived stores stay in the filter: their orders are history and remain searchable.
+    listStores(ctx, { includeArchived: true }),
   ]);
+  const ts = await getTranslations("stores");
   const href = (patch: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
     const merged = { tab, ...filters, store: filters.storeId, storeId: undefined, page: undefined, ...patch };
@@ -82,6 +84,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               {stores.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
+                  {s.archivedAt ? ` (${ts("archivedTag")})` : ""}
                 </option>
               ))}
             </select>

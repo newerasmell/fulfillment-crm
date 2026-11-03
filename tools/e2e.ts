@@ -78,6 +78,12 @@ try {
   // Справки (wave 4, reports track): its own group and OWNER (tests/e2e/reports.spec.ts).
   const { seedReports } = await import("../tests/e2e/seed-reports");
   const reportsOwner = await seedReports();
+  // Phone rules per country + product weights (fix at the source): own group (tests/e2e/rules-weights.spec.ts).
+  const { seedRulesWeights } = await import("../tests/e2e/seed-rules-weights");
+  const rulesWeightsOwner = await seedRulesWeights();
+  // Store edit / archive / delete (Магазини): its own group and OWNER (tests/e2e/stores-edit.spec.ts).
+  const { seedStoresEdit } = await import("../tests/e2e/seed-stores-edit");
+  const storesOwner = await seedStoresEdit();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -125,6 +131,12 @@ try {
       E2E_REPORTS_EMAIL: reportsOwner.email,
       E2E_REPORTS_PASSWORD: reportsOwner.password,
       E2E_REPORTS_TOTP: reportsOwner.totp,
+      E2E_RW_EMAIL: rulesWeightsOwner.email,
+      E2E_RW_PASSWORD: rulesWeightsOwner.password,
+      E2E_RW_TOTP: rulesWeightsOwner.totp,
+      E2E_STORES_EMAIL: storesOwner.email,
+      E2E_STORES_PASSWORD: storesOwner.password,
+      E2E_STORES_TOTP: storesOwner.totp,
     },
   });
   status = run.status ?? 1;

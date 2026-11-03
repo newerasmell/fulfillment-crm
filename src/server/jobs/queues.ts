@@ -42,6 +42,11 @@ export const QUEUES = {
     name: "shopify.registerWebhooks",
     options: { ...retry, policy: "stately", expireInSeconds: 300 },
   },
+  /** Shopify: remove the store's webhook subscriptions to our URL (archive / delete); then deletes when asked. */
+  shopifyRemoveWebhooks: {
+    name: "shopify.removeWebhooks",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
   /** Shopify: pull orders (data: { accountId, storeId, mode: "reconcile" | "backfill", days? }). */
   shopifySyncOrders: {
     name: "shopify.syncOrders",
@@ -167,6 +172,12 @@ export const QUEUES = {
   /** Every 2 min: Shopify fulfillment write-back of shipped shipments (store writeBackMode gate in the sender). */
   shopifyWriteBack: {
     name: "shopify.writeBack",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
+    cron: "*/2 * * * *",
+  },
+  /** Every 2 min: product weight → Shopify (store weightWriteMode gate in the sender). */
+  shopifyWeightWrite: {
+    name: "shopify.weightWrite",
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
     cron: "*/2 * * * *",
   },

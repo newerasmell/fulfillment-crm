@@ -21,6 +21,9 @@ INSERT INTO "Store"(id,"accountId",domain,code,name,currency,"updatedAt")
   VALUES ('s1','accA','a.example','AAA','A','EUR',now()),('s2','accB','b.example','BBB','B','EUR',now());
 INSERT INTO "FulfillmentConnection"(id,"accountId",type,name,"updatedAt") VALUES ('c1','accA','FHB_V3','FHB',now());
 INSERT INTO "Product"(id,"accountId",sku,name,"updatedAt") VALUES ('p1','accA','SKU-1','P',now());
+INSERT INTO "StoreVariantLink"(id,"accountId","storeId","shopifyVariantGid","shopifyProductGid",title,"productId","updatedAt")
+  VALUES ('vl1','accA','s1','gid://shopify/ProductVariant/1','gid://shopify/Product/1','V','p1',now());
+INSERT INTO "CountrySetting"(id,"accountId",country,currency) VALUES ('cs1','accA','BG','EUR');
 INSERT INTO "Order"(id,"accountId",source,number,currency,subtotal,total,"paymentMethod","placedAt","updatedAt")
   VALUES ('o1','accA','MANUAL','1','EUR',1,1,'COD',now(),now());
 INSERT INTO "Fulfillment"(id,"accountId","orderId","connectionId","externalId",status,"updatedAt")

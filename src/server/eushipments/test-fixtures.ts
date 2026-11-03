@@ -33,6 +33,7 @@ export async function euTestGroup(label: string) {
       companyId: company.id,
       domain: `${label}-${Date.now()}.example`,
       code: "TST",
+      vendorIdPrefix: "TST",
       name: "S",
       currency: "EUR",
     },

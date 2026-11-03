@@ -34,11 +34,15 @@ export function fhbProductId(sku: string, skuPrefixRule: unknown): string {
   return `${prefix}${sku.trim()}`;
 }
 
-/** `{STORECODE}-{number}` with the "#" and anything outside [A-Za-z0-9-] removed; `-2`, `-3` … for reships. */
-export function fhbOrderExternalId(storeCode: string, orderNumber: string, attempt = 1): string {
+/**
+ * Warehouse order id: the order number with the "#" and anything outside [A-Za-z0-9-] removed, with an optional
+ * `{PREFIX}-` in front (Store.vendorIdPrefix; "M" for manual orders); `-2`, `-3` … for reships.
+ */
+export function fhbOrderExternalId(prefix: string, orderNumber: string, attempt = 1): string {
   const number = orderNumber.replace(/^#/, "").replace(/[^A-Za-z0-9-]/g, "");
-  if (!storeCode.trim() || !number) throw new Error("store code and order number are required");
-  return `${storeCode.trim().toUpperCase()}-${number}${attempt > 1 ? `-${attempt}` : ""}`;
+  if (!number) throw new Error("order number is required");
+  const p = prefix.trim().toUpperCase();
+  return `${p ? `${p}-` : ""}${number}${attempt > 1 ? `-${attempt}` : ""}`;
 }
 
 export const MAX_VARIABLE_SYMBOL = 9_999_999_999n;
@@ -59,6 +63,8 @@ export interface FhbOrderDraft {
   };
   email: string;
   phone: string;
+  /** The group's own phone rule for the destination (used only for a country the ITU table lacks). */
+  phoneRule?: { cc: string; trunk: string } | null;
   /** FHB product ids with quantities; the same id on several lines is merged. */
   items: { id: string; quantity: number }[];
   /** Already in the destination's local currency. 0 / null = not COD. */
@@ -80,7 +86,7 @@ function mergeItems(items: { id: string; quantity: number }[]) {
 }
 
 function orderCore(d: FhbOrderDraft) {
-  const phone = normalisePhoneE164(d.phone, d.address.country) ?? d.phone.trim();
+  const phone = normalisePhoneE164(d.phone, d.address.country, d.phoneRule) ?? d.phone.trim();
   const notification = Object.fromEntries(
     Object.entries(d.notification ?? {}).filter(([, url]) => !!url && url.length <= FHB_URL_MAX),
   );

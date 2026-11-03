@@ -8,6 +8,7 @@ import {
   type FhbOrderDraft,
 } from "@/integrations/fhb-v3/mapper";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
+import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { isFhbOrderEditable } from "@/integrations/fhb-v3/status-map";
 import {
   hasHardBlock,
@@ -95,11 +96,26 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 type Tx = Prisma.TransactionClient;
 
 /**
- * The code in front of the FHB order id: the store code, or "M" for a manual order (Ръчни пратки, P7-03) whose
- * number is already unique per group (M1001 → FHB id "M-M1001", the same id used at every vendor).
+ * The prefix in front of the FHB order id: the store's optional vendorIdPrefix ("" = the Shopify order number as
+ * it is), or "M" for a manual order (Ръчни пратки, P7-03) whose number is already unique per group (M1001 → FHB id
+ * "M-M1001", the same id used at every vendor). null = no store and not manual: the order cannot get an id.
  */
-const orderCode = (o: { source?: string | null; store?: { code: string } | null }) =>
-  o.store?.code ?? (o.source === "MANUAL" ? "M" : null);
+const orderCode = (o: {
+  source?: string | null;
+  store?: { code: string; vendorIdPrefix?: string | null } | null;
+}) => (o.store ? (o.store.vendorIdPrefix?.trim() ?? "") : o.source === "MANUAL" ? "M" : null);
+
+/**
+ * Another order already uses this warehouse id on this connection (e.g. two stores both have #1001 and neither
+ * has a prefix). The (connectionId, externalId) unique index makes a duplicate impossible; this names it first.
+ */
+async function externalIdTakenBy(tx: Tx, connectionId: string, externalId: string, orderId: string) {
+  const other = await tx.fulfillment.findFirst({
+    where: { connectionId, externalId, orderId: { not: orderId } },
+    select: { order: { select: { number: true } } },
+  });
+  return other ? other.order.number : null;
+}
 
 /**
  * Loads everything the pre-flight needs and runs the FHB validators. Pure reads inside the caller's tx; no
@@ -136,6 +152,7 @@ async function fhbPreflight(
       })
     : null;
   const localCurrency = setting?.currency?.toUpperCase() ?? null;
+  const phoneRule = customPhoneRule(setting?.phoneRules);
 
   // Product mapping for this connection and the mirrored stock.
   const productIds = [...new Set(order.lines.map((l) => l.productId).filter((x): x is string => !!x))];
@@ -198,6 +215,7 @@ async function fhbPreflight(
     zip: addr.zip ?? null,
     email: order.email,
     phone,
+    phoneRule,
     lines: lineChecks,
     isCod,
     codAmount,
@@ -212,7 +230,20 @@ async function fhbPreflight(
     valueNotConverted,
     stockMaxAgeMs: input.stockMaxAgeMs,
   });
-  return { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value };
+  return {
+    order,
+    connection,
+    findings,
+    addr,
+    street,
+    country,
+    phone,
+    phoneRule,
+    lineChecks,
+    isCod,
+    codAmount,
+    value,
+  };
 }
 
 /** The FHB order draft from a pre-flight result (only valid when the pre-flight has no hard block). */
@@ -222,7 +253,7 @@ function fhbDraft(
   ids: { externalId: string; variableSymbol: string },
   notification: FhbOrderDraft["notification"],
 ): FhbOrderDraft {
-  const { order, addr, street, country, phone, lineChecks, isCod, codAmount, value } = pre;
+  const { order, addr, street, country, phone, phoneRule, lineChecks, isCod, codAmount, value } = pre;
   return {
     externalId: ids.externalId,
     variableSymbol: ids.variableSymbol,
@@ -235,7 +266,8 @@ function fhbDraft(
       country: country!,
     },
     email: order.email!,
-    phone: normalisePhoneE164(phone, country)!,
+    phone: normalisePhoneE164(phone, country, phoneRule)!,
+    phoneRule,
     items: lineChecks.map((l) => ({ id: l.vendorProductId!, quantity: l.quantity })),
     cod: isCod ? codAmount : null,
     value,
@@ -292,7 +324,13 @@ export async function nextFhbExternalId(tx: Tx, orderId: string, storeCode: stri
 async function loadScoped(tx: Tx, actor: ScopedActor, orderId: string, connectionId: string) {
   const order = await tx.order.findUnique({
     where: { id: orderId },
-    select: { id: true, companyId: true, number: true, source: true, store: { select: { code: true } } },
+    select: {
+      id: true,
+      companyId: true,
+      number: true,
+      source: true,
+      store: { select: { code: true, vendorIdPrefix: true } },
+    },
   });
   if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? ""))) {
     throw new DomainError("not_found");
@@ -315,7 +353,7 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
       const { order, connection } = await loadScoped(tx, actor, input.orderId, input.connectionId);
       if (await isLabelOnly(tx, order.id)) throw new DomainError("label_only_order");
       const code = orderCode(order);
-      if (!code) throw new DomainError("fhb_no_store_code");
+      if (code === null) throw new DomainError("fhb_no_store_code");
       // Serialises submissions per connection: the variable-symbol sequence and the duplicate checks below.
       await lockForUpdate("FulfillmentConnection", connection.id);
 
@@ -341,6 +379,8 @@ export async function submitFhbOrder(actor: ScopedActor, input: SubmitFhbOrderIn
         // A cancelled shipment keeps its id at FHB: a reship gets `-2`, `-3`, …, counted over the order's
         // shipments at EVERY FHB connection (a reroute FHB A → FHB B on one FHB account must not reuse A's id).
         const externalId = await nextFhbExternalId(tx, order.id, code, order.number);
+        if (await externalIdTakenBy(tx, connection.id, externalId, order.id))
+          throw new DomainError("fhb_external_id_taken");
         // Allocated atomically AFTER the lock: the connection row read by loadScoped() may be stale by now
         // (a concurrent submit committed its increment while we waited for the lock).
         const bumped = await tx.fulfillmentConnection.update({
@@ -598,7 +638,12 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
   return withAccountTransaction(accountId, async (tx) => {
     const order = await tx.order.findUnique({
       where: { id: input.orderId },
-      select: { id: true, number: true, source: true, store: { select: { code: true } } },
+      select: {
+        id: true,
+        number: true,
+        source: true,
+        store: { select: { code: true, vendorIdPrefix: true } },
+      },
     });
     if (!order) throw new DomainError("not_found");
     const connection = await tx.fulfillmentConnection.findUnique({ where: { id: input.connectionId } });
@@ -613,7 +658,7 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
         ),
       );
     const code = orderCode(order);
-    if (!code) {
+    if (code === null) {
       out.push(
         previewFinding(
           "fhb.order.no_store_code",
@@ -640,6 +685,15 @@ async function fhbPreview(accountId: string, input: Omit<SubmitFhbOrderInput, "a
       );
     const reuse = previous.find((p) => p.status === "SUBMIT_FAILED" || p.status === "QUEUED");
     const externalId = reuse?.externalId ?? (await nextFhbExternalId(tx, order.id, code, order.number));
+    const takenBy = reuse ? null : await externalIdTakenBy(tx, connection.id, externalId, order.id);
+    if (takenBy)
+      out.push(
+        previewFinding(
+          "fhb.order.external_id_taken",
+          `Номерът ${externalId} вече е използван към този склад от поръчка ${takenBy} (друг магазин). Задайте префикс към склада на един от магазините.`,
+          `The id ${externalId} is already used at this warehouse by order ${takenBy} (another store). Set a warehouse prefix on one of the stores.`,
+        ),
+      );
     const variableSymbol = reuse?.variableSymbol ?? BigInt(connection.variableSymbolNext).toString();
     const duplicate = !!(await tx.fulfillment.findFirst({
       where: {

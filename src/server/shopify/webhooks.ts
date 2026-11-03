@@ -3,9 +3,11 @@ import { isShopDomain } from "@/integrations/shopify/config";
 import { parseAppCredentials } from "@/integrations/shopify/credentials";
 import {
   WEBHOOK_CREATE_MUTATION,
+  WEBHOOK_DELETE_MUTATION,
   WEBHOOK_SUBSCRIPTIONS_QUERY,
   WEBHOOK_TOPICS,
   WebhookCreate,
+  WebhookDelete,
   WebhookSubscriptions,
   verifyWebhookHmac,
   webhookTarget,
@@ -82,7 +84,14 @@ export function webhookPointer(payload: unknown) {
 export type ReceiveResult =
   | { status: 401 }
   | { status: 400 }
-  | { status: 200; eventId: string | null; accountId: string | null; duplicate: boolean };
+  | {
+      status: 200;
+      eventId: string | null;
+      accountId: string | null;
+      duplicate: boolean;
+      /** The store is archived: acknowledged (so Shopify stops retrying) and not stored. */
+      ignored?: boolean;
+    };
 
 /**
  * Webhook intake: authenticates (HMAC with the client secret of the store the shop domain belongs to), stores
@@ -99,8 +108,16 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
   // The same shop may be connected in more than one group; the signature decides which one sent it.
   const stores = await systemDb().store.findMany({
     where: { domain, credentialId: { not: null } },
-    select: { id: true, accountId: true, credentialId: true, credential: { select: { updatedAt: true } } },
+    select: {
+      id: true,
+      accountId: true,
+      credentialId: true,
+      archivedAt: true,
+      credential: { select: { updatedAt: true } },
+    },
   });
+  // Live stores first: an archived copy of the same shop (same app secret) must never swallow a live one's events.
+  stores.sort((a, b) => Number(!!a.archivedAt) - Number(!!b.archivedAt));
   let store: (typeof stores)[number] | null = null;
   for (const s of stores) {
     try {
@@ -122,6 +139,9 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
     logger.warn({ domain, topic }, "shopify webhook rejected: signature");
     return { status: 401 };
   }
+  if (store.archivedAt) {
+    return { status: 200, eventId: null, accountId: store.accountId, duplicate: false, ignored: true };
+  }
 
   let payload: unknown;
   try {
@@ -136,7 +156,13 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
         source: "SHOPIFY",
         dedupeKey: `${store.id}:${webhookId}`,
         topic,
-        headers: { storeId: store.id, webhookId, triggeredAt: headers.get("x-shopify-triggered-at") },
+        headers: {
+          storeId: store.id,
+          // The shop it came from: if the store is pointed at another shop before it is processed, it is ignored.
+          shopDomain: domain,
+          webhookId,
+          triggeredAt: headers.get("x-shopify-triggered-at"),
+        },
         payload: webhookPointer(payload),
       },
     });
@@ -157,10 +183,15 @@ export async function processShopifyWebhook(
   const db = accountDb(accountId);
   const event = await db.webhookEvent.findUnique({ where: { id: eventId } });
   if (!event || event.status === "PROCESSED" || event.status === "IGNORED") return event?.status ?? null;
-  const storeId = (event.headers as { storeId?: string } | null)?.storeId;
+  const { storeId, shopDomain } = (event.headers ?? {}) as { storeId?: string; shopDomain?: string };
   const target = webhookTarget(event.topic, event.payload);
   try {
-    if (!storeId || target.kind === "ignore") {
+    // Deleted or archived since the event arrived, or now pointed at another shop: nothing to do for it any more.
+    const live = storeId
+      ? await db.store.findUnique({ where: { id: storeId }, select: { archivedAt: true, domain: true } })
+      : null;
+    const otherShop = !!live && !!shopDomain && shopDomain !== live.domain;
+    if (!storeId || target.kind === "ignore" || !live || live.archivedAt || otherShop) {
       await db.webhookEvent.update({
         where: { id: eventId },
         data: { status: "IGNORED", processedAt: new Date() },
@@ -230,5 +261,45 @@ export async function registerStoreWebhooks(
     ...(errors.length ? { errors } : {}),
   };
   await accountDb(accountId).store.update({ where: { id: storeId }, data: { webhookStatus: status } });
+  return status;
+}
+
+/**
+ * Worker (archive / delete): removes this store's subscriptions to our URL — the same client and URL as the
+ * registration, so subscriptions of anything else are never touched. Records the result in webhookStatus
+ * (`removed: true` only when nothing of ours is left); userErrors are shown on the store page and retryable.
+ */
+export async function removeStoreWebhooks(
+  accountId: string,
+  storeId: string,
+  uri: string,
+  opts: ShopifyClientOptions = {},
+  /** The shop the store pointed at before a domain change: removed there, webhookStatus (new shop) untouched. */
+  oldDomain?: string,
+) {
+  const { client, store } = await shopifyClientForStore(accountId, storeId, opts, oldDomain);
+  const existing = await client.query(WEBHOOK_SUBSCRIPTIONS_QUERY, { uri }, WebhookSubscriptions);
+  const left: string[] = [];
+  const errors: string[] = [];
+  for (const n of existing.webhookSubscriptions.nodes) {
+    if (n.uri !== uri) continue;
+    const res = await client.query(WEBHOOK_DELETE_MUTATION, { id: n.id }, WebhookDelete);
+    const errs = res.webhookSubscriptionDelete.userErrors;
+    if (errs.length) {
+      left.push(n.topic);
+      errors.push(`${n.topic}: ${errs.map((e) => e.message).join("; ")}`.slice(0, 300));
+    }
+  }
+  const prev = store.webhookStatus as { deleteRequested?: boolean };
+  const status = {
+    ok: errors.length === 0,
+    at: new Date().toISOString(),
+    topics: left.sort(),
+    removed: errors.length === 0,
+    ...(prev.deleteRequested ? { deleteRequested: true } : {}),
+    ...(errors.length ? { errors } : {}),
+  };
+  if (!oldDomain)
+    await accountDb(accountId).store.update({ where: { id: storeId }, data: { webhookStatus: status } });
   return status;
 }

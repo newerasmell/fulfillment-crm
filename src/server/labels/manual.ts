@@ -15,6 +15,7 @@ import { isJoyRejectable } from "@/integrations/fhb-joy/status-map";
 import { validateJoyShipment, type JoyShipmentDraft } from "@/integrations/fhb-joy/validators";
 import type { ValidationFinding } from "@/integrations/fhb-v3/validators";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
+import { customPhoneRule, type PhoneRule } from "@/integrations/eushipments/phone";
 import { MAX_VARIABLE_SYMBOL } from "@/integrations/fhb-v3/mapper";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
@@ -255,16 +256,22 @@ function toFinding(f: ValidationFinding, source: Finding["source"]): Finding {
   return { ...f, source, field: f.field };
 }
 
-async function localCurrencyOf(db: Tx, accountId: string, country: string) {
+/** The destination's setting: local currency and the group's own phone rule (Настройки → Държави). */
+interface CountryCtx {
+  currency: string | null;
+  phoneRule: PhoneRule | null;
+}
+
+async function countryCtxOf(db: Tx, accountId: string, country: string): Promise<CountryCtx> {
   const s = await db.countrySetting.findUnique({ where: { accountId_country: { accountId, country } } });
-  return s?.currency?.toUpperCase() ?? null;
+  return { currency: s?.currency?.toUpperCase() ?? null, phoneRule: customPhoneRule(s?.phoneRules) };
 }
 
 function joyDraftOf(
   v: Parsed,
   settings: ReturnType<typeof joySettingsOf>,
   ids: { id: string; variableSymbol: string },
-  localCurrency: string | null,
+  countryCtx: CountryCtx,
   duplicate: boolean,
 ): JoyShipmentDraft {
   const r = v.recipient;
@@ -283,7 +290,8 @@ function joyDraftOf(
     phone: r.phone,
     cod: v.cod,
     codCurrency: v.currency,
-    localCurrency,
+    localCurrency: countryCtx.currency,
+    phoneRule: countryCtx.phoneRule,
     numberOfPackages: v.parcels,
     weights: v.weights ?? null,
     requiresDeliveryPoint: !!v.parcelService && settings.pickupServices.includes(v.parcelService),
@@ -297,7 +305,7 @@ function awbDraftOf(
   v: Parsed,
   companyId: number | null,
   reference: string,
-  localCurrency: string | null,
+  countryCtx: CountryCtx,
   duplicate: boolean,
   now: Date,
 ): AwbDraft {
@@ -327,7 +335,8 @@ function awbDraftOf(
     declaredValue: v.declaredValue ?? null,
     cod: v.cod,
     codCurrency: v.currency,
-    localCurrency,
+    localCurrency: countryCtx.currency,
+    phoneRule: countryCtx.phoneRule,
     observations: v.note,
     contents: v.contents,
     openPackage: v.openPackage,
@@ -354,7 +363,7 @@ function planLabel(
   v: Parsed,
   conn: { type: ConnectionType; vendorIds: unknown },
   ids: { externalId: string; variableSymbol: string },
-  localCurrency: string | null,
+  countryCtx: CountryCtx,
   duplicate: boolean,
   now: Date,
 ): LabelPlan & { body: unknown | null } {
@@ -364,7 +373,7 @@ function planLabel(
       v,
       settings,
       { id: ids.externalId, variableSymbol: ids.variableSymbol },
-      localCurrency,
+      countryCtx,
       duplicate,
     );
     const findings = validateJoyShipment(draft).map((f) => toFinding(f, "fhb"));
@@ -384,7 +393,7 @@ function planLabel(
       deliveryPoint: v.deliveryPoint ? { code: v.deliveryPoint } : undefined,
     };
   }
-  const draft = awbDraftOf(v, euCompanyId(conn.vendorIds), ids.externalId, localCurrency, duplicate, now);
+  const draft = awbDraftOf(v, euCompanyId(conn.vendorIds), ids.externalId, countryCtx, duplicate, now);
   const findings = validateAwb(draft).map((f) => toFinding(f, "eushipments"));
   const hard = findings.some((f) => f.severity === "hard");
   const body = hard ? null : draft.service === "preAWB" ? buildPreAwb(draft) : buildCreateAwb(draft);
@@ -424,7 +433,7 @@ export async function previewManualShipment(
   if (actor.companyScope && !actor.companyScope.includes(v.companyId)) throw new DomainError("not_found");
   const db = scopedTx(actor.accountId);
   const conn = await loadConnection(db, actor, v.kind, v.connectionId, v.companyId);
-  const localCurrency = await localCurrencyOf(db, actor.accountId, v.recipient.countryCode);
+  const countryCtx = await countryCtxOf(db, actor.accountId, v.recipient.countryCode);
   const chosen = {
     bg: `Ръчно избрана връзка: „${conn.name}“ (${conn.type}), режим ${conn.liveMode}.`,
     en: `Chosen by hand: "${conn.name}" (${conn.type}), mode ${conn.liveMode}.`,
@@ -480,7 +489,8 @@ export async function previewManualShipment(
         })),
       },
       {
-        localCurrency,
+        localCurrency: countryCtx.currency,
+        phoneRule: countryCtx.phoneRule,
         routing: routing.connectionId === conn.id ? routing : { ...routing, connectionId: conn.id },
         stock,
         duplicates: await possibleDuplicates(db, v, now),
@@ -502,14 +512,7 @@ export async function previewManualShipment(
           },
     };
   }
-  const plan = planLabel(
-    v,
-    conn,
-    { externalId: "M-PREVIEW", variableSymbol: "1" },
-    localCurrency,
-    false,
-    now,
-  );
+  const plan = planLabel(v, conn, { externalId: "M-PREVIEW", variableSymbol: "1" }, countryCtx, false, now);
   return {
     kind: v.kind,
     findings: sortFindings([...plan.findings, ...duplicateFinding(await possibleDuplicates(db, v, now))]),
@@ -758,15 +761,14 @@ async function createLabel(
   now: Date,
 ): Promise<CreateManualResult> {
   const db = scopedTx(actor.accountId);
-  const localCurrency = await localCurrencyOf(db, actor.accountId, v.recipient.countryCode);
+  const countryCtx = await countryCtxOf(db, actor.accountId, v.recipient.countryCode);
   // Fail fast (nothing written, no number consumed); the same checks run again inside the transaction.
   {
     const conn = await loadConnection(db, actor, v.kind, v.connectionId, v.companyId);
     if (conn.liveMode === "READ_ONLY") throw new DomainError("connection_read_only");
     gate(
       [
-        ...planLabel(v, conn, { externalId: "M-M0", variableSymbol: "1" }, localCurrency, false, now)
-          .findings,
+        ...planLabel(v, conn, { externalId: "M-M0", variableSymbol: "1" }, countryCtx, false, now).findings,
         ...duplicateFinding(await possibleDuplicates(db, v, now)),
       ],
       v.acknowledgedCodes,
@@ -800,7 +802,7 @@ async function createLabel(
         v,
         conn,
         { externalId, variableSymbol: variableSymbol ?? "1" },
-        localCurrency,
+        countryCtx,
         duplicate,
         now,
       );
@@ -834,8 +836,8 @@ async function createLabel(
       );
       const phone =
         type === "FHB_JOY"
-          ? normalisePhoneE164(v.recipient.phone, v.recipient.countryCode)
-          : awbPhone(v.recipient.phone, v.recipient.countryCode);
+          ? normalisePhoneE164(v.recipient.phone, v.recipient.countryCode, countryCtx.phoneRule)
+          : awbPhone(v.recipient.phone, v.recipient.countryCode, countryCtx.phoneRule);
       const findings = sortFindings(plan.findings);
       const soft = findings.filter((f) => f.severity === "soft").length;
       await tx.orderCheck.create({
@@ -1030,12 +1032,12 @@ export async function resendLabel(
     if (!ms.connection.enabled) throw new DomainError("connection_disabled");
     if (!["QUEUED", "SUBMIT_FAILED"].includes(f.status)) throw new DomainError("already_submitted");
     const v = inputOf(ms);
-    const localCurrency = await localCurrencyOf(tx, actor.accountId, v.recipient.countryCode);
+    const countryCtx = await countryCtxOf(tx, actor.accountId, v.recipient.countryCode);
     const plan = planLabel(
       v,
       ms.connection,
       { externalId: f.externalId, variableSymbol: f.variableSymbol ?? "1" },
-      localCurrency,
+      countryCtx,
       false,
       now,
     );

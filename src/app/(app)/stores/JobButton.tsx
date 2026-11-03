@@ -13,7 +13,7 @@ export function JobButton({
   label,
 }: {
   storeId: string;
-  kind: "test" | "orders" | "products" | "webhooks";
+  kind: "test" | "orders" | "products" | "webhooks" | "removeWebhooks";
   label: string;
 }) {
   const t = useTranslations("stores");

@@ -13,6 +13,7 @@ const EXPECTED: Record<Permission, string> = {
   "credentials.write": "11000",
   "stores.manage": "11000",
   "stores.raiseMode": "10000",
+  "stores.archive": "10000",
   "stores.sync": "11100",
   "products.match": "11110",
   "connections.manage": "11000",
@@ -53,6 +54,8 @@ const EXPECTED: Record<Permission, string> = {
   "shipments.settings": "11000",
   "invoices.read": "11100",
   "reports.read": "11100",
+  "countries.manage": "11000",
+  "products.weight": "11100",
 };
 
 describe("role matrix", () => {

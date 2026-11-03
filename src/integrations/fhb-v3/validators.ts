@@ -66,6 +66,8 @@ export interface FhbOrderCheck {
   zip: string | null;
   email: string | null;
   phone: string | null;
+  /** The group's own phone rule for the destination (used only for a country the ITU table lacks). */
+  phoneRule?: { cc: string; trunk: string } | null;
   lines: FhbOrderLineCheck[];
   /** COD order? Then codAmount must be known in the destination's local currency. */
   isCod: boolean;
@@ -203,7 +205,7 @@ export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
       ),
     );
   } else {
-    const e164 = normalisePhoneE164(o.phone, o.country);
+    const e164 = normalisePhoneE164(o.phone, o.country, o.phoneRule);
     if (!e164 || e164.length > FHB_PHONE_MAX)
       out.push(
         f(

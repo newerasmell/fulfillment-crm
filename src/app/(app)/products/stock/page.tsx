@@ -401,6 +401,9 @@ async function ProductPanel({
           {product.isTester && <TesterBadge />}
         </h2>
         <div className={`${monoCls} text-muted`}>{product.sku}</div>
+        <Link href={`/products/${product.id}`} className="text-sm text-accent hover:underline">
+          {(await getTranslations("weights"))("productLink")}
+        </Link>
         {product.parent && (
           <div className="text-xs text-muted">
             {t("panel.testerOf")} <span className="font-mono">{product.parent.sku}</span>

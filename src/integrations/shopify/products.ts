@@ -1,6 +1,10 @@
 import { z } from "zod";
+import { ShopifyWeight } from "./weights";
 
-/** Variant queries (API 2026-10: barcodes are a connection, `barcodes { nodes { value } }`). */
+/**
+ * Variant queries (API 2026-10: barcodes are a connection, `barcodes { nodes { value } }`; the variant weight
+ * is `inventoryItem.measurement.weight { unit value }` — a suggestion for the master weight, never a key).
+ */
 
 /** Bounded by the 1000-point query cost cap (see query-cost.test.ts). */
 export const VARIANTS_PAGE_SIZE = 50;
@@ -17,6 +21,14 @@ const VARIANT_FIELDS = /* GraphQL */ `
     barcodes(first: 1) {
       nodes {
         value
+      }
+    }
+    inventoryItem {
+      measurement {
+        weight {
+          unit
+          value
+        }
       }
     }
     product {
@@ -68,6 +80,7 @@ export const ShopifyVariant = z.object({
   displayName: z.string(),
   updatedAt: z.string(),
   barcodes: z.object({ nodes: z.array(z.object({ value: z.string() })) }),
+  inventoryItem: z.object({ measurement: z.object({ weight: ShopifyWeight }).nullish() }).nullish(),
   product: z.object({ id: z.string(), title: z.string(), vendor: z.string(), status: z.string() }),
 });
 export type ShopifyVariant = z.infer<typeof ShopifyVariant>;

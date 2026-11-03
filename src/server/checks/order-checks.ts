@@ -39,6 +39,9 @@ export interface CheckOrder {
 export interface OrderCheckContext {
   /** CountrySetting.currency for the destination; null = not configured. */
   localCurrency: string | null;
+  /** The group's own phone rule for the destination (CountrySetting.phoneRules); only used by the E.164
+   *  conversion for a country the built-in calling-code table lacks. */
+  phoneRule?: { cc: string; trunk: string } | null;
   routing: RoutingDecision;
   /** Stock at the connection that will ship (the routed one, or the operator's choice). */
   stock: StockCheck | null;
@@ -151,7 +154,7 @@ export function orderLevelFindings(o: CheckOrder, ctx: OrderCheckContext): Order
 
   // Phone: must be convertible to E.164 for the destination (vendors get the normalised form).
   const rawPhone = o.phone ?? addr.phone ?? null;
-  const phone = normalisePhoneE164(rawPhone, country);
+  const phone = normalisePhoneE164(rawPhone, country, ctx.phoneRule);
   if (blank(rawPhone))
     out.push(
       f(

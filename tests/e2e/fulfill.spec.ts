@@ -29,7 +29,9 @@ test("bulk Fulfill: selection, sticky bar, per-order result, CANARY confirmation
   await rowA.getByRole("button", { name: "Прегледай и потвърди" }).click();
   const dialog = page.getByRole("dialog", { name: "Потвърждение (канарче)" });
   await expect(dialog.getByTestId("canary-cap")).toContainText("Остават 10 от 10");
-  await expect(dialog.getByLabel("Данни за изпращане")).toContainText("DM-93001");
+  // Warehouse id = the Shopify order number as it is (the demo store has no warehouse prefix).
+  await expect(dialog.getByLabel("Данни за изпращане")).toContainText('"93001"');
+  await expect(dialog.getByLabel("Данни за изпращане")).not.toContainText("DM-93001");
   await dialog.getByRole("button", { name: "Потвърди изпращането" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(rowA.getByRole("button", { name: "Прегледай и потвърди" })).toHaveCount(0, {

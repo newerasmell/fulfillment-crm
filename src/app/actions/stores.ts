@@ -12,6 +12,7 @@ import { enqueueShopify } from "@/server/shopify/jobs";
 import { webhookCallbackUrl } from "@/server/shopify/webhooks";
 import { backfillWindows } from "@/server/shopify/orders";
 import { createStore, getStore, replaceStoreCredentials, updateStoreSettings } from "@/server/stores";
+import { archiveStore, deleteStore, restoreStore, updateStoreDetails } from "@/server/store-lifecycle";
 
 type Result = { ok?: boolean; error?: string } | undefined;
 
@@ -64,13 +65,14 @@ export async function saveStoreSettingsAction(
   const ctx = await requireAccountContext();
   try {
     await updateStoreSettings(actorFrom(ctx), storeId, {
-      name: String(form.get("name") ?? ""),
-      countries: list(form.get("countries")),
       codGateways: list(form.get("codGateways")),
       skuPrefix: String(form.get("skuPrefix") ?? ""),
       notifyCustomer: form.get("notifyCustomer") === "on",
       writeBackMode: String(form.get("writeBackMode")) as "READ_ONLY",
       inventoryPushMode: String(form.get("inventoryPushMode")) as "DISABLED",
+      ...(form.get("weightWriteMode")
+        ? { weightWriteMode: String(form.get("weightWriteMode")) as "DISABLED" }
+        : {}),
       inventoryBuffer: Number(form.get("inventoryBuffer") ?? 0),
     });
   } catch (err) {
@@ -103,7 +105,122 @@ export async function replaceStoreCredentialsAction(
   return { ok: true };
 }
 
-type StoreJobKind = "test" | "orders" | "products" | "webhooks";
+/** "Данни на магазина": name, company, currency, countries, domain, code (locks in store-lifecycle.ts). */
+export async function saveStoreDetailsAction(
+  storeId: string,
+  _prev: Result,
+  form: FormData,
+): Promise<Result> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await updateStoreDetails(actorFrom(ctx), storeId, {
+      name: String(form.get("name") ?? ""),
+      companyId: String(form.get("companyId") ?? ""),
+      currency: String(form.get("currency") ?? ""),
+      countries: list(form.get("countries")),
+      domain: String(form.get("domain") ?? ""),
+      code: String(form.get("code") ?? ""),
+      vendorIdPrefix: String(form.get("vendorIdPrefix") ?? ""),
+    });
+    // A different shop: test it again; a good test re-registers the webhooks and starts the first imports.
+    if (r.domainChanged) {
+      await enqueueShopify.testConnection(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+      });
+    }
+    // The previous shop keeps posting to us until our subscriptions there are removed.
+    if (r.oldShopWebhooks) {
+      await enqueueShopify.removeWebhooks(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+        oldDomain: r.oldShopWebhooks,
+        userId: ctx.user.id,
+      });
+    }
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath(`/stores/${storeId}`);
+  revalidatePath("/stores");
+  return { ok: true };
+}
+
+/** "Архивирай магазина" (OWNER): stops every job, then a job removes the store's Shopify webhooks. */
+export async function archiveStoreAction(storeId: string, _prev: Result, _form: FormData): Promise<Result> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await archiveStore(actorFrom(ctx), storeId);
+    if (r.archived) {
+      // Coalesced per store with a later delete's job: the job reads deleteRequested from the store itself.
+      await enqueueShopify.removeWebhooks(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+        userId: ctx.user.id,
+      });
+    }
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath(`/stores/${storeId}`);
+  revalidatePath("/stores");
+  return { ok: true };
+}
+
+/** "Възстанови" (OWNER): the connection test runs again and, when good, re-registers the webhooks. */
+export async function restoreStoreAction(storeId: string, _prev: Result, _form: FormData): Promise<Result> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await restoreStore(actorFrom(ctx), storeId);
+    if (r.restored) {
+      await enqueueShopify.testConnection(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+      });
+    }
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath(`/stores/${storeId}`);
+  revalidatePath("/stores");
+  return { ok: true };
+}
+
+/** "Изтрий магазина" (OWNER, empty stores only, confirmed by typing the code). */
+export async function deleteStoreAction(
+  storeId: string,
+  _prev: (Result & { pending?: boolean }) | undefined,
+  form: FormData,
+): Promise<Result & { pending?: boolean }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await deleteStore(actorFrom(ctx), storeId, {
+      confirmCode: String(form.get("confirmCode") ?? ""),
+      force: form.get("force") === "on",
+    });
+    if (r.pending) {
+      // Webhooks first: the worker removes them, then deletes the store.
+      await enqueueShopify.removeWebhooks(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+        userId: ctx.user.id,
+      });
+      revalidatePath(`/stores/${storeId}`);
+      return { ok: true, pending: true };
+    }
+  } catch (err) {
+    return toError(err) ?? {};
+  }
+  revalidatePath("/stores");
+  redirect("/stores?deleted=1");
+}
+
+type StoreJobKind = "test" | "orders" | "products" | "webhooks" | "removeWebhooks";
 
 /** Queues a read-only Shopify job for one store (nothing here writes to Shopify except webhook subscriptions). */
 export async function runStoreJobAction(
@@ -115,11 +232,18 @@ export async function runStoreJobAction(
   const ctx = await requireAccountContext();
   let id: string | null;
   try {
-    assertCan(ctx.role, kind === "webhooks" ? "stores.manage" : "stores.sync");
-    await getStore(actorFrom(ctx), storeId);
+    assertCan(
+      ctx.role,
+      kind === "removeWebhooks" ? "stores.archive" : kind === "webhooks" ? "stores.manage" : "stores.sync",
+    );
+    const store = await getStore(actorFrom(ctx), storeId);
+    // An archived store runs no job except the (retryable) webhook removal.
+    if (!!store.archivedAt !== (kind === "removeWebhooks")) throw new DomainError("store_archived");
     const boss = await webBoss();
     const data = { accountId: ctx.accountId, storeId, callbackUrl: webhookCallbackUrl() };
-    if (kind === "test") id = await enqueueShopify.testConnection(boss, data);
+    if (kind === "removeWebhooks") {
+      id = await enqueueShopify.removeWebhooks(boss, { ...data, userId: ctx.user.id });
+    } else if (kind === "test") id = await enqueueShopify.testConnection(boss, data);
     else if (kind === "orders") id = await enqueueShopify.syncOrders(boss, { ...data, mode: "reconcile" });
     else if (kind === "products") id = await enqueueShopify.syncProducts(boss, data);
     else id = await enqueueShopify.registerWebhooks(boss, data);
@@ -135,7 +259,7 @@ export async function backfillOrdersAction(storeId: string, _prev: Result, form:
   const ctx = await requireAccountContext();
   try {
     assertCan(ctx.role, "stores.manage");
-    await getStore(actorFrom(ctx), storeId);
+    if ((await getStore(actorFrom(ctx), storeId)).archivedAt) throw new DomainError("store_archived");
     const days = z.coerce.number().int().min(1).max(365).parse(form.get("days"));
     const boss = await webBoss();
     for (const w of backfillWindows(days)) {
