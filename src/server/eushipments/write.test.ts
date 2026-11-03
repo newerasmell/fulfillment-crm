@@ -15,6 +15,7 @@ import {
   queueEuOrderDeletion,
   queueEuProduct,
   queueEuTransfer,
+  localCod,
   referenceFor,
 } from "./write";
 
@@ -102,6 +103,44 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect(referenceFor({ number: "#1-EUR2848" }, { vendorIdPrefix: null })).toBe("1-EUR2848");
     expect(referenceFor({ number: "1001" }, { vendorIdPrefix: "  " })).toBe("1001");
     expect(referenceFor({ number: "77" }, null)).toBe("M-77");
+  });
+
+  it("local COD: the order's own COD when it is already in the local currency, never a made-up conversion", () => {
+    const base = {
+      currency: "EUR",
+      codAmount: "127.00",
+      total: "127.00",
+      codLocalAmount: null,
+      codLocalCurrency: null,
+    };
+    expect(localCod(base, "EUR")).toEqual({ amount: "127.00", currency: "EUR" });
+    expect(localCod({ ...base, currency: "eur" }, "EUR")).toEqual({ amount: "127.00", currency: "EUR" });
+    expect(localCod(base, "RON")).toBeNull(); // EUR order to a RON country without a stored local amount
+    expect(localCod({ ...base, codLocalAmount: "632.00", codLocalCurrency: "RON" }, "RON")).toEqual({
+      amount: "632.00",
+      currency: "RON",
+    });
+    expect(localCod(base, null)).toBeNull(); // no country setting and nothing stored
+  });
+
+  it("an EUR order to an EUR country with no stored local amount is queued with its COD (owner report)", async () => {
+    await g.db.countrySetting.upsert({
+      where: { accountId_country: { accountId: g.accountId, country: "BG" } },
+      create: { accountId: g.accountId, country: "BG", currency: "EUR" },
+      update: { currency: "EUR" },
+    });
+    try {
+      const { order, product } = await euTestOrder(g, { number: "#1777" });
+      await g.db.order.update({
+        where: { id: order.id },
+        data: { codLocalAmount: null, codLocalCurrency: null },
+      });
+      await mapProduct(product.id, `ref-${product.sku}`);
+      const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
+      expect(q.status).toBe("queued");
+    } finally {
+      await g.db.countrySetting.deleteMany({ where: { country: "BG" } });
+    }
   });
 
   it("blocks an order whose product has no euShipments mapping; nothing is queued", async () => {
