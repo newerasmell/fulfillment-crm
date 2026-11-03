@@ -2441,7 +2441,10 @@
       "failed": "Неуспешни",
       "tokens": "Токени (вход / изход)",
       "embeddings": "Вектори на прегледи",
-      "providers": "Доставчик на вектори"
+      "providers": "Доставчик на вектори",
+      "budget": "Дневен лимит (последните 24 ч)",
+      "budgetLine": "AI прегледи {reviews}/{reviewLimit} · памет (embeddings) {embeddings}/{embeddingLimit}",
+      "budgetHelp": "При достигнат лимит или 5 поредни грешки платените заявки спират сами и се появява сигнал. Лимитите се сменят с AI_DAILY_REVIEW_LIMIT и AI_DAILY_EMBEDDING_LIMIT в Render."
     },
     "audit": {
       "title": "Дневна проверка на автопилота",
@@ -2565,7 +2568,9 @@
       "not_reviewable": "Поръчката не е в статус за преглед.",
       "not_allowed": "Корекциите не могат да се приложат.",
       "not_found": "Не е намерено.",
-      "not_editable": "Адресът вече не може да се променя."
+      "not_editable": "Адресът вече не може да се променя.",
+      "ai_daily_limit": "Дневният лимит за AI прегледи е достигнат. Новите прегледи спират до утре (лимитът се сменя с AI_DAILY_REVIEW_LIMIT).",
+      "ai_failure_brake": "Последните 5 заявки към Claude са неуспешни — AI е на пауза за 1 час. Проверете ключа и кредита в Anthropic."
     }
   },
   "shipmentList": {

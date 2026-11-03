@@ -38,6 +38,9 @@ export async function requestBulkLabels(actor: ScopedActor, rawIds: string[]) {
       !["QUEUED", "SUBMITTING", "SUBMIT_FAILED", "CANCELLED"].includes(r.status),
   );
   if (usable.length === 0) throw new DomainError("nothing_to_print");
+  // The PDF follows the operator's selection order (findMany returns rows in no guaranteed order).
+  const pos = new Map(ids.map((id, i) => [id, i]));
+  usable.sort((a, b) => pos.get(a.id)! - pos.get(b.id)!);
   const byConn = new Map<string, { type: string; ids: string[] }>();
   for (const r of usable) {
     const g = byConn.get(r.connectionId) ?? { type: r.connection.type, ids: [] };

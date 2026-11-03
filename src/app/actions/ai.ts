@@ -7,6 +7,7 @@ import { assertCan, ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { editOrderAddress } from "@/server/review";
+import { checkBudget } from "@/ai/budget";
 import { enqueueAiReview } from "@/ai/jobs";
 import { decideAuditSample } from "@/ai/evaluate";
 import {
@@ -106,6 +107,9 @@ export async function requestAiReviewAction(orderId: string): Promise<AiActionRe
       const card = await orderAiCard(a, Id.parse(orderId));
       if (!card.status.enabled) throw new DomainError("ai_off");
       if (!card.canRequest) throw new DomainError("not_reviewable");
+      const budget = await checkBudget(a.accountId, "order_review");
+      if (!budget.allowed)
+        throw new DomainError(budget.reason === "daily_limit" ? "ai_daily_limit" : "ai_failure_brake");
       await enqueueAiReview(await webBoss(), { accountId: a.accountId, orderId });
     },
     [`/orders/${orderId}`],

@@ -290,6 +290,18 @@ export default async function AiPage({ searchParams }: { searchParams: Promise<S
                       .join(" · ") || "0"}
                   </dd>
                 </div>
+                <div className="col-span-2" data-testid="ai-budget">
+                  <dt className="text-label">{t("usage.budget")}</dt>
+                  <dd className="m-0 font-mono">
+                    {t("usage.budgetLine", {
+                      reviews: d.budget.review.used,
+                      reviewLimit: d.budget.review.limit,
+                      embeddings: d.budget.embedding.used,
+                      embeddingLimit: d.budget.embedding.limit,
+                    })}
+                  </dd>
+                  <dd className="m-0 text-xs text-muted">{t("usage.budgetHelp")}</dd>
+                </div>
                 <div className="col-span-2">
                   <dt className="text-label">{t("usage.providers")}</dt>
                   <dd className="m-0 font-mono">
