@@ -10,7 +10,8 @@ import { assertReport, companySql, connectionTypeSql, reportQuery, type ReportCt
  *   delivered  = DELIVERED / COD_PAID, or a delivery date without a return;
  *   returned   = RETURNING / RETURN_RECEIVED;
  *   cancelled  = CANCELLED before it was shipped (never sent; left out of both rates);
- *   in transit = sent − delivered − returned.
+ *   cancelled after shipping = CANCELLED with a ship date (sent, counted in "sent", no longer on the way);
+ *   in transit = sent − delivered − returned − cancelled after shipping.
  * delivery rate = delivered / sent; return rate = returned / sent (shipments still on the way count in "sent").
  * The carrier is Fulfillment.carrier as the warehouse reported it (FHB parcel service code, named from the FHB
  * carrier list); euShipments shipments do not store their courier on the shipment, so they show "not recorded".
@@ -22,6 +23,7 @@ export interface ShipmentCounts {
   delivered: number;
   returned: number;
   cancelled: number;
+  cancelledAfterShip: number;
   failed: number;
   inTransit: number;
 }
@@ -47,6 +49,7 @@ const zero = (): ShipmentCounts => ({
   delivered: 0,
   returned: 0,
   cancelled: 0,
+  cancelledAfterShip: 0,
   failed: 0,
   inTransit: 0,
 });
@@ -69,6 +72,7 @@ export async function shipmentsReport(ctx: ReportCtx, range: ReportRange) {
     delivered: number;
     returned: number;
     cancelled: number;
+    cancelledAfterShip: number;
     failed: number;
   }>(
     ctx.accountId,
@@ -93,6 +97,8 @@ export async function shipmentsReport(ctx: ReportCtx, range: ReportRange) {
              count(*) FILTER (WHERE s.sent AND s.delivered)::int AS delivered,
              count(*) FILTER (WHERE s.status IN ('RETURNING','RETURN_RECEIVED'))::int AS returned,
              count(*) FILTER (WHERE s.status = 'CANCELLED' AND NOT s.sent)::int AS cancelled,
+             count(*) FILTER (WHERE s.status = 'CANCELLED' AND s.sent AND NOT s.delivered)::int
+               AS "cancelledAfterShip",
              count(*) FILTER (WHERE s.status = 'SUBMIT_FAILED' AND NOT s.sent)::int AS failed
         FROM s
         JOIN "FulfillmentConnection" c ON c.id = s."connectionId" AND c."accountId" = ${ctx.accountId}
@@ -115,8 +121,9 @@ export async function shipmentsReport(ctx: ReportCtx, range: ReportRange) {
       delivered: r.delivered,
       returned: r.returned,
       cancelled: r.cancelled,
+      cancelledAfterShip: r.cancelledAfterShip,
       failed: r.failed,
-      inTransit: Math.max(0, r.sent - r.delivered - r.returned),
+      inTransit: Math.max(0, r.sent - r.delivered - r.returned - r.cancelledAfterShip),
     };
     const w = byConn.get(r.connectionId) ?? {
       connectionId: r.connectionId,
@@ -155,6 +162,7 @@ export function shipmentsCsv(r: ShipmentsReport, labels: { noCarrier: string }):
       "returned",
       "in_transit",
       "cancelled_before_shipping",
+      "cancelled_after_shipping",
       "submit_failed",
       "delivery_rate_pct",
       "return_rate_pct",
@@ -170,6 +178,7 @@ export function shipmentsCsv(r: ShipmentsReport, labels: { noCarrier: string }):
     String(c.returned),
     String(c.inTransit),
     String(c.cancelled),
+    String(c.cancelledAfterShip),
     String(c.failed),
     pct(rate(c.delivered, c.sent)),
     pct(rate(c.returned, c.sent)),

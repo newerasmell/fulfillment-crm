@@ -152,6 +152,24 @@ export async function OrdersView({ ctx, range }: Props) {
           </Table>
         )}
       </Card>
+      {r.codAmounts.length > 0 && (
+        <Card>
+          <h2 className="mt-0 mb-3 text-lg font-semibold">{t("orders.codAmounts")}</h2>
+          <Table
+            label={t("orders.codAmounts")}
+            head={[t("orders.col.currency"), t("orders.col.orders"), t("orders.col.codAmount")]}
+          >
+            {r.codAmounts.map((x) => (
+              <tr key={x.currency} data-testid={`orders-cod-${x.currency}`}>
+                <td className={mono}>{x.currency}</td>
+                <td className={mono}>{x.count}</td>
+                <td className={`${mono} font-semibold`}>{money(x.amountCents / 100, x.currency)}</td>
+              </tr>
+            ))}
+          </Table>
+          <p className="mt-2 mb-0 text-xs text-muted">{t("orders.codAmountsNote")}</p>
+        </Card>
+      )}
       <div className="grid gap-4 lg:grid-cols-2">
         {groups(t("orders.byStore"), r.byStore, t("orders.manual"), "orders-store")}
         {groups(t("orders.byCompany"), r.byCompany, t("orders.noCompany"), "orders-company")}
@@ -207,6 +225,7 @@ export async function ShipmentsView({ ctx, range }: Props) {
     t("shipments.col.returned"),
     t("shipments.col.inTransit"),
     t("shipments.col.cancelled"),
+    t("shipments.col.cancelledAfterShip"),
     t("shipments.col.failed"),
     t("shipments.col.deliveryRate"),
     t("shipments.col.returnRate"),
@@ -268,6 +287,7 @@ export async function ShipmentsView({ ctx, range }: Props) {
                 <td className={mono}>{w.returned}</td>
                 <td className={mono}>{w.inTransit}</td>
                 <td className={mono}>{w.cancelled}</td>
+                <td className={mono}>{w.cancelledAfterShip}</td>
                 <td className={mono}>{w.failed}</td>
                 <td className={mono}>{pct(rate(w.delivered, w.sent))}</td>
                 <td className={mono}>{pct(rate(w.returned, w.sent))}</td>
@@ -290,6 +310,7 @@ export async function ShipmentsView({ ctx, range }: Props) {
                   <td className={mono}>{c.returned}</td>
                   <td className={mono}>{c.inTransit}</td>
                   <td className={mono}>{c.cancelled}</td>
+                  <td className={mono}>{c.cancelledAfterShip}</td>
                   <td className={mono}>{c.failed}</td>
                   <td className={mono}>{pct(rate(c.delivered, c.sent))}</td>
                   <td className={mono}>{pct(rate(c.returned, c.sent))}</td>
@@ -439,6 +460,11 @@ export async function CodView({ ctx, range }: Props) {
   );
   return (
     <>
+      {r.truncated && (
+        <p className="m-0 text-sm text-warn" data-testid="codr-truncated">
+          {t("cod.truncated")}
+        </p>
+      )}
       <Card>
         <h2 className="mt-0 mb-3 text-lg font-semibold">{t("cod.totals")}</h2>
         {r.byCurrency.length === 0 ? (
@@ -545,7 +571,6 @@ export async function ReviewView({ ctx, range }: Props) {
                 <tr key={`${f.code}:${f.severity}`} data-testid={`finding-${f.code}`}>
                   <td className={tdCls}>
                     <div className="font-mono text-sm">{f.code}</div>
-                    {f.sample && <div className="text-xs text-muted">{f.sample}</div>}
                   </td>
                   <td className={tdCls}>
                     <span

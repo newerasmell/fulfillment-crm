@@ -9,6 +9,7 @@ import {
   parseRange,
   presetRange,
   rate,
+  reviewCsv,
   reviewReport,
   shipmentsCsv,
   shipmentsReport,
@@ -106,6 +107,7 @@ async function setup() {
     cod?: boolean;
     status?: "IMPORTED" | "DELIVERED" | "CANCELLED" | "ON_HOLD" | "BLOCKED" | "SHIPPED" | "RETURNING";
     store?: boolean;
+    codLocal?: { amount: number; currency: string };
   }) =>
     sys.order.create({
       data: {
@@ -119,8 +121,8 @@ async function setup() {
         total: o.total ?? 10,
         paymentMethod: o.cod ? "COD" : "PREPAID",
         codAmount: o.cod ? (o.total ?? 10) : null,
-        codLocalAmount: o.cod ? (o.total ?? 10) : null,
-        codLocalCurrency: o.cod ? (o.currency ?? "EUR") : null,
+        codLocalAmount: o.cod ? (o.codLocal?.amount ?? o.total ?? 10) : null,
+        codLocalCurrency: o.cod ? (o.codLocal?.currency ?? o.currency ?? "EUR") : null,
         placedAt: o.placed,
         createdAt: new Date(o.placed.getTime() + 0.5 * H),
         status: o.status ?? "IMPORTED",
@@ -152,7 +154,9 @@ async function setup() {
         deliveredAt: f.delivered ?? null,
       },
     });
-  return { accountId, ctx, coA, coB, store, fhb, eu, order, ship, sys };
+  /** A restricted member who belongs to company A only (no sidebar company, no product line). */
+  const onlyA: ReportCtx = { ...ctx, role: "OPERATOR", companyScope: [coA.id] };
+  return { accountId, ctx, onlyA, coA, coB, store, fhb, eu, order, ship, sys };
 }
 
 describe("reports on the database", () => {
@@ -207,6 +211,39 @@ describe("reports on the database", () => {
     await expect(ordersReport({ ...s.ctx, role: "VIEWER" }, range)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  it("orders: COD amount in the local COD currency, kept apart from the order-currency totals", async () => {
+    const s = await setup();
+    const placed = new Date("2026-10-20T10:00:00Z");
+    // EUR order shipped to Hungary: COD collected in HUF, partly prepaid (COD smaller than the total).
+    await s.order({
+      company: s.coA.id,
+      placed,
+      total: 50,
+      cod: true,
+      codLocal: { amount: 15000, currency: "HUF" },
+    });
+    await s.order({ company: s.coA.id, placed, total: 20, cod: true });
+    await s.order({ company: s.coB.id, placed, total: 30, cod: true, currency: "RON" });
+    const range = parseRange({ from: "2026-10-01", to: "2026-10-31" }, NOW);
+    const r = await ordersReport(s.ctx, range);
+    expect(r.totals.find((t) => t.currency === "EUR")).toMatchObject({ codCents: 7000 });
+    expect(r.codAmounts).toEqual(
+      expect.arrayContaining([
+        { currency: "HUF", count: 1, amountCents: 1500000 },
+        { currency: "EUR", count: 1, amountCents: 2000 },
+        { currency: "RON", count: 1, amountCents: 3000 },
+      ]),
+    );
+    expect(r.codAmounts).toHaveLength(3);
+    expect(writeCsv(ordersCsv(r, { manual: "m", noCompany: "-" }))).toContain(
+      "cod_amount;;HUF;;1;;;15000.00",
+    );
+    // A member of company A only sees none of company B's COD.
+    const a = await ordersReport(s.onlyA, range);
+    expect(a.codAmounts.map((c) => c.currency).sort()).toEqual(["EUR", "HUF"]);
+    expect(a.orders).toBe(2);
+  });
+
   it("shipments: sent / delivered / returned / cancelled per warehouse and carrier, rates, warehouse scope", async () => {
     const s = await setup();
     const t = new Date("2026-10-20T10:00:00Z");
@@ -223,26 +260,41 @@ describe("reports on the database", () => {
     await one(s.coA.id, s.fhb.id, { status: "RETURNING", created: t, carrier: "gls", shipped: t });
     await one(s.coA.id, s.fhb.id, { status: "SHIPPED", created: t, carrier: "gls", shipped: t });
     await one(s.coA.id, s.fhb.id, { status: "CANCELLED", created: t, carrier: "gls" });
+    // Cancelled after it shipped: sent, but neither delivered, returned nor in transit any more.
+    await one(s.coA.id, s.fhb.id, { status: "CANCELLED", created: t, carrier: "gls", shipped: t });
     await one(s.coB.id, s.eu.id, { status: "COD_PAID", created: t, shipped: t });
     await one(s.coB.id, s.eu.id, { status: "SUBMIT_FAILED", created: t });
     const range = parseRange({ from: "2026-10-01", to: "2026-10-31" }, NOW);
     const r = await shipmentsReport(s.ctx, range);
     const f = r.warehouses.find((w) => w.connectionId === s.fhb.id)!;
-    expect(f).toMatchObject({ created: 4, sent: 3, delivered: 1, returned: 1, inTransit: 1, cancelled: 1 });
+    expect(f).toMatchObject({
+      created: 5,
+      sent: 4,
+      delivered: 1,
+      returned: 1,
+      inTransit: 1,
+      cancelled: 1,
+      cancelledAfterShip: 1,
+    });
     expect(f.carriers[0]).toMatchObject({ carrier: "gls", carrierName: "GLS" });
-    expect(rate(f.delivered, f.sent)).toBeCloseTo(1 / 3);
+    expect(rate(f.delivered, f.sent)).toBeCloseTo(1 / 4);
     expect(r.warehouses.find((w) => w.connectionId === s.eu.id)).toMatchObject({
       created: 2,
       sent: 1,
       delivered: 1,
       failed: 1,
     });
-    expect(r.total.sent).toBe(4);
+    expect(r.total.sent).toBe(5);
     const euOnly = await shipmentsReport({ ...s.ctx, connectionTypes: ["EUSHIPMENTS"] }, range);
     expect(euOnly.warehouses.map((w) => w.connectionId)).toEqual([s.eu.id]);
     expect(writeCsv(shipmentsCsv(r, { noCarrier: "-" }))).toContain(
-      "FHB Справки;FHB_V3;GLS (gls);4;3;1;1;1;1;0;33.3;33.3",
+      "FHB Справки;FHB_V3;GLS (gls);5;4;1;1;1;1;1;0;25.0;25.0",
     );
+    // A member of company A only: the euShipments warehouse (company B's orders) is not there.
+    const a = await shipmentsReport(s.onlyA, range);
+    expect(a.warehouses.map((w) => w.connectionId)).toEqual([s.fhb.id]);
+    expect(a.total.created).toBe(5);
+    expect((await shipmentsReport({ ...s.ctx, lineCompanyIds: [] }, range)).warehouses).toEqual([]);
   });
 
   it("timing: median and p90 per step from OrderEvent + Fulfillment times", async () => {
@@ -292,6 +344,11 @@ describe("reports on the database", () => {
     expect(r.warehouses.find((w) => w.connectionId === null)?.orders).toBe(1);
     const eu = await timingReport({ ...s.ctx, connectionTypes: ["EUSHIPMENTS"] }, range);
     expect(eu.overall).toBeNull();
+    // Company scope: a member of company A sees A's three orders, not B's order without shipment.
+    const a = await timingReport(s.onlyA, range);
+    expect(a.overall?.orders).toBe(3);
+    expect(a.warehouses.find((w) => w.connectionId === null)).toBeUndefined();
+    expect((await timingReport({ ...s.ctx, lineCompanyIds: [] }, range)).overall).toBeNull();
   });
 
   it("COD: totals per currency and warehouse, ageing, from the COD board rows", async () => {
@@ -343,8 +400,38 @@ describe("reports on the database", () => {
     expect(r.ageing).toEqual([
       { currency: "EUR", buckets: expect.objectContaining({ d0_7: { count: 1, amount: 25 } }) },
     ]);
+    expect(r.truncated).toBe(false);
     const outside = await codReport(s.ctx, parseRange({ from: "2026-09-01", to: "2026-09-30" }, NOW), NOW);
     expect(outside.shipments).toBe(0);
+    // A member of company A only: no HUF totals and no euShipments warehouse of company B.
+    const scoped = await codReport(s.onlyA, range, NOW);
+    expect(scoped.byCurrency.map((x) => x.currency)).toEqual(["EUR"]);
+    expect(scoped.byWarehouse.map((w) => w.name)).toEqual(["FHB Справки"]);
+    expect((await codReport({ ...s.ctx, lineCompanyIds: [] }, range, NOW)).shipments).toBe(0);
+  });
+
+  it("COD: a period older than the COD board's 365-day lookback is reported in full", async () => {
+    const s = await setup();
+    const created = new Date("2025-07-10T10:00:00Z"); // ~480 days before NOW
+    const o = await s.order({
+      company: s.coA.id,
+      placed: created,
+      cod: true,
+      total: 40,
+      status: "DELIVERED",
+    });
+    await s.ship(o.id, s.fhb.id, {
+      status: "DELIVERED",
+      created,
+      delivered: new Date("2025-07-14T10:00:00Z"),
+    });
+    const range = parseRange({ from: "2025-06-01", to: "2025-08-31" }, NOW);
+    const r = await codReport(s.ctx, range, NOW);
+    expect(r.shipments).toBe(1);
+    expect(r.byCurrency).toEqual([
+      expect.objectContaining({ currency: "EUR", expected: 40, outstanding: 40 }),
+    ]);
+    expect(r.ageing[0]?.buckets.d30_plus).toEqual({ count: 1, amount: 40 });
   });
 
   it("review: findings, decisions, reasons, open states; AI agreement only when AI data exist", async () => {
@@ -384,12 +471,36 @@ describe("reports on the database", () => {
     });
     const range = parseRange({ from: "2026-10-01", to: "2026-10-31" }, NOW);
     const r = await reviewReport(s.ctx, range);
-    expect(r.findings).toEqual([
-      { code: "phone_invalid", severity: "hard", n: 2, sample: "Невалиден телефон" },
-    ]);
+    // Codes and counts only: finding messages can quote recipient data and stay out of the aggregate.
+    expect(r.findings).toEqual([{ code: "phone_invalid", severity: "hard", n: 2 }]);
+    expect(JSON.stringify(reviewCsv(r))).not.toContain("Невалиден телефон");
     expect(r.decided).toBe(2);
     expect(r.reasons).toEqual([expect.objectContaining({ code: "customer_contact", count: 2 })]);
     expect(r.open).toEqual({ NEEDS_REVIEW: 0, ON_HOLD: 1, BLOCKED: 1 });
+    // "Waiting now" is the backlog now: an order placed long before the period that is still on hold counts.
+    await s.order({ company: s.coA.id, placed: new Date("2026-08-01T08:00:00Z"), status: "ON_HOLD" });
+    expect((await reviewReport(s.ctx, range)).open.ON_HOLD).toBe(2);
+    // Company B's finding, decision and waiting order are not counted for a member of company A.
+    const ob = await s.order({ company: s.coB.id, placed: t, status: "BLOCKED" });
+    await s.sys.orderCheck.create({
+      data: {
+        accountId: s.accountId,
+        orderId: ob.id,
+        routing: {},
+        findings: [{ code: "zip_invalid", severity: "hard", message_bg: "x" }],
+        hardCount: 1,
+      },
+    });
+    await s.sys.review.create({
+      data: { accountId: s.accountId, orderId: ob.id, decision: "CANCEL", reasonCode: "fraud", decidedAt: t },
+    });
+    const all = await reviewReport(s.ctx, range);
+    expect(all.findings.map((f) => f.code)).toContain("zip_invalid");
+    const onlyA = await reviewReport(s.onlyA, range);
+    expect(onlyA.findings.map((f) => f.code)).toEqual(["phone_invalid"]);
+    expect(onlyA.decided).toBe(2);
+    expect(onlyA.decisions.map((d) => d.decision)).not.toContain("CANCEL");
+    expect(onlyA.open).toEqual({ NEEDS_REVIEW: 0, ON_HOLD: 2, BLOCKED: 1 });
     expect(r.ai).toBeNull();
     await s.sys.aiSuggestion.create({
       data: {
@@ -406,10 +517,11 @@ describe("reports on the database", () => {
     });
     const withAi = await reviewReport(s.ctx, range);
     expect(withAi.ai).toMatchObject({ suggestions: 1, evaluated: 1, agreement: 1, target: 0.98 });
-    // An operator restricted to company B sees none of it.
+    // An operator restricted to company B sees only company B's order: none of A's findings, decisions or AI.
     const b = await reviewReport({ ...s.ctx, role: "OPERATOR", companyScope: [s.coB.id] }, range);
-    expect(b.decided).toBe(0);
-    expect(b.findings).toEqual([]);
+    expect(b.decided).toBe(1);
+    expect(b.findings.map((f) => f.code)).toEqual(["zip_invalid"]);
+    expect(b.open).toEqual({ NEEDS_REVIEW: 0, ON_HOLD: 0, BLOCKED: 1 });
     expect(b.ai).toBeNull();
   });
 
@@ -442,7 +554,21 @@ describe("reports on the database", () => {
         unitPrice: 5,
       },
     });
-    const r = await stockReport(s.ctx, NOW);
+    const ob = await s.order({ company: s.coB.id, placed: NOW });
+    await s.sys.orderLine.create({
+      data: {
+        accountId: s.accountId,
+        orderId: ob.id,
+        productId: p.id,
+        title: "Крем",
+        quantity: 4,
+        unitPrice: 5,
+      },
+    });
+    const all = await stockReport(s.ctx, NOW);
+    expect(all.zeroOpen).toEqual([expect.objectContaining({ id: p.id, open: { units: 7, lines: 2 } })]);
+    // A member of company A only counts company A's open orders.
+    const r = await stockReport(s.onlyA, NOW);
     expect(r.zeroOpen).toEqual([expect.objectContaining({ id: p.id, open: { units: 3, lines: 1 } })]);
     expect(r.runningOut).toEqual([]);
   });

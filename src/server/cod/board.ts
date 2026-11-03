@@ -25,6 +25,8 @@ import {
  */
 
 export const LOOKBACK_DAYS = 365;
+/** Most shipments one load reads; a load that hits it reports `truncated`. */
+export const ROW_CAP = 20_000;
 const SHIPMENT_STATUSES = ["SHIPPED", "DELIVERED", "COD_PAID"] as const;
 export const COD_TABS = ["outstanding", "mismatch", "paid", "in_transit", "all"] as const;
 export type CodTab = (typeof COD_TABS)[number];
@@ -45,6 +47,8 @@ async function loadRows(
   where: Prisma.FulfillmentWhereInput,
   now: Date,
   missingDays: number,
+  /** false when the caller bounds createdAt itself (the COD report's period, at most 366 days). */
+  lookback = true,
 ) {
   const db = accountDb(accountId);
   const since = new Date(now.getTime() - LOOKBACK_DAYS * 86_400_000);
@@ -52,7 +56,7 @@ async function loadRows(
     where: {
       AND: [
         where,
-        { status: { in: [...SHIPMENT_STATUSES] }, createdAt: { gte: since } },
+        { status: { in: [...SHIPMENT_STATUSES] }, ...(lookback ? { createdAt: { gte: since } } : {}) },
         { connection: { type: { in: ["FHB_V3", "EUSHIPMENTS"] } } },
       ],
     },
@@ -82,7 +86,7 @@ async function loadRows(
       },
     },
     orderBy: [{ deliveredAt: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
-    take: 20_000,
+    take: ROW_CAP,
   });
   const fhbKeys = shipments.filter((s) => s.connection.type === "FHB_V3");
   const euIds = shipments.filter((s) => s.connection.type === "EUSHIPMENTS").map((s) => s.id);
@@ -144,7 +148,7 @@ async function loadRows(
   };
   const fhbOf = new Map(fhbRows.map((r) => [`${r.connectionId}:${r.externalId}`, r]));
   const euOf = new Map(euRows.map((r) => [r.fulfillmentId, r]));
-  return shipments.map((s) => {
+  const rows = shipments.map((s) => {
     const fhb = fhbOf.get(`${s.connectionId}:${s.externalId}`);
     const row = classifyCod(
       {
@@ -170,6 +174,7 @@ async function loadRows(
     );
     return { shipment: s, row };
   });
+  return { rows, truncated: shipments.length >= ROW_CAP };
 }
 
 /** COD shipments plus shipments where the warehouse reports COD the order does not have. */
@@ -215,18 +220,18 @@ export async function scopedRows(ctx: BoardCtx, f: CodFilter, now: Date) {
         }
       : {}),
   };
-  const rows = [
-    ...(await loadRows(ctx.accountId, codWhere(where), now, settings.codMissingDays)),
-    ...(
-      await loadRows(
-        ctx.accountId,
-        { AND: [where, await unexpectedWhere(ctx.accountId)] },
-        now,
-        settings.codMissingDays,
-      )
-    ).filter((r) => r.row.mismatch === "unexpected"),
-  ];
-  return { settings, rows };
+  // A report period bounds createdAt itself, so the board's rolling lookback must not cut it short.
+  const lookback = !f.created;
+  const cod = await loadRows(ctx.accountId, codWhere(where), now, settings.codMissingDays, lookback);
+  const unexpected = await loadRows(
+    ctx.accountId,
+    { AND: [where, await unexpectedWhere(ctx.accountId)] },
+    now,
+    settings.codMissingDays,
+    lookback,
+  );
+  const rows = [...cod.rows, ...unexpected.rows.filter((r) => r.row.mismatch === "unexpected")];
+  return { settings, rows, truncated: cod.truncated || unexpected.truncated };
 }
 
 export async function listCod(ctx: BoardCtx, f: CodFilter = {}, now = new Date()) {
@@ -275,7 +280,7 @@ export async function listCod(ctx: BoardCtx, f: CodFilter = {}, now = new Date()
   };
 }
 
-function toView(r: Awaited<ReturnType<typeof loadRows>>[number], companyName: Map<string, string>) {
+function toView(r: Awaited<ReturnType<typeof loadRows>>["rows"][number], companyName: Map<string, string>) {
   const s = r.shipment;
   return {
     fulfillmentId: s.id,
@@ -378,8 +383,8 @@ export async function sweepCodMismatches(accountId: string, now = new Date()) {
     select: { id: true, kind: true, entityId: true },
   });
   const rows = [
-    ...(await loadRows(accountId, codWhere({}), now, codMissingDays)),
-    ...(await loadRows(accountId, await unexpectedWhere(accountId), now, codMissingDays)).filter(
+    ...(await loadRows(accountId, codWhere({}), now, codMissingDays)).rows,
+    ...(await loadRows(accountId, await unexpectedWhere(accountId), now, codMissingDays)).rows.filter(
       (r) => r.row.mismatch === "unexpected",
     ),
   ];
@@ -391,12 +396,9 @@ export async function sweepCodMismatches(accountId: string, now = new Date()) {
     ...new Set(openTasks.map((a) => a.entityId).filter((id): id is string => !!id && !evaluated.has(id))),
   ];
   for (let i = 0; i < recheck.length; i += 1000)
-    for (const r of await loadRows(
-      accountId,
-      { id: { in: recheck.slice(i, i + 1000) } },
-      now,
-      codMissingDays,
-    )) {
+    for (const r of (
+      await loadRows(accountId, { id: { in: recheck.slice(i, i + 1000) } }, now, codMissingDays)
+    ).rows) {
       evaluated.add(r.shipment.id);
       rows.push(r);
     }

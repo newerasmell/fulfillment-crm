@@ -2643,8 +2643,11 @@
         "orders": "Orders",
         "codShare": "COD share",
         "total": "Total",
-        "codTotal": "Of which COD"
-      }
+        "codTotal": "Total of COD orders",
+        "codAmount": "COD amount"
+      },
+      "codAmounts": "COD to collect (local currency)",
+      "codAmountsNote": "The amount the courier collects, in the destination country's local currency — the same as \"Expected\" in the COD report. Not comparable with \"Total of COD orders\" (order currency)."
     },
     "shipments": {
       "chart": "Shipment outcome by warehouse",
@@ -2664,11 +2667,12 @@
         "cancelled": "Cancelled",
         "failed": "Submit failed",
         "deliveryRate": "Delivery rate",
-        "returnRate": "Return rate"
+        "returnRate": "Return rate",
+        "cancelledAfterShip": "Cancelled after shipping"
       },
       "allCarriers": "All carriers",
       "noCarrier": "not recorded",
-      "note": "Shipments created in the period, by their current status. Sent = has a ship date or status Shipped or later. Delivery rate = delivered / sent; return rate = returned / sent. Cancelled before shipping and failed submissions are excluded from the rates; shipments still on the way count as sent. The carrier is the code the warehouse returned (FHB parcel service); euShipments shipments do not store the courier."
+      "note": "Shipments created in the period, by their current status. Sent = has a ship date or status Shipped or later. Delivery rate = delivered / sent; return rate = returned / sent. Cancelled before shipping and failed submissions are excluded from the rates; shipments still on the way count as sent. Shipments cancelled after shipping count as sent but not as in transit. The carrier is the code the warehouse returned (FHB parcel service); euShipments shipments do not store the courier."
     },
     "timing": {
       "chart": "Median and p90 per step (all warehouses)",
@@ -2710,7 +2714,8 @@
       },
       "mismatches": "Mismatches: amount {amount} · missing at warehouse {missing} · COD on a non-COD order {unexpected}",
       "board": "Open Cash on delivery",
-      "note": "COD shipments created in the period, with the same logic as the Cash on delivery screen. Amounts in the destination country's currency; different currencies are never added. Age is as of today."
+      "note": "COD shipments created in the period, with the same logic as the Cash on delivery screen. Amounts in the destination country's currency; different currencies are never added. Age is as of today.",
+      "truncated": "Only the first 20,000 shipments of the period are included — the totals are incomplete; narrow the period or warehouse."
     },
     "review": {
       "findings": "Why orders need review (most frequent checks)",
@@ -2753,7 +2758,7 @@
         "target": "target {value}",
         "evaluated": "{agreed} of {evaluated}"
       },
-      "note": "Orders placed in the period, by their company. Checks are each order's latest check. AI figures use the same measures as the AI assistant screen."
+      "note": "Orders placed in the period, by their company. Checks are each order's latest check. AI figures use the same measures as the AI assistant screen. \"Waiting now\" counts every order on hold, blocked or waiting for review right now, whenever it was placed."
     },
     "stock": {
       "runningOut": "Running out within {days} days",

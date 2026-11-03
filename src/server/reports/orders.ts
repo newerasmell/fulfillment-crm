@@ -15,7 +15,19 @@ export interface MoneyTotal {
   cod: number;
   /** Sum of order totals in cents (this currency only). */
   totalCents: number;
+  /** Sum of the order totals of the COD orders (order currency) — not the COD amount; see CodAmount. */
   codCents: number;
+}
+
+/**
+ * COD to collect, in the currency the courier collects it in: the destination country's local currency
+ * (Order.codLocalAmount / codLocalCurrency, falling back to codAmount in the order currency) — the same
+ * "expected" amount the COD board and the COD report use (classifyCod). Never mixed with order-currency totals.
+ */
+export interface CodAmount {
+  currency: string;
+  count: number;
+  amountCents: number;
 }
 
 export interface DayRow {
@@ -52,6 +64,7 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
   const empty = {
     days: days.map((day) => ({ day, orders: 0, cod: 0, prepaid: 0, cancelled: 0 })),
     totals: [] as MoneyTotal[],
+    codAmounts: [] as CodAmount[],
     byStore: [] as GroupRow[],
     byCompany: [] as GroupRow[],
     orders: 0,
@@ -59,7 +72,7 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
     cancelled: 0,
   };
   if (company === false) return empty;
-  const [perDay, groups] = await Promise.all([
+  const [perDay, groups, codRows] = await Promise.all([
     reportQuery<{ day: string; currency: string; pm: string; cancelled: boolean; n: number; total: string }>(
       ctx.accountId,
       Prisma.sql`
@@ -82,7 +95,25 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
       _count: { _all: true },
       _sum: { total: true },
     }),
+    reportQuery<{ currency: string; n: number; amount: string }>(
+      ctx.accountId,
+      Prisma.sql`
+        SELECT CASE WHEN o."codLocalAmount" IS NOT NULL THEN coalesce(o."codLocalCurrency", o.currency)
+                    ELSE o.currency END AS currency,
+               count(*)::int AS n,
+               coalesce(sum(coalesce(o."codLocalAmount", o."codAmount")), 0)::text AS amount
+          FROM "Order" o
+         WHERE o."accountId" = ${ctx.accountId}
+           AND o."placedAt" >= ${range.start} AND o."placedAt" < ${range.end}
+           AND o.status <> 'CANCELLED' AND o."paymentMethod" = 'COD'
+           AND coalesce(o."codLocalAmount", o."codAmount") IS NOT NULL
+           ${company}
+         GROUP BY 1`,
+    ),
   ]);
+  const codAmounts: CodAmount[] = codRows
+    .map((r) => ({ currency: r.currency, count: r.n, amountCents: toCents(r.amount) }))
+    .sort((a, b) => b.count - a.count || a.currency.localeCompare(b.currency));
   const byDay = new Map(empty.days.map((d) => [d.day, { ...d }]));
   const totals = new Map<string, MoneyTotal>();
   let orders = 0;
@@ -138,6 +169,7 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
   return {
     days: [...byDay.values()],
     totals: sortTotals([...totals.values()]),
+    codAmounts,
     byStore: group("storeId", new Map(stores.map((s) => [s.id, s.name]))),
     byCompany: group("companyId", new Map(companies.map((c) => [c.id, c.name]))),
     orders,
@@ -180,6 +212,8 @@ export function ordersCsv(r: OrdersReport, labels: { manual: string; noCompany: 
       "",
       money(t.totalCents),
     ]);
+  for (const c of r.codAmounts)
+    out.push(["cod_amount", "", c.currency, "", String(c.count), "", "", money(c.amountCents)]);
   for (const [section, rows, none] of [
     ["store", r.byStore, labels.manual],
     ["company", r.byCompany, labels.noCompany],

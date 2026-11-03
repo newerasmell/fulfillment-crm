@@ -22,7 +22,7 @@ const cents = (n: number) => Math.round(n * 100);
 
 export async function codReport(ctx: ReportCtx, range: ReportRange, now = new Date()) {
   assertReport(ctx, "cod.read");
-  const { rows } = await scopedRows(
+  const { rows, truncated } = await scopedRows(
     {
       accountId: ctx.accountId,
       role: ctx.role as never,
@@ -69,6 +69,8 @@ export async function codReport(ctx: ReportCtx, range: ReportRange, now = new Da
   for (const { row } of rows) if (row.mismatch) mismatches[row.mismatch]++;
   return {
     shipments: rows.length,
+    /** The row cap of the COD board was hit: the figures are incomplete (shown on screen and in the CSV). */
+    truncated,
     byCurrency,
     byWarehouse,
     ageing: [...ageing.values()].sort((a, b) => a.currency.localeCompare(b.currency)),
@@ -107,6 +109,7 @@ export function codCsv(r: CodReport): string[][] {
         m(t.paid),
         m(t.outstanding),
       ]);
+  if (r.truncated) out.push(["truncated", "", "", String(r.shipments), "", "", "", ""]);
   out.push([]);
   out.push(["ageing", "currency", ...AGE_BUCKETS.flatMap((b) => [`${b}_count`, `${b}_amount`])]);
   for (const a of r.ageing)

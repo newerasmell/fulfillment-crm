@@ -8,9 +8,10 @@ import { assertReport, companySql, reportQuery, scopeWhere, type ReportCtx } fro
 
 /**
  * Справка 5 — Преглед и автоматизация, for orders placed in the period:
- *   - why orders needed review: the top pre-flight finding codes of their latest check (OrderCheck.findings);
+ *   - why orders needed review: the top pre-flight finding codes of their latest check (OrderCheck.findings) —
+ *     codes and counts only: finding messages can quote a recipient's address, so none goes into this aggregate;
  *   - how people decided: Review decisions and the top reason codes (labels from the group's reason list);
- *   - how many are on hold / blocked / waiting for review right now;
+ *   - how many are on hold / blocked / waiting for review right now (any placement date, not only the period);
  *   - AI (only for members with ai.read, only if suggestions exist): the same agreement flags the AI screen uses
  *     (AiSuggestion.decisionAgreed / fixesAgreed / criticalMiss / autoApprovedAt, filled by src/ai/evaluate.ts),
  *     counted over this period and company scope, against the SPEC target agreement.
@@ -28,11 +29,10 @@ export async function reviewReport(ctx: ReportCtx, range: ReportRange) {
   const [findings, decisions, reasons, states, codes] = await Promise.all([
     company === false
       ? Promise.resolve([])
-      : reportQuery<{ code: string; severity: string | null; n: number; sample: string | null }>(
+      : reportQuery<{ code: string; severity: string | null; n: number }>(
           ctx.accountId,
           Prisma.sql`
-            SELECT x->>'code' AS code, x->>'severity' AS severity, count(DISTINCT k."orderId")::int AS n,
-                   min(x->>'message_bg') AS sample
+            SELECT x->>'code' AS code, x->>'severity' AS severity, count(DISTINCT k."orderId")::int AS n
               FROM "OrderCheck" k
               JOIN "Order" o ON o.id = k."orderId" AND o."accountId" = k."accountId"
               CROSS JOIN LATERAL jsonb_array_elements(
@@ -58,9 +58,10 @@ export async function reviewReport(ctx: ReportCtx, range: ReportRange) {
       orderBy: { _count: { reasonCode: "desc" } },
       take: TOP_N,
     }),
+    // "Waiting now" is the backlog right now, whenever the order was placed (not only orders of the period).
     db.order.groupBy({
       by: ["status"],
-      where: { ...orderWhere, status: { in: [...OPEN_STATES] } },
+      where: { ...scopeWhere(ctx), status: { in: [...OPEN_STATES] } },
       _count: { _all: true },
     }),
     listReasonCodes(ctx.accountId, { includeInactive: true }),
@@ -120,7 +121,7 @@ export type ReviewReport = Awaited<ReturnType<typeof reviewReport>>;
 
 export function reviewCsv(r: ReviewReport): string[][] {
   const out: string[][] = [["section", "key", "label", "count", "extra"]];
-  for (const f of r.findings) out.push(["finding", f.code, f.sample ?? "", String(f.n), f.severity ?? ""]);
+  for (const f of r.findings) out.push(["finding", f.code, "", String(f.n), f.severity ?? ""]);
   for (const d of r.decisions)
     out.push(["decision", d.decision, "", String(d.count), d.avgMs == null ? "" : `avg_ms=${d.avgMs}`]);
   for (const x of r.reasons) out.push(["reason", x.code, x.labelBg ?? "", String(x.count), ""]);

@@ -33,6 +33,7 @@ test("reports: landing, six reports with period, scope and CSV export", async ({
   await expect(page.getByTestId("kpi-cancelled")).toContainText("1");
   await expect(page.getByTestId("orders-total-EUR")).toContainText("175");
   await expect(page.getByTestId("orders-total-HUF")).toContainText("9000");
+  await expect(page.getByTestId("orders-cod-EUR")).toBeVisible();
   await expect(page.getByTestId("day-bars")).toBeVisible();
   await expect(page.getByTestId("orders-store-Магазин Справки-EUR")).toBeVisible();
   await expect(page.getByTestId("orders-company-Фирма Справки Б-HUF")).toBeVisible();
