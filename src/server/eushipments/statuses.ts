@@ -315,7 +315,35 @@ export async function applyOrderHistory(
         ...(rule.category === "DELIVERED" && !f.deliveredAt ? { deliveredAt: latest.at ?? now } : {}),
       },
     });
-    if (!superseded) await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history", f.id);
+    // Cancelled/deleted at euShipments WITHOUT a delete request from the CRM (someone removed it in the cabinet):
+    // the order is not cancelled for the customer — it is blocked with a task so a person resends it
+    // ("Изпрати отново", new shipment) or cancels it in Shopify. A CRM-requested delete follows as before.
+    const cancelledAtVendor =
+      !superseded &&
+      crm === "CANCELLED" &&
+      f.status !== "CANCELLED" &&
+      !(await tx.outboundRequest.findFirst({
+        where: { fulfillmentId: f.id, operation: "eushipments.deleteOrder" },
+        select: { id: true },
+      }));
+    if (!superseded)
+      await advanceOrderStatus(
+        tx,
+        f.orderId,
+        cancelledAtVendor ? "BLOCKED" : crm,
+        "eushipments.history",
+        f.id,
+      );
+    if (cancelledAtVendor)
+      await openAlertOnce(tx, {
+        kind: "eushipments_cancelled_at_vendor",
+        severity: "CRITICAL",
+        isTask: true,
+        title: `euShipments: пратка ${f.externalId} е изтрита/анулирана в кабинета — изпратете поръчката отново или я откажете в Shopify`,
+        body: `Shipment ${f.externalId}: "${scrubText(latest.record.STATUS, 200)}"`,
+        fulfillmentId,
+        accountId,
+      });
 
     const body = `Shipment ${f.externalId}: "${scrubText(latest.record.STATUS, 200)}"${
       latest.record.COMMENT ? ` (${scrubText(latest.record.COMMENT, 200)})` : ""

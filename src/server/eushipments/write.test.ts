@@ -17,6 +17,7 @@ import {
   queueEuTransfer,
   localCod,
   referenceFor,
+  reshipReference,
 } from "./write";
 
 // Mocked euShipments only — tests never call the vendor (CLAUDE.md).
@@ -59,7 +60,7 @@ function vendor(routes: Record<string, Handler>) {
     euShipmentsTransportFor(c, { fetchImpl, sleep: async () => {}, now });
   const count = (p: string) => calls.filter((c) => c.path.startsWith(p)).length;
   const sent = (p: string, n = 0) => calls.filter((c) => c.path.startsWith(p))[n]?.body;
-  return { calls, resolve, count, sent };
+  return { calls, resolve, count, sent, clientOptions: { fetchImpl, sleep: async () => {} } };
 }
 
 const PDF = Buffer.from("%PDF-1.4 synthetic test file").toString("base64");
@@ -141,6 +142,64 @@ describe("euShipments write side through the outbox (DB)", () => {
     } finally {
       await g.db.countrySetting.deleteMany({ where: { country: "BG" } });
     }
+  });
+
+  it("reship reference: re-queue keeps it, a live shipment keeps it (duplicate refused), after a cancel -2, -3", async () => {
+    const db = (rows: { externalId: string; status: string }[]) => ({
+      fulfillment: { findMany: async () => rows },
+    });
+    expect(await reshipReference(db([]), "c", "o", "1-EUR2849")).toBe("1-EUR2849");
+    expect(
+      await reshipReference(
+        db([{ externalId: "1-EUR2849", status: "SUBMIT_FAILED" }]),
+        "c",
+        "o",
+        "1-EUR2849",
+      ),
+    ).toBe("1-EUR2849");
+    expect(
+      await reshipReference(db([{ externalId: "1-EUR2849", status: "ACCEPTED" }]), "c", "o", "1-EUR2849"),
+    ).toBe("1-EUR2849");
+    expect(
+      await reshipReference(db([{ externalId: "1-EUR2849", status: "CANCELLED" }]), "c", "o", "1-EUR2849"),
+    ).toBe("1-EUR2849-2");
+    expect(
+      await reshipReference(
+        db([
+          { externalId: "1-EUR2849", status: "CANCELLED" },
+          { externalId: "1-EUR2849-2", status: "CANCELLED" },
+        ]),
+        "c",
+        "o",
+        "1-EUR2849",
+      ),
+    ).toBe("1-EUR2849-3");
+  });
+
+  it("a shipment deleted in the euShipments cabinet (no CRM delete) blocks the order with one task", async () => {
+    const { order } = await euTestOrder(g, { number: "#1880" });
+    await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+    const f = await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: order.id,
+        connectionId: g.connection.id,
+        externalId: "TST-1880",
+        status: "ACCEPTED",
+        rawStatus: "Information received",
+        submittedAt: new Date(),
+      },
+    });
+    const { pollEuOrders } = await import("./read");
+    const v = vendor({ "/fulfilment/orders-history": () => json([found("TST-1880", "Deleted")]) });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("BLOCKED");
+    expect(
+      await g.db.alert.count({
+        where: { kind: "eushipments_cancelled_at_vendor", entityId: f.id, isTask: true },
+      }),
+    ).toBe(1);
   });
 
   it("blocks an order whose product has no euShipments mapping; nothing is queued", async () => {

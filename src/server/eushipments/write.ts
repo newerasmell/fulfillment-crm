@@ -159,6 +159,35 @@ export type QueueOrderResult =
     };
 
 /**
+ * The reference for this order at this connection: an earlier shipment still on our side (QUEUED / SUBMIT_FAILED)
+ * keeps its reference (re-queue); otherwise, after a cancelled/deleted shipment, a reship gets `-2`, `-3`, … —
+ * euShipments refuses a reference that belongs to a deleted shipment, and our (connectionId, externalId) unique
+ * index allows one shipment per reference.
+ */
+export async function reshipReference(
+  db: { fulfillment: { findMany: (args: object) => Promise<{ externalId: string; status: string }[]> } },
+  connectionId: string,
+  orderId: string,
+  base: string,
+) {
+  const earlier = await db.fulfillment.findMany({
+    where: { connectionId, orderId },
+    select: { externalId: true, status: true },
+  });
+  if (earlier.length === 0) return base;
+  const open = earlier.find((e) => e.status === "QUEUED" || e.status === "SUBMIT_FAILED");
+  if (open) return open.externalId;
+  // A shipment that may exist at the vendor keeps its reference, so the duplicate check refuses a second one.
+  const live = earlier.find((e) => e.status !== "CANCELLED");
+  if (live) return live.externalId;
+  const used = new Set(earlier.map((e) => e.externalId));
+  if (!used.has(base)) return base;
+  let n = 2;
+  while (used.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+/**
  * The COD to collect in the destination's local currency: the order's own COD when the order is already in that
  * currency, else a stored local amount (Order.codLocalAmount/codLocalCurrency). null = cannot be determined.
  */
@@ -303,7 +332,12 @@ async function euOrderPreflight(
   now: Date,
 ) {
   const db = accountDb(accountId);
-  const reference = referenceFor(order, order.store ?? null);
+  const reference = await reshipReference(
+    db,
+    connection.id,
+    order.id,
+    referenceFor(order, order.store ?? null),
+  );
   const findings: Finding[] = [];
 
   // Two stores without a prefix can both have #1001: name the clash before the (connectionId, externalId) unique
