@@ -120,6 +120,10 @@ export async function saveCountrySetting(
   assertCan(actor.role, "countries.manage");
   const input = CountrySettingInput.parse(raw);
   if (input.rule && hasBuiltinPhoneRule(input.country)) throw new DomainError("builtin_phone_rule");
+  // The calling code is a fact of the country (public ITU table), not a choice: a wrong one would give
+  // euShipments a different number than FHB / Joy (which always use the ITU code) for the same order.
+  const itu = callingCodeOf(input.country);
+  if (input.rule && itu && input.rule.cc !== itu) throw new DomainError("calling_code_mismatch");
   const rule = input.rule ? customPhoneRule(input.rule) : null;
   const db = accountDb(actor.accountId);
   const before = await db.countrySetting.findUnique({

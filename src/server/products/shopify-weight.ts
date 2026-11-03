@@ -45,6 +45,7 @@ type Row = {
   accountId: string;
   storeId: string;
   productId: string;
+  variantLinkId: string;
   weightGrams: number;
   variantLink: { shopifyVariantGid: string; shopifyProductGid: string };
 };
@@ -86,6 +87,28 @@ async function openTask(accountId: string, productId: string, title: string, bod
       entityId: productId,
     },
   });
+}
+
+type SupersedeDb = Pick<Prisma.TransactionClient, "product" | "shopifyWeightWrite">;
+
+/**
+ * True when this row is no longer what the variant should get: the master weight (Product.weightGrams, the one
+ * truth) is not the row's weight any more — a person saved another weight while this row was sending, waiting
+ * for a retry or left behind by a crashed worker. Such a row must never reach Shopify: it would put a stale
+ * weight back over the newer one. (Rows are unique per (variant, weight), so at most one row of a variant can
+ * match the master; going back to an earlier weight re-arms that earlier row and it is current again.)
+ */
+export async function isSupersededWeightWrite(db: SupersedeDb, id: string): Promise<boolean> {
+  const row = await db.shopifyWeightWrite.findUnique({
+    where: { id },
+    select: { accountId: true, productId: true, weightGrams: true },
+  });
+  if (!row) return true;
+  const product = await db.product.findFirst({
+    where: { id: row.productId, accountId: row.accountId },
+    select: { weightGrams: true },
+  });
+  return !product || product.weightGrams !== row.weightGrams;
 }
 
 /** Processes one row. Safe to call concurrently and repeatedly (row lock + status machine). */
@@ -138,6 +161,13 @@ export async function processWeightWrite(
         data: { status: "DRY_RUN_RECORDED", evaluatedMode: mode, request, lastError: null },
       });
       return { kind: "done", status: "DRY_RUN_RECORDED" };
+    }
+    if (await isSupersededWeightWrite(tx, id)) {
+      await tx.shopifyWeightWrite.update({
+        where: { id },
+        data: { status: "REFUSED", evaluatedMode: mode, lastError: "superseded" },
+      });
+      return { kind: "done", status: "REFUSED" };
     }
     if (opts.offlineOnly) return { kind: "skip" };
     const attempts = row.attempts + 1;
@@ -221,6 +251,13 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
   if (!before.productVariant) return fail("variant_not_found");
   if (gramsOf(before) === row.weightGrams) return done(before.productVariant, "already_set");
 
+  // A newer weight may have been saved while we were reading: check again right before the only write.
+  if (await withSystemTransaction((tx) => isSupersededWeightWrite(tx, row.id))) {
+    const s = await finalize({ lastError: "superseded" }, "REFUSED");
+    if (s === "REFUSED")
+      await audit(row, "refused", { weightGrams: row.weightGrams, lastError: "superseded" });
+    return s;
+  }
   const variables = variantWeightVariables(
     before.productVariant.product.id,
     row.variantLink.shopifyVariantGid,
@@ -259,13 +296,33 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
   return done(payload, null);
 }
 
-/** Due rows (all accounts, worker): crashed sends back to PENDING (idempotent), then everything ready. */
+/**
+ * Due rows (all accounts, worker): crashed sends back to PENDING (the sender reads back before any write, so
+ * nothing is set twice) — or REFUSED when a newer weight replaced them meanwhile — then everything ready.
+ */
 export async function sweepWeightWrites(now: Date = new Date(), limit = 200) {
   const db = systemDb();
-  const stale = await db.shopifyWeightWrite.updateMany({
+  const staleRows = await db.shopifyWeightWrite.findMany({
     where: { status: "SENDING", lockedAt: { lt: new Date(now.getTime() - WEIGHT_WRITE_STALE_MS) } },
-    data: { status: "PENDING", lastError: "worker stopped during the Shopify call" },
+    select: { id: true, accountId: true, productId: true, weightGrams: true },
+    take: limit,
   });
+  let staleCount = 0;
+  let supersededCount = 0;
+  for (const r of staleRows) {
+    const superseded = await withSystemTransaction((tx) => isSupersededWeightWrite(tx, r.id));
+    const res = await db.shopifyWeightWrite.updateMany({
+      where: { id: r.id, status: "SENDING" },
+      data: superseded
+        ? { status: "REFUSED", lastError: "superseded" }
+        : { status: "PENDING", lastError: "worker stopped during the Shopify call" },
+    });
+    if (res.count !== 1) continue;
+    if (superseded) {
+      supersededCount++;
+      await audit(r, "refused", { weightGrams: r.weightGrams, lastError: "superseded" });
+    } else staleCount++;
+  }
   const ready = await db.shopifyWeightWrite.findMany({
     where: {
       OR: [
@@ -277,5 +334,5 @@ export async function sweepWeightWrites(now: Date = new Date(), limit = 200) {
     orderBy: { createdAt: "asc" },
     take: limit,
   });
-  return { stale: stale.count, ready: ready.map((r) => r.id) };
+  return { stale: staleCount, superseded: supersededCount, ready: ready.map((r) => r.id) };
 }
