@@ -57,11 +57,18 @@ test("Shopify write-back: a DRY_RUN record shows the exact fulfillmentCreate dat
   await login(page);
   await page.goto("/orders?tab=all&q=93004");
   await page.getByRole("link", { name: "#93004" }).click();
-  const wb = page.getByTestId("writeback");
+  const wb = page.locator('[data-testid="writeback"][data-kind="FULFIL"]');
   await expect(wb).toContainText("E2E-TRK-93004", { timeout: 60_000 });
+  await expect(wb).toContainText("Изпълнение");
   await expect(wb).toContainText("записано (пробно — би се изпратило)");
   await wb.getByText("Точни данни (fulfillmentCreate)").click();
   await expect(wb.locator("pre")).toContainText('"notifyCustomer": true');
+  // The lifecycle: the status event that follows the fulfillment, with its exact data.
+  const ev = page.locator('[data-testid="writeback"][data-kind="EVENT"]');
+  await expect(ev).toContainText("Статус");
+  await expect(ev).toContainText("в транзит");
+  await ev.getByText("Точни данни (fulfillmentEventCreate)").click();
+  await expect(ev.locator("pre")).toContainText('"status": "IN_TRANSIT"');
 });
 
 test("alerts and tasks: count on Начало, one list, take it, resolve with a note", async ({ page }) => {

@@ -123,6 +123,7 @@ export interface StoreSettingsView {
   codGateways: string[];
   skuPrefix: string | null;
   notifyCustomer: boolean;
+  fulfilTrigger: string;
   writeBackMode: string;
   inventoryPushMode: string;
   weightWriteMode: string;
@@ -170,6 +171,21 @@ export function StoreSettingsForm({
             </option>
           ))}
         </select>
+      </label>
+      <label className={labelCls}>
+        {t("fulfilTrigger")}
+        <select name="fulfilTrigger" defaultValue={s.fulfilTrigger} className={inputCls}>
+          {["ON_TRACKING", "ON_ACCEPT"].map((m) => (
+            <option
+              key={m}
+              value={m}
+              disabled={!canRaise && m === "ON_ACCEPT" && s.fulfilTrigger !== "ON_ACCEPT"}
+            >
+              {t(`fulfilTriggers.${m}`)}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs font-normal text-muted">{t("fulfilTriggerHint")}</span>
       </label>
       <label className={labelCls}>
         {t("inventoryPushMode")}

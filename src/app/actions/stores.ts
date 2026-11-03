@@ -68,6 +68,9 @@ export async function saveStoreSettingsAction(
       codGateways: list(form.get("codGateways")),
       skuPrefix: String(form.get("skuPrefix") ?? ""),
       notifyCustomer: form.get("notifyCustomer") === "on",
+      ...(form.get("fulfilTrigger")
+        ? { fulfilTrigger: String(form.get("fulfilTrigger")) as "ON_TRACKING" }
+        : {}),
       writeBackMode: String(form.get("writeBackMode")) as "READ_ONLY",
       inventoryPushMode: String(form.get("inventoryPushMode")) as "DISABLED",
       ...(form.get("weightWriteMode")

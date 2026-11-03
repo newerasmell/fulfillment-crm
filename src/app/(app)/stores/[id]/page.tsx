@@ -192,6 +192,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
               codGateways: store.codGateways,
               skuPrefix: store.skuPrefix,
               notifyCustomer: store.notifyCustomer,
+              fulfilTrigger: store.fulfilTrigger,
               writeBackMode: store.writeBackMode,
               inventoryPushMode: store.inventoryPushMode,
               weightWriteMode: store.weightWriteMode,
