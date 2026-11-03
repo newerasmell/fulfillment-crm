@@ -182,20 +182,20 @@ model Account {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  companies       Company[]
-  memberships     Membership[]
-  invitations     Invitation[]
-  credentials     Credential[]
-  stores          Store[]
-  connections     FulfillmentConnection[]
-  routingRules    RoutingRule[]
-  countrySettings CountrySetting[]
-  products        Product[]
-  orders          Order[]
-  alerts          Alert[]
-  auditLogs       AuditLog[]
-  webhookEvents   WebhookEvent[]
-  aiPolicies      AiPolicy[]
+  companies                 Company[]
+  memberships               Membership[]
+  invitations               Invitation[]
+  credentials               Credential[]
+  stores                    Store[]
+  connections               FulfillmentConnection[]
+  routingRules              RoutingRule[]
+  countrySettings           CountrySetting[]
+  products                  Product[]
+  orders                    Order[]
+  alerts                    Alert[]
+  auditLogs                 AuditLog[]
+  webhookEvents             WebhookEvent[]
+  aiPolicies                AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
   fulfillBatches            FulfillBatch[]
   shopifyWriteBacks         ShopifyWriteBack[]
@@ -214,6 +214,8 @@ model Account {
   aiPolicyEvents            AiPolicyEvent[]
   aiRuleProposals           AiRuleProposal[]
   reviewEmbeddings          ReviewEmbedding[]
+  shipmentBoardSettings     ShipmentBoardSettings?
+  fhbTickets                FhbTicket[]
 }
 
 model User {
@@ -392,12 +394,12 @@ model Store {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
-  account      Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  company      Company?           @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
-  credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
-  variantLinks StoreVariantLink[]
-  orders       Order[]
-  writeBacks   ShopifyWriteBack[]
+  account         Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company         Company?                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
+  credential      Credential?             @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  variantLinks    StoreVariantLink[]
+  orders          Order[]
+  writeBacks      ShopifyWriteBack[]
   locations       StoreLocation[]
   inventoryLevels ShopifyInventoryLevel[]
   inventoryPushes InventoryPush[]
@@ -430,23 +432,23 @@ model FulfillmentConnection {
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
-  account          Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  company          Company?          @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
-  credential       Credential?       @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
-  vendorProducts   VendorProduct[]
-  stockMovements   StockMovement[]
-  inbounds         InboundShipment[]
-  routingRules     RoutingRule[]
-  fulfillments     Fulfillment[]
-  outboundRequests OutboundRequest[]
-  fhbSyncStates    FhbSyncState[]
-  fhbOrders        FhbOrderMirror[]
-  fhbCods          FhbCodMirror[]
-  fhbReturns       FhbReturnMirror[]
-  fhbCarriers      FhbCarrier[]
-  fhbPickupPoints  FhbPickupPoint[]
-  eushipmentsSettings  EushipmentsSettings?
-  eushipmentsTransfers EushipmentsTransfer[]
+  account                    Account                    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company                    Company?                   @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
+  credential                 Credential?                @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  vendorProducts             VendorProduct[]
+  stockMovements             StockMovement[]
+  inbounds                   InboundShipment[]
+  routingRules               RoutingRule[]
+  fulfillments               Fulfillment[]
+  outboundRequests           OutboundRequest[]
+  fhbSyncStates              FhbSyncState[]
+  fhbOrders                  FhbOrderMirror[]
+  fhbCods                    FhbCodMirror[]
+  fhbReturns                 FhbReturnMirror[]
+  fhbCarriers                FhbCarrier[]
+  fhbPickupPoints            FhbPickupPoint[]
+  eushipmentsSettings        EushipmentsSettings?
+  eushipmentsTransfers       EushipmentsTransfer[]
   eushipmentsVendorCompanies EushipmentsVendorCompany[]
   eushipmentsCouriers        EushipmentsCourier[]
   eushipmentsWarehouses      EushipmentsWarehouse[]
@@ -458,7 +460,7 @@ model FulfillmentConnection {
   eushipmentsSyncs           EushipmentsSync[]
   masterCatalogueRuns        MasterCatalogueRun[]
   warehouseChoices           OrderWarehouseChoice[]
-  rerouteTargets             OrderReroute[]        @relation("RerouteTarget")
+  rerouteTargets             OrderReroute[]             @relation("RerouteTarget")
   storeLocations             StoreLocation[]
   returnCases                ReturnCase[]
   manualShipments            ManualShipment[]
@@ -577,9 +579,9 @@ model StoreVariantLink {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  store      Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
-  product    Product?    @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
-  orderLines OrderLine[]
+  store           Store                   @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  product         Product?                @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  orderLines      OrderLine[]
   inventoryLevels ShopifyInventoryLevel[]
 
   @@unique([accountId, id])
@@ -729,14 +731,14 @@ model Order {
   createdAt                DateTime       @default(now())
   updatedAt                DateTime       @updatedAt
 
-  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  company      Company?      @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
-  store        Store?        @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
-  lines        OrderLine[]
-  fulfillments Fulfillment[]
-  reviews      Review[]
-  events       OrderEvent[]
-  check        OrderCheck?
+  account           Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company           Company?              @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
+  store             Store?                @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  lines             OrderLine[]
+  fulfillments      Fulfillment[]
+  reviews           Review[]
+  events            OrderEvent[]
+  check             OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
   warehouseChoice   OrderWarehouseChoice?
@@ -747,6 +749,11 @@ model Order {
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
   @@index([accountId, status, placedAt])
+  // Header search (wave 4 shipments track): ILIKE '%q%' on number / customer name (pg_trgm).
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin)
+  /// Справки (P10-04): orders by placement date, every status.
+  @@index([accountId, placedAt])
 }
 
 model OrderLine {
@@ -808,11 +815,19 @@ model Fulfillment {
   reroutesFrom     OrderReroute[]
   manualShipment   ManualShipment?
   labels           ShipmentLabel[]
+  fhbTicket        FhbTicket?
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
   @@unique([connectionId, variableSymbol])
   @@index([accountId, status])
+  // Товарителници board (wave 4): newest-first paging / keyset export, COD carrier lookup, header search.
+  @@index([accountId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([accountId, orderId])
+  @@index([trackingNumbers], type: Gin)
+  @@index([externalId(ops: raw("gin_trgm_ops"))], type: Gin)
+  /// Справки (P10-04): shipments by creation date.
+  @@index([accountId, createdAt])
 }
 
 model FulfillmentEvent {
@@ -1644,14 +1659,14 @@ model AlertNote {
 
 /// One notification per alert and channel (email, telegram): the unique key makes sending idempotent.
 model AlertNotification {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   accountId String
   alertId   String
   channel   String
   /// SENDING | SENT | FAILED
-  status    String   @default("SENDING")
+  status    String    @default("SENDING")
   error     String?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   sentAt    DateTime?
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -1676,7 +1691,7 @@ model ProductLine {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account        Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
   companies      Company[]
   products       Product[]
   catalogueRuns  MasterCatalogueRun[]
@@ -2062,28 +2077,28 @@ model ReturnsCodSettings {
 /// WAREHOUSE (vendor order from stock — the normal review/Fulfill flow), JOY_LABEL (FHB Joy label for a parcel we
 /// pack), AWB (euShipments courier waybill), PRE_AWB (euShipments order without a waybill yet).
 model ManualShipment {
-  id            String    @id @default(cuid())
-  accountId     String
-  orderId       String
-  kind          String
-  connectionId  String
+  id              String    @id @default(cuid())
+  accountId       String
+  orderId         String
+  kind            String
+  connectionId    String
   /// The shipment row (label kinds: created with the request; WAREHOUSE: when Fulfill queues it).
-  fulfillmentId String?
+  fulfillmentId   String?
   /// Parcel parameters from the form (parcels, weights, parcel service / courier, office, dispatch date, …).
-  params        Json      @default("{}")
+  params          Json      @default("{}")
   /// Label tracking poller state (Joy GET /shipment, euShipments waybills-history).
-  trackedAt     DateTime?
-  stopTracking  Boolean   @default(false)
-  trackError    String?
+  trackedAt       DateTime?
+  stopTracking    Boolean   @default(false)
+  trackError      String?
   /// AWB label fetch (print/{awb}) after create: attempts so far and the last error. The sweep stops at a cap
   /// and opens one operator task instead of calling the vendor forever.
-  labelAttempts Int       @default(0)
-  labelError    String?
+  labelAttempts   Int       @default(0)
+  labelError      String?
   /// Idempotency key of the form submission: a double click / retried POST returns the same shipment.
   clientRequestId String?
-  createdById   String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdById     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   order       Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
   connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
@@ -2369,4 +2384,63 @@ model AiRuleProposal {
 
   @@unique([accountId, key])
   @@index([accountId, status])
+}
+
+// ───────────────────────── wave 4 · shipments + warehouse tickets track (P10-01 / P10-02) ─────────────────────────
+
+/// Товарителници board settings of a group (P10-01): a shipment is "забавена" when it is shipped but not delivered
+/// after this many days.
+model ShipmentBoardSettings {
+  id          String   @id @default(cuid())
+  accountId   String   @unique
+  delayedDays Int      @default(7)
+  updatedAt   DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+/// Тикети от склада (P10-02): FHB only sends ticket NOTIFICATIONS for an order (notification.ticket_created /
+/// ticket_updated / ticket_closed, INTEGRATION_NOTES §2.2) — no ticket id, text or replies (those stay in ZOE). One
+/// record per shipment: state of the latest event, first/last event time, how many events, operator review.
+model FhbTicket {
+  id            String    @id @default(cuid())
+  accountId     String
+  fulfillmentId String
+  /// OPEN (ticket_created) | UPDATED (ticket_updated) | CLOSED (ticket_closed) — the latest event received.
+  state         String
+  lastEvent     String
+  eventCount    Int       @default(0)
+  firstEventAt  DateTime
+  lastEventAt   DateTime
+  closedAt      DateTime?
+  /// "Прегледан" by an operator (with a note); counts only while no newer event arrived (reviewedAt ≥ lastEventAt).
+  reviewedAt    DateTime?
+  reviewedById  String?
+  reviewNote    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  account     Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  fulfillment Fulfillment      @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+  events      FhbTicketEvent[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, fulfillmentId])
+  @@index([accountId, state, lastEventAt])
+}
+
+/// One received ticket notification (idempotent per stored callback: webhookEventId is unique).
+model FhbTicketEvent {
+  id             String   @id @default(cuid())
+  accountId      String
+  ticketId       String
+  webhookEventId String
+  event          String
+  receivedAt     DateTime
+  createdAt      DateTime @default(now())
+
+  ticket FhbTicket @relation(fields: [accountId, ticketId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([webhookEventId])
+  @@index([accountId, ticketId, receivedAt])
 }

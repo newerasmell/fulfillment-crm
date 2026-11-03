@@ -4,6 +4,7 @@ import { FhbStockNotification } from "@/integrations/fhb-v3/schemas";
 import { accountDb, isUniqueViolation, systemDb } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
+import { isTicketEvent, recordFhbTicketEvent } from "@/server/tickets/tickets";
 import { applyFhbOrderView, applyFhbProductView } from "./apply";
 import { authenticateFhbCallbackPath } from "./callback-token";
 import { connectionAccount, fhbClientForConnection } from "./connection";
@@ -102,6 +103,16 @@ export async function processFhbCallback(
         ? await db.fulfillment.findUnique({ where: { id: pointer.fulfillmentId } })
         : null;
       if (!f || f.connectionId !== connectionId) return (await done("IGNORED", "unknown shipment")).status;
+      // Ticket notifications (P10-02): stored as the shipment's ticket record first (idempotent per event), then
+      // the order is re-read like every other order notification.
+      const ticketEvent = event.topic.slice("order.".length);
+      if (isTicketEvent(ticketEvent))
+        await recordFhbTicketEvent(accountId, {
+          fulfillmentId: f.id,
+          webhookEventId: event.id,
+          event: ticketEvent,
+          receivedAt: event.receivedAt,
+        });
       const client = await fhbClientForConnection(accountId, connectionId, clientOptions);
       const view = await client.getOrder(f.externalId);
       if (!view) return (await done("PROCESSED", "order not found at FHB")).status;

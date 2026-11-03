@@ -287,7 +287,15 @@ export async function locationMaps(accountId: string, storeIds: string[]) {
 /** Board rows of the current scope (stock / bundles / archive views). */
 export async function stockBoard(
   ctx: StockCtx,
-  opts: { view?: BoardView; q?: string; filter?: BoardFilter; page?: number; now?: Date } = {},
+  opts: {
+    view?: BoardView;
+    q?: string;
+    filter?: BoardFilter;
+    page?: number;
+    now?: Date;
+    /** Rows per page (default BOARD_PAGE_SIZE); Справки (P10-04) reads one page of up to BOARD_MAX_PRODUCTS. */
+    pageSize?: number;
+  } = {},
 ) {
   const now = opts.now ?? new Date();
   const view = opts.view ?? "stock";
@@ -331,6 +339,7 @@ export async function stockBoard(
       .map((r) => ({ ...r, parentSku: parentSku.get(r.id) ?? null })),
   );
   const page = Math.max(1, opts.page ?? 1);
+  const size = Math.min(BOARD_MAX_PRODUCTS, Math.max(1, opts.pageSize ?? BOARD_PAGE_SIZE));
   return {
     connections,
     stores,
@@ -338,7 +347,7 @@ export async function stockBoard(
     counts,
     total: sorted.length,
     truncated: products.length >= BOARD_MAX_PRODUCTS,
-    rows: sorted.slice((page - 1) * BOARD_PAGE_SIZE, page * BOARD_PAGE_SIZE),
+    rows: sorted.slice((page - 1) * size, page * size),
   };
 }
 

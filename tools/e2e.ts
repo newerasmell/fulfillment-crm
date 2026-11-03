@@ -69,6 +69,15 @@ try {
   // AI assistant (wave 3, AI track): its own group and OWNER, reviewer run against a mocked transport (ai.spec.ts).
   const { seedAi } = await import("../tests/e2e/seed-ai");
   const aiOwner = await seedAi();
+  // Shipments + warehouse tickets (wave 4, shipments track): its own group and OWNER (tests/e2e/shipments.spec.ts).
+  const { seedShipments } = await import("../tests/e2e/seed-shipments");
+  const shipmentsOwner = await seedShipments();
+  // Directory + invoices (wave 4, directory track): its own group and OWNER (tests/e2e/directory.spec.ts).
+  const { seedDirectory } = await import("../tests/e2e/seed-directory");
+  const directoryOwner = await seedDirectory();
+  // Справки (wave 4, reports track): its own group and OWNER (tests/e2e/reports.spec.ts).
+  const { seedReports } = await import("../tests/e2e/seed-reports");
+  const reportsOwner = await seedReports();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -107,6 +116,15 @@ try {
       E2E_AI_EMAIL: aiOwner.email,
       E2E_AI_PASSWORD: aiOwner.password,
       E2E_AI_TOTP: aiOwner.totp,
+      E2E_SHIPMENTS_EMAIL: shipmentsOwner.email,
+      E2E_SHIPMENTS_PASSWORD: shipmentsOwner.password,
+      E2E_SHIPMENTS_TOTP: shipmentsOwner.totp,
+      E2E_DIRECTORY_EMAIL: directoryOwner.email,
+      E2E_DIRECTORY_PASSWORD: directoryOwner.password,
+      E2E_DIRECTORY_TOTP: directoryOwner.totp,
+      E2E_REPORTS_EMAIL: reportsOwner.email,
+      E2E_REPORTS_PASSWORD: reportsOwner.password,
+      E2E_REPORTS_TOTP: reportsOwner.totp,
     },
   });
   status = run.status ?? 1;

@@ -2567,5 +2567,548 @@
       "not_found": "Not found.",
       "not_editable": "The address can no longer be changed."
     }
+  },
+  "shipmentList": {
+    "title": "Shipments",
+    "subtitle": "Every shipment from both warehouses — FHB, FHB Joy labels and euShipments waybills — with tracking.",
+    "export": "Export CSV",
+    "tabsLabel": "Shipment status",
+    "tabs": {
+      "preparing": "Preparing",
+      "shipped": "Shipped",
+      "delivered": "Delivered",
+      "returning": "Returning",
+      "problem": "Problem",
+      "cancelled": "Cancelled",
+      "all": "All",
+      "delayed": "Delayed"
+    },
+    "delayedHint": "\"Delayed\": shipped but not delivered after {days} days.",
+    "filters": "Filters",
+    "filter": {
+      "warehouse": "Warehouse",
+      "allWarehouses": "All warehouses",
+      "carrier": "Carrier",
+      "allCarriers": "All carriers",
+      "from": "Created from",
+      "to": "to",
+      "search": "Search",
+      "searchPlaceholder": "Order, tracking, customer, phone…",
+      "apply": "Apply",
+      "clear": "Clear"
+    },
+    "type": {
+      "FHB_V3": "FHB",
+      "FHB_JOY": "FHB Joy",
+      "EUSHIPMENTS": "euShipments"
+    },
+    "col": {
+      "order": "Order",
+      "company": "Company",
+      "warehouse": "Warehouse",
+      "carrier": "Carrier",
+      "tracking": "Tracking",
+      "status": "Status",
+      "cod": "COD",
+      "dates": "Dates",
+      "age": "Age"
+    },
+    "date": {
+      "created": "created",
+      "submitted": "sent to warehouse",
+      "shipped": "shipped",
+      "delivered": "delivered"
+    },
+    "days": "{n, plural, one {# day} other {# days}}",
+    "rawStatus": "Status as the warehouse sends it",
+    "delayed": "Delayed",
+    "rerouted": "Rerouted ({status})",
+    "rerouteStatus": {
+      "CANCEL_QUEUED": "waiting for cancellation",
+      "DONE": "done",
+      "REFUSED": "refused by the warehouse",
+      "UNCERTAIN": "uncertain",
+      "SIMULATED": "simulated"
+    },
+    "ticket": "Ticket: {state}",
+    "ticketState": {
+      "OPEN": "open",
+      "UPDATED": "updated",
+      "CLOSED": "closed"
+    },
+    "trackingLink": "Tracking {n}",
+    "manualKind": {
+      "WAREHOUSE": "Manual from stock",
+      "JOY_LABEL": "FHB Joy label",
+      "AWB": "euShipments waybill",
+      "PRE_AWB": "euShipments pre-AWB"
+    },
+    "empty": "No shipments for this filter.",
+    "pagination": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages} · {total} shipments",
+    "detail": {
+      "title": "Shipment {id}",
+      "open": "Details of shipment {id}",
+      "close": "Close",
+      "order": "Order",
+      "timeline": "(full order history)",
+      "vendorId": "Warehouse number",
+      "vendorUid": "Warehouse UID",
+      "variableSymbol": "Variable symbol",
+      "deliveryPoint": "Delivery point",
+      "ticket": "Warehouse ticket",
+      "ticketEvents": "{count, plural, one {# notification} other {# notifications}}",
+      "events": "Warehouse events",
+      "noEvents": "No warehouse events yet.",
+      "openZoe": "More about the shipment in ZOE ↗",
+      "moreInEu": "Anything beyond this data is in the euShipments cabinet (the API gives nothing more for the shipment)."
+    },
+    "settings": {
+      "title": "Shipment settings",
+      "form": "Shipment settings",
+      "delayedDays": "\"Delayed\" after (days without delivery)",
+      "save": "Save",
+      "saved": "Saved."
+    },
+    "error": {
+      "forbidden": "You do not have permission for this.",
+      "invalid_days": "Enter a whole number from 1 to 60."
+    }
+  },
+  "tickets": {
+    "pagination": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages} · {total} tickets",
+    "title": "Warehouse tickets",
+    "subtitle": "FHB ticket notifications per shipment. Text and replies are in ZOE.",
+    "openZoe": "Open in ZOE ↗",
+    "about": {
+      "fhb": "Through the API FHB only sends ticket notifications for an order (created / updated / closed) — no text or replies. Read and answer in ZOE, then mark the ticket reviewed here.",
+      "eu": "euShipments has no ticket API: their enquiries stay in the euShipments cabinet."
+    },
+    "tabsLabel": "Ticket state",
+    "tabs": {
+      "open": "Open",
+      "unreviewed": "Not reviewed",
+      "closed": "Closed",
+      "all": "All"
+    },
+    "search": "Order, shipment, tracking…",
+    "apply": "Search",
+    "empty": "No tickets for this filter.",
+    "col": {
+      "state": "State",
+      "shipment": "Order / shipment",
+      "warehouse": "Warehouse",
+      "company": "Company",
+      "events": "Notifications",
+      "age": "Age",
+      "review": "Review"
+    },
+    "state": {
+      "OPEN": "Open",
+      "UPDATED": "Updated",
+      "CLOSED": "Closed"
+    },
+    "vendorEvent": "Latest notification as FHB sends it",
+    "eventCount": "{count, plural, one {# notification} other {# notifications}}",
+    "first": "first: {date}",
+    "last": "last: {date}",
+    "days": "{n, plural, one {# day} other {# days}}",
+    "markReviewed": "Mark as reviewed",
+    "reviewForm": "Review ticket {reference}",
+    "noteLabel": "Note",
+    "notePlaceholder": "What was done (e.g. answered in ZOE)",
+    "confirmReviewed": "Reviewed",
+    "cancel": "Cancel",
+    "reviewedBy": "Reviewed by {name}, {date}",
+    "reviewedBefore": "Reviewed by {name}, {date} — a newer notification arrived since",
+    "note": "Note: {note}",
+    "error": {
+      "forbidden": "You do not have permission for this.",
+      "note_required": "Write a note (at least 2 characters).",
+      "not_found": "Ticket not found."
+    }
+  },
+  "globalSearch": {
+    "label": "Search",
+    "placeholder": "Order, tracking, customer, phone…",
+    "hint": "Finds orders by number, customer, phone or e-mail and shipments by tracking number. Enter opens the first hit.",
+    "loading": "Searching…",
+    "none": "Nothing found.",
+    "orders": "Orders",
+    "shipments": "Shipments"
+  },
+  "directory": {
+    "title": "Offices, PUDO, users",
+    "subtitle": "A directory of what the warehouse syncs already mirrored: offices and lockers, PUDO points, couriers, cities and sender.",
+    "tabsLabel": "Directory sections",
+    "tabs": {
+      "offices": "Offices & PUDO",
+      "couriers": "Couriers",
+      "cities": "Cities",
+      "senders": "Users / sender"
+    },
+    "original": {
+      "offices": "PUDO locations · Delivery points",
+      "couriers": "Couriers · Parcel services",
+      "cities": "Cities",
+      "senders": "Client data · Account"
+    },
+    "lastSync": "Last refresh",
+    "never": "never",
+    "syncNone": "This section has no sync for the selected warehouses.",
+    "noConnections": "No warehouse connections in the selected scope.",
+    "syncHelp": {
+      "offices": "euShipments: couriers, warehouses, countries and offices (daily). FHB: carriers and the pick-up point lists loaded so far (at most daily).",
+      "couriers": "euShipments: GET /couriers (daily). FHB: GET /parcel-service (at most daily).",
+      "cities": "euShipments cities are loaded per country on request; Refresh reloads the countries already loaded.",
+      "senders": "Refresh runs the euShipments connection test, which mirrors the companies the token can see. FHB account data come from the connection record."
+    },
+    "refresh": "Refresh",
+    "jobQueued": "Sync queued ({count}). The page will refresh.",
+    "jobAlready": "The sync is already queued.",
+    "errors": {
+      "forbidden": "You may not start a sync.",
+      "invalid": "Invalid request.",
+      "nothing": "No connection with credentials that can be synced."
+    },
+    "filters": "Filters",
+    "apply": "Apply",
+    "reset": "Clear",
+    "f": {
+      "q": "Search",
+      "qHint": "Name, code or address",
+      "cityHint": "City, postal code or cityId",
+      "vendor": "Warehouse",
+      "courier": "Courier / carrier",
+      "country": "Country",
+      "city": "City or postcode",
+      "type": "Type",
+      "all": "All"
+    },
+    "type": {
+      "office": "Office",
+      "locker": "Locker",
+      "pudo": "PUDO point"
+    },
+    "col": {
+      "code": "Code",
+      "name": "Name",
+      "courier": "Courier",
+      "city": "City",
+      "address": "Address",
+      "type": "Type",
+      "lastSync": "Synced"
+    },
+    "found": "{count, plural, one {# result} other {# results}}",
+    "emptyOffices": "No offices match these filters.",
+    "emptyCouriers": "No couriers synced yet.",
+    "emptyCities": "No cities match these filters.",
+    "emptyCompanies": "The connection test has not mirrored any companies yet.",
+    "codSupport": "COD supported",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyCode": "Copy code",
+    "fhbPointsHelp": "FHB pick-up points are loaded per carrier and country on the FHB connection page (Carriers). euShipments offices come from the daily sync.",
+    "detail": "Office details",
+    "close": "Close",
+    "d": {
+      "courierCode": "Courier code",
+      "postCode": "Postal code",
+      "region": "Region",
+      "country": "Country",
+      "coords": "Coordinates",
+      "weekday": "Opening hours (weekday)",
+      "saturday": "Opening hours (Saturday)",
+      "queryCountry": "Loaded for country",
+      "pasteEu": "Code for orders (recipient.officeId):",
+      "fhbCodesOpen": "FHB does not say whether delivery_point takes the point's id or its external_code (open question to FHB) — both values:"
+    },
+    "yes": "yes",
+    "no": "no",
+    "pages": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages}",
+    "euCouriers": "euShipments couriers",
+    "fhbCarriers": "FHB carriers",
+    "currency": "Currency",
+    "toAddress": "To address",
+    "toOffice": "To office",
+    "offices": "Offices",
+    "points": "PUDO points",
+    "loadPoints": "Load points ↗",
+    "citiesLoaded": "Loaded countries:",
+    "nameEn": "Name (Latin)",
+    "county": "County",
+    "citiesHelp": "A new country is loaded on the euShipments connection page (Couriers → Cities).",
+    "openConnection": "Open connection",
+    "senderId": "Sender (euShipments companyId)",
+    "senderMissing": "not chosen",
+    "vendorCompanies": "Companies the token can see",
+    "bulstat": "Company ID",
+    "isSender": "sender of this connection",
+    "warehouses": "Warehouses",
+    "euCabinetOnly": "The address book and client data (address, representative) stay in the euShipments cabinet — the API only gives them to pick a sender.",
+    "inZoe": "in ZOE ↗",
+    "fhbAccount": "FHB account (app id)",
+    "noCredential": "no credentials",
+    "mode": "Mode",
+    "syncErrors": "Errors in",
+    "fhbSenderHelp": "The FHB API documents no user or sender list; those stay in ZOE."
+  },
+  "invoices": {
+    "title": "Invoices",
+    "subtitle": "Where the warehouses' invoices are, and the per-order invoices FHB returns.",
+    "whereTitle": "Warehouse invoices",
+    "whereText": "The warehouses' invoices for their services are in their cabinets. Neither FHB nor euShipments documents an invoice list API, so the CRM does not fetch them.",
+    "noConnections": "No warehouse connections in the selected scope.",
+    "openZoe": "Open in ZOE ↗",
+    "inEu": "in euShipments: Statistics → Invoice list",
+    "euNoUrl": "(the cabinet address is not stored in the CRM)",
+    "nonGoal": "Accounting and invoicing are not part of the CRM (SPEC §1, a v1 non-goal).",
+    "perOrderTitle": "Order invoices (FHB)",
+    "perOrderText": "FHB returns invoice (PDF link), invoice_number and invoice_date on every order. These are the orders in the FHB mirror where they are filled in.",
+    "tabs": {
+      "all": "All",
+      "pdf": "With PDF",
+      "number": "Number only"
+    },
+    "search": "Invoice number, order or tracking number",
+    "apply": "Search",
+    "empty": "No orders with an invoice.",
+    "noFhb": "No FHB connection in the selected scope.",
+    "col": {
+      "order": "Order",
+      "warehouse": "Warehouse",
+      "number": "Invoice number",
+      "date": "Date",
+      "pdf": "PDF",
+      "status": "FHB status"
+    },
+    "noCrmOrder": "no order in the CRM",
+    "openPdf": "Open PDF ↗",
+    "synced": "synced",
+    "pages": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages}",
+    "euAwbNote": "euShipments documents INVOICED / INVOICE_NUMBER / INVOICE_DATE only in the detail of one AWB (GET /get-awb/{AWB}); the CRM does not sync it yet."
+  },
+  "reports": {
+    "title": "Reports",
+    "subtitle": "Operational reports from CRM data for a chosen period",
+    "back": "All reports",
+    "open": "Open report",
+    "export": "Export CSV",
+    "scope": "Scope: {company} · {warehouse}",
+    "scopeAll": "all warehouses",
+    "vendorHint": "The warehouses' own reports (ZOE Stats, euShipments Statistics) stay in their panels.",
+    "openZoe": "in ZOE ↗",
+    "openEu": "in euShipments ↗",
+    "range": {
+      "label": "Period",
+      "from": "From",
+      "to": "To",
+      "apply": "Show",
+      "days": "{days} days · Sofia days",
+      "presets": {
+        "7d": "7 days",
+        "30d": "30 days",
+        "90d": "90 days",
+        "thisMonth": "This month",
+        "lastMonth": "Last month"
+      }
+    },
+    "cards": {
+      "orders": {
+        "title": "Orders by day, store and company",
+        "text": "Counts and totals per currency, COD vs prepaid share."
+      },
+      "shipments": {
+        "title": "Shipments by warehouse and carrier",
+        "text": "Sent, delivered, returned, cancelled; delivery and return rates."
+      },
+      "timing": {
+        "title": "Processing time",
+        "text": "Import to approval, submission, shipping and delivery — median and p90."
+      },
+      "cod": {
+        "title": "Cash on delivery",
+        "text": "Expected, received and paid per currency and warehouse, ageing of what is unpaid."
+      },
+      "review": {
+        "title": "Review and automation",
+        "text": "Review reasons, decisions, held and blocked, AI agreement."
+      },
+      "stock": {
+        "title": "Stock",
+        "text": "Products running out within 7 days and zero stock with open orders."
+      }
+    },
+    "empty": "No data for the period.",
+    "orders": {
+      "kpi": {
+        "orders": "Orders",
+        "cod": "Cash on delivery",
+        "prepaid": "Prepaid",
+        "cancelled": "Cancelled"
+      },
+      "chart": "Orders per day",
+      "legendCod": "cash on delivery",
+      "legendPrepaid": "prepaid",
+      "totals": "Totals per currency",
+      "byStore": "By store",
+      "byCompany": "By company",
+      "manual": "Manual orders (no store)",
+      "noCompany": "No company",
+      "note": "Orders by order date. Cancelled orders are not in the totals. Different currencies are never added. Orders do not depend on the selected warehouse.",
+      "col": {
+        "day": "Day",
+        "name": "Name",
+        "currency": "Currency",
+        "orders": "Orders",
+        "codShare": "COD share",
+        "total": "Total",
+        "codTotal": "Total of COD orders",
+        "codAmount": "COD amount"
+      },
+      "codAmounts": "COD to collect (local currency)",
+      "codAmountsNote": "The amount the courier collects, in the destination country's local currency — the same as \"Expected\" in the COD report. Not comparable with \"Total of COD orders\" (order currency)."
+    },
+    "shipments": {
+      "chart": "Shipment outcome by warehouse",
+      "legend": {
+        "delivered": "delivered",
+        "returned": "returned",
+        "inTransit": "in transit"
+      },
+      "col": {
+        "warehouse": "Warehouse",
+        "carrier": "Carrier",
+        "created": "Created",
+        "sent": "Sent",
+        "delivered": "Delivered",
+        "returned": "Returned",
+        "inTransit": "In transit",
+        "cancelled": "Cancelled",
+        "failed": "Submit failed",
+        "deliveryRate": "Delivery rate",
+        "returnRate": "Return rate",
+        "cancelledAfterShip": "Cancelled after shipping"
+      },
+      "allCarriers": "All carriers",
+      "noCarrier": "not recorded",
+      "note": "Shipments created in the period, by their current status. Sent = has a ship date or status Shipped or later. Delivery rate = delivered / sent; return rate = returned / sent. Cancelled before shipping and failed submissions are excluded from the rates; shipments still on the way count as sent. Shipments cancelled after shipping count as sent but not as in transit. The carrier is the code the warehouse returned (FHB parcel service); euShipments shipments do not store the courier."
+    },
+    "timing": {
+      "chart": "Median and p90 per step (all warehouses)",
+      "stages": {
+        "approve": "Import → approved",
+        "submit": "Approved → submitted to warehouse",
+        "ship": "Submitted → shipped",
+        "deliver": "Shipped → delivered",
+        "total": "Import → delivered"
+      },
+      "col": {
+        "warehouse": "Warehouse",
+        "orders": "Orders",
+        "median": "Median",
+        "p90": "p90",
+        "n": "n"
+      },
+      "all": "All",
+      "noShipment": "No shipment",
+      "legendMedian": "median",
+      "legendP90": "p90",
+      "note": "Orders placed in the period (not cancelled). Import = first seen in the CRM; approved = first Approved event; submitted, shipped and delivered from the first shipment's dates, else from the order history. A step counts only when both dates exist. Median = half of the orders were faster; p90 = 9 in 10 were faster.",
+      "hours": "{value} h",
+      "days": "{value} d",
+      "minutes": "{value} min"
+    },
+    "cod": {
+      "totals": "By currency",
+      "byWarehouse": "By warehouse",
+      "ageing": "Unpaid by days since delivery",
+      "col": {
+        "currency": "Currency",
+        "warehouse": "Warehouse",
+        "shipments": "Shipments",
+        "expected": "Expected",
+        "received": "Received by courier",
+        "paid": "Paid out",
+        "outstanding": "Outstanding"
+      },
+      "mismatches": "Mismatches: amount {amount} · missing at warehouse {missing} · COD on a non-COD order {unexpected}",
+      "board": "Open Cash on delivery",
+      "note": "COD shipments created in the period, with the same logic as the Cash on delivery screen. Amounts in the destination country's currency; different currencies are never added. Age is as of today.",
+      "truncated": "Only the first 20,000 shipments of the period are included — the totals are incomplete; narrow the period or warehouse."
+    },
+    "review": {
+      "findings": "Why orders need review (most frequent checks)",
+      "decisions": "Review decisions",
+      "reasons": "Most frequent decision reasons",
+      "open": "Waiting now",
+      "openStates": {
+        "NEEDS_REVIEW": "To review",
+        "ON_HOLD": "On hold",
+        "BLOCKED": "Blocked"
+      },
+      "col": {
+        "code": "Code",
+        "severity": "Kind",
+        "orders": "Orders",
+        "decision": "Decision",
+        "count": "Count",
+        "avg": "Average time",
+        "reason": "Reason"
+      },
+      "severity": {
+        "hard": "blocking",
+        "soft": "warning"
+      },
+      "decision": {
+        "APPROVE": "Approved",
+        "EDIT_AND_APPROVE": "Edited and approved",
+        "HOLD": "Held",
+        "CANCEL": "Cancelled",
+        "REROUTE": "Rerouted"
+      },
+      "ai": {
+        "title": "AI assistant",
+        "none": "No AI suggestions in the period.",
+        "suggestions": "Suggestions",
+        "agreement": "Agreement with people",
+        "fixes": "Agreement on fixes",
+        "critical": "Critical misses",
+        "autopilot": "Auto-approved",
+        "target": "target {value}",
+        "evaluated": "{agreed} of {evaluated}"
+      },
+      "note": "Orders placed in the period, by their company. Checks are each order's latest check. AI figures use the same measures as the AI assistant screen. \"Waiting now\" counts every order on hold, blocked or waiting for review right now, whenever it was placed."
+    },
+    "stock": {
+      "runningOut": "Running out within {days} days",
+      "zeroOpen": "Zero stock with open orders",
+      "col": {
+        "product": "Product",
+        "sellable": "Sellable",
+        "physical": "Physical",
+        "sold": "Sold ({days} days)",
+        "daysLeft": "Days left",
+        "open": "Open units",
+        "lines": "Orders"
+      },
+      "tester": "TESTER",
+      "stale": "stale stock",
+      "board": "Open Products and stock",
+      "shown": "Showing {shown} of {total}",
+      "note": "A snapshot of now (the period does not apply). Same numbers as Products and stock for the selected line: sellable = free at the warehouse minus CRM-reserved; run-out from average sales over the last {window} days. Open = orders not at a warehouse yet. Batches and expiry dates stay in ZOE.",
+      "truncated": "Only the first products of the line are shown; narrow the line for the full list."
+    }
   }
 }

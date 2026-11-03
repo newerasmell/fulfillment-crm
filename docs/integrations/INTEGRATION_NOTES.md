@@ -162,6 +162,10 @@ problem that needs an operator, which is BLOCKED plus an operator task.
 - COD: `GET /cod?id=`, `GET /cod/list?status` with `waiting | received | paid`.
 - Carriers: `GET /parcel-service` → `[{code, name}]`. PUDO: `GET /delivery-point/{code}?country=`;
   **`country` is mandatory for `gls_eu_pudo` and `dpd_eu_pudo`**; 404 means "none in that country".
+  **Open question (P10-03):** the reference says only "`delivery_point`: string — Delivery point code"
+  for orders, while `GET /delivery-point` returns both `id: integer` and `external_code: string`. It does
+  not say which one `delivery_point` expects. Until FHB confirms, the /directory screen shows both, labelled
+  `id` / `external_code` with equal prominence, and does not present either one as the value to paste.
 - Default couriers per country (business choice, quality over cost): HU→GLS, CZ→PPL, PL→InPost,
   SI→DPD, HR→DPD; other countries use FHB recommendation once confirmed. Store as editable routing rules;
   resolve names to real codes from `/parcel-service` at runtime, never hard-code codes.

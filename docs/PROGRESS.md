@@ -123,6 +123,11 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   support address for returns (RETURNS_SUPPORT_EMAIL_TO / RETURNS_SUPPORT_TELEGRAM_CHAT_ID); 14-day return/COD
   thresholds; is FHB's local returns service active (SPEC §11.6); whether L2 autopilot also submits (now: approve,
   then Fulfill by a person); AI high-value default amounts; retention of the AI prompt log; Joy parcel-service codes.
+- 2026-11-03 (wave 4, phase 10): the five menu screens that were still placeholders — Товарителници, Тикети от склада,
+  Офиси/PUDO/потребители, Справки, Фактури — built from data the system already mirrors (no new vendor writes). New tables:
+  ShipmentBoardSettings, FhbTicket, FhbTicketEvent (+ report/directory indexes, pg_trgm for search). Audit:
+  docs/audits/wave-4.md; notes: docs/wave-4-notes.md. Owner questions: euShipments cabinet URL for link-outs; FHB: does order
+  delivery_point take the delivery-point id or external_code; euShipments per-AWB invoice fields could be read later.
 
 ## Open questions
 See SPEC.md §11.
