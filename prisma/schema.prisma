@@ -752,6 +752,8 @@ model Order {
   // Header search (wave 4 shipments track): ILIKE '%q%' on number / customer name (pg_trgm).
   @@index([number(ops: raw("gin_trgm_ops"))], type: Gin)
   @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin)
+  /// Справки (P10-04): orders by placement date, every status.
+  @@index([accountId, placedAt])
 }
 
 model OrderLine {
@@ -824,6 +826,8 @@ model Fulfillment {
   @@index([accountId, orderId])
   @@index([trackingNumbers], type: Gin)
   @@index([externalId(ops: raw("gin_trgm_ops"))], type: Gin)
+  /// Справки (P10-04): shipments by creation date.
+  @@index([accountId, createdAt])
 }
 
 model FulfillmentEvent {

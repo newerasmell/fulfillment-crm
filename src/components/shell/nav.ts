@@ -40,7 +40,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/cod", key: "cod", icon: "cash" },
       { href: "/invoices", key: "invoices", icon: "invoice" },
-      { href: "/reports", key: "reports", icon: "chart" },
+      { href: "/reports", key: "reports", icon: "chart", permission: "reports.read" },
     ],
   },
   {

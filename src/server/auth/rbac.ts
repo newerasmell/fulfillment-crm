@@ -78,6 +78,8 @@ export const PERMISSIONS = {
   "shipments.settings": ["OWNER", "ADMIN"],
   /** Фактури (P10-05): per-order invoice numbers / PDF links from the FHB order mirror. */
   "invoices.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Справки (P10-04): aggregate reports and their CSV (COD and review figures, so not for viewers). */
+  "reports.read": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
