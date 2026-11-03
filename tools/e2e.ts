@@ -72,6 +72,9 @@ try {
   // Shipments + warehouse tickets (wave 4, shipments track): its own group and OWNER (tests/e2e/shipments.spec.ts).
   const { seedShipments } = await import("../tests/e2e/seed-shipments");
   const shipmentsOwner = await seedShipments();
+  // Directory + invoices (wave 4, directory track): its own group and OWNER (tests/e2e/directory.spec.ts).
+  const { seedDirectory } = await import("../tests/e2e/seed-directory");
+  const directoryOwner = await seedDirectory();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -113,6 +116,9 @@ try {
       E2E_SHIPMENTS_EMAIL: shipmentsOwner.email,
       E2E_SHIPMENTS_PASSWORD: shipmentsOwner.password,
       E2E_SHIPMENTS_TOTP: shipmentsOwner.totp,
+      E2E_DIRECTORY_EMAIL: directoryOwner.email,
+      E2E_DIRECTORY_PASSWORD: directoryOwner.password,
+      E2E_DIRECTORY_TOTP: directoryOwner.totp,
     },
   });
   status = run.status ?? 1;

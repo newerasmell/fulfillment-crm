@@ -76,6 +76,8 @@ export const PERMISSIONS = {
   "tickets.review": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   /** Товарителници: the "забавени" threshold (days shipped without delivery) (P10-01). */
   "shipments.settings": ["OWNER", "ADMIN"],
+  /** Фактури (P10-05): per-order invoice numbers / PDF links from the FHB order mirror. */
+  "invoices.read": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
