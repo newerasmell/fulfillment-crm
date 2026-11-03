@@ -128,6 +128,24 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   ShipmentBoardSettings, FhbTicket, FhbTicketEvent (+ report/directory indexes, pg_trgm for search). Audit:
   docs/audits/wave-4.md; notes: docs/wave-4-notes.md. Owner questions: euShipments cabinet URL for link-outs; FHB: does order
   delivery_point take the delivery-point id or external_code; euShipments per-AWB invoice fields could be read later.
+- 2026-11-03 (owner request: full store editing + delete): Магазини → store page has "Данни на магазина" (name, company,
+  currency, countries, domain, code; OWNER/ADMIN, audited before/after) and "Архив и изтриване" (OWNER only, new
+  permission `stores.archive`). Rules (src/server/store-lifecycle.ts): the code is editable only while the store has no
+  orders and no fulfillments (it is in every deterministic vendor id); the domain only while nothing was imported from or
+  written to the shop (a domain change clears variant links/locations/inventory mirror and re-runs the connection test →
+  webhook registration); a company move changes future orders only and, with matched variants, must stay in the same
+  product line. Archive = new nullable Store.archivedAt/archivedById (migration 20261103120000_store_archive, additive):
+  reconcile/backfill/sync/test/registration, Shopify inventory read + push (sweep, create, sender), and the API live
+  check skip archived stores; webhooks for them are acknowledged (200) and not stored, already stored events become
+  IGNORED; a `shopify.removeWebhooks` job deletes our subscriptions (webhookSubscriptionDelete, checked against Admin API
+  2026-10) — failures shown with a retry button; a shop still used by another live store keeps them. Archived stores are
+  hidden from pickers (routing — unless a rule already names them —, stock board) and listed under a collapsed
+  "Архивирани"; orders stay visible/searchable (orders filter shows them as "архивиран"). Restore re-runs the
+  connection test. Delete only without orders, fulfillments, write-backs, inventory pushes or routing rules, confirmed by
+  typing the code; removes variant links, locations, inventory levels and the vault credential if nothing else uses it.
+  A connected store with webhooks is archived first and deleted by the removal job after it succeeded (an OWNER may
+  force the delete after a failed removal). Decision: Shopify fulfillment write-backs of an archived store's already
+  shipped orders still run (they are not a sync job and keep Shopify's order status right).
 
 ## Open questions
 See SPEC.md §11.

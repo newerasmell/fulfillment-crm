@@ -56,12 +56,14 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
       orderBy: { name: "asc" },
     }),
     db.store.findMany({
-      select: { id: true, code: true, name: true, companyId: true },
+      select: { id: true, code: true, name: true, companyId: true, archivedAt: true },
       orderBy: { code: "asc" },
     }),
   ]);
   const myConnections = connections.filter((c) => inScope(c.companyId));
-  const myStores = stores.filter((s) => inScope(s.companyId));
+  // Archived stores are not offered, except where a rule already names one (so editing it keeps it).
+  const usedStoreIds = new Set(rules.flatMap((r) => r.matchParsed?.storeIds ?? []));
+  const myStores = stores.filter((s) => inScope(s.companyId) && (!s.archivedAt || usedStoreIds.has(s.id)));
   const storeCodes = new Map(stores.map((s) => [s.id, s.code]));
   const productIds = [...new Set(rules.flatMap((r) => r.matchParsed?.productIds ?? []))];
   const skuOf = new Map(

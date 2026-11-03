@@ -42,6 +42,9 @@ export async function syncStoreInventory(
   now: Date = new Date(),
 ) {
   const db = accountDb(accountId);
+  // An archived (or deleted) store is never read: no inventory job runs for it.
+  const live = await db.store.findUnique({ where: { id: storeId }, select: { archivedAt: true } });
+  if (!live || live.archivedAt) return { locations: 0, levels: 0, removed: 0, skipped: true };
   const { client } = await clients(accountId, storeId, {});
   // 1. Locations (inactive ones too, so a deactivated mapped location shows up instead of silently vanishing).
   const seen: { id: string; isActive: boolean }[] = [];

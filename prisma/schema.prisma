@@ -391,6 +391,9 @@ model Store {
   inventoryPushMode InventoryPushMode @default(DISABLED)
   inventoryBuffer   Int               @default(0)
   notifyCustomer    Boolean           @default(true)
+  /// Archived: no jobs, webhooks ignored, hidden from pickers; orders stay as history.
+  archivedAt        DateTime?
+  archivedById      String?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 

@@ -14,6 +14,8 @@ export const PERMISSIONS = {
   "credentials.write": ["OWNER", "ADMIN"],
   "stores.manage": ["OWNER", "ADMIN"],
   "stores.raiseMode": ["OWNER"],
+  /** Archive, restore or delete a store (Магазини → Архивирай / Възстанови / Изтрий). */
+  "stores.archive": ["OWNER"],
   "stores.sync": ["OWNER", "ADMIN", "OPERATOR"],
   "products.match": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   "connections.manage": ["OWNER", "ADMIN"],

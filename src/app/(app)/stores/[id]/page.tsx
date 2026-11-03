@@ -8,6 +8,14 @@ import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
 import { getStore } from "@/server/stores";
+import {
+  deleteBlockers,
+  needsWebhookRemoval,
+  storeEditLocks,
+  storeUsage,
+  type WebhookStatusView,
+} from "@/server/store-lifecycle";
+import { ArchiveStoreForm, DeleteStoreForm, RestoreStoreForm, StoreDetailsForm } from "./lifecycle-forms";
 import { BackfillForm, ReplaceCredentialsForm, StoreSettingsForm } from "../forms";
 import { ConnectionBadge } from "../status";
 import { JobButton } from "../JobButton";
@@ -25,20 +33,30 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
     throw err;
   }
   const db = accountDb(ctx.accountId);
-  const [orders, variants, unmatched, company] = await Promise.all([
-    db.order.count({ where: { storeId: id } }),
+  const [usage, variants, unmatched, company] = await Promise.all([
+    storeUsage(ctx.accountId, id),
     db.storeVariantLink.count({ where: { storeId: id } }),
     db.storeVariantLink.count({ where: { storeId: id, productId: null } }),
     store.companyId
       ? db.company.findUnique({ where: { id: store.companyId }, select: { name: true } })
       : null,
   ]);
-  const webhook = store.webhookStatus as { ok?: boolean; at?: string; topics?: string[]; errors?: string[] };
+  const orders = usage.orders;
+  const webhook = store.webhookStatus as WebhookStatusView & { note?: string };
+  const archived = !!store.archivedAt;
+  const locks = storeEditLocks(usage);
+  const blockers = deleteBlockers(usage);
+  const owner = can(ctx.role, "stores.archive");
+  // The company picker: the member's companies, plus the current one if it is archived/outside the menu.
+  const companies =
+    store.companyId && !ctx.companies.some((c) => c.id === store.companyId)
+      ? [{ id: store.companyId, name: company?.name ?? "—" }, ...ctx.companies]
+      : ctx.companies;
   const cursors = store.syncCursors as { ordersSyncedAt?: string; ordersBackfilledAt?: string };
   const cursor = [cursors.ordersSyncedAt, cursors.ordersBackfilledAt].filter(Boolean).sort().pop();
-  const manage = can(ctx.role, "stores.manage");
-  const sync = can(ctx.role, "stores.sync");
-  const job = (kind: "test" | "orders" | "products" | "webhooks", label: string) => (
+  const manage = can(ctx.role, "stores.manage") && !archived;
+  const sync = can(ctx.role, "stores.sync") && !archived;
+  const job = (kind: "test" | "orders" | "products" | "webhooks" | "removeWebhooks", label: string) => (
     <JobButton storeId={id} kind={kind} label={label} />
   );
   const fmt = (iso?: string) =>
@@ -60,6 +78,24 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           </div>
         }
       />
+      {archived && (
+        <Card>
+          <p role="status" className="m-0 rounded-lg bg-warn-bg px-3 py-2 text-warn">
+            <span className="font-semibold">{t("archived")}</span> ·{" "}
+            {t("archivedSince", { at: fmt(store.archivedAt!.toISOString()) })}
+          </p>
+          {webhook.deleteRequested && webhook.ok !== false && (
+            <p className="mb-0 text-sm text-muted">{t("deletePending")}</p>
+          )}
+          {owner && (
+            <div className="mt-4 flex flex-wrap items-start gap-3">
+              <RestoreStoreForm storeId={id} />
+              {!webhook.removed && job("removeWebhooks", t("removeWebhooks"))}
+            </div>
+          )}
+          {owner && <p className="mb-0 text-xs text-muted">{t("restoreHelp")}</p>}
+        </Card>
+      )}
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("connection")}</h2>
         <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2">
@@ -70,7 +106,12 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           </dd>
           <dt className="text-muted">{t("webhooks")}</dt>
           <dd className="m-0">
-            {webhook.at ? (
+            {webhook.removed ? (
+              <span className="text-muted">
+                {t("webhooksRemoved")} · {fmt(webhook.at)}
+                {webhook.note && <span className="ml-1 text-xs">({t(`errors.${webhook.note}`)})</span>}
+              </span>
+            ) : webhook.at ? (
               <span className={webhook.ok ? "text-ok" : "text-block"}>
                 {t("webhooksCount", { count: webhook.topics?.length ?? 0 })} · {fmt(webhook.at)}
               </span>
@@ -110,6 +151,25 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       </Card>
       {manage && (
         <Card>
+          <h2 className="mt-0 text-base font-semibold">{t("details")}</h2>
+          <p className="mt-0 text-sm text-muted">{t("detailsHelp")}</p>
+          <StoreDetailsForm
+            storeId={id}
+            companies={companies}
+            locks={{ code: !!locks.code, domain: !!locks.domain }}
+            s={{
+              name: store.name,
+              companyId: store.companyId,
+              currency: store.currency,
+              countries: store.countries,
+              domain: store.domain,
+              code: store.code,
+            }}
+          />
+        </Card>
+      )}
+      {manage && (
+        <Card>
           <h2 className="mt-0 text-base font-semibold">{t("backfill")}</h2>
           <p className="mt-0 text-sm text-muted">{t("backfillHelp")}</p>
           <BackfillForm storeId={id} />
@@ -122,8 +182,6 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
             storeId={id}
             canRaise={can(ctx.role, "stores.raiseMode")}
             s={{
-              name: store.name,
-              countries: store.countries,
               codGateways: store.codGateways,
               skuPrefix: store.skuPrefix,
               notifyCustomer: store.notifyCustomer,
@@ -134,11 +192,39 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           />
         </Card>
       )}
-      {can(ctx.role, "credentials.write") && (
+      {can(ctx.role, "credentials.write") && !archived && (
         <Card>
           <h2 className="mt-0 text-base font-semibold">{t("replaceCredentials")}</h2>
           <p className="mt-0 text-sm text-muted">{t("replaceCredentialsHelp")}</p>
           <ReplaceCredentialsForm storeId={id} />
+        </Card>
+      )}
+      {owner && (
+        <Card>
+          <h2 className="mt-0 text-base font-semibold text-block">{t("danger")}</h2>
+          {!archived && (
+            <section className="mb-5 border-b border-line pb-5" aria-label={t("archive")}>
+              <h3 className="mt-0 text-sm font-semibold">{t("archive")}</h3>
+              <p className="mt-0 text-sm text-muted">{t("archiveHelp")}</p>
+              <ArchiveStoreForm storeId={id} notSent={usage.notSent} />
+            </section>
+          )}
+          <section aria-label={t("delete")}>
+            <h3 className="mt-0 text-sm font-semibold">{t("delete")}</h3>
+            <p className="mt-0 text-sm text-muted">{t("deleteHelp")}</p>
+            {blockers.length > 0 ? (
+              <p role="note" className="m-0 text-sm text-warn">
+                {t("deleteBlocked")} {blockers.map((b) => t(`errors.${b}`)).join(", ")}.{" "}
+                {!archived && t("deleteUseArchive")}
+              </p>
+            ) : (
+              <DeleteStoreForm
+                storeId={id}
+                code={store.code}
+                canForce={!!webhook.deleteRequested && webhook.ok === false && needsWebhookRemoval(store)}
+              />
+            )}
+          </section>
         </Card>
       )}
     </>

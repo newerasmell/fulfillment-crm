@@ -120,8 +120,6 @@ export function NewStoreForm({
 }
 
 export interface StoreSettingsView {
-  name: string;
-  countries: string[];
   codGateways: string[];
   skuPrefix: string | null;
   notifyCustomer: boolean;
@@ -147,14 +145,6 @@ export function StoreSettingsForm({
     canRaise || modes.indexOf(m) <= modes.indexOf(current);
   return (
     <form action={action} className="grid gap-3 sm:grid-cols-2" aria-label={t("settings")}>
-      <label className={labelCls}>
-        {t("name")}
-        <input name="name" required defaultValue={s.name} className={inputCls} />
-      </label>
-      <label className={labelCls}>
-        {t("countries")}
-        <input name="countries" defaultValue={s.countries.join(", ")} className={`${inputCls} uppercase`} />
-      </label>
       <label className={labelCls}>
         {t("codGateways")}
         <textarea
