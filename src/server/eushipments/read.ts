@@ -11,7 +11,7 @@ import { scrubText } from "@/lib/scrub";
 import { DomainError } from "@/server/accounts";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { euReadClientFor } from "./connection";
-import { advanceOrderStatus, applyOrderHistory } from "./statuses";
+import { advanceOrderStatus, applyOrderHistory, EU_EVENT_SOURCE, markGoneAtVendor } from "./statuses";
 
 /**
  * euShipments read side (P3-02). Only GET/list calls (plus the documented read-only POSTs
@@ -567,6 +567,7 @@ export const POLLED_STATUSES: CrmOrderStatus[] = [
 ];
 const MAX_POLL_PER_RUN = 5000;
 const NOT_FOUND_ALERT = "eushipments_not_found";
+const NOT_FOUND_TEXT = "not found at euShipments";
 
 /**
  * orders-history in batches of 100 for every open shipment of the connection. Per-item errors inside HTTP 200
@@ -644,7 +645,17 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
           }
         } else if (lookup.kind === "not_found") {
           notFound++;
-          await track(f.id, f.externalId, { polledAt: now, lastError: "not found at euShipments" });
+          // Second "not found" in a row for a shipment whose history we recorded before: removed in the cabinet.
+          const prior = await db.eushipmentsTracking.findUnique({
+            where: { fulfillmentId: f.id },
+            select: { lastError: true },
+          });
+          const existedBefore =
+            prior?.lastError === NOT_FOUND_TEXT &&
+            (await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: EU_EVENT_SOURCE } })) >
+              0;
+          await track(f.id, f.externalId, { polledAt: now, lastError: NOT_FOUND_TEXT });
+          if (existedBefore && (await markGoneAtVendor(accountId, f.id))) continue;
           await openNotFoundAlert(accountId, f.id, f.externalId);
         } else {
           errors++;

@@ -176,6 +176,42 @@ describe("euShipments write side through the outbox (DB)", () => {
     ).toBe("1-EUR2849-3");
   });
 
+  it("a shipment that existed and is 'not found' twice in a row is treated as removed in the cabinet", async () => {
+    const { order } = await euTestOrder(g, { number: "#1881" });
+    await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+    const f = await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: order.id,
+        connectionId: g.connection.id,
+        externalId: "TST-1881",
+        status: "ACCEPTED",
+        rawStatus: "Information received",
+        submittedAt: new Date(),
+      },
+    });
+    await g.db.fulfillmentEvent.create({
+      data: {
+        accountId: g.accountId,
+        fulfillmentId: f.id,
+        occurredAt: new Date(),
+        source: "eushipments",
+        rawStatus: "Information received",
+        status: "ACCEPTED",
+      },
+    });
+    const { pollEuOrders } = await import("./read");
+    const v = vendor({}); // orders-history answers the documented "not found" item by default
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("ACCEPTED"); // once: alert only
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("BLOCKED");
+    expect(
+      await g.db.alert.count({ where: { kind: "eushipments_cancelled_at_vendor", entityId: f.id } }),
+    ).toBe(1);
+  });
+
   it("a shipment deleted in the euShipments cabinet (no CRM delete) blocks the order with one task", async () => {
     const { order } = await euTestOrder(g, { number: "#1880" });
     await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
