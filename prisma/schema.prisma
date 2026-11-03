@@ -394,6 +394,9 @@ model Store {
   /// "Тегло към Shopify": product weight write-back (DISABLED → DRY_RUN → LIVE); raising it is OWNER-only.
   weightWriteMode   InventoryPushMode @default(DISABLED)
   notifyCustomer    Boolean           @default(true)
+  /// Archived: no jobs, webhooks ignored, hidden from pickers; orders stay as history.
+  archivedAt        DateTime?
+  archivedById      String?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 

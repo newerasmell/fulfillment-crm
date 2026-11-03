@@ -106,3 +106,22 @@ export const WebhookCreate = z.object({
     userErrors: z.array(z.object({ field: z.array(z.string()).nullish(), message: z.string() })),
   }),
 });
+
+/** Verified against Admin API 2026-10: webhookSubscriptionDelete(id: ID!) → {deletedWebhookSubscriptionId, userErrors}. */
+export const WEBHOOK_DELETE_MUTATION = /* GraphQL */ `
+  mutation WebhookDelete($id: ID!) {
+    webhookSubscriptionDelete(id: $id) {
+      deletedWebhookSubscriptionId
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+export const WebhookDelete = z.object({
+  webhookSubscriptionDelete: z.object({
+    deletedWebhookSubscriptionId: z.string().nullable(),
+    userErrors: z.array(z.object({ field: z.array(z.string()).nullish(), message: z.string() })),
+  }),
+});

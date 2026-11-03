@@ -164,7 +164,7 @@ export async function liveCheckTargets(
     only?.kind === "connection"
       ? []
       : await db.store.findMany({
-          where: { credentialId: { not: null }, ...one },
+          where: { credentialId: { not: null }, archivedAt: null, ...one },
           select: { id: true, accountId: true, name: true, connectionStatus: true },
           orderBy: { id: "asc" },
         });

@@ -51,7 +51,7 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
 
   await boss.work(QUEUES.stockShopifyInventoryTick.name, opts, async () => {
     const stores = await systemDb().store.findMany({
-      where: { credentialId: { not: null } },
+      where: { credentialId: { not: null }, archivedAt: null },
       select: { id: true, accountId: true, connectionStatus: true },
     });
     for (const s of stores)

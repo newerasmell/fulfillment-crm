@@ -42,6 +42,11 @@ export const QUEUES = {
     name: "shopify.registerWebhooks",
     options: { ...retry, policy: "stately", expireInSeconds: 300 },
   },
+  /** Shopify: remove the store's webhook subscriptions to our URL (archive / delete); then deletes when asked. */
+  shopifyRemoveWebhooks: {
+    name: "shopify.removeWebhooks",
+    options: { ...retry, policy: "stately", expireInSeconds: 300 },
+  },
   /** Shopify: pull orders (data: { accountId, storeId, mode: "reconcile" | "backfill", days? }). */
   shopifySyncOrders: {
     name: "shopify.syncOrders",

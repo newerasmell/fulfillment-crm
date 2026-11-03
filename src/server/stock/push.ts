@@ -210,7 +210,7 @@ export async function createInventoryPush(storeId: string, by: Creator, now: Dat
   const db = accountDb(acc);
   const store = await db.store.findUnique({
     where: { id: storeId },
-    select: { companyId: true, inventoryPushMode: true },
+    select: { companyId: true, inventoryPushMode: true, archivedAt: true },
   });
   if (!store) throw new DomainError("not_found");
   if (
@@ -219,6 +219,7 @@ export async function createInventoryPush(storeId: string, by: Creator, now: Dat
     (!store.companyId || !by.actor.companyScope.includes(store.companyId))
   )
     throw new DomainError("not_found");
+  if (store.archivedAt) throw new DomainError("store_archived");
   if (store.inventoryPushMode === "DISABLED") throw new DomainError("inventory_push_disabled");
   const plan = await planInventoryPush(acc, storeId, now);
   const result = await withAccountTransaction(acc, async (tx, { lockKey }) => {
@@ -324,7 +325,7 @@ export async function processInventoryPush(
     const row = await tx.inventoryPush.findUniqueOrThrow({
       where: { id },
       include: {
-        store: { select: { inventoryPushMode: true } },
+        store: { select: { inventoryPushMode: true, archivedAt: true } },
         account: { select: { outboxPaused: true } },
       },
     });
@@ -346,10 +347,14 @@ export async function processInventoryPush(
       });
       return { kind: "done", status: "PAUSED" };
     }
-    if (mode === "DISABLED") {
+    if (mode === "DISABLED" || row.store.archivedAt) {
       await tx.inventoryPush.update({
         where: { id },
-        data: { status: "REFUSED", evaluatedMode: mode, lastError: "inventory_push_disabled" },
+        data: {
+          status: "REFUSED",
+          evaluatedMode: mode,
+          lastError: row.store.archivedAt ? "store_archived" : "inventory_push_disabled",
+        },
       });
       return { kind: "done", status: "REFUSED" };
     }
@@ -656,6 +661,7 @@ export async function sweepInventoryPushes(now: Date = new Date(), limit = 100) 
   const stores = await db.store.findMany({
     where: {
       inventoryPushMode: { not: "DISABLED" },
+      archivedAt: null,
       locations: { some: { connectionId: { not: null }, isActive: true } },
     },
     select: { id: true, connectionStatus: true },

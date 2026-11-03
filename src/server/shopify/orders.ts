@@ -106,7 +106,10 @@ export async function importShopifyOrder(
   const updatedAt = new Date(o.updatedAt);
   return withAccountTransaction(
     accountId,
-    async (tx, { lockKey }) => {
+    async (tx, { lockKey, lockKeyShared }) => {
+      // A store edit / delete (store-lifecycle.ts) takes this key exclusively: it waits for imports in flight and
+      // its "no orders yet" re-check sees them, so the code or domain never changes under a first import.
+      await lockKeyShared(`store:${store.id}`);
       // Webhook and reconcile workers may import the same order at the same moment: serialise them, so the
       // "older never overwrites newer" check and the create-or-update decision see each other's result.
       await lockKey(`shopify-order:${store.id}:${o.id}`);

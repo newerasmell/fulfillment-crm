@@ -80,7 +80,7 @@ export async function boardScope(ctx: StockCtx) {
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
     db.store.findMany({
-      where: companyFilter(ctx),
+      where: { ...companyFilter(ctx), archivedAt: null },
       select: { id: true, name: true, code: true, inventoryBuffer: true, inventoryPushMode: true },
       orderBy: { name: "asc" },
     }),

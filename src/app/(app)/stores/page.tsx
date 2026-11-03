@@ -9,10 +9,13 @@ import { listStores } from "@/server/stores";
 import { ConnectionBadge } from "./status";
 import { NewStoreForm } from "./forms";
 
-export default async function StoresPage() {
+export default async function StoresPage({ searchParams }: { searchParams: Promise<{ deleted?: string }> }) {
   const ctx = await requireAccountContext();
   const t = await getTranslations("stores");
-  const stores = await listStores(ctx);
+  const { deleted } = await searchParams;
+  const all = await listStores(ctx, { includeArchived: true });
+  const stores = all.filter((s) => !s.archivedAt);
+  const archived = all.filter((s) => s.archivedAt);
   const manage = can(ctx.role, "stores.manage");
   const credentials = manage
     ? await accountDb(ctx.accountId).credential.findMany({
@@ -24,6 +27,11 @@ export default async function StoresPage() {
   return (
     <>
       <PageHeader title={t("title")} subtitle={t("intro")} />
+      {deleted && (
+        <p role="status" className="m-0 rounded-lg bg-ok-bg px-3 py-2 text-ok">
+          {t("deleted")}
+        </p>
+      )}
       <Card>
         {stores.length === 0 ? (
           <p className="m-0 text-muted">{t("empty")}</p>
@@ -62,6 +70,27 @@ export default async function StoresPage() {
           </div>
         )}
       </Card>
+      {archived.length > 0 && (
+        <Card>
+          <details>
+            <summary className="cursor-pointer font-semibold">
+              {t("archivedSection", { count: archived.length })}
+            </summary>
+            <ul className="mt-3 mb-0 flex list-none flex-col gap-2 p-0">
+              {archived.map((s) => (
+                <li key={s.id} className="flex flex-wrap items-center gap-3">
+                  <Link href={`/stores/${s.id}`} className="font-medium text-accent hover:underline">
+                    {s.name}
+                  </Link>
+                  <span className="text-muted">{s.company?.name ?? "—"}</span>
+                  <span className="font-mono text-[13px] text-muted">{s.domain}</span>
+                  <span className="font-mono">{s.code}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </Card>
+      )}
       {manage && ctx.companies.length > 0 && (
         <Card>
           <h2 className="mt-0 text-base font-semibold">{t("add")}</h2>

@@ -17,12 +17,12 @@ import { AppCredentials, parseAppCredentials } from "@/integrations/shopify/cred
 
 export type ScopedActor = Actor & { companyScope: CompanyScope };
 
-const Code = z
+export const StoreCode = z
   .string()
   .trim()
   .toUpperCase()
   .regex(/^[A-Z0-9]{2,5}$/, "code");
-const Countries = z
+export const Countries = z
   .array(
     z
       .string()
@@ -32,23 +32,26 @@ const Countries = z
   )
   .max(60);
 
+export const ShopDomain = z.string().transform((d, ctx) => {
+  try {
+    return normaliseShopDomain(d);
+  } catch {
+    ctx.addIssue({ code: "custom", message: "invalid_shop_domain" });
+    return z.NEVER;
+  }
+});
+export const Currency = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z]{3}$/);
+
 export const NewStoreInput = z.object({
   companyId: z.string().min(1),
   name: z.string().trim().min(1).max(200),
-  domain: z.string().transform((d, ctx) => {
-    try {
-      return normaliseShopDomain(d);
-    } catch {
-      ctx.addIssue({ code: "custom", message: "invalid_shop_domain" });
-      return z.NEVER;
-    }
-  }),
-  code: Code,
-  currency: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{3}$/),
+  domain: ShopDomain,
+  code: StoreCode,
+  currency: Currency,
   countries: Countries.default([]),
   /** Either an existing Shopify-app credential of the group, or a new client id + secret. */
   credentialId: z.string().optional(),
@@ -117,13 +120,17 @@ export async function createStore(actor: ScopedActor, raw: z.input<typeof NewSto
   return store;
 }
 
-export async function listStores(ctx: {
-  accountId: string;
-  companyScope: CompanyScope;
-  activeCompanyId: string | null;
-}) {
+/** Stores of the member's companies; archived ones only with `includeArchived` (history views, Магазини). */
+export async function listStores(
+  ctx: {
+    accountId: string;
+    companyScope: CompanyScope;
+    activeCompanyId: string | null;
+  },
+  opts: { includeArchived?: boolean } = {},
+) {
   return accountDb(ctx.accountId).store.findMany({
-    where: companyFilter(ctx),
+    where: { ...companyFilter(ctx), ...(opts.includeArchived ? {} : { archivedAt: null }) },
     include: { company: { select: { name: true } }, credential: { select: { label: true, hint: true } } },
     orderBy: [{ company: { name: "asc" } }, { name: "asc" }],
   });
@@ -142,8 +149,9 @@ const WRITE_RANK: Record<StoreWriteMode, number> = { READ_ONLY: 0, DRY_RUN: 1, L
 const PUSH_RANK: Record<InventoryPushMode, number> = { DISABLED: 0, DRY_RUN: 1, LIVE: 2 };
 
 export const StoreSettingsInput = z.object({
-  name: z.string().trim().min(1).max(200),
-  countries: Countries,
+  /** Optional here: the "Данни на магазина" card edits them (store-lifecycle.ts). */
+  name: z.string().trim().min(1).max(200).optional(),
+  countries: Countries.optional(),
   codGateways: z.array(z.string().trim().min(1).max(100)).max(20),
   skuPrefix: z
     .string()
