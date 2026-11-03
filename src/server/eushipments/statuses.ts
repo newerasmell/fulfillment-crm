@@ -381,3 +381,45 @@ export async function applyOrderHistory(
     };
   });
 }
+
+/**
+ * A shipment the vendor provably had (we recorded its history before) and that orders-history now answers as
+ * "not found" on two polls in a row: removed in the cabinet. Same handling as a "Deleted" status without a CRM
+ * delete request — shipment CANCELLED, order BLOCKED, one CRITICAL task; a person resends or cancels in Shopify.
+ */
+export async function markGoneAtVendor(accountId: string, fulfillmentId: string) {
+  return withAccountTransaction(accountId, async (tx, { lockKey }) => {
+    await lockKey(`eushipments:fulfillment:${fulfillmentId}`);
+    const f = await tx.fulfillment.findUniqueOrThrow({
+      where: { id: fulfillmentId },
+      select: { id: true, orderId: true, externalId: true, status: true },
+    });
+    if (f.status === "CANCELLED" || (await isSupersededShipment(tx, f.id))) return false;
+    const requested = await tx.outboundRequest.findFirst({
+      where: { fulfillmentId: f.id, operation: "eushipments.deleteOrder" },
+      select: { id: true },
+    });
+    await tx.fulfillment.update({
+      where: { id: f.id },
+      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+    });
+    await advanceOrderStatus(
+      tx,
+      f.orderId,
+      requested ? "CANCELLED" : "BLOCKED",
+      "eushipments.not_found",
+      f.id,
+    );
+    if (!requested)
+      await openAlertOnce(tx, {
+        kind: "eushipments_cancelled_at_vendor",
+        severity: "CRITICAL",
+        isTask: true,
+        title: `euShipments: пратка ${f.externalId} вече не съществува в кабинета — изпратете поръчката отново или я откажете в Shopify`,
+        body: `orders-history answers "not found" for ${f.externalId} on two polls in a row; it existed before.`,
+        fulfillmentId: f.id,
+        accountId,
+      });
+    return true;
+  });
+}

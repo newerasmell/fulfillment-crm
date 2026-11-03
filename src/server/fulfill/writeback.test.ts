@@ -90,6 +90,7 @@ describe("planFulfillment (pure)", () => {
     );
     expect(p).toEqual({
       ok: true,
+      lines: [{ lineItemId: LINE_GID, quantity: 2 }],
       input: {
         lineItemsByFulfillmentOrder: [
           { fulfillmentOrderId: FO_GID, fulfillmentOrderLineItems: [{ id: FOLI_GID, quantity: 2 }] },
@@ -140,7 +141,8 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
   }
   const setMode = (writeBackMode: "READ_ONLY" | "DRY_RUN" | "LIVE") =>
     db().store.update({ where: { id: g.store.id }, data: { writeBackMode } });
-  const rowFor = (fulfillmentId: string) => db().shopifyWriteBack.findFirst({ where: { fulfillmentId } });
+  const rowFor = (fulfillmentId: string) =>
+    db().shopifyWriteBack.findFirst({ where: { fulfillmentId, kind: "FULFIL" } });
 
   beforeAll(async () => {
     g = await euTestGroup("writeback");
@@ -192,7 +194,7 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
     // Never twice: a SENT row is not processed again, and the sweep creates no second row.
     expect(await processWriteBack(row.id, live.clients)).toBe("skipped");
     await sweepWriteBacks();
-    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: f.id } })).toBe(1);
+    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: f.id, kind: "FULFIL" } })).toBe(1);
     expect(live.count("FulfillmentWriteBack")).toBe(1);
     const ev = await db().fulfillmentEvent.findFirst({
       where: { fulfillmentId: f.id, source: "shopify.writeback" },

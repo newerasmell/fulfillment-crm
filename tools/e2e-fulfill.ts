@@ -154,6 +154,28 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       },
     },
   });
+  // The status that follows (lifecycle): an "in transit" fulfillment event, recorded in DRY_RUN.
+  await db.shopifyWriteBack.create({
+    data: {
+      accountId,
+      storeId: store.id,
+      orderId: shipped.id,
+      fulfillmentId: f.id,
+      kind: "EVENT",
+      value: "IN_TRANSIT",
+      status: "DRY_RUN_RECORDED",
+      evaluatedMode: "DRY_RUN",
+      request: {
+        mutation: "mutation FulfillmentEventWriteBack(...)",
+        variables: {
+          fulfillmentEvent: {
+            fulfillmentId: "<the Shopify fulfillment created by the FULFIL write-back>",
+            status: "IN_TRANSIT",
+          },
+        },
+      },
+    },
+  });
   // An open task of the kind the Shopify import raises after approval (alerts screen, P4-08).
   await db.alert.create({
     data: {
