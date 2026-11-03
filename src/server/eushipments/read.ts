@@ -568,6 +568,8 @@ export const POLLED_STATUSES: CrmOrderStatus[] = [
 const MAX_POLL_PER_RUN = 5000;
 const NOT_FOUND_ALERT = "eushipments_not_found";
 const NOT_FOUND_TEXT = "not found at euShipments";
+/** A freshly created shipment may not be in orders-history yet: never call it removed before this. */
+const GONE_AFTER_MS = 30 * 60_000;
 
 /**
  * orders-history in batches of 100 for every open shipment of the connection. Per-item errors inside HTTP 200
@@ -645,15 +647,29 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
           }
         } else if (lookup.kind === "not_found") {
           notFound++;
-          // Second "not found" in a row for a shipment whose history we recorded before: removed in the cabinet.
+          // Second "not found" in a row (≥ GONE_AFTER_MS after it was sent) for a shipment the vendor provably had:
+          // we recorded its history, or euShipments confirmed the create (vendor order id / request SENT).
+          // Then it was removed in the cabinet.
           const prior = await db.eushipmentsTracking.findUnique({
             where: { fulfillmentId: f.id },
             select: { lastError: true },
           });
+          const shipment = await db.fulfillment.findUniqueOrThrow({
+            where: { id: f.id },
+            select: { vendorOrderId: true, submittedAt: true, createdAt: true },
+          });
+          const sentAt = shipment.submittedAt ?? shipment.createdAt;
+          const confirmed =
+            !!shipment.vendorOrderId ||
+            (await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: EU_EVENT_SOURCE } })) >
+              0 ||
+            (await db.outboundRequest.count({
+              where: { fulfillmentId: f.id, operation: "eushipments.createOrder", status: "SENT" },
+            })) > 0;
           const existedBefore =
             prior?.lastError === NOT_FOUND_TEXT &&
-            (await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: EU_EVENT_SOURCE } })) >
-              0;
+            confirmed &&
+            now.getTime() - sentAt.getTime() >= GONE_AFTER_MS;
           await track(f.id, f.externalId, { polledAt: now, lastError: NOT_FOUND_TEXT });
           if (existedBefore && (await markGoneAtVendor(accountId, f.id))) continue;
           await openNotFoundAlert(accountId, f.id, f.externalId);

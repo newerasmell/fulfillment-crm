@@ -187,7 +187,7 @@ describe("euShipments write side through the outbox (DB)", () => {
         externalId: "TST-1881",
         status: "ACCEPTED",
         rawStatus: "Information received",
-        submittedAt: new Date(),
+        submittedAt: new Date(Date.now() - 2 * 3600_000),
       },
     });
     await g.db.fulfillmentEvent.create({
@@ -210,6 +210,34 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect(
       await g.db.alert.count({ where: { kind: "eushipments_cancelled_at_vendor", entityId: f.id } }),
     ).toBe(1);
+  });
+
+  it("a confirmed create with no history yet ('not found' twice, sent > 30 min ago) is removed; a fresh one is not", async () => {
+    const mk = async (n: string, ago: number) => {
+      const { order } = await euTestOrder(g, { number: `#${n}` });
+      await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+      const f = await g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          connectionId: g.connection.id,
+          externalId: `TST-${n}`,
+          status: "ACCEPTED",
+          vendorOrderId: `v-${n}`,
+          submittedAt: new Date(Date.now() - ago),
+        },
+      });
+      return { order, f };
+    };
+    const old = await mk("1882", 2 * 3600_000);
+    const fresh = await mk("1883", 60_000);
+    const { pollEuOrders } = await import("./read");
+    const v = vendor({});
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: old.f.id } })).status).toBe("CANCELLED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: old.order.id } })).status).toBe("BLOCKED");
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fresh.f.id } })).status).toBe("ACCEPTED");
   });
 
   it("a shipment deleted in the euShipments cabinet (no CRM delete) blocks the order with one task", async () => {
