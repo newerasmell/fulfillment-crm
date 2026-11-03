@@ -251,6 +251,13 @@ describe("euShipments read side (DB)", () => {
       include: { stockLevel: true },
     });
     expect(vp.stockLevel).toMatchObject({ physical: 90, free: 90, sellable: 90, source: "POLL" });
+    // A product the warehouse does not list has 0 (not "no data"): every active product of the connection has a level.
+    const active = await g.db.vendorProduct.findMany({
+      where: { connectionId: g.connection.id, archived: false },
+      include: { stockLevel: true },
+    });
+    expect(active.every((p) => p.stockLevel)).toBe(true);
+    expect(active.filter((p) => p.id !== vp.id).every((p) => p.stockLevel!.free === 0)).toBe(true);
     // AVAIL_DATE "2026-11-02 06:00:00" read as Europe/Sofia
     expect(vp.stockLevel!.snapshotAt.toISOString()).toBe("2026-11-02T04:00:00.000Z");
     // the next snapshot without that product sets it to 0 and drops the old per-warehouse rows

@@ -526,7 +526,9 @@ export async function syncEuStock(accountId: string, connectionId: string, deps:
             where: { vendorProductId: vp.id },
             select: { reserved: true },
           });
-          if (!existing && free === 0) continue;
+          // A product missing from get-prod-avails has 0 at the warehouse: record the 0 (with a fresh snapshot) so
+          // the stock board and the Shopify push show it as sold out instead of "no data" (which kept Shopify's old
+          // positive number and could oversell).
           const reserved = existing?.reserved ?? 0;
           const data = {
             physical: free,
