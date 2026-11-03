@@ -34,6 +34,8 @@ export interface CodFilter {
   bucket?: CodBucket;
   connectionTypes?: readonly string[];
   q?: string;
+  /** Shipments created in [from, before) (Справки, P10-04); the board itself leaves it unset. */
+  created?: { gte: Date; lt: Date };
 }
 
 const num = (d: Prisma.Decimal | null) => (d == null ? null : Number(d));
@@ -190,7 +192,8 @@ function tabMatch(tab: CodTab, row: CodRow) {
   }
 }
 
-async function scopedRows(ctx: BoardCtx, f: CodFilter, now: Date) {
+/** Classified COD rows of the member's scope (board, CSV and the COD report in src/server/reports/cod.ts). */
+export async function scopedRows(ctx: BoardCtx, f: CodFilter, now: Date) {
   const settings = await getReturnsCodSettings(ctx.accountId);
   const order = companyFilter({
     companyScope: ctx.companyScope ?? null,
@@ -201,6 +204,7 @@ async function scopedRows(ctx: BoardCtx, f: CodFilter, now: Date) {
   const where: Prisma.FulfillmentWhereInput = {
     order,
     ...(f.connectionTypes ? { connection: { type: { in: f.connectionTypes as never } } } : {}),
+    ...(f.created ? { createdAt: f.created } : {}),
     ...(q
       ? {
           OR: [

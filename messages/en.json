@@ -2567,5 +2567,212 @@
       "not_found": "Not found.",
       "not_editable": "The address can no longer be changed."
     }
+  },
+  "reports": {
+    "title": "Reports",
+    "subtitle": "Operational reports from CRM data for a chosen period",
+    "back": "All reports",
+    "open": "Open report",
+    "export": "Export CSV",
+    "scope": "Scope: {company} · {warehouse}",
+    "scopeAll": "all warehouses",
+    "vendorHint": "The warehouses' own reports (ZOE Stats, euShipments Statistics) stay in their panels.",
+    "openZoe": "in ZOE ↗",
+    "openEu": "in euShipments ↗",
+    "range": {
+      "label": "Period",
+      "from": "From",
+      "to": "To",
+      "apply": "Show",
+      "days": "{days} days · Sofia days",
+      "presets": {
+        "7d": "7 days",
+        "30d": "30 days",
+        "90d": "90 days",
+        "thisMonth": "This month",
+        "lastMonth": "Last month"
+      }
+    },
+    "cards": {
+      "orders": {
+        "title": "Orders by day, store and company",
+        "text": "Counts and totals per currency, COD vs prepaid share."
+      },
+      "shipments": {
+        "title": "Shipments by warehouse and carrier",
+        "text": "Sent, delivered, returned, cancelled; delivery and return rates."
+      },
+      "timing": {
+        "title": "Processing time",
+        "text": "Import to approval, submission, shipping and delivery — median and p90."
+      },
+      "cod": {
+        "title": "Cash on delivery",
+        "text": "Expected, received and paid per currency and warehouse, ageing of what is unpaid."
+      },
+      "review": {
+        "title": "Review and automation",
+        "text": "Review reasons, decisions, held and blocked, AI agreement."
+      },
+      "stock": {
+        "title": "Stock",
+        "text": "Products running out within 7 days and zero stock with open orders."
+      }
+    },
+    "empty": "No data for the period.",
+    "orders": {
+      "kpi": {
+        "orders": "Orders",
+        "cod": "Cash on delivery",
+        "prepaid": "Prepaid",
+        "cancelled": "Cancelled"
+      },
+      "chart": "Orders per day",
+      "legendCod": "cash on delivery",
+      "legendPrepaid": "prepaid",
+      "totals": "Totals per currency",
+      "byStore": "By store",
+      "byCompany": "By company",
+      "manual": "Manual orders (no store)",
+      "noCompany": "No company",
+      "note": "Orders by order date. Cancelled orders are not in the totals. Different currencies are never added. Orders do not depend on the selected warehouse.",
+      "col": {
+        "day": "Day",
+        "name": "Name",
+        "currency": "Currency",
+        "orders": "Orders",
+        "codShare": "COD share",
+        "total": "Total",
+        "codTotal": "Of which COD"
+      }
+    },
+    "shipments": {
+      "chart": "Shipment outcome by warehouse",
+      "legend": {
+        "delivered": "delivered",
+        "returned": "returned",
+        "inTransit": "in transit"
+      },
+      "col": {
+        "warehouse": "Warehouse",
+        "carrier": "Carrier",
+        "created": "Created",
+        "sent": "Sent",
+        "delivered": "Delivered",
+        "returned": "Returned",
+        "inTransit": "In transit",
+        "cancelled": "Cancelled",
+        "failed": "Submit failed",
+        "deliveryRate": "Delivery rate",
+        "returnRate": "Return rate"
+      },
+      "allCarriers": "All carriers",
+      "noCarrier": "not recorded",
+      "note": "Shipments created in the period, by their current status. Sent = has a ship date or status Shipped or later. Delivery rate = delivered / sent; return rate = returned / sent. Cancelled before shipping and failed submissions are excluded from the rates; shipments still on the way count as sent. The carrier is the code the warehouse returned (FHB parcel service); euShipments shipments do not store the courier."
+    },
+    "timing": {
+      "chart": "Median and p90 per step (all warehouses)",
+      "stages": {
+        "approve": "Import → approved",
+        "submit": "Approved → submitted to warehouse",
+        "ship": "Submitted → shipped",
+        "deliver": "Shipped → delivered",
+        "total": "Import → delivered"
+      },
+      "col": {
+        "warehouse": "Warehouse",
+        "orders": "Orders",
+        "median": "Median",
+        "p90": "p90",
+        "n": "n"
+      },
+      "all": "All",
+      "noShipment": "No shipment",
+      "legendMedian": "median",
+      "legendP90": "p90",
+      "note": "Orders placed in the period (not cancelled). Import = first seen in the CRM; approved = first Approved event; submitted, shipped and delivered from the first shipment's dates, else from the order history. A step counts only when both dates exist. Median = half of the orders were faster; p90 = 9 in 10 were faster.",
+      "hours": "{value} h",
+      "days": "{value} d",
+      "minutes": "{value} min"
+    },
+    "cod": {
+      "totals": "By currency",
+      "byWarehouse": "By warehouse",
+      "ageing": "Unpaid by days since delivery",
+      "col": {
+        "currency": "Currency",
+        "warehouse": "Warehouse",
+        "shipments": "Shipments",
+        "expected": "Expected",
+        "received": "Received by courier",
+        "paid": "Paid out",
+        "outstanding": "Outstanding"
+      },
+      "mismatches": "Mismatches: amount {amount} · missing at warehouse {missing} · COD on a non-COD order {unexpected}",
+      "board": "Open Cash on delivery",
+      "note": "COD shipments created in the period, with the same logic as the Cash on delivery screen. Amounts in the destination country's currency; different currencies are never added. Age is as of today."
+    },
+    "review": {
+      "findings": "Why orders need review (most frequent checks)",
+      "decisions": "Review decisions",
+      "reasons": "Most frequent decision reasons",
+      "open": "Waiting now",
+      "openStates": {
+        "NEEDS_REVIEW": "To review",
+        "ON_HOLD": "On hold",
+        "BLOCKED": "Blocked"
+      },
+      "col": {
+        "code": "Code",
+        "severity": "Kind",
+        "orders": "Orders",
+        "decision": "Decision",
+        "count": "Count",
+        "avg": "Average time",
+        "reason": "Reason"
+      },
+      "severity": {
+        "hard": "blocking",
+        "soft": "warning"
+      },
+      "decision": {
+        "APPROVE": "Approved",
+        "EDIT_AND_APPROVE": "Edited and approved",
+        "HOLD": "Held",
+        "CANCEL": "Cancelled",
+        "REROUTE": "Rerouted"
+      },
+      "ai": {
+        "title": "AI assistant",
+        "none": "No AI suggestions in the period.",
+        "suggestions": "Suggestions",
+        "agreement": "Agreement with people",
+        "fixes": "Agreement on fixes",
+        "critical": "Critical misses",
+        "autopilot": "Auto-approved",
+        "target": "target {value}",
+        "evaluated": "{agreed} of {evaluated}"
+      },
+      "note": "Orders placed in the period, by their company. Checks are each order's latest check. AI figures use the same measures as the AI assistant screen."
+    },
+    "stock": {
+      "runningOut": "Running out within {days} days",
+      "zeroOpen": "Zero stock with open orders",
+      "col": {
+        "product": "Product",
+        "sellable": "Sellable",
+        "physical": "Physical",
+        "sold": "Sold ({days} days)",
+        "daysLeft": "Days left",
+        "open": "Open units",
+        "lines": "Orders"
+      },
+      "tester": "TESTER",
+      "stale": "stale stock",
+      "board": "Open Products and stock",
+      "shown": "Showing {shown} of {total}",
+      "note": "A snapshot of now (the period does not apply). Same numbers as Products and stock for the selected line: sellable = free at the warehouse minus CRM-reserved; run-out from average sales over the last {window} days. Open = orders not at a warehouse yet. Batches and expiry dates stay in ZOE.",
+      "truncated": "Only the first products of the line are shown; narrow the line for the full list."
+    }
   }
 }

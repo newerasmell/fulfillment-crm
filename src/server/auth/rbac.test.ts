@@ -49,6 +49,7 @@ const EXPECTED: Record<Permission, string> = {
   "ai.audit": "11100",
   "ai.rules": "11000",
   "ai.log": "11000",
+  "reports.read": "11100",
 };
 
 describe("role matrix", () => {

@@ -747,6 +747,8 @@ model Order {
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
   @@index([accountId, status, placedAt])
+  /// Справки (P10-04): orders by placement date, every status.
+  @@index([accountId, placedAt])
 }
 
 model OrderLine {
@@ -813,6 +815,8 @@ model Fulfillment {
   @@unique([connectionId, externalId])
   @@unique([connectionId, variableSymbol])
   @@index([accountId, status])
+  /// Справки (P10-04): shipments by creation date.
+  @@index([accountId, createdAt])
 }
 
 model FulfillmentEvent {
