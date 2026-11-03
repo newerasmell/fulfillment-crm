@@ -146,6 +146,13 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   A connected store with webhooks is archived first and deleted by the removal job after it succeeded (an OWNER may
   force the delete after a failed removal). Decision: Shopify fulfillment write-backs of an archived store's already
   shipped orders still run (they are not a sync job and keep Shopify's order status right).
+  Audit fixes: a domain change resets writeBackMode/inventoryPushMode to READ_ONLY/DISABLED (audited; only an OWNER
+  raises them again), marks the store's queued Shopify events IGNORED, and queues a removal of our webhooks on the old
+  shop (same credential, `oldDomain` job); events now carry `shopDomain` and the worker ignores one whose shop no
+  longer matches the store. The removal job decides the purge from the store (`deleteRequested` + archived), not the
+  job payload (jobs are coalesced per store). The intake tries live stores before archived ones; a shop counts as
+  shared only with another live store on the same app (same client id). Order imports take `store:<id>` as a shared
+  advisory lock, store edits/deletes exclusively, so the "no orders yet" re-check is serialised with a first import.
 
 ## Open questions
 See SPEC.md §11.

@@ -97,6 +97,9 @@ export function deleteBlockers(u: StoreUsage): string[] {
   return out;
 }
 
+/** The modes of a new connection: nothing is written to the shop until an OWNER raises them. */
+const SAFE_MODES = { writeBackMode: "READ_ONLY", inventoryPushMode: "DISABLED" } as const;
+
 export const StoreDetailsInput = z.object({
   name: z.string().trim().min(1).max(200),
   companyId: z.string().min(1).max(64),
@@ -168,7 +171,8 @@ export async function updateStoreDetails(
     await withAccountTransaction(actor.accountId, async (tx, { lockKey }) => {
       await lockKey(`store:${storeId}`);
       if (codeChanged || domainChanged) {
-        // Re-checked inside the transaction: an order imported meanwhile locks the code and the domain.
+        // Re-checked inside the transaction. The order import holds the same key (shared) while it inserts, so an
+        // import running right now finishes first and is counted here, or starts after this change.
         const again = storeEditLocks(await usageWith(tx as unknown as UsageDb, storeId));
         if (codeChanged && again.code) throw new DomainError(again.code);
         if (domainChanged && again.domain) throw new DomainError(again.domain);
@@ -177,13 +181,29 @@ export async function updateStoreDetails(
         where: { id: storeId },
         data: {
           ...input,
-          // A different shop: the old test result, webhooks and mirrors say nothing about it.
+          // A different shop: the old test result, webhooks and mirrors say nothing about it, and it starts
+          // in the safe modes like a new connection (only an OWNER raises them again, audited).
           ...(domainChanged
-            ? { connectionStatus: {}, webhookStatus: {}, shopName: null, syncCursors: {} }
+            ? {
+                connectionStatus: {},
+                webhookStatus: {},
+                shopName: null,
+                syncCursors: {},
+                ...SAFE_MODES,
+              }
             : {}),
         },
       });
       if (domainChanged) {
+        // Events of the old shop still waiting in the queue must not be imported into the new one.
+        await tx.webhookEvent.updateMany({
+          where: {
+            source: "SHOPIFY",
+            status: { in: ["RECEIVED", "FAILED"] },
+            headers: { path: ["storeId"], equals: storeId },
+          },
+          data: { status: "IGNORED", processedAt: new Date(), error: "store_domain_changed" },
+        });
         await tx.shopifyInventoryLevel.deleteMany({ where: { storeId } });
         await tx.storeVariantLink.deleteMany({ where: { storeId } });
         await tx.storeLocation.deleteMany({ where: { storeId } });
@@ -199,12 +219,19 @@ export async function updateStoreDetails(
     action: "store.details",
     entityType: "Store",
     entityId: storeId,
-    before: detailsOf(before),
-    after: input,
+    before: {
+      ...detailsOf(before),
+      ...(domainChanged
+        ? { writeBackMode: before.writeBackMode, inventoryPushMode: before.inventoryPushMode }
+        : {}),
+    },
+    after: { ...input, ...(domainChanged ? SAFE_MODES : {}) },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
-  return { domainChanged, companyChanged, codeChanged };
+  // The old shop may still hold our webhook subscriptions: the caller queues their removal (old domain).
+  const oldShopWebhooks = domainChanged && needsWebhookRemoval(before) ? before.domain : null;
+  return { domainChanged, companyChanged, codeChanged, oldShopWebhooks };
 }
 
 /** Archive (OWNER): jobs stop, webhooks are ignored and removed by a job, orders stay as history. Idempotent. */

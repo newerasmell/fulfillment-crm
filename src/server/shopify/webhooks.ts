@@ -116,6 +116,8 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
       credential: { select: { updatedAt: true } },
     },
   });
+  // Live stores first: an archived copy of the same shop (same app secret) must never swallow a live one's events.
+  stores.sort((a, b) => Number(!!a.archivedAt) - Number(!!b.archivedAt));
   let store: (typeof stores)[number] | null = null;
   for (const s of stores) {
     try {
@@ -154,7 +156,13 @@ export async function receiveShopifyWebhook(rawBody: string, headers: Headers): 
         source: "SHOPIFY",
         dedupeKey: `${store.id}:${webhookId}`,
         topic,
-        headers: { storeId: store.id, webhookId, triggeredAt: headers.get("x-shopify-triggered-at") },
+        headers: {
+          storeId: store.id,
+          // The shop it came from: if the store is pointed at another shop before it is processed, it is ignored.
+          shopDomain: domain,
+          webhookId,
+          triggeredAt: headers.get("x-shopify-triggered-at"),
+        },
         payload: webhookPointer(payload),
       },
     });
@@ -175,14 +183,15 @@ export async function processShopifyWebhook(
   const db = accountDb(accountId);
   const event = await db.webhookEvent.findUnique({ where: { id: eventId } });
   if (!event || event.status === "PROCESSED" || event.status === "IGNORED") return event?.status ?? null;
-  const storeId = (event.headers as { storeId?: string } | null)?.storeId;
+  const { storeId, shopDomain } = (event.headers ?? {}) as { storeId?: string; shopDomain?: string };
   const target = webhookTarget(event.topic, event.payload);
   try {
-    // Deleted or archived since the event arrived: nothing to do for it any more.
+    // Deleted or archived since the event arrived, or now pointed at another shop: nothing to do for it any more.
     const live = storeId
-      ? await db.store.findUnique({ where: { id: storeId }, select: { archivedAt: true } })
+      ? await db.store.findUnique({ where: { id: storeId }, select: { archivedAt: true, domain: true } })
       : null;
-    if (!storeId || target.kind === "ignore" || !live || live.archivedAt) {
+    const otherShop = !!live && !!shopDomain && shopDomain !== live.domain;
+    if (!storeId || target.kind === "ignore" || !live || live.archivedAt || otherShop) {
       await db.webhookEvent.update({
         where: { id: eventId },
         data: { status: "IGNORED", processedAt: new Date() },
@@ -265,8 +274,10 @@ export async function removeStoreWebhooks(
   storeId: string,
   uri: string,
   opts: ShopifyClientOptions = {},
+  /** The shop the store pointed at before a domain change: removed there, webhookStatus (new shop) untouched. */
+  oldDomain?: string,
 ) {
-  const { client, store } = await shopifyClientForStore(accountId, storeId, opts);
+  const { client, store } = await shopifyClientForStore(accountId, storeId, opts, oldDomain);
   const existing = await client.query(WEBHOOK_SUBSCRIPTIONS_QUERY, { uri }, WebhookSubscriptions);
   const left: string[] = [];
   const errors: string[] = [];
@@ -288,6 +299,7 @@ export async function removeStoreWebhooks(
     ...(prev.deleteRequested ? { deleteRequested: true } : {}),
     ...(errors.length ? { errors } : {}),
   };
-  await accountDb(accountId).store.update({ where: { id: storeId }, data: { webhookStatus: status } });
+  if (!oldDomain)
+    await accountDb(accountId).store.update({ where: { id: storeId }, data: { webhookStatus: status } });
   return status;
 }

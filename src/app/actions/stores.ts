@@ -126,6 +126,16 @@ export async function saveStoreDetailsAction(
         callbackUrl: webhookCallbackUrl(),
       });
     }
+    // The previous shop keeps posting to us until our subscriptions there are removed.
+    if (r.oldShopWebhooks) {
+      await enqueueShopify.removeWebhooks(await webBoss(), {
+        accountId: ctx.accountId,
+        storeId,
+        callbackUrl: webhookCallbackUrl(),
+        oldDomain: r.oldShopWebhooks,
+        userId: ctx.user.id,
+      });
+    }
   } catch (err) {
     return toError(err);
   }
@@ -140,10 +150,12 @@ export async function archiveStoreAction(storeId: string, _prev: Result, _form: 
   try {
     const r = await archiveStore(actorFrom(ctx), storeId);
     if (r.archived) {
+      // Coalesced per store with a later delete's job: the job reads deleteRequested from the store itself.
       await enqueueShopify.removeWebhooks(await webBoss(), {
         accountId: ctx.accountId,
         storeId,
         callbackUrl: webhookCallbackUrl(),
+        userId: ctx.user.id,
       });
     }
   } catch (err) {
@@ -192,7 +204,6 @@ export async function deleteStoreAction(
         accountId: ctx.accountId,
         storeId,
         callbackUrl: webhookCallbackUrl(),
-        deleteAfter: true,
         userId: ctx.user.id,
       });
       revalidatePath(`/stores/${storeId}`);
@@ -227,8 +238,7 @@ export async function runStoreJobAction(
     const boss = await webBoss();
     const data = { accountId: ctx.accountId, storeId, callbackUrl: webhookCallbackUrl() };
     if (kind === "removeWebhooks") {
-      const deleteAfter = (store.webhookStatus as { deleteRequested?: boolean }).deleteRequested === true;
-      id = await enqueueShopify.removeWebhooks(boss, { ...data, deleteAfter, userId: ctx.user.id });
+      id = await enqueueShopify.removeWebhooks(boss, { ...data, userId: ctx.user.id });
     } else if (kind === "test") id = await enqueueShopify.testConnection(boss, data);
     else if (kind === "orders") id = await enqueueShopify.syncOrders(boss, { ...data, mode: "reconcile" });
     else if (kind === "products") id = await enqueueShopify.syncProducts(boss, data);

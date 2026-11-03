@@ -1,6 +1,8 @@
 import type { PgBoss } from "pg-boss";
 import type { ShopifyClientOptions } from "@/integrations/shopify/client";
+import { parseAppCredentials } from "@/integrations/shopify/credentials";
 import { logger } from "@/lib/logger";
+import { readCredentialSecret } from "@/server/security/credentials";
 import { QUEUES } from "@/server/jobs/queues";
 import { accountDb, systemDb } from "@/server/db/client";
 import { purgeStore } from "@/server/store-lifecycle";
@@ -34,9 +36,15 @@ export interface SyncOrdersJob extends StoreJob {
   to?: string;
 }
 export interface RemoveWebhooksJob extends StoreJob {
-  /** Delete the store once the removal succeeded (Изтрий магазина); the user who asked, for the audit log. */
+  /**
+   * Ignored (jobs queued by older code): whether the store is deleted after the removal is decided from the
+   * store itself (webhookStatus.deleteRequested), since jobs are coalesced per store and a restore may come between.
+   */
   deleteAfter?: boolean;
+  /** The user who asked, for the audit log. */
   userId?: string | null;
+  /** Remove our subscriptions on the shop the store pointed at before a domain change (the store is not archived). */
+  oldDomain?: string;
 }
 export interface WebhookJob {
   accountId: string;
@@ -49,7 +57,9 @@ export const enqueueShopify = {
   registerWebhooks: (boss: PgBoss, d: StoreJob) =>
     boss.send(QUEUES.shopifyRegisterWebhooks.name, d, { singletonKey: d.storeId }),
   removeWebhooks: (boss: PgBoss, d: RemoveWebhooksJob) =>
-    boss.send(QUEUES.shopifyRemoveWebhooks.name, d, { singletonKey: d.storeId }),
+    boss.send(QUEUES.shopifyRemoveWebhooks.name, d, {
+      singletonKey: d.oldDomain ? `${d.storeId}:old:${d.oldDomain}` : d.storeId,
+    }),
   syncOrders: (boss: PgBoss, d: SyncOrdersJob) =>
     boss.send(QUEUES.shopifySyncOrders.name, d, {
       singletonKey: d.mode === "backfill" ? `${d.storeId}:backfill:${d.from}` : `${d.storeId}:reconcile`,
@@ -80,27 +90,98 @@ async function isArchived(accountId: string, storeId: string) {
   return !s || !!s.archivedAt;
 }
 
+async function clientIdOf(accountId: string, credentialId: string) {
+  return parseAppCredentials(await readCredentialSecret(accountDb(accountId), accountId, credentialId))
+    .clientId;
+}
+
+/**
+ * True when another live store (any group) uses this shop through the same Shopify app: webhook subscriptions
+ * belong to the app, so they are shared with it and must stay. A store on the same shop through another app
+ * does not use ours. A credential that cannot be read counts as shared (keeping them is the safe side).
+ */
+async function sharedWithSameApp(
+  accountId: string,
+  storeId: string,
+  domain: string,
+  credentialId: string | null,
+) {
+  const others = await systemDb().store.findMany({
+    where: { domain, id: { not: storeId }, archivedAt: null, credentialId: { not: null } },
+    select: { accountId: true, credentialId: true },
+  });
+  if (!others.length) return false;
+  if (!credentialId) return true;
+  let own: string;
+  try {
+    own = await clientIdOf(accountId, credentialId);
+  } catch {
+    return true;
+  }
+  for (const o of others) {
+    if (o.credentialId === credentialId) return true;
+    try {
+      if ((await clientIdOf(o.accountId, o.credentialId!)) === own) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Domain change: removes our subscriptions on the old shop (same credential), unless the store points there again. */
+async function removeOldShopWebhooks(
+  data: RemoveWebhooksJob & { oldDomain: string },
+  opts: ShopifyClientOptions,
+) {
+  const store = await accountDb(data.accountId).store.findUnique({
+    where: { id: data.storeId },
+    select: { domain: true, credentialId: true },
+  });
+  if (!store || !store.credentialId || store.domain === data.oldDomain) return "skipped" as const;
+  if (await sharedWithSameApp(data.accountId, data.storeId, data.oldDomain, store.credentialId))
+    return "removed" as const;
+  const uri = validCallbackUrl(data.callbackUrl) ?? webhookCallbackUrl();
+  if (!uri) return "failed" as const;
+  const status = await removeStoreWebhooks(data.accountId, data.storeId, uri, opts, data.oldDomain);
+  logger.info({ storeId: data.storeId, ok: status.ok }, "shopify webhooks removed on the previous shop");
+  return status.ok ? ("removed" as const) : ("failed" as const);
+}
+
 /**
  * Removal job: only for an archived store (a restore in between wins). Without a usable connection nothing can
  * be removed — a store being deleted is then deleted anyway (Shopify drops subscriptions that keep failing). A shop
- * that another live store (another group) still uses keeps its subscriptions: they are shared.
+ * that another live store uses through the same app keeps its subscriptions: they are shared. The store is deleted
+ * afterwards only when it still asks for it (deleteRequested), whatever job payload was coalesced into this run.
  */
 export async function runRemoveWebhooks(data: RemoveWebhooksJob, opts: ShopifyClientOptions = {}) {
+  if (data.oldDomain) return removeOldShopWebhooks({ ...data, oldDomain: data.oldDomain }, opts);
   const db = accountDb(data.accountId);
   const store = await db.store.findUnique({
     where: { id: data.storeId },
-    select: { archivedAt: true, domain: true, connectionStatus: true, webhookStatus: true },
+    select: {
+      archivedAt: true,
+      domain: true,
+      connectionStatus: true,
+      webhookStatus: true,
+      credentialId: true,
+    },
   });
   if (!store || !store.archivedAt) return "skipped" as const;
   const finish = async () => {
-    if (data.deleteAfter) await purgeStore(data.accountId, data.storeId, { userId: data.userId ?? null });
-    return data.deleteAfter ? ("deleted" as const) : ("removed" as const);
+    const now = await db.store.findUnique({
+      where: { id: data.storeId },
+      select: { archivedAt: true, webhookStatus: true },
+    });
+    const deleteRequested = (now?.webhookStatus as { deleteRequested?: boolean } | undefined)
+      ?.deleteRequested;
+    if (!now?.archivedAt || deleteRequested !== true) return "removed" as const;
+    await purgeStore(data.accountId, data.storeId, { userId: data.userId ?? null });
+    return "deleted" as const;
   };
-  const shared = await systemDb().store.count({
-    where: { domain: store.domain, id: { not: data.storeId }, archivedAt: null },
-  });
+  const shared = await sharedWithSameApp(data.accountId, data.storeId, store.domain, store.credentialId);
   const connected = (store.connectionStatus as { ok?: boolean }).ok === true;
-  if (shared > 0 || !connected) {
+  if (shared || !connected) {
     const prev = store.webhookStatus as { deleteRequested?: boolean };
     await db.store.update({
       where: { id: data.storeId },
@@ -111,7 +192,7 @@ export async function runRemoveWebhooks(data: RemoveWebhooksJob, opts: ShopifyCl
           topics: [],
           removed: true,
           ...(prev.deleteRequested ? { deleteRequested: true } : {}),
-          ...(shared > 0 ? { note: "shared_shop" } : { note: "not_connected" }),
+          ...(shared ? { note: "shared_shop" } : { note: "not_connected" }),
         },
       },
     });
