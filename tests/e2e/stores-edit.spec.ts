@@ -9,19 +9,23 @@ const STORES_OWNER = {
   totp: process.env.E2E_STORES_TOTP ?? "",
 };
 
-test("stores: edit details, locked code, archive + restore, delete an empty store", async ({ page }) => {
+test("stores: edit details, warehouse prefix, locked domain, archive + restore, delete an empty store", async ({
+  page,
+}) => {
   test.setTimeout(240_000);
   await login(page, STORES_OWNER);
 
-  // 1. Edit name and countries of a store with orders; its code and domain are locked with the reason shown.
+  // 1. Edit name, countries and the warehouse prefix of a store with orders; only its domain is locked (the code is
+  // internal and no longer part of warehouse order ids).
   await page.goto("/stores");
   await page.getByRole("link", { name: "Магазин с поръчки" }).click();
   await page.waitForLoadState("networkidle");
   const details = page.getByRole("form", { name: "Данни на магазина" });
-  await expect(details.locator('input[name="code"]')).toHaveAttribute("readonly", "");
+  await expect(details.locator('input[name="code"]')).not.toHaveAttribute("readonly", "");
   await expect(details.locator('input[name="domain"]')).toHaveAttribute("readonly", "");
-  await expect(details.getByText(/Кодът е заключен/)).toBeVisible();
   await expect(details.getByText(/Домейнът е заключен/)).toBeVisible();
+  await expect(details.getByText(/Празно = номерът от Shopify/)).toBeVisible();
+  await details.locator('input[name="vendorIdPrefix"]').fill("ab");
   await expect(details.getByText(/важи само за новите поръчки/)).toBeVisible();
   await details.locator('input[name="name"]').fill("Магазин с поръчки 2");
   await details.locator('input[name="countries"]').fill("BG, GR");
@@ -31,6 +35,9 @@ test("stores: edit details, locked code, archive + restore, delete an empty stor
   await expect(page.getByRole("heading", { name: "Магазин с поръчки 2" })).toBeVisible();
   await expect(page.locator('form[aria-label="Данни на магазина"] input[name="countries"]')).toHaveValue(
     "BG, GR",
+  );
+  await expect(page.locator('form[aria-label="Данни на магазина"] input[name="vendorIdPrefix"]')).toHaveValue(
+    "AB",
   );
   // Delete is not offered: it explains why and points to archive.
   await expect(page.getByRole("note")).toContainText("има поръчки");
