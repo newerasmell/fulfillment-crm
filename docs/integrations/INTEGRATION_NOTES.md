@@ -404,3 +404,13 @@ Rules per vendor in production:
 Reference: `anthropic.md` (every header and body field we send, with the quoted reference line); untouched
 excerpts in `raw/anthropic-messages-api.md`. Not a warehouse vendor and no outbox: one read-style call per order
 version that only fills an AiSuggestion. No key in the build environment; tests mock the transport.
+
+## 8. Paid AI calls: limits (src/ai/budget.ts) and OpenAI embeddings
+
+- Optional memory provider OpenAI (`OPENAI_API_KEY`, docs/integrations/openai-embeddings.md); Voyage wins when both keys
+  are set, so at most one paid embedding provider is ever used. The local feature-hash provider always works.
+- Hard daily caps per group (rolling 24 h, counted from AiInteraction): `AI_DAILY_REVIEW_LIMIT` (Claude reviews, default
+  100) and `AI_DAILY_EMBEDDING_LIMIT` (embedding calls, default 300); 0 switches that kind off. Checked by the sweep, the
+  reviewer (manual requests included) and every paid embedding call. 5 failed calls in a row within an hour pause that
+  kind for an hour. Each event raises one alert per 24 h.
+

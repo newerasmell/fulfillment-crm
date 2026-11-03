@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { accountDb, systemDb } from "@/server/db/client";
 import { QUEUES } from "@/server/jobs/queues";
 import { orderFingerprint, FINGERPRINT_SELECT, storedFingerprint } from "@/server/pipeline";
+import { checkBudget } from "./budget";
 import { llmClient } from "./llm";
 import { drawAuditSample, evaluateDecisions } from "./evaluate";
 import { AI_APPROVAL_DECISION, enforcePolicies } from "./policies";
@@ -70,6 +71,8 @@ export async function registerAiWorkers(boss: PgBoss, opts: { pollingIntervalSec
   await boss.work(QUEUES.aiSweep.name, opts, async () => {
     if (!llmClient()) return; // ANTHROPIC_API_KEY unset: the AI is off (GATE P8-G1)
     for (const accountId of await activeAiAccounts()) {
+      // Daily cap / failure brake reached: queue nothing (the alert is raised by checkBudget).
+      if (!(await checkBudget(accountId, "order_review")).allowed) continue;
       const due = await ordersDueForAiReview(accountId);
       for (const orderId of due) await enqueueAiReview(boss, { accountId, orderId });
       if (due.length) logger.info({ accountId, count: due.length }, "ai reviews queued");

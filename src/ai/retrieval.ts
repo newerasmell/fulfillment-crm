@@ -4,7 +4,8 @@ import { accountDb } from "@/server/db/client";
 import { embeddingCounts, nearestReviews, upsertReviewEmbedding } from "@/server/db/vector";
 import { parseDiff } from "@/server/review/diff";
 import { caseText, type CaseInput } from "./case-text";
-import { embeddingProviders, textHash } from "./embeddings";
+import { checkBudget } from "./budget";
+import { embeddingProviders, textHash, type EmbeddingProvider } from "./embeddings";
 import { maskValue } from "./fields";
 
 /**
@@ -55,6 +56,47 @@ export function reviewCase(r: ReviewForCase): CaseInput {
   };
 }
 
+class BudgetSkip extends Error {}
+
+/**
+ * Every call to a PAID embedding provider goes through here: the daily cap and the failure brake (./budget.ts)
+ * are checked first, and the call is logged in AiInteraction (purpose "embedding": counts and status only, no
+ * case text). A free provider is called directly.
+ */
+async function meteredEmbed(
+  accountId: string,
+  provider: EmbeddingProvider,
+  texts: string[],
+  kind: "document" | "query",
+): Promise<number[][]> {
+  if (!provider.paid || texts.length === 0) return provider.embed(texts, kind);
+  const budget = await checkBudget(accountId, "embedding");
+  if (!budget.allowed) throw new BudgetSkip(budget.reason);
+  const started = Date.now();
+  let status = "ok";
+  let error: string | null = null;
+  try {
+    return await provider.embed(texts, kind);
+  } catch (err) {
+    status = "api_error";
+    error = String(err).slice(0, 500);
+    throw err;
+  } finally {
+    await accountDb(accountId).aiInteraction.create({
+      data: {
+        accountId,
+        purpose: "embedding",
+        provider: provider.name,
+        model: provider.model,
+        request: { kind, inputs: texts.length },
+        status,
+        error,
+        latencyMs: Date.now() - started,
+      },
+    });
+  }
+}
+
 /** Embeds decided reviews that have no vector (or a stale one) yet, for every configured provider. */
 export async function embedPendingReviews(accountId: string, limit = 200) {
   const db = accountDb(accountId);
@@ -88,9 +130,10 @@ export async function embedPendingReviews(accountId: string, limit = 200) {
       const texts = chunk.map((r) => caseText(reviewCase(r)));
       let vectors: number[][];
       try {
-        vectors = await provider.embed(texts, "document");
+        vectors = await meteredEmbed(accountId, provider, texts, "document");
       } catch (err) {
-        logger.warn({ provider: provider.name, err: String(err) }, "review embedding failed");
+        if (!(err instanceof BudgetSkip))
+          logger.warn({ provider: provider.name, err: String(err) }, "review embedding failed");
         break;
       }
       for (const [j, review] of chunk.entries()) {
@@ -132,9 +175,10 @@ export async function similarCases(
     if (!counts[provider.name]) continue;
     let vector: number[] | undefined;
     try {
-      [vector] = await provider.embed([text], "query");
+      [vector] = await meteredEmbed(accountId, provider, [text], "query");
     } catch (err) {
-      logger.warn({ provider: provider.name, err: String(err) }, "query embedding failed");
+      if (!(err instanceof BudgetSkip))
+        logger.warn({ provider: provider.name, err: String(err) }, "query embedding failed");
       continue;
     }
     if (!vector) continue;

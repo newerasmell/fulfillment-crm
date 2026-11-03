@@ -10,6 +10,7 @@ import { applyGuardrails } from "./guardrails";
 import { llmClient, MessageResponse } from "./llm";
 import { AI_APPROVAL_DECISION, aiStopped, loadPolicy } from "./policies";
 import { reviewRequestBody, type ReviewContext } from "./prompt";
+import { checkBudget } from "./budget";
 import { similarCases } from "./retrieval";
 import { REVIEW_TOOL_NAME, ReviewOutput } from "./reviewer-schema";
 import { tryAutopilot, type AutopilotResult } from "./autopilot";
@@ -97,6 +98,9 @@ export async function reviewOrder(
     });
     if (failures >= MAX_FAILURES_PER_DAY) return { status: "skipped", reason: "recent_failures" };
   }
+  // Hard spending cap and failure brake for paid calls (./budget.ts) — applies to manual requests too.
+  const budget = await checkBudget(accountId, "order_review", now);
+  if (!budget.allowed) return { status: "skipped", reason: budget.reason };
 
   const findings = (Array.isArray(check.findings) ? check.findings : []) as unknown as Finding[];
   const routing = (check.routing ?? {}) as unknown as Partial<RoutingDecision>;

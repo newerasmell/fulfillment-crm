@@ -5,6 +5,9 @@ import { z } from "zod";
  * Embedding providers for similar-case retrieval (P8-01). Anthropic has no embeddings endpoint, so:
  *   - "voyage": Voyage AI (POST https://api.voyageai.com/v1/embeddings, Bearer VOYAGE_API_KEY, model voyage-3.5,
  *     output_dimension 1024) — only when VOYAGE_API_KEY is set;
+ *   - "openai": OpenAI (POST https://api.openai.com/v1/embeddings, Bearer OPENAI_API_KEY, model
+ *     text-embedding-3-small, dimensions 1024) — only when OPENAI_API_KEY is set and VOYAGE_API_KEY is not (at most
+ *     ONE paid provider is ever used, so nothing is paid for twice);
  *   - "local-hash": deterministic feature hashing of the case tokens into 1024 dimensions, L2-normalised. Needs
  *     no key and no network, so retrieval always works. Every decided review always gets a local-hash vector;
  *     a voyage vector is added when the key is set. Vectors of different providers are never compared.
@@ -13,8 +16,10 @@ import { z } from "zod";
 export const EMBEDDING_DIMS = 1024;
 
 export interface EmbeddingProvider {
-  readonly name: "voyage" | "local-hash";
+  readonly name: "voyage" | "openai" | "local-hash";
   readonly model: string;
+  /** Costs money per call: metered and capped by ./budget.ts. */
+  readonly paid: boolean;
   embed(texts: string[], kind: "document" | "query"): Promise<number[][]>;
 }
 
@@ -46,6 +51,7 @@ export function hashEmbed(text: string, dims = EMBEDDING_DIMS): number[] {
 export const localHashProvider: EmbeddingProvider = {
   name: "local-hash",
   model: "fnv1a-1024-v1",
+  paid: false,
   async embed(texts) {
     return texts.map((t) => hashEmbed(t));
   },
@@ -67,6 +73,7 @@ export function voyageProvider(
   return {
     name: "voyage",
     model,
+    paid: true,
     async embed(texts, kind) {
       if (!texts.length) return [];
       const res = await doFetch(VOYAGE_URL, {
@@ -88,22 +95,81 @@ export function voyageProvider(
   };
 }
 
+const OpenAiResponse = z.object({
+  data: z.array(z.object({ embedding: z.array(z.number()), index: z.number().int() })),
+  model: z.string().optional(),
+  usage: z.object({ prompt_tokens: z.number().optional(), total_tokens: z.number().optional() }).optional(),
+});
+
+export const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
+export const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
+
+/** OpenAI embeddings (docs/integrations/openai-embeddings.md). One request per call, no retries (budget.ts brakes). */
+export function openaiProvider(
+  apiKey: string,
+  opts: { model?: string; fetchImpl?: typeof fetch } = {},
+): EmbeddingProvider {
+  const model = opts.model ?? DEFAULT_OPENAI_EMBEDDING_MODEL;
+  const doFetch = opts.fetchImpl ?? fetch;
+  return {
+    name: "openai",
+    model,
+    paid: true,
+    async embed(texts) {
+      if (!texts.length) return [];
+      const res = await doFetch(OPENAI_EMBEDDINGS_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ input: texts, model, dimensions: EMBEDDING_DIMS, encoding_format: "float" }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`openai embeddings failed: HTTP ${res.status}`);
+      const parsed = OpenAiResponse.parse(await res.json());
+      const out = new Array<number[]>(texts.length);
+      for (const d of parsed.data) {
+        if (d.embedding.length !== EMBEDDING_DIMS) throw new Error("openai returned a wrong dimension");
+        if (d.index < 0 || d.index >= texts.length) throw new Error("openai returned an unknown index");
+        out[d.index] = d.embedding;
+      }
+      if (out.some((e) => !e)) throw new Error("openai returned too few embeddings");
+      return out;
+    },
+  };
+}
+
+let openaiOverride: EmbeddingProvider | null | undefined;
+/** Tests only: replace the OpenAI provider (null = force "not configured"; undefined = from env). */
+export function setOpenAiProviderForTests(p: EmbeddingProvider | null | undefined) {
+  openaiOverride = p;
+}
+
 let voyageOverride: EmbeddingProvider | null | undefined;
 /** Tests only: replace the Voyage provider (null = force "not configured"; undefined = from env). */
 export function setVoyageProviderForTests(p: EmbeddingProvider | null | undefined) {
   voyageOverride = p;
 }
 
-/** Providers to store vectors for, in retrieval preference order (voyage first when configured). */
+/**
+ * Providers to store vectors for, in retrieval preference order: at most ONE paid provider (Voyage when its key is
+ * set, else OpenAI when its key is set), then the free local one, which always works.
+ */
 export function embeddingProviders(): EmbeddingProvider[] {
-  const key = process.env.VOYAGE_API_KEY?.trim();
+  const vKey = process.env.VOYAGE_API_KEY?.trim();
   const voyage =
     voyageOverride !== undefined
       ? voyageOverride
-      : key
-        ? voyageProvider(key, { model: process.env.VOYAGE_MODEL?.trim() || undefined })
+      : vKey
+        ? voyageProvider(vKey, { model: process.env.VOYAGE_MODEL?.trim() || undefined })
         : null;
-  return voyage ? [voyage, localHashProvider] : [localHashProvider];
+  if (voyage) return [voyage, localHashProvider];
+  const oKey = process.env.OPENAI_API_KEY?.trim();
+  const openai =
+    openaiOverride !== undefined
+      ? openaiOverride
+      : oKey
+        ? openaiProvider(oKey, { model: process.env.OPENAI_EMBEDDING_MODEL?.trim() || undefined })
+        : null;
+  return openai ? [openai, localHashProvider] : [localHashProvider];
 }
 
 export const textHash = (text: string) => createHash("sha256").update(text).digest("hex");

@@ -2441,7 +2441,10 @@
       "failed": "Failed",
       "tokens": "Tokens (in / out)",
       "embeddings": "Review vectors",
-      "providers": "Embedding provider"
+      "providers": "Embedding provider",
+      "budget": "Daily limit (last 24 h)",
+      "budgetLine": "AI reviews {reviews}/{reviewLimit} · memory (embeddings) {embeddings}/{embeddingLimit}",
+      "budgetHelp": "When a limit is reached or 5 calls in a row fail, paid calls stop on their own and an alert appears. Change the limits with AI_DAILY_REVIEW_LIMIT and AI_DAILY_EMBEDDING_LIMIT in Render."
     },
     "audit": {
       "title": "Daily autopilot audit",
@@ -2565,7 +2568,9 @@
       "not_reviewable": "The order is not in a reviewable status.",
       "not_allowed": "The fixes cannot be applied.",
       "not_found": "Not found.",
-      "not_editable": "The address can no longer be changed."
+      "not_editable": "The address can no longer be changed.",
+      "ai_daily_limit": "The daily AI review limit is reached. New reviews stop until tomorrow (change it with AI_DAILY_REVIEW_LIMIT).",
+      "ai_failure_brake": "The last 5 calls to Claude failed — the AI is paused for 1 hour. Check the key and the credit at Anthropic."
     }
   },
   "shipmentList": {

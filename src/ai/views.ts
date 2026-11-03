@@ -5,6 +5,7 @@ import { embeddingCounts } from "@/server/db/vector";
 import { orderFingerprint, FINGERPRINT_SELECT, storedFingerprint } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
 import { aiModels, aiStatus } from "./config";
+import { budgetUsage } from "./budget";
 import { embeddingProviders } from "./embeddings";
 import {
   ADDRESS_FIX_DECISION,
@@ -88,10 +89,12 @@ export async function aiDashboard(actor: ScopedActor, now = new Date()) {
   const [suggestions24h, calls24h, failed24h, tokens, pendingAudit, openProposals, embeddings] =
     await Promise.all([
       db.aiSuggestion.count({ where: { createdAt: { gte: dayAgo }, ...suggestionScope(actor) } }),
-      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, ...calls } }),
-      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, status: { not: "ok" }, ...calls } }),
+      db.aiInteraction.count({ where: { createdAt: { gte: dayAgo }, purpose: "order_review", ...calls } }),
+      db.aiInteraction.count({
+        where: { createdAt: { gte: dayAgo }, purpose: "order_review", status: { not: "ok" }, ...calls },
+      }),
       db.aiInteraction.aggregate({
-        where: { createdAt: { gte: dayAgo }, ...calls },
+        where: { createdAt: { gte: dayAgo }, purpose: "order_review", ...calls },
         _sum: { inputTokens: true, outputTokens: true },
       }),
       db.aiAuditSample.count({ where: { status: "PENDING", ...sampleScope(actor) } }),
@@ -116,6 +119,7 @@ export async function aiDashboard(actor: ScopedActor, now = new Date()) {
     openProposals,
     embeddings,
     providers: embeddingProviders().map((p) => ({ name: p.name, model: p.model })),
+    budget: await budgetUsage(actor.accountId, now),
   };
 }
 
@@ -240,6 +244,8 @@ export async function listInteractions(actor: ScopedActor, take = 50) {
     select: {
       id: true,
       orderId: true,
+      purpose: true,
+      provider: true,
       model: true,
       status: true,
       error: true,
