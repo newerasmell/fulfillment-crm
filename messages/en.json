@@ -2678,6 +2678,10 @@
     }
   },
   "tickets": {
+    "pagination": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages} · {total} tickets",
     "title": "Warehouse tickets",
     "subtitle": "FHB ticket notifications per shipment. Text and replies are in ZOE.",
     "openZoe": "Open in ZOE ↗",

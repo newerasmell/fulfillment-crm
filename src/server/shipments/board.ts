@@ -4,7 +4,8 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { companyFilter } from "@/server/companies";
-import { accountDb } from "@/server/db/client";
+import { safeTimeZone, zonedDay, zonedDayEnd, zonedDayStart } from "@/lib/tz";
+import { accountDb, systemDb } from "@/server/db/client";
 import type { BoardCtx } from "@/server/returns/board";
 import type { ScopedActor } from "@/server/stores";
 
@@ -69,7 +70,7 @@ export interface ShipmentFilter {
   view?: ShipmentView;
   connectionId?: string;
   carrier?: string;
-  /** YYYY-MM-DD, created at (inclusive, UTC days). */
+  /** YYYY-MM-DD, created at (inclusive, calendar days in the account's time zone). */
   from?: string;
   to?: string;
   q?: string;
@@ -170,13 +171,19 @@ export function searchWhere(raw: string): Prisma.FulfillmentWhereInput {
   return { OR: or };
 }
 
-function baseWhere(ctx: BoardCtx, f: ShipmentFilter): Prisma.FulfillmentWhereInput {
+/** The account's time zone (Account.timezone, default Europe/Sofia): date filters and CSV dates use its days. */
+export async function accountTimeZone(accountId: string) {
+  const a = await systemDb().account.findUnique({ where: { id: accountId }, select: { timezone: true } });
+  return safeTimeZone(a?.timezone);
+}
+
+function baseWhere(ctx: BoardCtx, f: ShipmentFilter, tz: string): Prisma.FulfillmentWhereInput {
   const and: Prisma.FulfillmentWhereInput[] = [scopeWhere(ctx)];
   if (f.connectionTypes) and.push({ connection: { type: { in: f.connectionTypes as never } } });
   if (f.connectionId) and.push({ connectionId: f.connectionId });
   if (f.carrier) and.push({ carrier: f.carrier });
-  if (f.from) and.push({ createdAt: { gte: new Date(`${f.from}T00:00:00Z`) } });
-  if (f.to) and.push({ createdAt: { lt: new Date(new Date(`${f.to}T00:00:00Z`).getTime() + DAY) } });
+  if (f.from) and.push({ createdAt: { gte: zonedDayStart(f.from, tz) } });
+  if (f.to) and.push({ createdAt: { lt: zonedDayEnd(f.to, tz) } });
   if (f.q) and.push(searchWhere(f.q));
   return { AND: and };
 }
@@ -311,8 +318,27 @@ async function companiesOf(accountId: string, ids: string[]) {
   return new Map(rows.map((c) => [c.id, c]));
 }
 
+/**
+ * The shipment that carries each order's COD: the order's latest non-cancelled Fulfillment. A rerouted order
+ * (cancelled original + new shipment) or a reship shows the amount once, never on a cancelled row.
+ */
+async function codCarriers(accountId: string, orderIds: string[]) {
+  if (!orderIds.length) return new Map<string, string>();
+  const rows = await accountDb(accountId).fulfillment.findMany({
+    where: { orderId: { in: orderIds }, status: { not: "CANCELLED" } },
+    select: { id: true, orderId: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const m = new Map<string, string>();
+  for (const r of rows) if (!m.has(r.orderId)) m.set(r.orderId, r.id);
+  return m;
+}
+
 async function toViews(accountId: string, rows: Row[], delayedDays: number, now: Date) {
-  const [carrierName, companies] = await Promise.all([
+  const codOrderIds = [
+    ...new Set(rows.filter((r) => r.order.paymentMethod === "COD").map((r) => r.order.id)),
+  ];
+  const [carrierName, companies, codCarrier] = await Promise.all([
     carrierNames(
       accountId,
       rows
@@ -320,6 +346,7 @@ async function toViews(accountId: string, rows: Row[], delayedDays: number, now:
         .map((r) => ({ connectionId: r.connectionId, type: r.connection.type, carrier: r.carrier! })),
     ),
     companiesOf(accountId, [...new Set(rows.map((r) => r.order.companyId).filter((x): x is string => !!x))]),
+    codCarriers(accountId, codOrderIds),
   ]);
   const delayedBefore = now.getTime() - delayedDays * DAY;
   return rows.map((r) => {
@@ -337,7 +364,7 @@ async function toViews(accountId: string, rows: Row[], delayedDays: number, now:
       carrierName: carrierName(r.connectionId, r.carrier),
       tracking: trackingLinks(r.trackingNumbers, r.trackingUrls),
       trackingNumbers: r.trackingNumbers,
-      cod: codOf(r.order),
+      cod: codCarrier.get(r.order.id) === r.id ? codOf(r.order) : null,
       codStatus: r.codStatus,
       createdAt: r.createdAt,
       submittedAt: r.submittedAt,
@@ -367,8 +394,11 @@ export type ShipmentRowView = Awaited<ReturnType<typeof toViews>>[number];
 export async function listShipments(ctx: BoardCtx, f: ShipmentFilter = {}, now = new Date()) {
   assertCan(ctx.role, "account.read");
   const db = accountDb(ctx.accountId);
-  const settings = await getShipmentSettings(ctx.accountId);
-  const base = baseWhere(ctx, f);
+  const [settings, tz] = await Promise.all([
+    getShipmentSettings(ctx.accountId),
+    accountTimeZone(ctx.accountId),
+  ]);
+  const base = baseWhere(ctx, f, tz);
   const view = f.view ?? "all";
   const where = { AND: [base, viewWhere(view, settings.delayedDays, now)] };
   const [total, ...counts] = await Promise.all([
@@ -442,9 +472,11 @@ export async function shipmentFilterOptions(ctx: BoardCtx, f: Pick<ShipmentFilte
   };
 }
 
-const iso = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : "");
-
-/** CSV rows of the current filter (every page, capped at EXPORT_CAP). COD only for roles that may see it. */
+/**
+ * CSV rows of the current filter (every page, capped at EXPORT_CAP). COD only for roles that may see it.
+ * Keyset pages on (createdAt, id) so shipments created during the export never repeat or skip rows; dates are
+ * days in the account's time zone.
+ */
 export async function exportShipmentsCsv(
   ctx: BoardCtx,
   f: ShipmentFilter = {},
@@ -454,8 +486,12 @@ export async function exportShipmentsCsv(
   assertCan(ctx.role, "account.read");
   if (opts.withCod) assertCan(ctx.role, "cod.read");
   const db = accountDb(ctx.accountId);
-  const settings = await getShipmentSettings(ctx.accountId);
-  const where = { AND: [baseWhere(ctx, f), viewWhere(f.view ?? "all", settings.delayedDays, now)] };
+  const [settings, tz] = await Promise.all([
+    getShipmentSettings(ctx.accountId),
+    accountTimeZone(ctx.accountId),
+  ]);
+  const where = { AND: [baseWhere(ctx, f, tz), viewWhere(f.view ?? "all", settings.delayedDays, now)] };
+  const iso = (d: Date | null) => (d ? zonedDay(d, tz) : "");
   const header = [
     "order",
     "shipment",
@@ -477,14 +513,27 @@ export async function exportShipmentsCsv(
     "manual_kind",
   ];
   const out: string[][] = [header];
-  for (let skip = 0; skip < EXPORT_CAP; skip += 1000) {
-    const rows = await db.fulfillment.findMany({
-      where,
+  let cursor: { createdAt: Date; id: string } | null = null;
+  for (let done = 0; done < EXPORT_CAP;) {
+    const after: Prisma.FulfillmentWhereInput[] = cursor
+      ? [
+          {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            ],
+          },
+        ]
+      : [];
+    const rows: Row[] = await db.fulfillment.findMany({
+      where: { AND: [where, ...after] },
       select: SELECT,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      skip,
-      take: Math.min(1000, EXPORT_CAP - skip),
+      take: Math.min(1000, EXPORT_CAP - done),
     });
+    done += rows.length;
+    const last = rows.at(-1);
+    if (last) cursor = { createdAt: last.createdAt, id: last.id };
     for (const v of await toViews(ctx.accountId, rows, settings.delayedDays, now))
       out.push([
         v.order.number,

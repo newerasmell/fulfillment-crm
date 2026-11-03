@@ -33,14 +33,23 @@ export default async function TicketsPage({ searchParams }: { searchParams: Prom
     ? (tabRaw as TicketTab)
     : "open";
   const q = one(sp.q)?.slice(0, 80);
+  const rawPage = Number(one(sp.page));
   const data = await listTickets(
     { ...actorFrom(ctx), activeCompanyId: ctx.activeCompanyId, lineCompanyIds: ctx.lineCompanyIds },
-    { tab, q, connectionTypes: scope === "all" ? undefined : SCOPE_TYPES[scope] },
+    {
+      tab,
+      q,
+      page: Number.isInteger(rawPage) && rawPage > 1 && rawPage < 10_000 ? rawPage : 1,
+      connectionTypes: scope === "all" ? undefined : SCOPE_TYPES[scope],
+    },
   );
   const review = can(ctx.role, "tickets.review");
-  const href = (over: Record<string, string | undefined>) => {
+  const href = (over: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    for (const [k, v] of Object.entries({ tab, q, ...over })) if (v) p.set(k, v);
+    for (const [k, v] of Object.entries({ tab, q, ...over })) {
+      const sv = v == null ? "" : String(v);
+      if (sv && !(k === "page" && sv === "1")) p.set(k, sv);
+    }
     return `/tickets?${p.toString()}`;
   };
   const dt = (d: Date) => format.dateTime(d, { dateStyle: "short", timeStyle: "short" });
@@ -210,6 +219,29 @@ export default async function TicketsPage({ searchParams }: { searchParams: Prom
               </tbody>
             </table>
           </div>
+        )}
+        {data.pages > 1 && (
+          <nav aria-label={t("pagination")} className="mt-4 flex items-center gap-3">
+            {data.page > 1 && (
+              <Link
+                href={href({ page: data.page - 1 })}
+                className={`${ghostButtonCls} inline-flex items-center`}
+              >
+                ← {t("prev")}
+              </Link>
+            )}
+            <span className="text-sm text-muted" data-testid="tickets-page">
+              {t("pageOf", { page: data.page, pages: data.pages, total: data.total })}
+            </span>
+            {data.page < data.pages && (
+              <Link
+                href={href({ page: data.page + 1 })}
+                className={`${ghostButtonCls} inline-flex items-center`}
+              >
+                {t("next")} →
+              </Link>
+            )}
+          </nav>
         )}
       </Card>
     </>

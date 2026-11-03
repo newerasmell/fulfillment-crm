@@ -149,7 +149,9 @@ export interface TicketFilter {
   tab?: TicketTab;
   connectionTypes?: readonly string[];
   q?: string;
+  page?: number;
 }
+export const TICKET_PAGE_SIZE = 100;
 
 const scopeWhere = (ctx: BoardCtx): Prisma.FhbTicketWhereInput => ({
   fulfillment: {
@@ -161,14 +163,25 @@ const scopeWhere = (ctx: BoardCtx): Prisma.FhbTicketWhereInput => ({
   },
 });
 
-function tabWhere(tab: TicketTab): Prisma.FhbTicketWhereInput {
+/**
+ * "Непрегледан" = still open and nobody has reviewed it since its latest event (a review before a newer
+ * ticket_updated does not count). Same meaning on the chip, the list and the Начало card (countOpenTickets).
+ */
+function unreviewedWhere(accountId: string): Prisma.FhbTicketWhereInput {
+  return {
+    state: { in: ["OPEN", "UPDATED"] },
+    OR: [{ reviewedAt: null }, { reviewedAt: { lt: accountDb(accountId).fhbTicket.fields.lastEventAt } }],
+  };
+}
+
+function tabWhere(tab: TicketTab, accountId: string): Prisma.FhbTicketWhereInput {
   switch (tab) {
     case "open":
       return { state: { in: ["OPEN", "UPDATED"] } };
     case "closed":
       return { state: "CLOSED" };
     case "unreviewed":
-      return { reviewedAt: null };
+      return unreviewedWhere(accountId);
     default:
       return {};
   }
@@ -201,28 +214,32 @@ export async function listTickets(ctx: BoardCtx, f: TicketFilter = {}, now = new
     ],
   };
   const tab = f.tab ?? "open";
-  const [rows, ...counts] = await Promise.all([
-    db.fhbTicket.findMany({
-      where: { AND: [base, tabWhere(tab)] },
-      // Open first, then the most recent activity.
-      orderBy: [{ closedAt: { sort: "desc", nulls: "first" } }, { lastEventAt: "desc" }],
-      take: 300,
-      include: {
-        fulfillment: {
-          select: {
-            id: true,
-            externalId: true,
-            status: true,
-            rawStatus: true,
-            trackingNumbers: true,
-            connection: { select: { id: true, name: true, type: true } },
-            order: { select: { id: true, number: true, companyId: true } },
-          },
+  const counts = await Promise.all(
+    TICKET_TABS.map((t) => db.fhbTicket.count({ where: { AND: [base, tabWhere(t, ctx.accountId)] } })),
+  );
+  const total = counts[TICKET_TABS.indexOf(tab)] ?? 0;
+  const pages = Math.max(1, Math.ceil(total / TICKET_PAGE_SIZE));
+  const page = Math.min(Math.max(1, Math.floor(f.page ?? 1)), pages);
+  const rows = await db.fhbTicket.findMany({
+    where: { AND: [base, tabWhere(tab, ctx.accountId)] },
+    // Open first, then the most recent activity.
+    orderBy: [{ closedAt: { sort: "desc", nulls: "first" } }, { lastEventAt: "desc" }, { id: "desc" }],
+    skip: (page - 1) * TICKET_PAGE_SIZE,
+    take: TICKET_PAGE_SIZE,
+    include: {
+      fulfillment: {
+        select: {
+          id: true,
+          externalId: true,
+          status: true,
+          rawStatus: true,
+          trackingNumbers: true,
+          connection: { select: { id: true, name: true, type: true } },
+          order: { select: { id: true, number: true, companyId: true } },
         },
       },
-    }),
-    ...TICKET_TABS.map((t) => db.fhbTicket.count({ where: { AND: [base, tabWhere(t)] } })),
-  ]);
+    },
+  });
   const userIds = [...new Set(rows.map((r) => r.reviewedById).filter((x): x is string => !!x))];
   const companyIds = [
     ...new Set(rows.map((r) => r.fulfillment.order.companyId).filter((x): x is string => !!x)),
@@ -240,6 +257,9 @@ export async function listTickets(ctx: BoardCtx, f: TicketFilter = {}, now = new
   const companyOf = new Map(companies.map((c) => [c.id, c]));
   return {
     counts: Object.fromEntries(TICKET_TABS.map((t, i) => [t, counts[i] ?? 0])) as Record<TicketTab, number>,
+    total,
+    page,
+    pages,
     rows: rows.map((r) => {
       const company = r.fulfillment.order.companyId
         ? companyOf.get(r.fulfillment.order.companyId)
@@ -273,23 +293,20 @@ export async function listTickets(ctx: BoardCtx, f: TicketFilter = {}, now = new
   };
 }
 
-/** Начало → "Тикети": open tickets nobody has reviewed since their latest event (same scope as the board). */
+/** Начало → "Тикети": the board's "Непрегледани" chip (open, not reviewed since the latest event; same scope). */
 export async function countOpenTickets(ctx: BoardCtx, f: { connectionTypes?: readonly string[] } = {}) {
   assertCan(ctx.role, "account.read");
-  const rows = await accountDb(ctx.accountId).fhbTicket.findMany({
+  return accountDb(ctx.accountId).fhbTicket.count({
     where: {
       AND: [
         scopeWhere(ctx),
-        { state: { in: ["OPEN", "UPDATED"] } },
+        unreviewedWhere(ctx.accountId),
         ...(f.connectionTypes
           ? [{ fulfillment: { connection: { type: { in: f.connectionTypes as never } } } }]
           : []),
       ],
     },
-    select: { reviewedAt: true, lastEventAt: true },
-    take: 5000,
   });
-  return rows.filter((r) => !reviewedNow(r)).length;
 }
 
 const Note = z.string().trim().min(2).max(1000);

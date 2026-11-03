@@ -749,6 +749,9 @@ model Order {
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
   @@index([accountId, status, placedAt])
+  // Header search (wave 4 shipments track): ILIKE '%q%' on number / customer name (pg_trgm).
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 model OrderLine {
@@ -816,6 +819,11 @@ model Fulfillment {
   @@unique([connectionId, externalId])
   @@unique([connectionId, variableSymbol])
   @@index([accountId, status])
+  // Товарителници board (wave 4): newest-first paging / keyset export, COD carrier lookup, header search.
+  @@index([accountId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([accountId, orderId])
+  @@index([trackingNumbers], type: Gin)
+  @@index([externalId(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 model FulfillmentEvent {

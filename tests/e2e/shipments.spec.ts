@@ -116,7 +116,7 @@ test("shipments list: chips, delayed, filters, search, paging, detail, CSV, sett
 
   // ── Тикети от склада ──
   await page.goto("/");
-  await expect(page.locator(`a[href="/tickets?tab=open"]`)).toContainText("1");
+  await expect(page.locator(`a[href="/tickets?tab=unreviewed"]`)).toContainText("1");
   await page.goto("/tickets");
   await expect(page.getByRole("heading", { name: "Тикети от склада", level: 1 })).toBeVisible();
   await expect(page.getByTestId("tickets-tab-open")).toContainText("1");

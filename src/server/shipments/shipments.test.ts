@@ -1,10 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import examples from "@/integrations/fhb-v3/__fixtures__/openapi-examples.json";
 import type { FetchLike } from "@/integrations/fhb-v3/client";
+import { safeTimeZone, zonedDay, zonedDayEnd, zonedDayStart } from "@/lib/tz";
 import { writeCsv } from "@/lib/xlsx";
 import type { Actor } from "@/server/accounts";
 import { ForbiddenError } from "@/server/auth/rbac";
-import { systemDb } from "@/server/db/client";
+import { systemDb, withSystemTransaction } from "@/server/db/client";
 import { fhbOrderNotificationUrls } from "@/server/fhb/callback-token";
 import { processFhbCallback, receiveFhbCallback } from "@/server/fhb/callbacks";
 import { createFhbConnection } from "@/server/fhb/connection";
@@ -14,6 +15,7 @@ import {
   markTicketReviewed,
   recordFhbTicketEvent,
   TICKET_ALERT_KIND,
+  TICKET_PAGE_SIZE,
 } from "@/server/tickets";
 import {
   ageDays,
@@ -484,5 +486,276 @@ describe("FHB ticket notifications", () => {
       receivedAt: new Date(Date.now() + 1000),
     });
     expect(await countOpenTickets(d.owner)).toBe(1);
+    // The chip and the list mean the same as the Начало card: reviewed before the newer event → unreviewed.
+    const again = await listTickets(d.owner, { tab: "unreviewed" }, NOW);
+    expect(again.counts.unreviewed).toBe(1);
+    expect(again.rows.map((r) => r.id)).toEqual([ticketId]);
+    expect(again.rows[0]).toMatchObject({ reviewed: false, reviewNote: "Отговорено в ZOE" });
+    // Closed tickets are not "to review" any more, reviewed or not.
+    const e3 = await sys.webhookEvent.create({
+      data: {
+        accountId: d.accountId,
+        source: "FHB",
+        dedupeKey: `r3-${Math.random()}`,
+        topic: "order.ticket_closed",
+        payload: {},
+      },
+    });
+    await recordFhbTicketEvent(d.accountId, {
+      fulfillmentId: f.id,
+      webhookEventId: e3.id,
+      event: "ticket_closed",
+      receivedAt: new Date(Date.now() + 2000),
+    });
+    expect((await listTickets(d.owner, { tab: "unreviewed" }, NOW)).counts.unreviewed).toBe(0);
+    expect(await countOpenTickets(d.owner)).toBe(0);
+  });
+
+  it("the ticket board and the Начало count respect a restricted member's companies", async () => {
+    const d = await seed();
+    const sys = systemDb();
+    const record = async (fulfillmentId: string) => {
+      const e = await sys.webhookEvent.create({
+        data: {
+          accountId: d.accountId,
+          source: "FHB",
+          dedupeKey: `s-${Math.random()}`,
+          topic: "order.ticket_created",
+          payload: {},
+        },
+      });
+      return recordFhbTicketEvent(d.accountId, {
+        fulfillmentId,
+        webhookEventId: e.id,
+        event: "ticket_created",
+        receivedAt: ago(1),
+      });
+    };
+    const a = await record(d.s.shippedNew.id); // Фирма А
+    const b = await record(d.s.shippedOld.id); // Фирма Б
+    const own = await listTickets(d.owner, { tab: "all" }, NOW);
+    expect(own.rows.map((r) => r.id).sort()).toEqual([a.ticketId, b.ticketId].sort());
+    expect(await countOpenTickets(d.owner)).toBe(2);
+    const res = await listTickets(d.restricted, { tab: "all" }, NOW);
+    expect(res.counts).toMatchObject({ all: 1, open: 1, unreviewed: 1 });
+    expect(res.rows.map((r) => r.id)).toEqual([b.ticketId]);
+    expect(await countOpenTickets(d.restricted)).toBe(1);
+  });
+
+  it("pages the ticket list (the chip count and the reachable rows agree)", async () => {
+    const d = await seed();
+    const sys = systemDb();
+    const orders = Array.from({ length: TICKET_PAGE_SIZE + 1 }, (_, i) => ({
+      id: `tp-${d.accountId}-${i}`,
+      accountId: d.accountId,
+      companyId: d.coA.id,
+      source: "MANUAL" as const,
+      number: `#TP-${i}`,
+      currency: "EUR",
+      subtotal: "1.00",
+      total: "1.00",
+      paymentMethod: "PREPAID" as const,
+      placedAt: ago(2),
+    }));
+    await sys.order.createMany({ data: orders });
+    await sys.fulfillment.createMany({
+      data: orders.map((o, i) => ({
+        id: `tpf-${d.accountId}-${i}`,
+        accountId: d.accountId,
+        orderId: o.id,
+        connectionId: d.fhb.id,
+        externalId: `TP-${d.accountId}-${i}`,
+        status: "SHIPPED" as const,
+        trackingNumbers: [],
+        trackingUrls: [],
+      })),
+    });
+    await sys.fhbTicket.createMany({
+      data: orders.map((_, i) => ({
+        accountId: d.accountId,
+        fulfillmentId: `tpf-${d.accountId}-${i}`,
+        state: "OPEN",
+        lastEvent: "ticket_created",
+        eventCount: 1,
+        firstEventAt: ago(1),
+        lastEventAt: new Date(ago(1).getTime() + i * 1000),
+      })),
+    });
+    const p1 = await listTickets(d.owner, { tab: "open" }, NOW);
+    expect(p1).toMatchObject({ total: TICKET_PAGE_SIZE + 1, page: 1, pages: 2 });
+    expect(p1.rows).toHaveLength(TICKET_PAGE_SIZE);
+    const p2 = await listTickets(d.owner, { tab: "open", page: 2 }, NOW);
+    expect(p2.rows).toHaveLength(1);
+    const seen = new Set([...p1.rows, ...p2.rows].map((r) => r.id));
+    expect(seen.size).toBe(TICKET_PAGE_SIZE + 1);
+    expect((await listTickets(d.owner, { tab: "open", page: 99 }, NOW)).page).toBe(2);
+  });
+});
+
+describe("audit fixes: COD once per order, account-zone days, keyset export, indexes", () => {
+  it("a rerouted order's COD shows on its live shipment only, never on the cancelled one (and once in the CSV)", async () => {
+    const d = await seed();
+    const sys = systemDb();
+    const order = await sys.order.create({
+      data: {
+        accountId: d.accountId,
+        companyId: d.coA.id,
+        source: "MANUAL",
+        number: "#SH-REROUTE",
+        currency: "EUR",
+        subtotal: "10.00",
+        total: "10.00",
+        paymentMethod: "COD",
+        codAmount: "30",
+        codLocalAmount: "150",
+        codLocalCurrency: "RON",
+        placedAt: ago(5),
+      },
+    });
+    const old = await sys.fulfillment.create({
+      data: {
+        accountId: d.accountId,
+        orderId: order.id,
+        connectionId: d.fhb.id,
+        externalId: "SH-REROUTE",
+        status: "CANCELLED",
+        trackingNumbers: [],
+        trackingUrls: [],
+        createdAt: ago(5),
+      },
+    });
+    const live = await sys.fulfillment.create({
+      data: {
+        accountId: d.accountId,
+        orderId: order.id,
+        connectionId: d.eu.id,
+        externalId: "SH-REROUTE-2",
+        status: "SHIPPED",
+        trackingNumbers: [],
+        trackingUrls: [],
+        createdAt: ago(4),
+      },
+    });
+    const rows = (await listShipments(d.owner, { q: "SH-REROUTE" }, NOW)).rows;
+    expect(rows.find((r) => r.id === old.id)!.cod).toBeNull();
+    expect(rows.find((r) => r.id === live.id)!.cod).toEqual({ amount: 150, currency: "RON" });
+    const csv = await exportShipmentsCsv(d.owner, { q: "SH-REROUTE" }, { withCod: true }, NOW);
+    const codCol = csv[0]!.indexOf("cod");
+    const mine = csv.slice(1).filter((r) => r[0] === "#SH-REROUTE");
+    expect(mine).toHaveLength(2);
+    expect(mine.map((r) => r[codCol]).filter(Boolean)).toEqual(["150.00"]);
+  });
+
+  it("date filters and CSV dates use the account's time zone (Europe/Sofia by default)", async () => {
+    const d = await seed();
+    const sys = systemDb();
+    const order = await sys.order.create({
+      data: {
+        accountId: d.accountId,
+        source: "MANUAL",
+        companyId: d.coA.id,
+        number: "#SH-MIDNIGHT",
+        currency: "EUR",
+        subtotal: "1.00",
+        total: "1.00",
+        paymentMethod: "PREPAID",
+        placedAt: NOW,
+      },
+    });
+    // 00:30 in Sofia on 3 Nov = 22:30 UTC on 2 Nov.
+    const f = await sys.fulfillment.create({
+      data: {
+        accountId: d.accountId,
+        orderId: order.id,
+        connectionId: d.fhb.id,
+        externalId: "SH-MIDNIGHT",
+        status: "QUEUED",
+        trackingNumbers: [],
+        trackingUrls: [],
+        createdAt: new Date("2026-11-02T22:30:00Z"),
+      },
+    });
+    const ids = async (from: string, to: string) =>
+      (await listShipments(d.owner, { from, to, q: "SH-MIDNIGHT" }, NOW)).rows.map((r) => r.id);
+    expect(await ids("2026-11-03", "2026-11-03")).toEqual([f.id]);
+    expect(await ids("2026-11-02", "2026-11-02")).toEqual([]);
+    const csv = await exportShipmentsCsv(
+      d.owner,
+      { from: "2026-11-03", to: "2026-11-03", q: "SH-MIDNIGHT" },
+      { withCod: false },
+      NOW,
+    );
+    expect(csv).toHaveLength(2);
+    expect(csv[1]![csv[0]!.indexOf("created")]).toBe("2026-11-03");
+    // Another zone on the account moves the day boundary.
+    await sys.account.update({ where: { id: d.accountId }, data: { timezone: "UTC" } });
+    expect(await ids("2026-11-02", "2026-11-02")).toEqual([f.id]);
+  });
+
+  it("zone day bounds: Sofia midnight, DST change, invalid zone falls back", () => {
+    expect(zonedDayStart("2026-11-03", "Europe/Sofia").toISOString()).toBe("2026-11-02T22:00:00.000Z");
+    expect(zonedDayStart("2026-07-01", "Europe/Sofia").toISOString()).toBe("2026-06-30T21:00:00.000Z");
+    // 25 Oct 2026: clocks go back in Sofia (a 25-hour day).
+    expect(zonedDayStart("2026-10-25", "Europe/Sofia").toISOString()).toBe("2026-10-24T21:00:00.000Z");
+    expect(zonedDayEnd("2026-10-25", "Europe/Sofia").toISOString()).toBe("2026-10-25T22:00:00.000Z");
+    expect(zonedDay(new Date("2026-11-02T22:30:00Z"), "Europe/Sofia")).toBe("2026-11-03");
+    expect(safeTimeZone("Not/AZone")).toBe("Europe/Sofia");
+  });
+
+  it("CSV export pages by (createdAt, id): rows with the same time are neither repeated nor skipped", async () => {
+    const d = await seed();
+    const sys = systemDb();
+    const n = 1005;
+    const at = ago(2);
+    // One order per shipment (an order has at most one active shipment).
+    const orderIds = Array.from({ length: n }, (_, i) => `bulk-${d.accountId}-${i}`);
+    await sys.order.createMany({
+      data: orderIds.map((id, i) => ({
+        id,
+        accountId: d.accountId,
+        companyId: d.coA.id,
+        source: "MANUAL" as const,
+        number: `#SH-BULK-${i}`,
+        currency: "EUR",
+        subtotal: "1.00",
+        total: "1.00",
+        paymentMethod: "PREPAID" as const,
+        status: "SHIPPED" as const, // not IMPORTED: keeps the shared checks sweep free of these rows
+        placedAt: at,
+      })),
+    });
+    await sys.fulfillment.createMany({
+      data: orderIds.map((orderId, i) => ({
+        accountId: d.accountId,
+        orderId,
+        connectionId: d.fhb.id,
+        externalId: `SH-BULK-${i}`,
+        status: "SHIPPED" as const,
+        trackingNumbers: [],
+        trackingUrls: [],
+        createdAt: at,
+      })),
+    });
+    const csv = await exportShipmentsCsv(d.owner, { q: "SH-BULK" }, { withCod: false }, NOW);
+    const shipments = csv.slice(1).map((r) => r[1]);
+    expect(shipments).toHaveLength(n);
+    expect(new Set(shipments).size).toBe(n);
+  });
+
+  it("the board's sort and search have indexes", async () => {
+    const rows = await withSystemTransaction(
+      (tx) => tx.$queryRaw<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes WHERE tablename IN ('Fulfillment', 'Order')`,
+    );
+    const names = rows.map((r) => r.indexname);
+    for (const i of [
+      "Fulfillment_accountId_createdAt_id_idx",
+      "Fulfillment_accountId_orderId_idx",
+      "Fulfillment_trackingNumbers_idx",
+      "Fulfillment_externalId_idx",
+      "Order_number_idx",
+      "Order_customerName_idx",
+    ])
+      expect(names).toContain(i);
   });
 });

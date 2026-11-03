@@ -27,7 +27,8 @@ export function GlobalSearchPanel({ onClose }: { onClose: () => void }) {
   const t = useTranslations("globalSearch");
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [hits, setHits] = useState<Hits | null>(null);
+  // The hits remember the text that produced them: Enter must never open a hit of an older query.
+  const [hits, setHits] = useState<(Hits & { q: string }) | null>(null);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
     const text = q.trim();
@@ -37,7 +38,7 @@ export function GlobalSearchPanel({ onClose }: { onClose: () => void }) {
       setLoading(true);
       try {
         const res = await fetch(`/api/search?q=${encodeURIComponent(text)}`, { signal: ctrl.signal });
-        if (res.ok) setHits((await res.json()) as Hits);
+        if (res.ok) setHits({ ...((await res.json()) as Hits), q: text });
       } catch {
         /* aborted or offline: keep the last hits */
       } finally {
@@ -54,10 +55,11 @@ export function GlobalSearchPanel({ onClose }: { onClose: () => void }) {
     onClose();
     router.push(to);
   };
-  const first = shown?.orders[0]
-    ? `/orders/${shown.orders[0].id}`
-    : shown?.shipments[0]
-      ? `/shipments?id=${shown.shipments[0].id}&q=${encodeURIComponent(q.trim())}`
+  const current = shown && shown.q === q.trim() ? shown : null;
+  const first = current?.orders[0]
+    ? `/orders/${current.orders[0].id}`
+    : current?.shipments[0]
+      ? `/shipments?id=${current.shipments[0].id}&q=${encodeURIComponent(q.trim())}`
       : null;
   return (
     <>

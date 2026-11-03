@@ -16,7 +16,7 @@ const ATTENTION = [
   { key: "blocked", href: "/orders?tab=blocked" },
   { key: "errors", href: "/orders?tab=blocked" },
   { key: "returns", href: "/returns?tab=todo" },
-  { key: "tickets", href: "/tickets?tab=open" },
+  { key: "tickets", href: "/tickets?tab=unreviewed" },
   { key: "stockouts", href: "/products" },
   { key: "alerts", href: "/alerts" },
 ] as const;
