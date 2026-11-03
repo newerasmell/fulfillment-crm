@@ -14,7 +14,7 @@ import type { FhbOrderListItem, FhbOrderView, FhbProductView } from "@/integrati
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { applyFhbOrderView, raiseAlertOnce } from "./apply";
+import { applyFhbOrderView, fhbStornoBase, raiseAlertOnce } from "./apply";
 import { fhbClientForConnection } from "./connection";
 
 /**
@@ -338,15 +338,25 @@ export async function upsertFhbOrders(
   for (const raw of unknown) await alertUnknownOrderStatus(accountId, connectionId, raw);
 
   // CRM shipments: re-apply only when the warehouse says something new (applyFhbOrderView is idempotent).
+  // An order cancelled in ZOE comes back as "{our id}#STORNO#…" (apply.ts fhbStornoBase): look it up by our id.
+  const ourId = (externalId: string) => fhbStornoBase(externalId) ?? externalId;
   const known = await accountDb(accountId).fulfillment.findMany({
-    where: { connectionId, externalId: { in: rows.map((r) => r.externalId) } },
-    select: { externalId: true, rawStatus: true, trackingNumbers: true, returnInfo: true },
+    where: { connectionId, externalId: { in: rows.map((r) => ourId(r.externalId)) } },
+    select: { externalId: true, rawStatus: true, status: true, trackingNumbers: true, returnInfo: true },
   });
   const byId = new Map(known.map((f) => [f.externalId, f]));
   let applied = 0;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
-    const f = byId.get(r.externalId);
+    const f = byId.get(ourId(r.externalId));
+    if (f && fhbStornoBase(r.externalId) && f.status !== "CANCELLED") {
+      const v = views[i]!;
+      if (v.id) {
+        await applyFhbOrderView(accountId, connectionId, v as FhbOrderView, opts.source, now);
+        applied++;
+      }
+      continue;
+    }
     if (!f) continue;
     const changed =
       f.rawStatus !== r.rawStatus ||

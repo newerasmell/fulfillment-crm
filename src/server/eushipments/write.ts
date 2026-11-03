@@ -159,6 +159,27 @@ export type QueueOrderResult =
     };
 
 /**
+ * The COD to collect in the destination's local currency: the order's own COD when the order is already in that
+ * currency, else a stored local amount (Order.codLocalAmount/codLocalCurrency). null = cannot be determined.
+ */
+export function localCod(
+  order: {
+    currency: string;
+    codAmount: { toString(): string } | null;
+    total: { toString(): string };
+    codLocalAmount: { toString(): string } | null;
+    codLocalCurrency: string | null;
+  },
+  localCurrency: string | null,
+): { amount: string; currency: string } | null {
+  if (localCurrency && order.currency.toUpperCase() === localCurrency.toUpperCase())
+    return { amount: (order.codAmount ?? order.total).toString(), currency: localCurrency.toUpperCase() };
+  if (order.codLocalAmount != null && order.codLocalCurrency)
+    return { amount: order.codLocalAmount.toString(), currency: order.codLocalCurrency.toUpperCase() };
+  return null;
+}
+
+/**
  * Our referenceNumber (the same id everywhere; INTEGRATION_NOTES §4.3): the Shopify order number as it is, with
  * the store's optional prefix ({PREFIX}-{number}); manual orders (no store) get "M-{number}".
  */
@@ -347,32 +368,32 @@ async function euOrderPreflight(
     : null;
 
   const cod = order.paymentMethod === "COD";
-  if (cod && (order.codLocalAmount == null || !order.codLocalCurrency))
+  // COD goes in the destination's local currency (CLAUDE.md). Same currency as the order: the COD itself;
+  // otherwise only a stored local amount in that currency — never a made-up conversion (same rule as FHB).
+  const localCurrency = countrySetting?.currency?.toUpperCase() ?? null;
+  const local = cod ? localCod(order, localCurrency) : null;
+  if (cod && !local)
     findings.push(
       block(
         "cod_local_missing",
         "awb.bankRepayment",
-        "Наложеният платеж не е изчислен в местната валута на държавата.",
-        "The COD is not converted to the destination country's local currency.",
+        localCurrency
+          ? `Наложеният платеж е в ${order.currency}, а не е изчислен в местната валута ${localCurrency}.`
+          : `Няма настройка за държавата ${destination ?? "?"} (местна валута) — Настройки → Държави.`,
+        localCurrency
+          ? `The COD is in ${order.currency} and has no amount in the local currency ${localCurrency}.`
+          : `No setting (local currency) for the country ${destination ?? "?"} — Settings → Countries.`,
       ),
     );
-  if (cod && order.codLocalCurrency && order.countryCode) {
-    const cs =
-      destination === order.countryCode.toUpperCase()
-        ? countrySetting
-        : await db.countrySetting.findUnique({
-            where: { accountId_country: { accountId: accountId, country: order.countryCode } },
-          });
-    if (cs && cs.currency !== order.codLocalCurrency)
-      findings.push(
-        block(
-          "cod_currency_mismatch",
-          "awb.bankRepayment",
-          `Наложеният платеж е в ${order.codLocalCurrency}, а държавата е в ${cs.currency}.`,
-          `The COD is in ${order.codLocalCurrency} but the country uses ${cs.currency}.`,
-        ),
-      );
-  }
+  if (local && localCurrency && local.currency !== localCurrency)
+    findings.push(
+      block(
+        "cod_currency_mismatch",
+        "awb.bankRepayment",
+        `Наложеният платеж е в ${local.currency}, а държавата е в ${localCurrency}.`,
+        `The COD is in ${local.currency} but the country uses ${localCurrency}.`,
+      ),
+    );
   if (input.invoicePdfBase64 && !isPdf(input.invoicePdfBase64))
     findings.push(
       block("invoice_not_pdf", "invoice", "Фактурата не е PDF файл.", "The invoice is not a PDF file."),
@@ -404,7 +425,7 @@ async function euOrderPreflight(
     phone: order.phone,
     phoneRule: customPhoneRule(countrySetting?.phoneRules),
     email: order.email,
-    codLocal: cod ? order.codLocalAmount?.toString() : null,
+    codLocal: local ? local.amount : null,
     lines: lines.map((l) => ({
       refNumber: (l.productId && refs.get(l.productId)) || l.sku || "?",
       qty: l.quantity,

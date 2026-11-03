@@ -8,7 +8,7 @@ import { accountDb, systemDb } from "@/server/db/client";
 import { processOutbound } from "@/server/outbox/outbox";
 import { checkOrder } from "@/server/checks";
 import { transitionOrder } from "@/server/pipeline";
-import { applyFhbOrderView } from "./apply";
+import { applyFhbOrderView, fhbStornoBase } from "./apply";
 import { authenticateFhbCallbackPath } from "./callback-token";
 import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
 import { createFhbConnection } from "./connection";
@@ -1157,5 +1157,39 @@ describe("status apply", () => {
     expect(events.map((e) => e.rawStatus)).toEqual(
       expect.arrayContaining(["pending", "on_the_moon", "rejected"]),
     );
+  });
+
+  it("an order cancelled by hand in ZOE ('{id}#STORNO#…', rejected) is matched by our id: shipment CANCELLED, order BLOCKED, one task", async () => {
+    const s = await setup("LIVE");
+    const { request, fulfillment } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    await processOutbound(
+      request.id,
+      fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
+    );
+    expect(fhbStornoBase("1-EUR2849#STORNO#TJX6KD")).toBe("1-EUR2849");
+    expect(fhbStornoBase("TST-1001")).toBeNull();
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    for (let i = 0; i < 2; i++)
+      await applyFhbOrderView(
+        s.account.id,
+        s.connection.id,
+        FhbOrderView.parse(orderView({ id: "TST-1001#STORNO#AB12CD", status: "rejected" })),
+        "test",
+      );
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+    expect(f).toMatchObject({ status: "CANCELLED", rawStatus: "rejected", externalId: "TST-1001" });
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe("BLOCKED");
+    expect(
+      await systemDb().alert.count({
+        where: { accountId: s.account.id, kind: "fhb_order_cancelled_in_zoe", isTask: true },
+      }),
+    ).toBe(1);
+    expect(
+      await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_order_rejected" } }),
+    ).toBe(0);
   });
 });
