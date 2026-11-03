@@ -404,6 +404,10 @@ Rules per vendor in production:
   *New* and within 14 days.
 - **Shopify:** fulfillment write-back and inventory push follow the same modes per store
   (READ_ONLY → DRY_RUN preview → LIVE). Inventory push starts disabled.
+  The write-back covers the whole lifecycle per shipment (2026-11): fulfillmentCreate (on tracking, or on
+  acceptance without tracking and without a customer e-mail), fulfillmentTrackingInfoUpdate per new tracking
+  number, fulfillmentEventCreate per status (IN_TRANSIT, DELIVERED, FAILURE — in that order, never after a final
+  one). None has an idempotency key: the order / fulfillment is read back before every send and retry.
   One exception, by design: **webhook subscriptions** (`webhookSubscriptionCreate`) are created in every
   mode, including READ_ONLY. They change no order, product, stock or customer data — only where Shopify
   sends change notifications — and without them reading is limited to the 15-minute reconcile. The worker

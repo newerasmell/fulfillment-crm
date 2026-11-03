@@ -293,6 +293,8 @@
     "skuPrefix": "SKU prefix",
     "skuPrefixHint": "Stripped before matching to master products.",
     "writeBackMode": "Write-back to Shopify",
+    "fulfilTrigger": "Mark fulfilled in Shopify",
+    "fulfilTriggerHint": "With \"Accepted by the warehouse\" the order is marked fulfilled in Shopify on acceptance (no e-mail to the customer until there is a tracking number); the tracking number and statuses (in transit, delivered, failed) follow. Shopify app scopes needed: write_merchant_managed_fulfillment_orders (fulfilment and tracking) and write_fulfillments (statuses), plus read_orders.",
     "inventoryPushMode": "Stock push to Shopify",
     "inventoryBuffer": "Stock buffer",
     "notifyCustomer": "Notify the customer on fulfilment",
@@ -387,7 +389,11 @@
     "cancel": "Cancel",
     "vendorIdPrefix": "Warehouse prefix (optional)",
     "vendorIdPrefixNone": "none — the Shopify order number",
-    "vendorIdPrefixHint": "Warehouse order id: {example}. Empty = the Shopify order number as it is. Only needed when two stores send to one warehouse with the same numbers. Applies to new shipments; sent ones keep their id."
+    "vendorIdPrefixHint": "Warehouse order id: {example}. Empty = the Shopify order number as it is. Only needed when two stores send to one warehouse with the same numbers. Applies to new shipments; sent ones keep their id.",
+    "fulfilTriggers": {
+      "ON_TRACKING": "When there is a tracking number (shipped)",
+      "ON_ACCEPT": "Accepted by the warehouse"
+    }
   },
   "products": {
     "title": "Products & stock",
@@ -1370,20 +1376,32 @@
       "fhb_external_id_taken": "This id is already used at the warehouse by another store's order. Set a \"warehouse prefix\" on one of the stores."
     },
     "writeBack": {
-      "title": "Shopify: fulfillment with tracking",
-      "request": "Exact data (fulfillmentCreate)",
+      "title": "Shopify: fulfilment, tracking, statuses",
+      "request": "Exact data ({mutation})",
       "status": {
         "PENDING": "waiting",
         "PAUSED": "paused",
         "HELD": "held",
-        "REFUSED": "not sent (read only)",
+        "REFUSED": "not sent",
         "DRY_RUN_RECORDED": "recorded (dry run — would be sent)",
         "AWAITING_CONFIRMATION": "awaiting confirmation",
         "SENDING": "sending",
-        "SENT": "created in Shopify",
+        "SENT": "written to Shopify",
         "FAILED": "failed",
         "UNCERTAIN": "unknown outcome"
-      }
+      },
+      "response": "Shopify response",
+      "kind": {
+        "FULFIL": "Fulfilment",
+        "TRACKING": "Tracking",
+        "EVENT": "Status"
+      },
+      "event": {
+        "IN_TRANSIT": "in transit",
+        "DELIVERED": "delivered",
+        "FAILURE": "failed / returned"
+      },
+      "noTracking": "no tracking"
     }
   },
   "alerts": {

@@ -65,6 +65,21 @@ enum StoreWriteMode {
   LIVE
 }
 
+/// "Маркирай изпълнена в Shopify": when the Shopify fulfillment is created for a shipment.
+enum ShopifyFulfilTrigger {
+  /// Once the shipment is SHIPPED (or later) and has a tracking number (the P4-07 behaviour).
+  ON_TRACKING
+  /// As soon as the warehouse accepted it (ACCEPTED or later); without tracking the customer is not notified.
+  ON_ACCEPT
+}
+
+/// What a ShopifyWriteBack row writes: the fulfillment, a tracking update of it, or a fulfillment event.
+enum ShopifyWriteBackKind {
+  FULFIL
+  TRACKING
+  EVENT
+}
+
 enum InventoryPushMode {
   DISABLED
   DRY_RUN
@@ -367,7 +382,7 @@ model Credential {
 // ───────────────────────── channels & warehouses ─────────────────────────
 
 model Store {
-  id                String            @id @default(cuid())
+  id                String               @id @default(cuid())
   accountId         String
   /// Owning company. Nullable only until the backfill migration has run everywhere.
   companyId         String?
@@ -381,27 +396,29 @@ model Store {
   currency          String
   countries         String[]
   credentialId      String?
-  webhookStatus     Json              @default("{}")
-  syncCursors       Json              @default("{}")
+  webhookStatus     Json                 @default("{}")
+  syncCursors       Json                 @default("{}")
   /// Shop name as Shopify reports it (filled by the connection test).
   shopName          String?
   /// Payment gateway names that mean cash on delivery in this store (case-insensitive), e.g. "Cash on Delivery (COD)".
-  codGateways       String[]          @default(["Cash on Delivery (COD)", "cash_on_delivery", "Наложен платеж"])
+  codGateways       String[]             @default(["Cash on Delivery (COD)", "cash_on_delivery", "Наложен платеж"])
   /// Prefix this store adds to SKUs (stripped before matching variants to master products).
   skuPrefix         String?
   /// Last connection test: {ok, at, error?, shopName?, currency?}
-  connectionStatus  Json              @default("{}")
-  writeBackMode     StoreWriteMode    @default(READ_ONLY)
-  inventoryPushMode InventoryPushMode @default(DISABLED)
-  inventoryBuffer   Int               @default(0)
+  connectionStatus  Json                 @default("{}")
+  writeBackMode     StoreWriteMode       @default(READ_ONLY)
+  inventoryPushMode InventoryPushMode    @default(DISABLED)
+  inventoryBuffer   Int                  @default(0)
   /// "Тегло към Shopify": product weight write-back (DISABLED → DRY_RUN → LIVE); raising it is OWNER-only.
-  weightWriteMode   InventoryPushMode @default(DISABLED)
-  notifyCustomer    Boolean           @default(true)
+  weightWriteMode   InventoryPushMode    @default(DISABLED)
+  notifyCustomer    Boolean              @default(true)
+  /// "Маркирай изпълнена в Shopify": ON_TRACKING (default, unchanged behaviour) | ON_ACCEPT.
+  fulfilTrigger     ShopifyFulfilTrigger @default(ON_TRACKING)
   /// Archived: no jobs, webhooks ignored, hidden from pickers; orders stay as history.
   archivedAt        DateTime?
   archivedById      String?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
   account         Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
   company         Company?                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
@@ -824,16 +841,16 @@ model Fulfillment {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  order            Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
-  connection       FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
-  events           FulfillmentEvent[]
-  lines            FulfillmentLine[]
-  outboundRequests OutboundRequest[]
-  shopifyWriteBack ShopifyWriteBack?
-  reroutesFrom     OrderReroute[]
-  manualShipment   ManualShipment?
-  labels           ShipmentLabel[]
-  fhbTicket        FhbTicket?
+  order             Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection        FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  events            FulfillmentEvent[]
+  lines             FulfillmentLine[]
+  outboundRequests  OutboundRequest[]
+  shopifyWriteBacks ShopifyWriteBack[]
+  reroutesFrom      OrderReroute[]
+  manualShipment    ManualShipment?
+  labels            ShipmentLabel[]
+  fhbTicket         FhbTicket?
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -1621,31 +1638,36 @@ model FulfillBatchItem {
   @@index([accountId, orderId])
 }
 
-/// Shopify fulfillment write-back for one shipment (P4-07): the store-side outbox. One row per shipment (never
-/// two Shopify fulfillments for one shipment); the sender gates on Store.writeBackMode at send time (READ_ONLY:
-/// nothing, DRY_RUN: the exact mutation is recorded, LIVE: sent) and reads the order's fulfillments back by
-/// tracking number before every send and retry.
+/// Shopify write-back for one shipment (P4-07, lifecycle 2026-11): the store-side outbox. One FULFIL row per
+/// shipment (never two Shopify fulfillments for one shipment), then one TRACKING row per tracking value and one
+/// EVENT row per FulfillmentEventStatus. The sender gates on Store.writeBackMode at send time (READ_ONLY:
+/// nothing, DRY_RUN: the exact mutation is recorded, LIVE: sent) and reads Shopify back before every send and retry.
 model ShopifyWriteBack {
-  id                    String          @id @default(cuid())
+  id                    String               @id @default(cuid())
   accountId             String
   storeId               String
   orderId               String
   fulfillmentId         String
-  status                OutboundStatus  @default(PENDING)
+  status                OutboundStatus       @default(PENDING)
   /// writeBackMode the sender evaluated last time.
   evaluatedMode         StoreWriteMode?
-  trackingNumber        String
+  kind                  ShopifyWriteBackKind @default(FULFIL)
+  /// FULFIL: "" · TRACKING: the tracking number · EVENT: the FulfillmentEventStatus. Unique per shipment + kind.
+  value                 String               @default("")
+  /// FULFIL: the tracking number sent with the fulfillment (null = created without tracking, ON_ACCEPT).
+  trackingNumber        String?
   /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
   request               Json?
-  attempts              Int             @default(0)
+  attempts              Int                  @default(0)
   lastResponse          Json?
   lastError             String?
+  /// The Shopify fulfillment: captured from the create / read-back (FULFIL) or the one updated (TRACKING, EVENT).
   shopifyFulfillmentGid String?
   lockedAt              DateTime?
   nextAttemptAt         DateTime?
   sentAt                DateTime?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
   store       Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
@@ -1653,7 +1675,7 @@ model ShopifyWriteBack {
   fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
 
   @@unique([accountId, id])
-  @@unique([accountId, fulfillmentId])
+  @@unique([accountId, fulfillmentId, kind, value])
   @@index([accountId, orderId])
   @@index([status, nextAttemptAt])
 }

@@ -31,6 +31,12 @@ INSERT INTO "Fulfillment"(id,"accountId","orderId","connectionId","externalId",s
 INSERT INTO "Company"(id,"accountId",name,"updatedAt") VALUES ('co1','accA','Фирма А',now());
 INSERT INTO "ManualShipment"(id,"accountId","orderId",kind,"connectionId","updatedAt")
   VALUES ('ms1','accA','o1','LABEL','c1',now());
+INSERT INTO "Order"(id,"accountId",source,number,currency,subtotal,total,"paymentMethod","placedAt","updatedAt","storeId")
+  VALUES ('o2','accA','SHOPIFY','2','EUR',1,1,'COD',now(),now(),'s1');
+INSERT INTO "Fulfillment"(id,"accountId","orderId","connectionId","externalId",status,"trackingNumbers","updatedAt")
+  VALUES ('f3','accA','o2','c1','AAA-2','SHIPPED',ARRAY['TRK-1'],now());
+INSERT INTO "ShopifyWriteBack"(id,"accountId","storeId","orderId","fulfillmentId",status,"trackingNumber","updatedAt")
+  VALUES ('wb1','accA','s1','o2','f3','SENT','TRK-1',now());
 INSERT INTO "AuditLog"(id,"accountId",action) VALUES ('a1','accA','seed');
 INSERT INTO "Alert"(id,"accountId",kind,title) VALUES ('al1','accA','seed','Seed alert');
 `;

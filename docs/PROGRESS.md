@@ -185,6 +185,27 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   Before LIVE: run `pnpm check:live` with VARIANT_WEIGHT_READ_QUERY against one store (the mutation args/inputs were
   re-checked in the Admin schema: productVariantsBulkUpdate(productId, variants), InventoryItemMeasurementInput.weight).
 
+- 2026-11-03 Shopify lifecycle write-back (owner request: "the order must be fulfilled in Shopify, and when
+  tracking appears it goes back to Shopify and the statuses change"). Per shipment, through the same sender
+  (writeBackMode gate at send time, claim, read-back before every send/retry, UNCERTAIN + task, kill switch):
+  FULFIL (one per shipment; per-store "Маркирай изпълнена в Shopify" = ON_TRACKING default — unchanged — or
+  ON_ACCEPT: fulfillmentCreate once the warehouse accepted it, without tracking and with notifyCustomer=false when
+  there is no number yet; choosing ON_ACCEPT is OWNER-only) → TRACKING (fulfillmentTrackingInfoUpdate, one per
+  tracking value, notifyCustomer from the store setting; carrier mapped to Shopify's documented spelling, else
+  sent as we have it) → EVENT (fulfillmentEventCreate, one per FulfillmentEventStatus: SHIPPED → IN_TRANSIT,
+  DELIVERED/COD_PAID → DELIVERED, RETURNING/RETURN_RECEIVED/EXCEPTION → FAILURE; never an earlier status after a
+  final one, in our rows or in Shopify → REFUSED "superseded_by_…"). TRACKING/EVENT rows wait in LIVE until the
+  FULFIL row is SENT (REFUSED "fulfillment_not_in_shopify" if it never will be). A fulfilment without tracking is
+  recognised in the read-back as a Shopify fulfillment that did not exist at our first attempt and holds exactly
+  our lines (stored with the request as readBack). Cancelled / re-routed shipments never write (sweep + claim).
+  Migration additive: ShopifyWriteBack.kind/value (defaults), trackingNumber nullable, unique widened to
+  (shipment, kind, value) — new index created before the old one is dropped; Store.fulfilTrigger default
+  ON_TRACKING. Scopes (2026-10 docs): fulfillmentCreate / fulfillmentTrackingInfoUpdate need
+  write_merchant_managed_fulfillment_orders (or write_third_party_/write_assigned_fulfillment_orders for
+  locations run by a fulfillment-service app); fulfillmentEventCreate needs write_fulfillments; the read-back
+  `fulfillment(id)` needs read_orders. Owner to do: make sure the Shopify app has write_fulfillments (release +
+  reinstall if it was added), then choose the trigger per store and check the DRY_RUN rows on an order page.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

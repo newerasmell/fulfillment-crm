@@ -159,6 +159,8 @@ export const StoreSettingsInput = z.object({
     .max(20)
     .transform((v) => v || null),
   notifyCustomer: z.boolean(),
+  /** "Маркирай изпълнена в Shopify"; absent = unchanged. ON_ACCEPT writes earlier, so choosing it is OWNER-only. */
+  fulfilTrigger: z.enum(["ON_TRACKING", "ON_ACCEPT"]).optional(),
   writeBackMode: z.enum(["READ_ONLY", "DRY_RUN", "LIVE"]),
   inventoryPushMode: z.enum(["DISABLED", "DRY_RUN", "LIVE"]),
   /** "Тегло към Shopify" (product weight write-back); absent = unchanged. */
@@ -179,7 +181,8 @@ export async function updateStoreSettings(
     WRITE_RANK[input.writeBackMode] > WRITE_RANK[before.writeBackMode] ||
     PUSH_RANK[input.inventoryPushMode] > PUSH_RANK[before.inventoryPushMode] ||
     (input.weightWriteMode !== undefined &&
-      PUSH_RANK[input.weightWriteMode] > PUSH_RANK[before.weightWriteMode])
+      PUSH_RANK[input.weightWriteMode] > PUSH_RANK[before.weightWriteMode]) ||
+    (input.fulfilTrigger === "ON_ACCEPT" && before.fulfilTrigger !== "ON_ACCEPT")
   ) {
     assertCan(actor.role, "stores.raiseMode");
   }
@@ -196,6 +199,7 @@ export async function updateStoreSettings(
       codGateways: before.codGateways,
       skuPrefix: before.skuPrefix,
       notifyCustomer: before.notifyCustomer,
+      fulfilTrigger: before.fulfilTrigger,
       writeBackMode: before.writeBackMode,
       inventoryPushMode: before.inventoryPushMode,
       weightWriteMode: before.weightWriteMode,

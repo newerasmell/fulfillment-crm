@@ -42,6 +42,12 @@ function WarehouseChip({ type, name }: { type: string; name: string }) {
   return <span className={`rounded-full px-2 py-0.5 text-xs whitespace-nowrap ${cls}`}>{name}</span>;
 }
 
+const WRITE_BACK_MUTATION = {
+  FULFIL: "fulfillmentCreate",
+  TRACKING: "fulfillmentTrackingInfoUpdate",
+  EVENT: "fulfillmentEventCreate",
+} as const;
+
 export default async function OrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const ctx = await requireAccountContext();
@@ -609,9 +615,16 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           <h2 className="mt-0 text-base font-semibold">{tw("title")}</h2>
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {writeBacks.map((w) => (
-              <li key={w.id} data-testid="writeback" className="flex flex-col gap-1">
+              <li key={w.id} data-testid="writeback" data-kind={w.kind} className="flex flex-col gap-1">
                 <span className="flex flex-wrap items-center gap-3">
-                  <span className="font-mono text-[13px]">{w.trackingNumber}</span>
+                  <span className="text-sm font-medium">{tw(`kind.${w.kind}`)}</span>
+                  <span className="font-mono text-[13px]">
+                    {w.kind === "EVENT"
+                      ? tw(`event.${w.value}`)
+                      : w.kind === "TRACKING"
+                        ? w.value
+                        : (w.trackingNumber ?? tw("noTracking"))}
+                  </span>
                   <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
                     {tw(`status.${w.status}`)}
                   </span>
@@ -619,9 +632,19 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 </span>
                 {w.request && can(ctx.role, "outbox.payloads") && (
                   <details>
-                    <summary className="text-sm text-muted">{tw("request")}</summary>
+                    <summary className="text-sm text-muted">
+                      {tw("request", { mutation: WRITE_BACK_MUTATION[w.kind] })}
+                    </summary>
                     <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
                       {JSON.stringify((w.request as { variables?: unknown }).variables ?? w.request, null, 2)}
+                    </pre>
+                  </details>
+                )}
+                {w.lastResponse && can(ctx.role, "outbox.payloads") && (
+                  <details>
+                    <summary className="text-sm text-muted">{tw("response")}</summary>
+                    <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
+                      {JSON.stringify(w.lastResponse, null, 2)}
                     </pre>
                   </details>
                 )}

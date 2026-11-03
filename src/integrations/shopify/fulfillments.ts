@@ -11,6 +11,20 @@ import { z } from "zod";
  * Scope: write_merchant_managed_fulfillment_orders (plus read_merchant_managed_fulfillment_orders to read).
  * fulfillmentCreate has no idempotency key in 2026-10: we read the order's fulfillments back (by tracking
  * number) before every send and every retry.
+ *
+ * Lifecycle (owner request 2026-11-03), also checked against the 2026-10 schema + docs:
+ *  - fulfillmentTrackingInfoUpdate(fulfillmentId: ID!, trackingInfoInput: FulfillmentTrackingInput!,
+ *    notifyCustomer: Boolean) → FulfillmentTrackingInfoUpdatePayload {fulfillment, userErrors}; scope: one of
+ *    write_merchant_managed_fulfillment_orders / write_assigned_… / write_third_party_fulfillment_orders.
+ *  - fulfillmentEventCreate(fulfillmentEvent: FulfillmentEventInput! {fulfillmentId: ID!, status:
+ *    FulfillmentEventStatus!, happenedAt, message, …}) → FulfillmentEventCreatePayload {fulfillmentEvent,
+ *    userErrors}; scope: write_fulfillments. FulfillmentEventStatus: ATTEMPTED_DELIVERY CARRIER_PICKED_UP
+ *    CONFIRMED DELAYED DELIVERED FAILURE IN_TRANSIT LABEL_PRINTED LABEL_PURCHASED OUT_FOR_DELIVERY READY_FOR_PICKUP.
+ *  - fulfillment(id: ID!) {id status trackingInfo{…} fulfillmentLineItems(first){nodes{quantity lineItem{id}}}
+ *    events(first){nodes{id status}}} for the read-back of those two; scope read_orders (or a
+ *    read_*_fulfillment_orders scope).
+ * Neither mutation has an idempotency key: the fulfillment is read back (tracking number / event status present?)
+ * before every send and retry.
  */
 
 export const FULFILLMENT_FO_PAGE = 5;
@@ -44,6 +58,41 @@ export const FULFILLMENT_CREATE_MUTATION = `#graphql
 mutation FulfillmentWriteBack($fulfillment: FulfillmentInput!) {
   fulfillmentCreate(fulfillment: $fulfillment) {
     fulfillment { id status }
+    userErrors { field message }
+  }
+}`;
+
+export const FULFILLMENT_STATE_LINES_PAGE = 40;
+export const FULFILLMENT_STATE_EVENTS_PAGE = 50;
+
+/** Read-back of one Shopify fulfillment (tracking update / event / fulfilment created without tracking). */
+export const WRITE_BACK_STATE_QUERY = `#graphql
+query FulfillmentWriteBackState($id: ID!) {
+  fulfillment(id: $id) {
+    id
+    status
+    trackingInfo { number company url }
+    fulfillmentLineItems(first: ${FULFILLMENT_STATE_LINES_PAGE}) {
+      nodes { quantity lineItem { id } }
+    }
+    events(first: ${FULFILLMENT_STATE_EVENTS_PAGE}) {
+      nodes { id status }
+    }
+  }
+}`;
+
+export const FULFILLMENT_TRACKING_UPDATE_MUTATION = `#graphql
+mutation FulfillmentTrackingWriteBack($fulfillmentId: ID!, $trackingInfoInput: FulfillmentTrackingInput!, $notifyCustomer: Boolean) {
+  fulfillmentTrackingInfoUpdate(fulfillmentId: $fulfillmentId, trackingInfoInput: $trackingInfoInput, notifyCustomer: $notifyCustomer) {
+    fulfillment { id status }
+    userErrors { field message }
+  }
+}`;
+
+export const FULFILLMENT_EVENT_CREATE_MUTATION = `#graphql
+mutation FulfillmentEventWriteBack($fulfillmentEvent: FulfillmentEventInput!) {
+  fulfillmentEventCreate(fulfillmentEvent: $fulfillmentEvent) {
+    fulfillmentEvent { id status }
     userErrors { field message }
   }
 }`;
@@ -94,14 +143,139 @@ export const FulfillmentCreateSchema = z.object({
     .nullable(),
 });
 
+const UserErrors = z.array(z.object({ field: z.array(z.string()).nullable(), message: z.string() }));
+
+export const WriteBackStateSchema = z.object({
+  fulfillment: z
+    .object({
+      id: z.string(),
+      status: z.string(),
+      trackingInfo: z.array(TrackingInfo),
+      fulfillmentLineItems: z.object({
+        nodes: z.array(
+          z.object({ quantity: z.number().int().nullable(), lineItem: z.object({ id: z.string() }) }),
+        ),
+      }),
+      events: z.object({ nodes: z.array(z.object({ id: z.string(), status: z.string() })) }),
+    })
+    .nullable(),
+});
+export type WriteBackState = z.infer<typeof WriteBackStateSchema>;
+
+export const FulfillmentTrackingUpdateSchema = z.object({
+  fulfillmentTrackingInfoUpdate: z
+    .object({
+      fulfillment: z.object({ id: z.string(), status: z.string() }).nullable(),
+      userErrors: UserErrors,
+    })
+    .nullable(),
+});
+
+export const FulfillmentEventCreateSchema = z.object({
+  fulfillmentEventCreate: z
+    .object({
+      fulfillmentEvent: z.object({ id: z.string(), status: z.string() }).nullable(),
+      userErrors: UserErrors,
+    })
+    .nullable(),
+});
+
+export interface TrackingInput {
+  number: string;
+  company?: string;
+  url?: string;
+}
+
 export interface FulfillmentInput {
   lineItemsByFulfillmentOrder: {
     fulfillmentOrderId: string;
     fulfillmentOrderLineItems: { id: string; quantity: number }[];
   }[];
   notifyCustomer: boolean;
-  trackingInfo: { number: string; company?: string; url?: string };
+  /** Absent when the fulfillment is created on acceptance, before the warehouse has a tracking number. */
+  trackingInfo?: TrackingInput;
 }
+
+/**
+ * Carrier names Shopify lists as supported tracking companies (FulfillmentTrackingInfo, 2026-10 docs: "Supported
+ * tracking companies", incl. the Bulgaria entry "Speedy"). Our carrier (as the warehouse reports it) maps to the
+ * exact Shopify spelling only when it is one of these; any other name is sent as we have it.
+ */
+const SHOPIFY_TRACKING_COMPANIES = [
+  "Speedy",
+  "GLS",
+  "DPD",
+  "DPD Local",
+  "DPD UK",
+  "DHL Express",
+  "DHL eCommerce",
+  "Deutsche Post",
+  "Packeta",
+  "Venipak",
+  "UPS",
+  "FedEx",
+  "TNT",
+  "Cyprus Post",
+  "Latvia Post",
+  "Poste Italiane",
+  "PostNL",
+  "PostNord",
+  "Swiss Post",
+  "Royal Mail",
+  "Evri",
+  "Correos",
+  "CTT",
+  "Chronopost",
+  "Colissimo",
+  "Mondial Relay",
+  "BPost",
+  "An Post",
+];
+const COMPANY_BY_KEY = new Map(
+  SHOPIFY_TRACKING_COMPANIES.map((c) => [c.toLowerCase().replace(/\s+/g, " "), c]),
+);
+
+/** The Shopify-supported spelling of our carrier name when it is a documented one; else the name as we have it. */
+export function shopifyTrackingCompany(carrier: string | null | undefined): string | null {
+  const c = carrier?.trim();
+  if (!c) return null;
+  return COMPANY_BY_KEY.get(c.toLowerCase().replace(/\s+/g, " ")) ?? c;
+}
+
+/** FulfillmentTrackingInput for one tracking number (company mapped, empty fields left out). */
+export function trackingInput(t: {
+  number: string;
+  company: string | null;
+  url: string | null;
+}): TrackingInput {
+  const company = shopifyTrackingCompany(t.company);
+  return { number: t.number, ...(company ? { company } : {}), ...(t.url ? { url: t.url } : {}) };
+}
+
+/**
+ * Our shipment status → the FulfillmentEventStatus reported to Shopify (2026-10 enum, see the header). Returns and
+ * exceptions (lost, damaged, destroyed, rejected by the courier) map to FAILURE — the documented closest ("The
+ * fulfillment request failed"); ACCEPTED / PROCESSING report nothing (the fulfillment itself says it).
+ */
+export const EVENT_FOR_STATUS: Readonly<Record<string, ShopifyEventStatus>> = {
+  SHIPPED: "IN_TRANSIT",
+  DELIVERED: "DELIVERED",
+  COD_PAID: "DELIVERED",
+  RETURNING: "FAILURE",
+  RETURN_RECEIVED: "FAILURE",
+  EXCEPTION: "FAILURE",
+};
+export type ShopifyEventStatus = "IN_TRANSIT" | "DELIVERED" | "FAILURE";
+
+/**
+ * Order of the events we report: never an earlier one after a later one (no "in transit" after "delivered").
+ * DELIVERED and FAILURE are both final: once one of them is reported nothing else follows.
+ */
+export const EVENT_RANK: Readonly<Record<ShopifyEventStatus, number>> = {
+  IN_TRANSIT: 1,
+  DELIVERED: 2,
+  FAILURE: 2,
+};
 
 /**
  * FulfillmentStatus in 2026-10 (schema tool): CANCELLED, ERROR, FAILURE, SUCCESS. CANCELLED does not count;
@@ -159,7 +333,7 @@ export const isDefiniteGraphqlRejection = (codes: readonly string[]) =>
   codes.length > 0 && codes.every((c) => DEFINITE_GRAPHQL_CODES.has(c));
 
 export type PlanResult =
-  | { ok: true; input: FulfillmentInput }
+  | { ok: true; input: FulfillmentInput; lines: { lineItemId: string; quantity: number }[] }
   | { ok: false; reason: "order_not_found" | "nothing_to_fulfil" | "multiple_locations" | "lines_unmatched" };
 
 /** Fulfillment orders Shopify lets us fulfil now. */
@@ -176,7 +350,7 @@ const fulfillable = (fo: NonNullable<WriteBackRead["order"]>["fulfillmentOrders"
 export function planFulfillment(
   read: WriteBackRead,
   lines: { shopifyLineGid: string; quantity: number }[],
-  tracking: { number: string; company: string | null; url: string | null },
+  tracking: { number: string; company: string | null; url: string | null } | null,
   notifyCustomer: boolean,
 ): PlanResult {
   if (!read.order) return { ok: false, reason: "order_not_found" };
@@ -184,6 +358,7 @@ export function planFulfillment(
   for (const l of lines) need.set(l.shopifyLineGid, (need.get(l.shopifyLineGid) ?? 0) + l.quantity);
   if (need.size === 0) return { ok: false, reason: "lines_unmatched" };
   const byFo = new Map<string, { location: string | null; items: { id: string; quantity: number }[] }>();
+  const planned = new Map<string, number>();
   for (const fo of read.order.fulfillmentOrders.nodes.filter(fulfillable)) {
     for (const li of fo.lineItems.nodes) {
       const want = need.get(li.lineItem.id) ?? 0;
@@ -192,6 +367,7 @@ export function planFulfillment(
       need.set(li.lineItem.id, want - take);
       const entry = byFo.get(fo.id) ?? { location: fo.assignedLocation.location?.id ?? null, items: [] };
       entry.items.push({ id: li.id, quantity: take });
+      planned.set(li.lineItem.id, (planned.get(li.lineItem.id) ?? 0) + take);
       byFo.set(fo.id, entry);
     }
   }
@@ -206,11 +382,32 @@ export function planFulfillment(
         fulfillmentOrderLineItems: v.items,
       })),
       notifyCustomer,
-      trackingInfo: {
-        number: tracking.number,
-        ...(tracking.company ? { company: tracking.company } : {}),
-        ...(tracking.url ? { url: tracking.url } : {}),
-      },
+      ...(tracking ? { trackingInfo: trackingInput(tracking) } : {}),
     },
+    lines: [...planned].map(([lineItemId, quantity]) => ({ lineItemId, quantity })),
   };
+}
+
+/**
+ * Fulfillments of the order that did not exist before our first attempt and are not cancelled: candidates for the
+ * one our fulfillmentCreate (without tracking) may have created. Confirmed by their line items (sameLines).
+ */
+export function newFulfillments(read: WriteBackRead, knownIds: readonly string[]) {
+  const known = new Set(knownIds);
+  return (read.order?.fulfillments ?? []).filter((f) => !known.has(f.id) && f.status !== "CANCELLED");
+}
+
+/** The Shopify fulfillment holds exactly our line items and quantities. */
+export function sameLines(state: WriteBackState, lines: readonly { lineItemId: string; quantity: number }[]) {
+  const sum = (xs: readonly { id: string; q: number }[]) => {
+    const m = new Map<string, number>();
+    for (const x of xs) m.set(x.id, (m.get(x.id) ?? 0) + x.q);
+    return m;
+  };
+  const a = sum(
+    state.fulfillment?.fulfillmentLineItems.nodes.map((n) => ({ id: n.lineItem.id, q: n.quantity ?? 0 })) ??
+      [],
+  );
+  const b = sum(lines.map((l) => ({ id: l.lineItemId, q: l.quantity })));
+  return a.size > 0 && a.size === b.size && [...b].every(([id, q]) => a.get(id) === q);
 }
