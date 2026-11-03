@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { saveCountryRuleAction } from "@/app/actions/rules-weights";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
 import { normalisePhone, PhoneRuleSchema, type PhoneRule } from "@/integrations/eushipments/phone";
-import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
+import { callingCodeOf, normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 
 /**
  * The group's own phone rule for a country without a rule in the euShipments guideline. Live preview with the
@@ -31,7 +31,9 @@ export function PhoneRuleForm({
   const router = useRouter();
   const [state, action, pending] = useActionState(saveCountryRuleAction, undefined);
   const [style, setStyle] = useState<PhoneRule["style"]>(initial.style);
-  const [cc, setCc] = useState(initial.cc);
+  // Known country → the ITU calling code is fixed (the server refuses any other one).
+  const ituCc = callingCodeOf(country);
+  const [cc, setCc] = useState(ituCc ?? initial.cc);
   const [trunk, setTrunk] = useState(initial.trunk);
   const [lengths, setLengths] = useState(initial.lengths.join(", "));
   const [phone, setPhone] = useState(samplePhone ?? "");
@@ -79,6 +81,9 @@ export function PhoneRuleForm({
             name="cc"
             value={cc}
             onChange={(e) => setCc(e.target.value)}
+            readOnly={!!ituCc}
+            aria-readonly={!!ituCc}
+            title={ituCc ? t("ccFixed") : undefined}
             inputMode="numeric"
             className={`${inputCls} font-mono`}
           />

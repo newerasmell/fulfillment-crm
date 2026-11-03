@@ -148,6 +148,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   one new table with RLS). Shopify 2026-10 fields checked with the Shopify docs/schema tools. Owner to do: add the
   `write_products` scope to the Shopify app (release + reinstall) before raising the weight mode to LIVE; confirm
   the CY phone format (+357 + 8 digits) with euShipments; then DRY_RUN → check the recorded payload → LIVE.
+  Audit fixes (same day): the weight sender refuses a row whose weight is no longer the master weight
+  ("superseded") in the claim, right before the mutation and in the stale-SENDING sweep, so an older retry or a
+  crashed send can never put a stale weight back over a newer one; tests now cover 5xx/network + read-back,
+  backoff → FAILED + task, crash recovery and definite rejections. Weight actions respect company/line scope
+  (restricted members: their lines' masters + masters without a line). A custom phone rule must use the
+  country's ITU calling code (`calling_code_mismatch`; the form shows it read-only). Lower-case address country
+  codes are re-checked too. Decision for the owner to confirm before merge (CLAUDE.md "ask before changing the
+  data model of an existing table with data"): the additive columns on Product (weightSource/SetAt/SetById),
+  Store (weightWriteMode, default DISABLED) and StoreVariantLink (shopifyWeightGrams) — no existing value changes.
+  Before LIVE: run `pnpm check:live` with VARIANT_WEIGHT_READ_QUERY against one store (the mutation args/inputs were
+  re-checked in the Admin schema: productVariantsBulkUpdate(productId, variants), InventoryItemMeasurementInput.weight).
 
 ## Open questions
 See SPEC.md §11.

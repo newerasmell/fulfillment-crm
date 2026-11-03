@@ -68,6 +68,7 @@ export function ordersToCountry(country: string): Prisma.OrderWhereInput {
   return {
     OR: [
       { shippingAddress: { path: ["countryCode"], equals: cc } },
+      { shippingAddress: { path: ["countryCode"], equals: cc.toLowerCase() } },
       { countryCode: cc },
       { countryCode: cc.toLowerCase() },
     ],

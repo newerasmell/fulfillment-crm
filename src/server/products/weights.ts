@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
@@ -119,6 +120,25 @@ export interface SetWeightResult {
   recheck: RecheckResult;
 }
 
+/**
+ * Masters a company-restricted member may see and change: those of a line that holds one of their companies,
+ * plus masters not assigned to any line yet (as the Продукти list shows them, lineProductWhere). Unscoped: all.
+ */
+export function productScopeWhere(actor: ScopedActor): Prisma.ProductWhereInput {
+  return actor.companyScope
+    ? { OR: [{ lineId: null }, { line: { companies: { some: { id: { in: actor.companyScope } } } } }] }
+    : {};
+}
+
+async function assertProductInScope(actor: ScopedActor, productId: string) {
+  if (!actor.companyScope) return;
+  const ok = await accountDb(actor.accountId).product.findFirst({
+    where: { AND: [{ id: productId }, productScopeWhere(actor)] },
+    select: { id: true },
+  });
+  if (!ok) throw new DomainError("not_found");
+}
+
 /** Stores in which this person may change the product (company scope); all for unscoped members. */
 function storeScope(actor: ScopedActor) {
   return actor.companyScope ? { store: { companyId: { in: actor.companyScope } } } : {};
@@ -137,6 +157,7 @@ export async function queueShopifyWeight(
   grams: number,
 ): Promise<ShopifyWeightQueued> {
   assertCan(actor.role, "products.weight");
+  await assertProductInScope(actor, productId);
   const db = accountDb(actor.accountId);
   const links = await db.storeVariantLink.findMany({
     where: { productId, ...storeScope(actor) },
@@ -208,8 +229,8 @@ export async function setProductWeight(
   assertCan(actor.role, "products.weight");
   const input = WeightInput.parse(raw);
   const db = accountDb(actor.accountId);
-  const before = await db.product.findUnique({
-    where: { id: productId },
+  const before = await db.product.findFirst({
+    where: { AND: [{ id: productId }, productScopeWhere(actor)] },
     select: { id: true, archived: true, weightGrams: true, weightSource: true },
   });
   if (!before || before.archived) throw new DomainError("not_found");
@@ -286,7 +307,13 @@ export async function fillWeightsFromWarehouse(
   let cursor: string | undefined;
   for (;;) {
     const batch = await db.product.findMany({
-      where: { archived: false, weightGrams: null, ...(opts.lineId ? { lineId: opts.lineId } : {}) },
+      where: {
+        AND: [
+          { archived: false, weightGrams: null },
+          opts.lineId ? { lineId: opts.lineId } : {},
+          productScopeWhere(actor),
+        ],
+      },
       select: { id: true },
       orderBy: { id: "asc" },
       take: BULK_BATCH,
@@ -348,8 +375,8 @@ export async function fillWeightsFromWarehouse(
 export async function productWeightView(actor: ScopedActor, productId: string) {
   assertCan(actor.role, "account.read");
   const db = accountDb(actor.accountId);
-  const product = await db.product.findUnique({
-    where: { id: productId },
+  const product = await db.product.findFirst({
+    where: { AND: [{ id: productId }, productScopeWhere(actor)] },
     select: {
       id: true,
       sku: true,

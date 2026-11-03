@@ -3142,6 +3142,7 @@
     "styleInternational": "International (+code and number)",
     "styleNational": "National (without the country code)",
     "cc": "Country calling code",
+    "ccFixed": "Set by the country (ITU) — cannot be changed.",
     "trunk": "National trunk prefix (e.g. 0)",
     "lengths": "Digits after the code",
     "lengthsHint": "One or more numbers, comma separated (e.g. 8 or 9, 10).",
@@ -3168,6 +3169,7 @@
       "invalid": "Check the fields.",
       "builtin_phone_rule": "This country has a rule from the euShipments guideline — it cannot be changed.",
       "currency_required": "Enter the local currency.",
+      "calling_code_mismatch": "The calling code does not match the country.",
       "not_found": "Not found."
     }
   },
