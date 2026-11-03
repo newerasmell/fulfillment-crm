@@ -53,7 +53,8 @@ export default async function ProductsPage() {
         title={t("title")}
         subtitle={t("intro")}
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {can(ctx.role, "products.weight") && <FillWeightsButton />}
             {ctx.lines.length > 0 && (
               <Link
                 href="/products/lines"
@@ -133,7 +134,6 @@ export default async function ProductsPage() {
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="m-0 text-base font-semibold">{t("masterTitle", { count: products.length })}</h2>
-          {can(ctx.role, "products.weight") && <FillWeightsButton />}
         </div>
         {products.length === 0 ? (
           <p className="m-0 text-muted">{t("masterEmpty")}</p>
