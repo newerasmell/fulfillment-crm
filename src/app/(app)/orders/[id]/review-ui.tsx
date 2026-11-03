@@ -326,6 +326,7 @@ export function DecisionBar({
   openedAt,
   canRelease,
   canRestart = false,
+  afterWarehouse = false,
   statusLabel,
 }: {
   orderId: string;
@@ -337,6 +338,8 @@ export function DecisionBar({
   canRelease: boolean;
   /** BLOCKED / EXCEPTION / UNKNOWN with no active shipment: "Изпрати отново". */
   canRestart?: boolean;
+  /** BLOCKED / EXCEPTION / UNKNOWN: "block" is shown as "Откажи поръчката" (cancel in the CRM, task for Shopify). */
+  afterWarehouse?: boolean;
   statusLabel: string;
 }) {
   const t = useTranslations("review");
@@ -437,7 +440,7 @@ export function DecisionBar({
                 kind === k ? `${tone[k]} ring-2 ring-white` : `${tone[k]}`
               }`}
             >
-              {t(`decide.${k}`)}
+              {k === "block" && afterWarehouse ? t("decide.cancelOrder") : t(`decide.${k}`)}
             </button>
           ))}
         {canRestart && (
@@ -509,7 +512,9 @@ export function DecisionBar({
             disabled={pending}
             className={`min-h-11 rounded-[10px] px-4 font-semibold ${tone[kind]}`}
           >
-            {t("decide.confirm", { decision: t(`kind.${kind}`) })}
+            {t("decide.confirm", {
+              decision: kind === "block" && afterWarehouse ? t("decide.cancelOrder") : t(`kind.${kind}`),
+            })}
           </button>
           <button
             type="button"
@@ -520,7 +525,9 @@ export function DecisionBar({
           </button>
           {kind === "block" ? (
             <div role="alert" className="w-full rounded-lg bg-block-bg px-3 py-2 text-sm text-block">
-              <p className="m-0 font-semibold">{t("decide.blockHint")}</p>
+              <p className="m-0 font-semibold">
+                {afterWarehouse ? t("decide.cancelOrderHint") : t("decide.blockHint")}
+              </p>
               <label className="mt-1 flex items-center gap-2">
                 <input type="checkbox" required className="h-4 w-4" />
                 {t("decide.blockAck")}

@@ -1203,7 +1203,9 @@
       "noActions": "No decision to take in status \"{status}\".",
       "blockAck": "I understand this cannot be undone.",
       "restart": "Send again",
-      "restartHint": "The order starts over: it is checked, you approve it and it goes out with a new warehouse id."
+      "restartHint": "The order starts over: it is checked, you approve it and it goes out with a new warehouse id.",
+      "cancelOrder": "Cancel the order",
+      "cancelOrderHint": "The order is cancelled in the CRM (irreversible) — only while no shipment is active at a warehouse. It stays open in Shopify: a task is created to cancel or refund it there."
     },
     "decision": {
       "APPROVE": "Approved",
@@ -1277,7 +1279,8 @@
       "transition_not_allowed": "Not possible in the current status.",
       "transition_race": "The order changed — try again.",
       "generic": "The action failed.",
-      "shipment_active": "The order still has an active shipment at a warehouse — it must be cancelled there first."
+      "shipment_active": "The order still has an active shipment at a warehouse — it must be cancelled there first.",
+      "transition_guard__vendor_request_open": "A warehouse request of this order is still on its way or uncertain — resolve it first."
     },
     "payload": {
       "title": "What will be sent",
@@ -1686,7 +1689,10 @@
       "reroute": "Rerouted — cancelled at the old warehouse",
       "reroute_refused": "Reroute refused",
       "reroute_uncertain": "Reroute: unknown result",
-      "reroute_simulated": "Reroute (dry run): recorded only"
+      "reroute_simulated": "Reroute (dry run): recorded only",
+      "warehouse_cancel_requested": "Cancel at warehouse requested",
+      "warehouse_cancelled": "Cancelled at the warehouse",
+      "warehouse_cancel_refused": "The warehouse refused the cancel"
     },
     "error": {
       "generic": "Action failed.",
@@ -1710,7 +1716,41 @@
       "shipment_changed": "The shipment changed — reload.",
       "cancel_uncertain": "An earlier cancellation has an unknown result — check at the warehouse.",
       "transition_not_allowed": "Not possible in the current status.",
-      "transition_race": "The order changed — try again."
+      "transition_race": "The order changed — try again.",
+      "already_requested": "The cancel was already requested — see the request status.",
+      "label_shipment": "Labels are voided on the manual shipment page."
+    },
+    "warehouseCancel": {
+      "open": "Cancel at warehouse",
+      "title": "Cancel the shipment at the warehouse",
+      "explain": "Shipment {id} at {connection} is cancelled through the outbox. Once the warehouse confirms, the shipment becomes Cancelled and the order Blocked: then send it again (new id) or cancel the order.",
+      "ack": "I understand: the shipment at {connection} will be cancelled and this cannot be undone.",
+      "submit": "Cancel at warehouse",
+      "mode": {
+        "READ_ONLY": "Read-only mode: nothing is sent to the warehouse — the request is only refused and recorded.",
+        "DRY_RUN": "Dry run: the request is only recorded (what would be sent) — the warehouse is not changed.",
+        "CANARY": "Canary mode: the cancel goes to the warehouse only after an explicit confirmation in the outbox."
+      },
+      "request": {
+        "PENDING": "Cancel request: queued",
+        "PAUSED": "Cancel request: paused (connection paused)",
+        "AWAITING_CONFIRMATION": "Cancel request: waiting for confirmation (canary)",
+        "HELD": "Cancel request: held",
+        "SENDING": "Cancel request: sending",
+        "SENT": "Cancel request: sent — waiting for the warehouse to confirm",
+        "UNCERTAIN": "Cancel request: unknown result — check at the warehouse",
+        "DRY_RUN_RECORDED": "Dry run: the cancel was only recorded — nothing was sent to the warehouse",
+        "READ_ONLY": "Read-only: the cancel was not sent",
+        "REFUSED": "Cancel request: not sent",
+        "FAILED": "The warehouse refused to cancel the shipment — it stays",
+        "other": "Cancel request: {status}"
+      },
+      "refusal": {
+        "vendor": "can no longer be cancelled from here — only in the warehouse cabinet",
+        "label": "Label: void it on the manual shipment page",
+        "reroute_open": "A reroute is in progress — it decides the cancel.",
+        "already_requested": "The cancel was already requested."
+      }
     }
   },
   "stock": {

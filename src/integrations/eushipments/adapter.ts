@@ -54,6 +54,8 @@ export interface EuEffects {
   orderCreated(ctx: Envelope["ctx"], r: { orderId: string | null; recovered: boolean }): Promise<void>;
   orderRejected(ctx: Envelope["ctx"], error: string): Promise<void>;
   orderDeleted(ctx: Envelope["ctx"]): Promise<void>;
+  /** euShipments definitely refused a delete-order (e.g. no longer deletable): the shipment stays. */
+  orderDeleteRejected(ctx: Envelope["ctx"], error: string): Promise<void>;
   productCreated(
     ctx: Envelope["ctx"],
     r: { vendorProductId: string | null; refNumber: string; alreadyExisted: boolean },
@@ -256,9 +258,13 @@ export class EuShipmentsTransport implements OutboundTransport {
         case EU_OPS.deleteOrder: {
           const ref = String(ctx.referenceNumber ?? "");
           const res = await client.deleteOrderByRef(ref);
-          if (!res.ok) return { outcome: "rejected", response: res.body, error: res.error };
+          if (!res.ok) {
+            if (live) await this.effect(call, "orderDeleteRejected", ctx, res.error);
+            return { outcome: "rejected", response: res.body, error: res.error };
+          }
           if (res.data.error) {
             const error = scrubText(String(res.data.error));
+            if (live) await this.effect(call, "orderDeleteRejected", ctx, error);
             return { outcome: "rejected", response: res.data, error };
           }
           if (live) await this.effect(call, "orderDeleted", ctx);

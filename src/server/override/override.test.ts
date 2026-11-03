@@ -297,7 +297,13 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
 
     it("the default reason list: няма наличност, по-бърза доставка, клиентът поиска, друго", async () => {
       const codes = (await warehouseReasonCodes(g.accountId)).map((c) => c.code);
-      expect(codes).toEqual(["no_stock", "faster_delivery", "customer_requested", "other"]);
+      expect(codes).toEqual([
+        "no_stock",
+        "faster_delivery",
+        "customer_requested",
+        "sent_by_mistake",
+        "other",
+      ]);
     });
 
     it("needs a reason (and text for Друго), an eligible warehouse and orders.review", async () => {

@@ -3,6 +3,7 @@ import type { AttachPdfBody } from "@/integrations/eushipments/schemas";
 import { scrubText } from "@/lib/scrub";
 import { withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { warehouseCancelConfirmed, warehouseCancelRefused } from "@/server/override/cancel-effects";
 import { followShipment, transition } from "@/server/pipeline";
 
 /**
@@ -115,6 +116,40 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
             status: "CANCELLED",
             payload: { event: "deleted_at_vendor" },
           },
+        });
+        // A CRM-requested delete: the order goes to BLOCKED (never for a reroute-owned shipment).
+        await warehouseCancelConfirmed(db, {
+          accountId: f.accountId,
+          orderId: f.orderId,
+          fulfillmentId,
+          source: "eushipments.delete",
+        });
+      });
+    },
+
+    async orderDeleteRejected(ctx, error) {
+      const fulfillmentId = s(ctx.fulfillmentId);
+      if (!fulfillmentId) return;
+      await tx(async (db) => {
+        const f = await db.fulfillment.findUnique({ where: { id: fulfillmentId } });
+        if (!f || f.status === "CANCELLED") return;
+        await db.fulfillmentEvent.create({
+          data: {
+            accountId: f.accountId,
+            fulfillmentId,
+            occurredAt: new Date(),
+            source: "crm",
+            status: f.status,
+            rawStatus: f.rawStatus,
+            payload: { event: "delete_refused", error: scrubText(error, 300) },
+          },
+        });
+        await warehouseCancelRefused(db, {
+          accountId: f.accountId,
+          orderId: f.orderId,
+          fulfillmentId,
+          detail: scrubText(error, 500),
+          source: "eushipments.delete",
         });
       });
     },

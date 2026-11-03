@@ -6,6 +6,7 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { followShipment, isSupersededShipment, transition } from "@/server/pipeline";
+import { warehouseCancelConfirmed, warehouseCancelRefused } from "@/server/override/cancel-effects";
 
 /**
  * Applies what FHB told us (create/update responses, read-backs, callback re-reads) to the CRM mirror:
@@ -296,6 +297,13 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
             payload: json({ deletedAtWarehouse: true }),
           },
         });
+        // A CRM-requested cancel: the order goes to BLOCKED (never for a reroute-owned shipment).
+        await warehouseCancelConfirmed(tx, {
+          accountId,
+          orderId: f.orderId,
+          fulfillmentId: f.id,
+          source: "fhb:fhb.order.delete",
+        });
       });
       return;
     }
@@ -354,6 +362,14 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
               payload: json({ rejected: true, code: e.error.code, violations: e.error.violations }),
             },
           });
+          if (e.operation === "fhb.order.delete")
+            await warehouseCancelRefused(tx, {
+              accountId,
+              orderId: f.orderId,
+              fulfillmentId: f.id,
+              detail: message.slice(0, 500),
+              source: "fhb:fhb.order.delete",
+            });
         });
         // A vendor 400 means a pre-flight rule is missing (CLAUDE.md): make it visible.
         await raiseAlertOnce(accountId, {

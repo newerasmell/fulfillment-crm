@@ -4,6 +4,8 @@
  *   setWarehouseChoice / clearWarehouseChoice   — before sending (orders.review), checks re-run for the choice
  *   rerouteView / requestReroute                — "Пренасочи" after sending (orders.reroute: OWNER, ADMIN)
  *   processReroute / sweepReroutes              — worker: switch only after the old warehouse confirmed the cancel
+ *   warehouseCancelView / requestWarehouseCancel — "Откажи в склада" (orders.cancelShipment: OWNER, ADMIN)
+ *   warehouseCancelConfirmed / warehouseCancelRefused — what the vendor answer means for the order
  *   warehouseReasonCodes                        — the configurable reason list ("warehouse" codes)
  */
 export * from "./choice";
@@ -12,3 +14,5 @@ export * from "./options";
 export * from "./reasons";
 export * from "./reroute";
 export * from "./jobs";
+export * from "./cancel-effects";
+export * from "./warehouse-cancel";

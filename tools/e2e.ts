@@ -57,6 +57,9 @@ try {
   // Manual warehouse choice + reroute (wave 3, override track): its own group and OWNER (tests/e2e/override.spec.ts).
   const { seedOverride } = await import("../tests/e2e/seed-override");
   const overrideOwner = await seedOverride();
+  // "Откажи в склада" / "Откажи поръчката": its own group and OWNER (tests/e2e/cancel-at-warehouse.spec.ts).
+  const { seedCancel } = await import("../tests/e2e/seed-cancel");
+  const cancelOwner = await seedCancel();
   // Stock board, inbound and Shopify inventory push (wave 3, stock track): own group (tests/e2e/stock.spec.ts).
   const { seedStock } = await import("../tests/e2e/seed-stock");
   const stockOwner = await seedStock();
@@ -109,6 +112,9 @@ try {
       E2E_OVERRIDE_EMAIL: overrideOwner.email,
       E2E_OVERRIDE_PASSWORD: overrideOwner.password,
       E2E_OVERRIDE_TOTP: overrideOwner.totp,
+      E2E_CANCEL_EMAIL: cancelOwner.email,
+      E2E_CANCEL_PASSWORD: cancelOwner.password,
+      E2E_CANCEL_TOTP: cancelOwner.totp,
       E2E_STOCK_EMAIL: stockOwner.email,
       E2E_STOCK_PASSWORD: stockOwner.password,
       E2E_STOCK_TOTP: stockOwner.totp,

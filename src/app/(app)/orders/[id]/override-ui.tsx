@@ -4,7 +4,12 @@ import { useState, useTransition } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { canaryViewAction, confirmCanaryAction } from "@/app/actions/fulfill";
-import { chooseWarehouseAction, clearWarehouseAction, rerouteAction } from "@/app/actions/override";
+import {
+  chooseWarehouseAction,
+  clearWarehouseAction,
+  rerouteAction,
+  warehouseCancelAction,
+} from "@/app/actions/override";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
 import type { Finding } from "@/server/checks/findings";
 
@@ -430,6 +435,111 @@ export function CancelCanaryConfirm({ requestId }: { requestId: string }) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * "Откажи в склада" for one shipment: a confirmation dialog with a required reason. The server re-checks everything
+ * (role, vendor rules, reroute, a request already on its way); the outbox sender applies the liveMode.
+ */
+export function WarehouseCancelButton({
+  orderId,
+  fulfillmentId,
+  externalId,
+  connection,
+  liveMode,
+  codes,
+}: {
+  orderId: string;
+  fulfillmentId: string;
+  externalId: string;
+  connection: string;
+  liveMode: string;
+  codes: CodeView[];
+}) {
+  const t = useTranslations("override");
+  const err = useErr();
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  const [ack, setAck] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const submit = () =>
+    start(async () => {
+      const r = await warehouseCancelAction({
+        orderId,
+        fulfillmentId,
+        reasonCode: reason || null,
+        reasonText: note || null,
+      });
+      if (r.error) return setError(err(r.error));
+      setOpen(false);
+      router.refresh();
+    });
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(true);
+          setError(null);
+        }}
+        className={`${ghostButtonCls} self-start text-block`}
+        data-testid={`warehouse-cancel-${externalId}`}
+      >
+        {t("warehouseCancel.open")}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("warehouseCancel.title")}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        >
+          <form
+            className="flex w-full max-w-lg flex-col gap-3 rounded-[14px] bg-surface p-4 shadow-lg"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
+            <h3 className="m-0 text-base font-semibold">{t("warehouseCancel.title")}</h3>
+            <p className="m-0 text-sm">{t("warehouseCancel.explain", { id: externalId, connection })}</p>
+            {liveMode !== "LIVE" && (
+              <p className="m-0 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn">
+                {t(`warehouseCancel.mode.${liveMode}`)}
+              </p>
+            )}
+            <ReasonFields codes={codes} reason={reason} setReason={setReason} note={note} setNote={setNote} />
+            <label className="flex items-center gap-2 rounded-lg bg-block-bg px-3 py-2 text-sm text-block">
+              <input
+                type="checkbox"
+                required
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+                className="h-4 w-4"
+              />
+              {t("warehouseCancel.ack", { connection })}
+            </label>
+            <div className="flex gap-2">
+              <button type="submit" disabled={pending || !reason || !ack} className={`${buttonCls} bg-block`}>
+                {t("warehouseCancel.submit")}
+              </button>
+              <button type="button" onClick={() => setOpen(false)} className={ghostButtonCls}>
+                {t("cancel")}
+              </button>
+            </div>
+            {error && (
+              <p role="alert" className="m-0 text-sm text-block">
+                {error}
+              </p>
+            )}
+          </form>
         </div>
       )}
     </>

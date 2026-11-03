@@ -20,9 +20,21 @@ import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
 import { orderWriteBacks } from "@/server/fulfill";
 import { FulfillButton } from "../selection";
 import { StatusChip } from "../status";
-import { CHOICE_STATUSES, rerouteView, warehouseOptions, warehouseReasonCodes } from "@/server/override";
+import {
+  CHOICE_STATUSES,
+  rerouteView,
+  warehouseCancelView,
+  warehouseOptions,
+  warehouseReasonCodes,
+} from "@/server/override";
 import type { StockCheck } from "@/server/routing";
-import { CancelCanaryConfirm, RerouteForm, WarehouseChooser, type OptionView } from "./override-ui";
+import {
+  CancelCanaryConfirm,
+  RerouteForm,
+  WarehouseCancelButton,
+  WarehouseChooser,
+  type OptionView,
+} from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
@@ -66,11 +78,20 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   }
   const { order, check } = data;
   const o = await getTranslations("override");
-  const [wOptions, wCodes, rv] = await Promise.all([
+  const [wOptions, wCodes, rv, wc] = await Promise.all([
     warehouseOptions(actorFrom(ctx), order.id),
     warehouseReasonCodes(ctx.accountId),
     rerouteView(actorFrom(ctx), order.id),
+    warehouseCancelView(actorFrom(ctx), order.id),
   ]);
+  const cancelRow = (fulfillmentId: string) => wc.rows.find((x) => x.fulfillmentId === fulfillmentId) ?? null;
+  /** What happened to the last "Откажи в склада" request (the sender's liveMode decision included). */
+  const cancelRequestText = (req: NonNullable<(typeof wc.rows)[number]["request"]>) =>
+    req.status === "REFUSED" && req.lastError === "read_only"
+      ? o("warehouseCancel.request.READ_ONLY")
+      : o.has(`warehouseCancel.request.${req.status}`)
+        ? o(`warehouseCancel.request.${req.status}`)
+        : o("warehouseCancel.request.other", { status: req.status });
   const optionView = (c: {
     id: string;
     name: string;
@@ -510,6 +531,55 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                         {o("shipments.raw")}: {f.rawStatus}
                       </span>
                     )}
+                    {(() => {
+                      const row = cancelRow(f.id);
+                      if (!row) return null;
+                      return (
+                        <div
+                          className="flex w-full flex-col gap-1"
+                          data-testid={`warehouse-cancel-row-${f.externalId}`}
+                        >
+                          {row.request && (
+                            <span className="text-xs text-muted" data-testid="warehouse-cancel-request">
+                              {cancelRequestText(row.request)}
+                              {row.request.status === "FAILED" && row.request.lastError
+                                ? ` (${row.request.lastError})`
+                                : ""}
+                            </span>
+                          )}
+                          {row.request &&
+                            row.liveMode === "CANARY" &&
+                            !row.request.confirmedAt &&
+                            ["PENDING", "AWAITING_CONFIRMATION"].includes(row.request.status) &&
+                            can(ctx.role, "outbox.confirmCanary") && (
+                              <CancelCanaryConfirm requestId={row.request.id} />
+                            )}
+                          {!wc.canCancel ? null : row.refusal === null ? (
+                            <WarehouseCancelButton
+                              orderId={order.id}
+                              fulfillmentId={f.id}
+                              externalId={f.externalId}
+                              connection={f.connection}
+                              liveMode={row.liveMode}
+                              codes={reasonCodes}
+                            />
+                          ) : row.refusal === "label" && row.manualShipmentId ? (
+                            <Link
+                              href={`/manual-shipments/${encodeURIComponent(row.manualShipmentId)}`}
+                              className="text-xs text-accent hover:underline"
+                            >
+                              {o("warehouseCancel.refusal.label")}
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-muted" data-testid="warehouse-cancel-refusal">
+                              {o.has(`warehouseCancel.refusal.${row.refusal}`)
+                                ? o(`warehouseCancel.refusal.${row.refusal}`)
+                                : o("warehouseCancel.refusal.vendor")}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </li>
                 ))}
               </ul>
@@ -667,6 +737,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
             (RESTARTABLE_STATUSES as readonly string[]).includes(order.status) &&
             data.fulfillments.every((f) => f.status === "CANCELLED" || f.status === "SUBMIT_FAILED")
           }
+          afterWarehouse={(RESTARTABLE_STATUSES as readonly string[]).includes(order.status)}
           statusLabel={statusLabel}
         />
       )}

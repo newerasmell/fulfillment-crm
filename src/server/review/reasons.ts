@@ -57,6 +57,8 @@ export const DEFAULT_REASON_CODES: readonly ReasonCode[] = [
   d("no_stock", "Няма наличност", "No stock", ["warehouse"], 200),
   d("faster_delivery", "По-бърза доставка", "Faster delivery", ["warehouse"], 210),
   d("customer_requested", "Клиентът поиска", "The customer asked for it", ["warehouse"], 220),
+  // "Откажи в склада" (cancel a shipment from the CRM) uses the same "warehouse" list.
+  d("sent_by_mistake", "Изпратена по грешка", "Sent by mistake", ["warehouse"], 230),
   d(OTHER_REASON, "Друго (опишете)", "Other (describe)", ["approve", "hold", "block", "warehouse"], 1000),
 ];
 
