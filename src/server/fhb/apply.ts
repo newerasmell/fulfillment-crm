@@ -52,6 +52,12 @@ export async function raiseAlertOnce(
   return created.id;
 }
 
+/** "1-EUR2849#STORNO#TJX6KD" → "1-EUR2849" (an order cancelled by hand in ZOE); null for any other id. */
+export function fhbStornoBase(externalId: string): string | null {
+  const i = externalId.indexOf("#STORNO#");
+  return i > 0 ? externalId.slice(0, i) : null;
+}
+
 export async function applyFhbOrderView(
   accountId: string,
   connectionId: string,
@@ -60,18 +66,32 @@ export async function applyFhbOrderView(
   now = new Date(),
 ) {
   const m = mapFhbOrderView(view);
+  // Observed in production (2026-11-03, not in the reference): an order cancelled by hand in ZOE comes back with
+  // its id renamed to "{our id}#STORNO#{random}" and status "rejected". Match it to our shipment by the id we sent
+  // (or by FHB's uid) and treat it as cancelled at the warehouse — a person decides what happens next.
+  const storno = fhbStornoBase(m.externalId);
   const result = await withAccountTransaction(accountId, async (tx) => {
-    const f = await tx.fulfillment.findUnique({
-      where: { connectionId_externalId: { connectionId, externalId: m.externalId } },
-    });
+    const f =
+      (await tx.fulfillment.findUnique({
+        where: { connectionId_externalId: { connectionId, externalId: m.externalId } },
+      })) ??
+      (storno
+        ? await tx.fulfillment.findUnique({
+            where: { connectionId_externalId: { connectionId, externalId: storno } },
+          })
+        : null) ??
+      (m.vendorUid
+        ? await tx.fulfillment.findFirst({ where: { connectionId, vendorUid: m.vendorUid } })
+        : null);
     if (!f) return null;
     // Replaced by a confirmed reroute (P4-09): the vendor's late view is kept, but never reactivates it.
     const superseded = await isSupersededShipment(tx, f.id);
-    const changed = f.rawStatus !== m.mapping.raw || f.status !== m.mapping.status;
+    const shipmentStatus = storno ? "CANCELLED" : m.mapping.status;
+    const changed = f.rawStatus !== m.mapping.raw || f.status !== shipmentStatus;
     await tx.fulfillment.update({
       where: { id: f.id },
       data: {
-        status: superseded ? f.status : m.mapping.status,
+        status: superseded ? f.status : shipmentStatus,
         rawStatus: m.mapping.raw,
         vendorUid: m.vendorUid ?? f.vendorUid,
         carrier: m.carrier ?? f.carrier,
@@ -92,8 +112,12 @@ export async function applyFhbOrderView(
           occurredAt: now,
           source: `fhb:${source}`,
           rawStatus: m.mapping.raw,
-          status: m.mapping.status,
-          payload: json({ trackingNumbers: m.trackingNumbers, vendorUid: m.vendorUid }),
+          status: shipmentStatus,
+          payload: json({
+            trackingNumbers: m.trackingNumbers,
+            vendorUid: m.vendorUid,
+            ...(storno ? { stornoId: m.externalId } : {}),
+          }),
         },
       });
     }
@@ -112,6 +136,15 @@ export async function applyFhbOrderView(
       kind: "fhb_unknown_status",
       severity: "WARNING",
       title: `Unknown FHB order status "${m.mapping.raw ?? ""}" — extend the status map`,
+      entityType: "Fulfillment",
+      entityId: result.fulfillmentId,
+    });
+  } else if (storno) {
+    await raiseAlertOnce(accountId, {
+      kind: "fhb_order_cancelled_in_zoe",
+      severity: "CRITICAL",
+      isTask: true,
+      title: `FHB: поръчка ${storno} е анулирана в ZOE — изпратете я отново или я откажете в Shopify`,
       entityType: "Fulfillment",
       entityId: result.fulfillmentId,
     });

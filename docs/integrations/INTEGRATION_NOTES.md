@@ -178,6 +178,12 @@ problem that needs an operator, which is BLOCKED plus an operator task.
   `uid:{uid}`; CRM shipments always have our id, so they never collide.
 - `GET /stock/movements` sends `page` as a **string**; `page`/`total` are coerced to numbers on every list.
 
+- 2026-11-03: an order **cancelled by hand in ZOE** comes back (order list / history) with its `id` renamed to
+  `{our id}#STORNO#{6 random chars}` and status `rejected` (e.g. `1-EUR2849#STORNO#TJX6KD`). Not documented. We match
+  it to our shipment by the part before `#STORNO#` (or FHB's `uid`), mark the shipment `CANCELLED`, move the order
+  to BLOCKED and open one CRITICAL task (`fhb_order_cancelled_in_zoe`): a person resends (new id `-2`) or cancels in
+  Shopify. ZOE sends no notification for a cancel: the CRM learns it at the 30-min FHB sync (or "Пусни" → orders).
+
 ## 3. FHB Joy API (label printing / manual parcels)
 
 Use for **manual shipments we pack ourselves** (replacements, samples, B2B parcels) using FHB's carrier
