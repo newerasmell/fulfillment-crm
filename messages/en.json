@@ -261,7 +261,7 @@
     "name": "Name",
     "domain": "Shopify domain",
     "code": "Code",
-    "codeHint": "2–5 letters/digits, permanent (used in warehouse order ids).",
+    "codeHint": "2–5 Latin letters/digits. Internal code (lists, rules) — not part of warehouse order ids.",
     "currency": "Currency",
     "countries": "Countries",
     "existingApp": "App",
@@ -384,7 +384,10 @@
     "webhooksRemoved": "Removed",
     "removeWebhooks": "Remove webhooks again",
     "archivedTag": "archived",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "vendorIdPrefix": "Warehouse prefix (optional)",
+    "vendorIdPrefixNone": "none — the Shopify order number",
+    "vendorIdPrefixHint": "Warehouse order id: {example}. Empty = the Shopify order number as it is. Only needed when two stores send to one warehouse with the same numbers. Applies to new shipments; sent ones keep their id."
   },
   "products": {
     "title": "Products & stock",
@@ -498,7 +501,8 @@
       "generic": "The action failed.",
       "forbidden": "You are not allowed to do this.",
       "invalid": "Invalid input.",
-      "no_product": "No master product with that SKU."
+      "no_product": "No master product with that SKU.",
+      "fhb_external_id_taken": "This id is already used at the warehouse by another store's order. Set a \"warehouse prefix\" on one of the stores."
     },
     "saved": "Saved.",
     "queued": "Refresh queued.",
@@ -1359,7 +1363,8 @@
       "no_company_id": "The connection has no euShipments company.",
       "fhb_variable_symbol_exhausted": "Variable symbols are exhausted.",
       "error": "Unexpected error.",
-      "notFulfillable": "The order is not approved (status {status})."
+      "notFulfillable": "The order is not approved (status {status}).",
+      "fhb_external_id_taken": "This id is already used at the warehouse by another store's order. Set a \"warehouse prefix\" on one of the stores."
     },
     "writeBack": {
       "title": "Shopify: fulfillment with tracking",

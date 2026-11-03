@@ -42,6 +42,11 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
       : null,
   ]);
   const orders = usage.orders;
+  const latestOrder = await db.order.findFirst({
+    where: { storeId: id },
+    orderBy: { placedAt: "desc" },
+    select: { number: true },
+  });
   const webhook = store.webhookStatus as WebhookStatusView & { note?: string };
   const archived = !!store.archivedAt;
   const locks = storeEditLocks(usage);
@@ -164,6 +169,8 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
               countries: store.countries,
               domain: store.domain,
               code: store.code,
+              vendorIdPrefix: store.vendorIdPrefix,
+              sampleNumber: latestOrder?.number ?? null,
             }}
           />
         </Card>

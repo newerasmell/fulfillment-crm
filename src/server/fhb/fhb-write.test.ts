@@ -18,6 +18,7 @@ import {
   FhbPreflightError,
   previewFhbOrderPayload,
   submitFhbOrder,
+  previewFhbOrderFindings,
   updateFhbOrder,
 } from "./orders";
 import { queueFhbProduct } from "./products";
@@ -77,6 +78,7 @@ async function setup(mode: LiveMode = "LIVE") {
       companyId: company.id,
       domain: `t${n}.myshopify.com`,
       code: "TST",
+      vendorIdPrefix: "TST",
       name: "T",
       currency: "EUR",
       countries: ["SK"],
@@ -217,6 +219,51 @@ const bodyOf = async (id: string) =>
   ).body;
 
 describe("FHB order create through the outbox", () => {
+  it("without a prefix the warehouse id is the Shopify number; a clash with another store is named, never sent twice", async () => {
+    const s = await setup("LIVE");
+    await systemDb().store.update({ where: { id: s.store.id }, data: { vendorIdPrefix: null } });
+    // A second store of the group, also without a prefix, with the same order number.
+    const second = await systemDb().store.create({
+      data: {
+        accountId: s.account.id,
+        companyId: s.company.id,
+        domain: `t2-${s.store.id}.myshopify.com`,
+        code: "TS2",
+        name: "T2",
+        currency: "EUR",
+        countries: ["SK"],
+      },
+    });
+    const twin = await extraOrder(s, "#1001");
+    await systemDb().order.update({ where: { id: twin.id }, data: { storeId: second.id } });
+    const first = await submitFhbOrder(s.owner, {
+      orderId: twin.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    expect(first.fulfillment.externalId).toBe("1001");
+    const findings = await previewFhbOrderFindings(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(findings.map((f) => f.code)).toContain("fhb.order.external_id_taken");
+    await expect(
+      submitFhbOrder(s.owner, {
+        orderId: s.order.id,
+        connectionId: s.connection.id,
+        acknowledgeWarnings: true,
+      }),
+    ).rejects.toMatchObject({ code: "fhb_external_id_taken" });
+    // With a prefix on one store the clash is gone.
+    await systemDb().store.update({ where: { id: s.store.id }, data: { vendorIdPrefix: "TST" } });
+    const ok = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    expect(ok.fulfillment.externalId).toBe("TST-1001");
+  });
+
   it("queues a validated payload: deterministic id, variable symbol sequence, local COD, validate:true, signed URLs", async () => {
     const s = await setup("LIVE");
     const res = await submitFhbOrder(s.owner, {

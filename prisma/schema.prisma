@@ -372,8 +372,11 @@ model Store {
   /// Owning company. Nullable only until the backfill migration has run everywhere.
   companyId         String?
   domain            String
-  /// Short permanent code used in external ids (e.g. order id {CODE}-{number}).
+  /// Short internal code of the store (lists, routing labels). Not part of warehouse order ids any more.
   code              String
+  /// Optional prefix in front of the Shopify order number in warehouse order ids ({PREFIX}-{number});
+  /// null = the Shopify order number as it is. Existing shipments keep the id they were sent with.
+  vendorIdPrefix    String?
   name              String
   currency          String
   countries         String[]

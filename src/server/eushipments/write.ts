@@ -158,10 +158,15 @@ export type QueueOrderResult =
       referenceNumber: string;
     };
 
-/** Our referenceNumber: {STORECODE}-{number} (the same id everywhere; INTEGRATION_NOTES §4.3). */
-export function referenceFor(order: { number: string }, storeCode: string | null) {
+/**
+ * Our referenceNumber (the same id everywhere; INTEGRATION_NOTES §4.3): the Shopify order number as it is, with
+ * the store's optional prefix ({PREFIX}-{number}); manual orders (no store) get "M-{number}".
+ */
+export function referenceFor(order: { number: string }, store: { vendorIdPrefix?: string | null } | null) {
   const n = order.number.replace(/^#/, "").trim();
-  return storeCode ? `${storeCode}-${n}` : `M-${n}`;
+  if (!store) return `M-${n}`;
+  const p = store.vendorIdPrefix?.trim();
+  return p ? `${p}-${n}` : n;
 }
 
 const isPdf = (b64: string) => {
@@ -260,7 +265,7 @@ async function stockFindings(
 }
 
 type EuPreflightOrder = Prisma.OrderGetPayload<{
-  include: { lines: { include: { product: true } }; store: { select: { code: true } } };
+  include: { lines: { include: { product: true } }; store: { select: { code: true; vendorIdPrefix: true } } };
 }>;
 
 /**
@@ -277,8 +282,24 @@ async function euOrderPreflight(
   now: Date,
 ) {
   const db = accountDb(accountId);
-  const reference = referenceFor(order, order.store?.code ?? null);
+  const reference = referenceFor(order, order.store ?? null);
   const findings: Finding[] = [];
+
+  // Two stores without a prefix can both have #1001: name the clash before the (connectionId, externalId) unique
+  // index refuses it.
+  const clash = await db.fulfillment.findFirst({
+    where: { connectionId: connection.id, externalId: reference, orderId: { not: order.id } },
+    select: { order: { select: { number: true } } },
+  });
+  if (clash)
+    findings.push(
+      block(
+        "reference_taken",
+        "awb.referenceNumber",
+        `Номерът ${reference} вече е използван към този склад от поръчка ${clash.order.number} (друг магазин). Задайте „Префикс към склада“ на един от магазините.`,
+        `The reference ${reference} is already used at this warehouse by order ${clash.order.number} (another store). Set a "warehouse prefix" on one of the stores.`,
+      ),
+    );
 
   const lines = order.lines.filter((l) => l.quantity > 0);
   if (!lines.length)
@@ -419,7 +440,10 @@ export async function previewEuOrderFindings(
     ];
   const order = await accountDb(accountId).order.findUnique({
     where: { id: input.orderId },
-    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+    include: {
+      lines: { include: { product: true } },
+      store: { select: { code: true, vendorIdPrefix: true } },
+    },
   });
   if (!order) throw new DomainError("not_found");
   return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).findings;
@@ -439,7 +463,10 @@ export async function previewEuOrderPayload(
   if (!companyId) return null;
   const order = await accountDb(accountId).order.findUnique({
     where: { id: input.orderId },
-    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+    include: {
+      lines: { include: { product: true } },
+      store: { select: { code: true, vendorIdPrefix: true } },
+    },
   });
   if (!order) throw new DomainError("not_found");
   return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).built.body;
@@ -456,7 +483,10 @@ export async function queueEuOrder(
   const db = accountDb(actor.accountId);
   const order = await db.order.findUnique({
     where: { id: input.orderId },
-    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+    include: {
+      lines: { include: { product: true } },
+      store: { select: { code: true, vendorIdPrefix: true } },
+    },
   });
   if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
     throw new DomainError("not_found");

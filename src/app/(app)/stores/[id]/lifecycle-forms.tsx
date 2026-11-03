@@ -37,6 +37,9 @@ export interface StoreDetailsView {
   countries: string[];
   domain: string;
   code: string;
+  vendorIdPrefix: string | null;
+  /** Example order number for the preview (the store's latest order), if any. */
+  sampleNumber?: string | null;
 }
 
 /** "Данни на магазина". Locked fields are read-only with the reason next to them; the server enforces it too. */
@@ -113,6 +116,23 @@ export function StoreDetailsForm({
         />
         <span id="code-hint" className={`text-xs font-normal ${locks.code ? "text-warn" : "text-muted"}`}>
           {locks.code ? t("codeLocked") : t("codeHint")}
+        </span>
+      </label>
+      <label className={labelCls}>
+        {t("vendorIdPrefix")}
+        <input
+          name="vendorIdPrefix"
+          pattern="[A-Za-z0-9]{0,10}"
+          maxLength={10}
+          defaultValue={s.vendorIdPrefix ?? ""}
+          placeholder={t("vendorIdPrefixNone")}
+          aria-describedby="prefix-hint"
+          className={`${inputCls} font-mono uppercase`}
+        />
+        <span id="prefix-hint" className="text-xs font-normal text-muted">
+          {t("vendorIdPrefixHint", {
+            example: `${s.vendorIdPrefix ? `${s.vendorIdPrefix}-` : ""}${(s.sampleNumber ?? "#1001").replace(/^#/, "")}`,
+          })}
         </span>
       </label>
       <div className="flex items-center gap-3 sm:col-span-2">

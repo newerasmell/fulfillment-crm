@@ -187,24 +187,36 @@ describe("store edit, archive and delete", () => {
     await expect(updateStoreDetails(owner, id, { ...base, domain: "evil.com" })).rejects.toThrow();
 
     const order = await addOrder(id, "L-1");
+    // The code is internal only (warehouse ids use the order number + optional prefix): never locked.
     expect(storeEditLocks(await storeUsage(accountId, id))).toEqual({
-      code: "code_locked",
+      code: null,
       domain: "domain_locked",
-    });
-    await expect(updateStoreDetails(owner, id, { ...base, code: "LK2" })).rejects.toMatchObject({
-      code: "code_locked",
     });
     await expect(updateStoreDetails(owner, id, { ...base, domain: dom("lock2") })).rejects.toMatchObject({
       code: "domain_locked",
     });
-    // Fulfillments alone lock the code too (the external id carries it).
     await systemDb().fulfillment.create({
-      data: { accountId, orderId: order.id, connectionId, externalId: `LK1-L-1-${tag}`, status: "ACCEPTED" },
+      data: { accountId, orderId: order.id, connectionId, externalId: `L-1-${tag}`, status: "ACCEPTED" },
     });
     expect((await storeUsage(accountId, id)).fulfillments).toBe(1);
-    // Everything else stays editable.
-    await updateStoreDetails(owner, id, { ...base, name: "Still editable", countries: ["BG", "GR"] });
-    expect((await getStore(owner, id)).countries).toEqual(["BG", "GR"]);
+    // Code and warehouse prefix stay editable with history: shipments keep their stored externalId.
+    await updateStoreDetails(owner, id, {
+      ...base,
+      code: "LK2",
+      vendorIdPrefix: "ab1",
+      name: "Still editable",
+      countries: ["BG", "GR"],
+    });
+    const after = await getStore(owner, id);
+    expect(after).toMatchObject({ code: "LK2", vendorIdPrefix: "AB1", countries: ["BG", "GR"] });
+    expect((await systemDb().fulfillment.findFirstOrThrow({ where: { orderId: order.id } })).externalId).toBe(
+      `L-1-${tag}`,
+    );
+    await updateStoreDetails(owner, id, { ...base, code: "LK2", vendorIdPrefix: "" });
+    expect((await getStore(owner, id)).vendorIdPrefix).toBeNull();
+    await expect(
+      updateStoreDetails(owner, id, { ...base, code: "LK2", vendorIdPrefix: "a-b" }),
+    ).rejects.toThrow();
   });
 
   it("moving to another company affects only future orders and respects product lines", async () => {
@@ -826,7 +838,7 @@ describe("store edit, archive and delete", () => {
     expect((await getStore(owner, same)).webhookStatus).toMatchObject({ removed: true, note: "shared_shop" });
   });
 
-  it("a store edit waits for an order import in flight and then sees its order (code stays locked)", async () => {
+  it("a store edit waits for an order import in flight and then sees its order (domain stays locked)", async () => {
     const id = await newStore("race", "RA1");
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
@@ -853,11 +865,12 @@ describe("store edit, archive and delete", () => {
       await gate;
     });
     await insertedP;
-    const edit = updateStoreDetails(owner, id, await details(id, { code: "RA2" }));
+    const before = (await getStore(owner, id)).domain;
+    const edit = updateStoreDetails(owner, id, await details(id, { domain: dom("race2") }));
     await new Promise((r) => setTimeout(r, 200)); // the edit's pre-check passes (order not committed yet)
     release();
     await importing;
-    await expect(edit).rejects.toMatchObject({ code: "code_locked" });
-    expect((await getStore(owner, id)).code).toBe("RA1");
+    await expect(edit).rejects.toMatchObject({ code: "domain_locked" });
+    expect((await getStore(owner, id)).domain).toBe(before);
   });
 });

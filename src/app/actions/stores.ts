@@ -120,6 +120,7 @@ export async function saveStoreDetailsAction(
       countries: list(form.get("countries")),
       domain: String(form.get("domain") ?? ""),
       code: String(form.get("code") ?? ""),
+      vendorIdPrefix: String(form.get("vendorIdPrefix") ?? ""),
     });
     // A different shop: test it again; a good test re-registers the webhooks and starts the first imports.
     if (r.domainChanged) {

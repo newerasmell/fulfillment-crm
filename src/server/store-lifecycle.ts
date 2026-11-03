@@ -12,9 +12,10 @@ import { Countries, Currency, ShopDomain, StoreCode, getStore, type ScopedActor 
  * the connection test / webhook jobs, and webhook removal is a worker job (src/server/shopify/jobs.ts).
  *
  * Safety rules:
- * - The store code is part of every deterministic vendor external id ({CODE}-{number}). Changing it after an
- *   order or a shipment exists could let the same order go out twice under two ids (CLAUDE.md: never a duplicate
- *   shipment), so it is editable only while the store has no orders and no fulfillments at all.
+ * - Warehouse order ids are the Shopify order number with the store's optional vendorIdPrefix (owner request
+ *   2026-11-03). The store code is internal only, so it may change any time. A changed prefix applies to new
+ *   shipments only: every shipment keeps the externalId it was stored with, re-submits reuse it, and the
+ *   (connectionId, externalId) unique index makes a duplicate impossible.
  * - A different domain is a different shop: editable only while nothing was imported from or written to it.
  * - Delete only an empty store (no orders, fulfillments, write-backs, inventory pushes, routing rules); anything
  *   with history is archived instead. Orders are never deleted or moved.
@@ -81,7 +82,7 @@ export function storeUsage(accountId: string, storeId: string) {
 /** Why the code / domain cannot be changed (an i18n error key), or null when it can. */
 export function storeEditLocks(u: StoreUsage) {
   return {
-    code: u.orders > 0 || u.fulfillments > 0 ? "code_locked" : null,
+    code: null as string | null,
     domain: u.orders > 0 || u.writeBacks > 0 || u.inventoryPushes > 0 ? "domain_locked" : null,
   } as const;
 }
@@ -107,6 +108,14 @@ export const StoreDetailsInput = z.object({
   countries: Countries,
   domain: ShopDomain,
   code: StoreCode,
+  /** "" / absent = the Shopify order number as it is. */
+  vendorIdPrefix: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^([A-Z0-9]{1,10})?$/, "prefix")
+    .optional()
+    .transform((v) => (v ? v : null)),
 });
 
 const detailsOf = (s: {
@@ -116,6 +125,7 @@ const detailsOf = (s: {
   countries: string[];
   domain: string;
   code: string;
+  vendorIdPrefix?: string | null;
 }) => ({
   name: s.name,
   companyId: s.companyId,
@@ -123,10 +133,12 @@ const detailsOf = (s: {
   countries: s.countries,
   domain: s.domain,
   code: s.code,
+  vendorIdPrefix: s.vendorIdPrefix ?? null,
 });
 
 /**
- * "Данни на магазина": name, company, currency, countries, Shopify domain, code (OWNER/ADMIN, audited).
+ * "Данни на магазина": name, company, currency, countries, Shopify domain, code, warehouse prefix (OWNER/ADMIN,
+ * audited).
  * Moving the store to another company affects only orders imported from now on: existing orders keep their
  * companyId. With matched variants the new company must be in the same product line (matching never crosses lines).
  */
