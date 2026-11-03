@@ -365,7 +365,11 @@ export async function linkEuVendorProduct(actor: ScopedActor, raw: z.input<typeo
     if (products.length !== 1) throw new DomainError(products.length ? "ambiguous_sku" : "unknown_sku");
     productId = products[0]!.id;
   }
-  await db.vendorProduct.update({ where: { id: vp.id }, data: { productId } });
+  // A person's decision either way: a link clears an earlier unlink, an unlink is remembered.
+  await db.vendorProduct.update({
+    where: { id: vp.id },
+    data: { productId, unlinkedAt: productId ? null : new Date() },
+  });
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,

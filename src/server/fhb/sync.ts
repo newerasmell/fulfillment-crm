@@ -145,7 +145,7 @@ async function upsertProductBatch(
         const match = sku ? (productBySku.get(sku) ?? null) : null;
         const existing = await tx.vendorProduct.findUnique({
           where: { connectionId_vendorId: { connectionId, vendorId: p.vendorId } },
-          select: { id: true, productId: true },
+          select: { id: true, productId: true, unlinkedAt: true },
         });
         const data = {
           vendorCode: p.vendorCode,
@@ -158,7 +158,11 @@ async function upsertProductBatch(
         const vp = existing
           ? await tx.vendorProduct.update({
               where: { id: existing.id },
-              data: { ...data, ...(!existing.productId && match ? { productId: match } : {}) },
+              data: {
+                ...data,
+                // Never re-link one a person unlinked (suspicious link).
+                ...(!existing.productId && !existing.unlinkedAt && match ? { productId: match } : {}),
+              },
               select: { id: true },
             })
           : await tx.vendorProduct.create({
@@ -713,7 +717,10 @@ export async function linkVendorProductToSku(
       select: { id: true },
     });
     if (!product) return "no_product";
-    await tx.vendorProduct.update({ where: { id: vp.id }, data: { productId: product.id } });
+    await tx.vendorProduct.update({
+      where: { id: vp.id },
+      data: { productId: product.id, unlinkedAt: null },
+    });
     return "linked" as const;
   }).then(async (r) => {
     if (r === "linked")

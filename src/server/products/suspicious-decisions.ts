@@ -78,8 +78,13 @@ export async function confirmSuspiciousLink(
   if (!fresh || fresh.productId !== row.productId || fresh.nameKey !== row.nameKey) {
     throw new DomainError("link_changed");
   }
-  await accountDb(actor.accountId).suspiciousLink.update({
-    where: { id },
+  // Conditional: a second (or concurrent) click on an already confirmed link changes nothing, audits nothing.
+  const res = await accountDb(actor.accountId).suspiciousLink.updateMany({
+    where: {
+      id,
+      nameKey: fresh.nameKey,
+      OR: [{ confirmedKey: null }, { confirmedKey: { not: fresh.nameKey } }],
+    },
     data: {
       confirmedKey: fresh.nameKey,
       confirmedAt: new Date(),
@@ -87,6 +92,7 @@ export async function confirmSuspiciousLink(
       flagged: false,
     },
   });
+  if (res.count === 0) return { recheck: null, alreadyConfirmed: true as const };
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
@@ -107,8 +113,9 @@ export async function confirmSuspiciousLink(
 }
 
 /**
- * "Развържи": removes the link (store variant or warehouse product → master). A variant is marked "unlinked" so
- * the next Shopify sync does not re-link it by SKU; lines of orders not sent anywhere lose the product (they show
+ * "Развържи": removes the link (store variant or warehouse product → master). A variant is marked "unlinked" and
+ * a warehouse product gets `unlinkedAt`, so the next Shopify / warehouse sync or catalogue run does not re-link
+ * it by SKU (only a person's own link does); lines of orders not sent anywhere lose the product (they show
  * up as unmatched until a person links the right one).
  */
 export async function unlinkSuspiciousLink(
@@ -133,7 +140,8 @@ export async function unlinkSuspiciousLink(
     } else {
       const res = await tx.vendorProduct.updateMany({
         where: { id: r.itemId, productId: r.productId },
-        data: { productId: null },
+        // Remembered: the next FHB / euShipments sync or catalogue run does not re-link it by SKU.
+        data: { productId: null, unlinkedAt: new Date() },
       });
       if (res.count !== 1) throw new DomainError("link_changed");
     }

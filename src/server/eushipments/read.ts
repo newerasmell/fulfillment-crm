@@ -373,11 +373,13 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
       const res = await withAccountTransaction(accountId, async (tx) => {
         const existing = await tx.vendorProduct.findUnique({
           where: { connectionId_vendorId: { connectionId, vendorId } },
-          select: { id: true, productId: true },
+          select: { id: true, productId: true, unlinkedAt: true },
         });
-        const link = existing?.productId
-          ? null
-          : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule), lineId);
+        // Linked already, or unlinked by a person (suspicious link): never matched by SKU again.
+        const link =
+          existing?.productId || existing?.unlinkedAt
+            ? null
+            : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule), lineId);
         const data = {
           vendorCode: String(r.ID),
           archived: false,

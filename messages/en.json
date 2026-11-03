@@ -3351,7 +3351,10 @@
     "reason": {
       "name": "different names",
       "volume": "different volume",
-      "concentration": "different concentration"
+      "concentration": "different concentration",
+      "flanker": "another version (Intense, Elixir, …)",
+      "gender": "different gender",
+      "number": "different number in the name"
     },
     "confirm": "Confirm (same product)",
     "confirmAria": "Confirm the link {label}",

@@ -292,7 +292,8 @@ export async function linkItemInTx(
         id: itemId,
         ...(opts.expectProductId !== undefined ? { productId: opts.expectProductId } : {}),
       },
-      data: { productId },
+      // A person's link (suggestion, manual, import) clears an earlier "unlinked by person".
+      data: { productId, unlinkedAt: null },
     });
     return res.count === 1;
   }

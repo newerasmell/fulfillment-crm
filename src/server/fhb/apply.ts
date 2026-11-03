@@ -202,7 +202,10 @@ export async function applyFhbProductView(
     vp = vp
       ? await tx.vendorProduct.update({
           where: { id: vp.id },
-          data: { ...data, ...(opts.productId && !vp.productId ? { productId: opts.productId } : {}) },
+          data: {
+            ...data,
+            ...(opts.productId && !vp.productId && !vp.unlinkedAt ? { productId: opts.productId } : {}),
+          },
         })
       : await tx.vendorProduct.create({
           data: { accountId, connectionId, productId: opts.productId ?? null, ...data },

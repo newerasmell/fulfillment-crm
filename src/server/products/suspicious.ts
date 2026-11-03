@@ -410,17 +410,37 @@ async function visibleSources(ctx: ListCtx) {
 
 export const SUSPICIOUS_LIST_LIMIT = 200;
 
+/**
+ * Narrowing to one line by the master's CURRENT line (the stored lineId is a copy from the last refresh and goes
+ * stale when a master moves). Flagged rows are few, so their masters are read once and filtered by line.
+ */
+async function lineFilter(
+  accountId: string,
+  base: Prisma.SuspiciousLinkWhereInput,
+  lineId: string | null | undefined,
+): Promise<Prisma.SuspiciousLinkWhereInput> {
+  if (!lineId) return base;
+  const db = accountDb(accountId);
+  const productIds = (
+    await db.suspiciousLink.findMany({ where: base, select: { productId: true }, distinct: ["productId"] })
+  ).map((r) => r.productId);
+  const inLine = productIds.length
+    ? await db.product.findMany({ where: { id: { in: productIds }, lineId }, select: { id: true } })
+    : [];
+  return { AND: [base, { productId: { in: inLine.map((p) => p.id) } }] };
+}
+
 /** Flagged links the member may see; `lineId` narrows to masters of one line. */
 export async function listSuspiciousLinks(
   ctx: ListCtx,
   opts: { lineId?: string | null; take?: number } = {},
 ): Promise<{ rows: SuspiciousRow[]; total: number }> {
   const sources = await visibleSources(ctx);
-  const where: Prisma.SuspiciousLinkWhereInput = {
-    flagged: true,
-    sourceId: { in: [...sources.keys()] },
-    ...(opts.lineId ? { lineId: opts.lineId } : {}),
-  };
+  const where = await lineFilter(
+    ctx.accountId,
+    { flagged: true, sourceId: { in: [...sources.keys()] } },
+    opts.lineId,
+  );
   const db = accountDb(ctx.accountId);
   const [rows, total] = await Promise.all([
     db.suspiciousLink.findMany({
@@ -453,6 +473,6 @@ export async function listSuspiciousLinks(
 export async function countSuspicious(accountId: string, sourceIds: string[], lineId?: string | null) {
   if (!sourceIds.length) return 0;
   return accountDb(accountId).suspiciousLink.count({
-    where: { flagged: true, sourceId: { in: sourceIds }, ...(lineId ? { lineId } : {}) },
+    where: await lineFilter(accountId, { flagged: true, sourceId: { in: sourceIds } }, lineId),
   });
 }

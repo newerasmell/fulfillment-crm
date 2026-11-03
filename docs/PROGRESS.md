@@ -271,9 +271,25 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   OWNER/ADMIN/OPERATOR): "Потвърди (същият продукт е)" stores the confirmation with the product + both names (any name
   change re-flags) and "Развържи" unlinks (audited; a variant is marked matchMethod "unlinked" so the Shopify sync and
   the catalogue auto-link never re-link it by SKU; lines of orders not sent anywhere lose the product). Both re-check
-  the affected open orders. Known limit: an unlinked WAREHOUSE product can be re-linked by its next sync (no
-  matchMethod there) — it is then flagged again at once, so the brake still holds. Tests:
+  the affected open orders. Tests:
   src/server/products/suspicious.test.ts; e2e tests/e2e/suspicious.spec.ts (seed tests/e2e/seed-suspicious.ts).
+- 2026-11-03 Suspicious links, audit fixes. (1) Same-family products were missed (the containment overlap made any
+  subset name agree: "X" vs "X Elixir", "X EDP" vs "X Intense EDP"). The score is now the weighted Dice alone plus
+  explicit signals, each its own reason: flanker words (intense/elixir/extreme/absolu/sport/noir/night/profondo/
+  limited/edition/prive/oud/very/…, one side has one the other lacks → "flanker"), gender (men vs women incl. the
+  Bulgarian forms, both named and different → "gender"; unisex is compatible), numbers other than sizes ("… 2" vs
+  "… 3" or on one side only → "number"; a bare "100" equal to the other side's 100 ml is fine), parfum / le parfum /
+  extrait as a concentration of its own (not EDP), and a word SUBSTITUTION (each side has a heavy word, weight ≥ 0.5,
+  the other lacks → "name"). Extra words on ONE side only (a brand in a store title) are still tolerated unless they
+  are flanker words — a one-sided unknown word is deliberately not flagged (brand-style prefixes/suffixes would flood
+  the list and stop the stock push). Volumes also parse oz / fl oz (→ ml, rounded to the sold size) and g / гр.
+  (2) "Развържи" on a warehouse product now sticks: VendorProduct.unlinkedAt (additive nullable migration
+  20261103200000); FHB product sync, FHB apply, euShipments product sync and create effect, catalogue masters phase
+  and line auto-link all skip it; a person's own link (warehouse link screens, suggestions, mapping import) clears it,
+  the euShipments manual unlink sets it. (3) Confirm is idempotent (conditional update: a second / concurrent click
+  returns alreadyConfirmed, audited once). (4) The line filter of the suspicious list / coverage count uses the
+  master's CURRENT line, not the copy taken at refresh. Tests added for link_changed, >500-row paging (find + stale
+  removal), unlink vs FHB/eu sync and autoLinkLine, vendor-side order finding.
 
 ## Open questions
 See SPEC.md §11.

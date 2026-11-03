@@ -638,6 +638,9 @@ model VendorProduct {
   archived     Boolean   @default(false)
   lastSyncAt   DateTime?
   raw          Json?
+  /// A person unlinked it ("Съмнителни връзки" → Развържи): no automatic SKU match re-links it; a person's
+  /// own link clears it.
+  unlinkedAt   DateTime?
 
   connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
   product    Product?              @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)

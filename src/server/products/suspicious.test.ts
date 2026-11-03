@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import type { FhbClient } from "@/integrations/fhb-v3/client";
 import type { ShopifyClient } from "@/integrations/shopify/client";
 import type { ShopifyVariant } from "@/integrations/shopify/products";
 import { ForbiddenError } from "@/server/auth/rbac";
@@ -6,6 +7,8 @@ import { bootstrapOwner } from "@/server/auth/users";
 import { orderLevelFindings, type CheckOrder, type OrderCheckContext } from "@/server/checks/order-checks";
 import { validateOrder } from "@/server/checks/validate";
 import { accountDb, systemDb } from "@/server/db/client";
+import { linkVendorProductToSku, syncFhbProducts } from "@/server/fhb/sync";
+import { autoLinkLine } from "@/server/lines/catalogue";
 import type { ScopedActor } from "@/server/lines/lines";
 import { syncStoreProducts } from "@/server/shopify/products";
 import { planInventoryPush } from "@/server/stock/push";
@@ -70,7 +73,56 @@ describe("name agreement (pure)", () => {
     expect(weight("maison")).toBeLessThan(weight("alfa"));
     const r = nameAgreement("Maison Lumen Gamma Rose", "Maison Lumen Alpha Bloom", { weight });
     expect(r.flagged).toBe(true);
-    expect(nameAgreement("Maison Lumen Alpha Bloom Limited", "Alpha Bloom", { weight }).flagged).toBe(false);
+    // A brand-like prefix on one side is tolerated …
+    expect(nameAgreement("Maison Lumen Alpha Bloom", "Alpha Bloom", { weight }).flagged).toBe(false);
+    // … a flanker word is not (an old SKU now on the "Limited" version of the line).
+    expect(nameAgreement("Maison Lumen Alpha Bloom Limited", "Alpha Bloom", { weight })).toMatchObject({
+      flagged: true,
+      reasons: ["flanker"],
+    });
+  });
+
+  it("another product of the same family (flanker, gender, number, concentration) MUST flag", () => {
+    const why = (a: string, b: string, brand?: string) => {
+      const r = nameAgreement(a, b, { brand });
+      return r.flagged ? r.reasons : "ok";
+    };
+    // Flankers: one side has the modifier, the other does not (shorter name contained in the longer).
+    expect(why("Zephyr 10ml", "Zephyr Elixir 10ml")).toEqual(["flanker"]);
+    expect(why("Velvet Oud EDP 10ml", "Velvet Oud Intense EDP 10ml")).toEqual(["flanker"]);
+    expect(why("Kind Heart", "Very Kind Heart")).toEqual(["flanker"]);
+    expect(why("Mare di Luce", "Mare di Luce Profondo")).toEqual(["flanker"]);
+    expect(why("Bloom", "Alpha Bloom Noir Intense")).toEqual(["name"]); // mostly other words
+    expect(why("Alpha Bloom Intense 15ml", "Alpha Bloom Intens EDP 15ml")).toBe("ok"); // spelling variant
+    // Gender: both named and different (Bulgarian forms too); unisex is compatible.
+    expect(why("Alpha Bloom for Women", "Alpha Bloom pour Homme")).toEqual(["gender"]);
+    expect(why("Алфа Блум за мъже", "Alpha Bloom for Women")).toEqual(["gender"]);
+    expect(why("Алфа Блум за жени", "Alpha Bloom for Women")).toBe("ok");
+    expect(why("Alpha Bloom унисекс", "Alpha Bloom for Women")).toBe("ok");
+    // Parfum / extrait is a concentration of its own, not EDP.
+    expect(why("Alpha Bloom Parfum", "Alpha Bloom EDT")).toEqual(["concentration"]);
+    expect(why("Alpha Bloom Le Parfum", "Alpha Bloom Eau de Parfum")).toEqual(["concentration"]);
+    expect(why("Alpha Bloom Extrait de Parfum", "Alpha Bloom Parfum")).toBe("ok");
+    // Numbers: different, or on one side only — but a bare size equal to the other side's volume is fine.
+    expect(why("Alpha Bloom 2", "Alpha Bloom 3")).toEqual(["number"]);
+    expect(why("Alpha Bloom", "Alpha Bloom 2")).toEqual(["number"]);
+    expect(why("Alpha Bloom EDP 100", "Alpha Bloom EDP 100ml")).toBe("ok");
+    // A substituted word (each side has a word the other lacks), even when most words agree.
+    expect(why("Maison Lumen Alpha Bloom", "Maison Lumen Beta Bloom")).toEqual(["name"]);
+  });
+
+  it("volumes in oz and g are compared too", () => {
+    expect(nameAgreement("Alpha Bloom 0.5 oz", "Alpha Bloom 100ml")).toMatchObject({
+      flagged: true,
+      reasons: ["volume"],
+      volumes: { a: [15], b: [100] },
+    });
+    expect(nameAgreement("Alpha Bloom 3.4 fl oz", "Alpha Bloom 100ml").flagged).toBe(false);
+    expect(nameAgreement("Alpha Bloom 1.7 oz", "Alpha Bloom 50 мл").flagged).toBe(false);
+    expect(nameAgreement("Alpha Bloom 50g", "Alpha Bloom 100 гр")).toMatchObject({
+      flagged: true,
+      reasons: ["volume"],
+    });
   });
 
   it("order check: a flagged line gets a SOFT, acknowledgeable finding, never a hard block", () => {
@@ -330,6 +382,12 @@ describe("suspicious links (database)", () => {
   it("confirm (OPERATOR): never flagged again while the names stay; pushed again; audited", async () => {
     const [row] = (await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).rows;
     await confirmSuspiciousLink({ ...g.owner, role: "OPERATOR" }, row!.id);
+    // A second (or concurrent) click changes nothing and is not audited twice.
+    const again = await Promise.all([
+      confirmSuspiciousLink({ ...g.owner, role: "OPERATOR" }, row!.id),
+      confirmSuspiciousLink(g.owner, row!.id),
+    ]);
+    expect(again.map((r) => r.alreadyConfirmed)).toEqual([true, true]);
     await refreshSuspiciousLinks(g.accountId, ALL_LINKS);
     expect((await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).total).toBe(0);
     const plan = await planInventoryPush(g.accountId, g.store.id);
@@ -367,6 +425,39 @@ describe("suspicious links (database)", () => {
     });
     // The push of that product's variant uses the flagged warehouse product: skipped as well.
     expect((await planInventoryPush(g.accountId, g.store.id)).skipped.suspicious_link).toBe(2);
+    // An order line of that product gets the soft finding although its store variant agrees.
+    const order = await g.db.order.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        storeId: g.store.id,
+        source: "MANUAL",
+        number: `V-${Math.random().toString(36).slice(2, 7)}`,
+        status: "NEEDS_REVIEW",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "PREPAID",
+        placedAt: new Date(),
+        lines: {
+          create: [
+            {
+              productId: good.product.id,
+              variantLinkId: good.variant.id,
+              sku: "5900000000001",
+              title: "Alpha Bloom",
+              quantity: 1,
+              unitPrice: 1,
+            },
+          ],
+        },
+      },
+    });
+    const found = (await validateOrder(g.accountId, order.id, { persist: false })).findings.filter(
+      (x) => x.code === "order.line_name_mismatch",
+    );
+    expect(found).toEqual([expect.objectContaining({ severity: "soft" })]);
+    expect(found[0]!.message_bg).toContain("5900000000001");
     await g.db.vendorProduct.update({
       where: { id: good.vp.id },
       data: { raw: { name: "Decant Alpha Bloom EDP 15ml" } },
@@ -403,5 +494,184 @@ describe("suspicious links (database)", () => {
     expect((await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).total).toBe(0);
     // A stale second click is refused, never applied twice.
     await expect(unlinkSuspiciousLink(g.owner, row!.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+const fhbClient = (products: { id: string; name: string }[]) =>
+  ({
+    listProducts: async () => ({
+      total: products.length,
+      products: products.map((p) => ({ ...p, stock_quantity: 3, free_quantity: 3 })),
+    }),
+  }) as unknown as FhbClient;
+
+describe("suspicious links: decisions that must stick, stale clicks, paging", () => {
+  let g: G;
+  let lineId: string;
+
+  beforeAll(async () => {
+    g = await group("edge");
+    const line = await g.db.productLine.create({ data: { accountId: g.accountId, name: "Линия syn" } });
+    lineId = line.id;
+    await g.db.company.update({ where: { id: g.company.id }, data: { lineId } });
+  });
+
+  it("confirm refuses with link_changed when the names change between the list and the click", async () => {
+    const l = await linked(g, 50, "5900000000050", {
+      master: "Decant Beta Noir EDP 15ml",
+      vendor: "Decant Beta Noir EDP 15ml",
+      variant: "Gamma Rose EDP 15ml",
+    });
+    await refreshSuspiciousLinks(g.accountId, { variants: { id: l.variant.id } });
+    const row = (await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).rows.find(
+      (r) => r.itemId === l.variant.id,
+    );
+    expect(row).toBeDefined();
+    await g.db.storeVariantLink.update({
+      where: { id: l.variant.id },
+      data: { title: "Delta Musk EDP 15ml" },
+    });
+    await expect(confirmSuspiciousLink(g.owner, row!.id)).rejects.toMatchObject({ code: "link_changed" });
+    expect(
+      await g.db.auditLog.count({
+        where: { action: "product.suspicious_link_confirmed", entityId: l.variant.id },
+      }),
+    ).toBe(0);
+  });
+
+  it("warehouse unlink sticks: FHB sync and the line auto-link never re-link it by SKU; a person's link does", async () => {
+    const sku = "5900000000060";
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku, name: "Decant Alpha Bloom EDP 15ml", lineId },
+    });
+    // The FHB id equals the SKU (no prefix), so every automatic path WOULD match it.
+    const vp = await g.db.vendorProduct.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.fhb.id,
+        productId: product.id,
+        vendorId: sku,
+        raw: { name: "Decant Zeta Fern EDP 15ml" },
+      },
+    });
+    await refreshSuspiciousLinks(g.accountId, { vendors: { id: vp.id } });
+    const row = (await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).rows.find(
+      (r) => r.itemId === vp.id,
+    );
+    expect(row).toMatchObject({ kind: "vendor", reasons: ["name"] });
+    await unlinkSuspiciousLink(g.owner, row!.id);
+    const after = await g.db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } });
+    expect(after.productId).toBeNull();
+    expect(after.unlinkedAt).toBeInstanceOf(Date);
+    expect(
+      await g.db.auditLog.count({ where: { action: "product.suspicious_link_unlinked", entityId: vp.id } }),
+    ).toBe(1);
+
+    await syncFhbProducts({
+      accountId: g.accountId,
+      connectionId: g.fhb.id,
+      client: fhbClient([{ id: sku, name: "Decant Zeta Fern EDP 15ml" }]),
+      now: new Date(),
+    });
+    expect((await g.db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } })).productId).toBeNull();
+    await autoLinkLine(g.accountId, lineId);
+    expect((await g.db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } })).productId).toBeNull();
+
+    // A person's own link wins and clears the mark.
+    expect(await linkVendorProductToSku(g.accountId, vp.id, sku)).toBe("linked");
+    expect(await g.db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } })).toMatchObject({
+      productId: product.id,
+      unlinkedAt: null,
+    });
+  });
+
+  it("variant unlink sticks for the line auto-link too", async () => {
+    const sku = "5900000000070";
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku, name: "Decant Alpha Bloom EDP 15ml", lineId },
+    });
+    const variant = await g.db.storeVariantLink.create({
+      data: {
+        accountId: g.accountId,
+        storeId: g.store.id,
+        shopifyVariantGid: "gid://shopify/ProductVariant/70",
+        shopifyProductGid: "gid://shopify/Product/70",
+        sku,
+        title: "Sigma Iris EDP 15ml",
+        productId: product.id,
+        matchMethod: "sku",
+      },
+    });
+    await refreshSuspiciousLinks(g.accountId, { variants: { id: variant.id } });
+    const row = (await listSuspiciousLinks({ accountId: g.accountId, companyScope: null })).rows.find(
+      (r) => r.itemId === variant.id,
+    );
+    await unlinkSuspiciousLink(g.owner, row!.id);
+    await autoLinkLine(g.accountId, lineId);
+    expect(
+      (await g.db.storeVariantLink.findUniqueOrThrow({ where: { id: variant.id } })).productId,
+    ).toBeNull();
+  });
+
+  it("the line filter follows the master's CURRENT line, not the copy from the last refresh", async () => {
+    const l = await linked(g, 80, "5900000000080", {
+      master: "Decant Beta Noir EDP 15ml",
+      vendor: "Decant Beta Noir EDP 15ml",
+      variant: "Omega Leaf EDP 15ml",
+    });
+    await g.db.product.update({ where: { id: l.product.id }, data: { lineId } });
+    await refreshSuspiciousLinks(g.accountId, { variants: { id: l.variant.id } });
+    const inLine = async (id: string) =>
+      (await listSuspiciousLinks({ accountId: g.accountId, companyScope: null }, { lineId: id })).rows.some(
+        (r) => r.itemId === l.variant.id,
+      );
+    expect(await inLine(lineId)).toBe(true);
+    const other = await g.db.productLine.create({ data: { accountId: g.accountId, name: "Друга syn" } });
+    await g.db.product.update({ where: { id: l.product.id }, data: { lineId: other.id } });
+    // No refresh in between.
+    expect(await inLine(lineId)).toBe(false);
+    expect(await inLine(other.id)).toBe(true);
+  });
+
+  it("paging: a bad link past the first 500 is found, and stale rows past the first page are removed", async () => {
+    const h = await group("paging");
+    const product = await h.db.product.create({
+      data: { accountId: h.accountId, sku: "5900000000900", name: "Decant Alpha Bloom EDP 15ml" },
+    });
+    const pad = (i: number) => String(i).padStart(4, "0");
+    // Explicit ids: the scan goes by id, so the bad one is at position 515 of 520.
+    await h.db.storeVariantLink.createMany({
+      data: Array.from({ length: 520 }, (_, i) => ({
+        id: `pg-variant-${pad(i)}`,
+        accountId: h.accountId,
+        storeId: h.store.id,
+        shopifyVariantGid: `gid://shopify/ProductVariant/9${pad(i)}`,
+        shopifyProductGid: `gid://shopify/Product/9${pad(i)}`,
+        sku: "5900000000900",
+        title: i === 515 ? "Gamma Rose EDP 15ml" : "Alpha Bloom EDP 15ml",
+        productId: product.id,
+        matchMethod: "sku",
+      })),
+    });
+    expect([...(await suspiciousItemIds(h.accountId, ALL_LINKS))]).toEqual(["pg-variant-0515"]);
+    // 510 stale rows (their items do not exist) before the real one: removed across pages.
+    await h.db.suspiciousLink.createMany({
+      data: Array.from({ length: 510 }, (_, i) => ({
+        id: `pg-stale-${pad(i)}`,
+        accountId: h.accountId,
+        kind: "variant",
+        itemId: `gone-${i}`,
+        productId: product.id,
+        sourceId: h.store.id,
+        itemName: "x",
+        productSku: "5900000000900",
+        productName: "x",
+        nameKey: "x",
+      })),
+    });
+    const res = await refreshSuspiciousLinks(h.accountId, ALL_LINKS);
+    expect(res).toMatchObject({ checked: 520, flagged: 1, removed: 510 });
+    const rows = await h.db.suspiciousLink.findMany({ select: { itemId: true } });
+    expect(rows.map((r) => r.itemId)).toEqual(["pg-variant-0515"]);
   });
 });
