@@ -1,10 +1,11 @@
-import type { OutboundStatus, Prisma, ShopifyWriteBackKind } from "@/generated/prisma/client";
+import { Prisma, type OutboundStatus, type ShopifyWriteBackKind } from "@/generated/prisma/client";
 import { ShopifyClient, type ShopifyClientOptions } from "@/integrations/shopify/client";
 import { ShopifyError } from "@/integrations/shopify/errors";
 import {
   EVENT_FOR_STATUS,
   EVENT_RANK,
   existingFulfillment,
+  FINAL_EVENTS,
   failedFulfillment,
   FULFILLMENT_CREATE_MUTATION,
   FULFILLMENT_EVENT_CREATE_MUTATION,
@@ -52,7 +53,12 @@ import { shopifyClientForStore } from "@/server/shopify/store-client";
  *    tracking number or event already on the fulfillment) — never a second fulfillment for one shipment;
  *  - sends with a client that never retries by itself; an unknown outcome is resolved by the read-back, and
  *    becomes UNCERTAIN + a CRITICAL task when the read-back fails too;
- *  - TRACKING / EVENT rows in LIVE wait for the shipment's FULFIL row (and earlier rows of their kind) to be done.
+ *  - TRACKING / EVENT rows in LIVE wait for the shipment's FULFIL row (and earlier rows of their kind) to be done;
+ *    an UNCERTAIN FULFIL row keeps them waiting, and rows refused because the fulfilment was not in Shopify are
+ *    re-armed once an operator has set that FULFIL row SENT;
+ *  - a shipment cancelled / re-routed after its FULFIL was SENT opens an operator task (the Shopify fulfillment
+ *    stays); the replacement shipment of the same order with the same lines adopts that Shopify fulfillment
+ *    (no second fulfillmentCreate) and its tracking number / statuses update it.
  * Rows are only created for stores not in READ_ONLY and for shipments of the last WRITE_BACK_WINDOW_DAYS, so
  * raising a store's mode never notifies customers about old parcels.
  */
@@ -67,6 +73,14 @@ const ACCEPTED_STATES = ["ACCEPTED", "PROCESSING", ...SHIPPED_STATES] as const;
 /** Statuses whose shipment may still get tracking updates / events (a FULFIL row exists already). */
 const FOLLOW_STATES = [...ACCEPTED_STATES, "RETURNING", "RETURN_RECEIVED", "EXCEPTION"] as const;
 const IN_FLIGHT: OutboundStatus[] = ["PENDING", "PAUSED", "SENDING"];
+/** A FULFIL row in one of these keeps its TRACKING / EVENT rows waiting (UNCERTAIN: an operator decides). */
+const PARENT_WAIT: OutboundStatus[] = [...IN_FLIGHT, "UNCERTAIN"];
+const NOT_IN_SHOPIFY = "fulfillment_not_in_shopify";
+const ORPHANED = "shipment_cancelled_after_fulfil";
+/** A shipment that will never be sent again (cancelled at the warehouse or re-routed away). */
+const goneShipment = {
+  OR: [{ status: "CANCELLED" }, { reroutesFrom: { some: { status: { in: ["CANCEL_QUEUED", "DONE"] } } } }],
+} satisfies Prisma.FulfillmentWhereInput;
 const DEPENDENT_PAGE = 500;
 const NO_TARGET = "<the Shopify fulfillment created by the FULFIL write-back>";
 const backoffMs = (attempt: number) => Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, attempt - 1));
@@ -275,8 +289,55 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
     cursor = batch.at(-1)!.id;
   }
 
+  // A shipment cancelled / re-routed after its fulfilment reached Shopify: the Shopify fulfillment stays (we never
+  // cancel it) — one operator task per row; the marker in lastError keeps it from opening again.
+  const orphaned = await db.shopifyWriteBack.findMany({
+    where: {
+      kind: "FULFIL",
+      status: "SENT",
+      createdAt: { gte: since },
+      OR: [{ lastError: null }, { lastError: { not: ORPHANED } }],
+      fulfillment: goneShipment,
+    },
+    select: { id: true, accountId: true, orderId: true, shopifyFulfillmentGid: true },
+    take: limit,
+  });
+  for (const o of orphaned) {
+    const marked = await db.shopifyWriteBack.updateMany({
+      where: { id: o.id, status: "SENT" },
+      data: { lastError: ORPHANED },
+    });
+    if (marked.count !== 1) continue;
+    await openTask(
+      o.accountId,
+      o.orderId,
+      "shopify_writeback_orphaned",
+      "Shopify fulfillment of a cancelled shipment",
+      `The shipment was cancelled or re-routed after Shopify was marked fulfilled (${o.shopifyFulfillmentGid}). ` +
+        "When the order is sent again with the same lines, the new shipment reuses this Shopify fulfillment and " +
+        "updates its tracking. Otherwise cancel the fulfillment in Shopify by hand.",
+    );
+  }
+
+  // DRY_RUN records of stores that are LIVE now run again from scratch (a fresh read-back key, not the one of the
+  // dry run: fulfillments created in Shopify since then are not ours).
   const rearmed = await db.shopifyWriteBack.updateMany({
     where: { status: "DRY_RUN_RECORDED", createdAt: { gte: since }, store: { writeBackMode: "LIVE" } },
+    data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null, request: Prisma.DbNull },
+  });
+  // TRACKING / EVENT rows refused because their fulfilment was not in Shopify, now that it is (an operator
+  // resolved the FULFIL row): due again, in their original order.
+  const rearmedDependents = await db.shopifyWriteBack.updateMany({
+    where: {
+      status: "REFUSED",
+      lastError: NOT_IN_SHOPIFY,
+      kind: { in: ["TRACKING", "EVENT"] },
+      createdAt: { gte: since },
+      store: { writeBackMode: "LIVE" },
+      fulfillment: {
+        shopifyWriteBacks: { some: { kind: "FULFIL", status: "SENT", shopifyFulfillmentGid: { not: null } } },
+      },
+    },
     data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null },
   });
   const ready = await db.shopifyWriteBack.findMany({
@@ -290,7 +351,12 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: limit,
   });
-  return { created, rearmed: rearmed.count, stale: stale.length, ready: ready.map((r) => r.id) };
+  return {
+    created,
+    rearmed: rearmed.count + rearmedDependents.count,
+    stale: stale.length,
+    ready: ready.map((r) => r.id),
+  };
 }
 
 /**
@@ -413,7 +479,7 @@ export async function processWriteBack(
       if (mode === "LIVE") {
         // In order: the fulfillment first, then earlier rows of this kind; a parent that will not be sent
         // means there is nothing in Shopify to update.
-        if ((parent && IN_FLIGHT.includes(parent.status)) || earlier > 0) {
+        if ((parent && PARENT_WAIT.includes(parent.status)) || earlier > 0) {
           await tx.shopifyWriteBack.update({
             where: { id },
             data: {
@@ -425,7 +491,7 @@ export async function processWriteBack(
           });
           return { kind: "done", status: "PENDING" };
         }
-        if (!parent || parent.status !== "SENT" || !target) return refuse("fulfillment_not_in_shopify");
+        if (!parent || parent.status !== "SENT" || !target) return refuse(NOT_IN_SHOPIFY);
       }
     }
     const attempts = row.attempts + 1;
@@ -738,6 +804,29 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
     }
   }
 
+  // A replacement for a shipment cancelled / re-routed after its fulfilment reached Shopify: the order's lines are
+  // already fulfilled there. Reuse that Shopify fulfillment (never a second one); TRACKING then puts our number on it.
+  const adopted = await adoptableFulfillment(ctx, lines);
+  if (adopted) {
+    const live = ctx.mode === "LIVE";
+    const status = await ctx.finalize(
+      {
+        shopifyFulfillmentGid: adopted.gid,
+        lastResponse: json(adopted.response),
+        lastError: `adopted_from_cancelled_shipment ${adopted.fromFulfillmentId}`,
+        // It carries the old shipment's tracking (or none): the new number follows as a TRACKING row.
+        ...(live ? { sentAt: new Date(), trackingNumber: null } : { request: json({ adopt: adopted.gid }) }),
+      },
+      live ? "SENT" : "DRY_RUN_RECORDED",
+    );
+    if (status === "SENT" || status === "DRY_RUN_RECORDED")
+      await event(row, live ? "already_sent" : "dry_run", {
+        adoptedFulfillment: adopted.gid,
+        fromFulfillmentId: adopted.fromFulfillmentId,
+      });
+    return final(status);
+  }
+
   const url = tn
     ? (shipment.trackingUrls[shipment.trackingNumbers.indexOf(tn)] ?? shipment.trackingUrls[0])
     : null;
@@ -796,8 +885,82 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
 }
 const FAILED = new Set(["ERROR", "FAILURE"]);
 
+/**
+ * The Shopify fulfillment of a cancelled / re-routed shipment of the same order with exactly our lines, still
+ * standing in Shopify and not adopted by another live shipment; null when there is none (or more than one).
+ */
+async function adoptableFulfillment(
+  ctx: KindContext,
+  lines: { shopifyLineGid: string; quantity: number }[],
+): Promise<{ gid: string; fromFulfillmentId: string; response: unknown } | null> {
+  const db = systemDb();
+  const { row } = ctx;
+  const candidates = await db.shopifyWriteBack.findMany({
+    where: {
+      accountId: row.accountId,
+      orderId: row.orderId,
+      kind: "FULFIL",
+      status: "SENT",
+      shopifyFulfillmentGid: { not: null },
+      fulfillmentId: { not: row.fulfillmentId },
+      fulfillment: goneShipment,
+    },
+    select: {
+      fulfillmentId: true,
+      shopifyFulfillmentGid: true,
+      fulfillment: {
+        select: { lines: { select: { quantity: true, orderLine: { select: { shopifyLineGid: true } } } } },
+      },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+  });
+  const key = (ls: { shopifyLineGid: string | null; quantity: number }[]) => {
+    const m = new Map<string, number>();
+    for (const l of ls)
+      if (l.shopifyLineGid) m.set(l.shopifyLineGid, (m.get(l.shopifyLineGid) ?? 0) + l.quantity);
+    return [...m].sort(([a], [b]) => a.localeCompare(b)).join("|");
+  };
+  const ours = key(lines);
+  const matching = candidates.filter(
+    (c) =>
+      key(
+        c.fulfillment.lines.map((l) => ({
+          shopifyLineGid: l.orderLine.shopifyLineGid,
+          quantity: l.quantity,
+        })),
+      ) === ours,
+  );
+  const gids = [...new Set(matching.map((c) => c.shopifyFulfillmentGid!))];
+  if (gids.length !== 1 || !ours) return null;
+  const gid = gids[0]!;
+  // Already the fulfillment of another shipment that is still on its way: not ours to take.
+  const taken = await db.shopifyWriteBack.count({
+    where: {
+      accountId: row.accountId,
+      orderId: row.orderId,
+      kind: "FULFIL",
+      shopifyFulfillmentGid: gid,
+      fulfillmentId: { notIn: [row.fulfillmentId, ...matching.map((c) => c.fulfillmentId)] },
+      status: { in: ["SENT", ...PARENT_WAIT] },
+      fulfillment: { NOT: goneShipment },
+    },
+  });
+  if (taken > 0) return null;
+  const state = await readState(ctx.reader, gid);
+  if (!state.fulfillment || state.fulfillment.status === "CANCELLED" || FAILED.has(state.fulfillment.status))
+    return null;
+  if (
+    !sameLines(
+      state,
+      lines.map((l) => ({ lineItemId: l.shopifyLineGid, quantity: l.quantity })),
+    )
+  )
+    return null;
+  return { gid, fromFulfillmentId: matching[0]!.fulfillmentId, response: state.fulfillment };
+}
+
 /** Reads the target fulfillment; a missing / cancelled one is an operator task. */
-async function targetState(ctx: KindContext): Promise<WriteBackState["fulfillment"] | Prepared> {
+async function targetState(ctx: KindContext): Promise<NonNullable<WriteBackState["fulfillment"]> | Prepared> {
   const state = await readState(ctx.reader, ctx.target!);
   if (!state.fulfillment) return final(await ctx.failVisibly("shopify_fulfillment_not_found"));
   if (state.fulfillment.status === "CANCELLED")
@@ -875,17 +1038,23 @@ async function prepareEvent(ctx: KindContext): Promise<Prepared> {
   if (ctx.mode === "LIVE") {
     const before = await targetState(ctx);
     if (isPrepared(before)) return before;
-    if (before && has(before)) return final(await ctx.alreadyThere(before.id, before.events));
-    // Shopify already shows a final status (DELIVERED / FAILURE, ours or the carrier's): an earlier one is not
-    // reported after it.
-    const later = before?.events.nodes.find(
-      (e) => e.status !== status && (EVENT_RANK[e.status as ShopifyEventStatus] ?? 0) > EVENT_RANK[status],
+    if (has(before)) return final(await ctx.alreadyThere(before.id, before.events));
+    // Shopify already shows a final status (DELIVERED / FAILURE, ours or the carrier's), or a later one: nothing is
+    // reported after it — neither an earlier status nor the other final one.
+    const later = before.events.nodes.find(
+      (e) =>
+        e.status !== status &&
+        (FINAL_EVENTS.has(e.status) ||
+          (EVENT_RANK[e.status as ShopifyEventStatus] ?? 0) > EVENT_RANK[status]),
     );
     if (later) {
       const s = await ctx.finalize({ lastError: `superseded_by_${later.status.toLowerCase()}` }, "REFUSED");
       if (s === "REFUSED") await event(row, "refused", { lastError: `superseded_by_${later.status}` });
       return final(s);
     }
+    // Only the newest page of events was read and ours is not on it: unreadable, never "not there".
+    if (before.events.pageInfo.hasNextPage)
+      throw new Error("Shopify fulfillment has more events than one read-back page");
   }
   const happenedAt =
     (status === "DELIVERED" ? shipment.deliveredAt : status === "IN_TRANSIT" ? shipment.shippedAt : null) ??
@@ -915,9 +1084,11 @@ async function prepareEvent(ctx: KindContext): Promise<Prepared> {
       },
       confirm: async () => {
         const after = await readState(ctx.reader, ctx.target!);
-        return after.fulfillment && has(after.fulfillment)
-          ? { gid: after.fulfillment.id, response: after.fulfillment.events }
-          : null;
+        if (after.fulfillment && has(after.fulfillment))
+          return { gid: after.fulfillment.id, response: after.fulfillment.events };
+        if (after.fulfillment?.events.pageInfo.hasNextPage)
+          throw new Error("Shopify fulfillment has more events than one read-back page");
+        return null;
       },
     },
   };

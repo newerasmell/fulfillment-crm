@@ -294,7 +294,7 @@
     "skuPrefixHint": "Stripped before matching to master products.",
     "writeBackMode": "Write-back to Shopify",
     "fulfilTrigger": "Mark fulfilled in Shopify",
-    "fulfilTriggerHint": "With \"Accepted by the warehouse\" the order is marked fulfilled in Shopify on acceptance (no e-mail to the customer until there is a tracking number); the tracking number and statuses (in transit, delivered, failed) follow. Shopify app scopes needed: write_merchant_managed_fulfillment_orders (fulfilment and tracking) and write_fulfillments (statuses), plus read_orders.",
+    "fulfilTriggerHint": "With \"Accepted by the warehouse\" the order is marked fulfilled in Shopify on acceptance (no e-mail to the customer until there is a tracking number); the tracking number and statuses (in transit, delivered, failed) follow. Shopify app scopes needed: write_merchant_managed_fulfillment_orders (fulfilment and tracking) and write_fulfillments (statuses), plus read_orders. If the warehouse cancels an accepted shipment, the Shopify fulfillment stays and a task is opened; a re-sent shipment with the same lines reuses it and updates its tracking.",
     "inventoryPushMode": "Stock push to Shopify",
     "inventoryBuffer": "Stock buffer",
     "notifyCustomer": "Notify the customer on fulfilment",

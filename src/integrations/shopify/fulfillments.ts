@@ -20,9 +20,11 @@ import { z } from "zod";
  *    FulfillmentEventStatus!, happenedAt, message, …}) → FulfillmentEventCreatePayload {fulfillmentEvent,
  *    userErrors}; scope: write_fulfillments. FulfillmentEventStatus: ATTEMPTED_DELIVERY CARRIER_PICKED_UP
  *    CONFIRMED DELAYED DELIVERED FAILURE IN_TRANSIT LABEL_PRINTED LABEL_PURCHASED OUT_FOR_DELIVERY READY_FOR_PICKUP.
- *  - fulfillment(id: ID!) {id status trackingInfo{…} fulfillmentLineItems(first){nodes{quantity lineItem{id}}}
- *    events(first){nodes{id status}}} for the read-back of those two; scope read_orders (or a
- *    read_*_fulfillment_orders scope).
+ *  - fulfillment(id: ID!) {id status trackingInfo{…} fulfillmentLineItems(first){nodes{quantity lineItem{id}}
+ *    pageInfo{hasNextPage}} events(first, reverse: true){nodes{id status} pageInfo{hasNextPage}}} for the
+ *    read-back of those two (events newest first: carrier events can be many); scope read_orders (or a
+ *    read_*_fulfillment_orders scope). A page with hasNextPage is an incomplete read-back (thrown, never "not
+ *    there").
  * Neither mutation has an idempotency key: the fulfillment is read back (tracking number / event status present?)
  * before every send and retry.
  */
@@ -74,9 +76,11 @@ query FulfillmentWriteBackState($id: ID!) {
     trackingInfo { number company url }
     fulfillmentLineItems(first: ${FULFILLMENT_STATE_LINES_PAGE}) {
       nodes { quantity lineItem { id } }
+      pageInfo { hasNextPage }
     }
-    events(first: ${FULFILLMENT_STATE_EVENTS_PAGE}) {
+    events(first: ${FULFILLMENT_STATE_EVENTS_PAGE}, reverse: true) {
       nodes { id status }
+      pageInfo { hasNextPage }
     }
   }
 }`;
@@ -143,6 +147,7 @@ export const FulfillmentCreateSchema = z.object({
     .nullable(),
 });
 
+const PageInfo = z.object({ hasNextPage: z.boolean() });
 const UserErrors = z.array(z.object({ field: z.array(z.string()).nullable(), message: z.string() }));
 
 export const WriteBackStateSchema = z.object({
@@ -155,8 +160,12 @@ export const WriteBackStateSchema = z.object({
         nodes: z.array(
           z.object({ quantity: z.number().int().nullable(), lineItem: z.object({ id: z.string() }) }),
         ),
+        pageInfo: PageInfo,
       }),
-      events: z.object({ nodes: z.array(z.object({ id: z.string(), status: z.string() })) }),
+      events: z.object({
+        nodes: z.array(z.object({ id: z.string(), status: z.string() })),
+        pageInfo: PageInfo,
+      }),
     })
     .nullable(),
 });
@@ -253,9 +262,10 @@ export function trackingInput(t: {
 }
 
 /**
- * Our shipment status → the FulfillmentEventStatus reported to Shopify (2026-10 enum, see the header). Returns and
- * exceptions (lost, damaged, destroyed, rejected by the courier) map to FAILURE — the documented closest ("The
- * fulfillment request failed"); ACCEPTED / PROCESSING report nothing (the fulfillment itself says it).
+ * Our shipment status → the FulfillmentEventStatus reported to Shopify (2026-10 enum, see the header). Returns map
+ * to FAILURE — the documented closest ("The fulfillment request failed"). A courier exception is often temporary
+ * (delay, failed attempt, address problem) and maps to DELAYED, which is not final: DELIVERED may still follow.
+ * ACCEPTED / PROCESSING report nothing (the fulfillment itself says it).
  */
 export const EVENT_FOR_STATUS: Readonly<Record<string, ShopifyEventStatus>> = {
   SHIPPED: "IN_TRANSIT",
@@ -263,9 +273,9 @@ export const EVENT_FOR_STATUS: Readonly<Record<string, ShopifyEventStatus>> = {
   COD_PAID: "DELIVERED",
   RETURNING: "FAILURE",
   RETURN_RECEIVED: "FAILURE",
-  EXCEPTION: "FAILURE",
+  EXCEPTION: "DELAYED",
 };
-export type ShopifyEventStatus = "IN_TRANSIT" | "DELIVERED" | "FAILURE";
+export type ShopifyEventStatus = "IN_TRANSIT" | "DELAYED" | "DELIVERED" | "FAILURE";
 
 /**
  * Order of the events we report: never an earlier one after a later one (no "in transit" after "delivered").
@@ -273,9 +283,13 @@ export type ShopifyEventStatus = "IN_TRANSIT" | "DELIVERED" | "FAILURE";
  */
 export const EVENT_RANK: Readonly<Record<ShopifyEventStatus, number>> = {
   IN_TRANSIT: 1,
+  DELAYED: 1.5,
   DELIVERED: 2,
   FAILURE: 2,
 };
+
+/** Final FulfillmentEventStatus values: once Shopify shows one (ours or the carrier's), nothing else is reported. */
+export const FINAL_EVENTS: ReadonlySet<string> = new Set<ShopifyEventStatus>(["DELIVERED", "FAILURE"]);
 
 /**
  * FulfillmentStatus in 2026-10 (schema tool): CANCELLED, ERROR, FAILURE, SUCCESS. CANCELLED does not count;
@@ -399,6 +413,9 @@ export function newFulfillments(read: WriteBackRead, knownIds: readonly string[]
 
 /** The Shopify fulfillment holds exactly our line items and quantities. */
 export function sameLines(state: WriteBackState, lines: readonly { lineItemId: string; quantity: number }[]) {
+  // Only part of the fulfillment's lines were read: we cannot tell, and "not ours" could lead to a second create.
+  if (state.fulfillment?.fulfillmentLineItems.pageInfo.hasNextPage)
+    throw new Error("Shopify fulfillment has more line items than one read-back page");
   const sum = (xs: readonly { id: string; q: number }[]) => {
     const m = new Map<string, number>();
     for (const x of xs) m.set(x.id, (m.get(x.id) ?? 0) + x.q);

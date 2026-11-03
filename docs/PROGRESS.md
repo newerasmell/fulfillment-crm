@@ -205,6 +205,19 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   locations run by a fulfillment-service app); fulfillmentEventCreate needs write_fulfillments; the read-back
   `fulfillment(id)` needs read_orders. Owner to do: make sure the Shopify app has write_fulfillments (release +
   reinstall if it was added), then choose the trigger per store and check the DRY_RUN rows on an order page.
+  Audit fixes: (1) any final event already in Shopify (DELIVERED / FAILURE) supersedes the other one; (2) EXCEPTION
+  → DELAYED (rank 1.5, not final), so DELIVERED still follows a temporary courier exception; FAILURE only for
+  returns; (3) an UNCERTAIN FULFIL keeps its TRACKING / EVENT rows waiting, and rows REFUSED
+  "fulfillment_not_in_shopify" are re-armed by the sweep once their FULFIL row is SENT with a gid; (4) a shipment
+  cancelled / re-routed after its FULFIL was SENT opens one task "shopify_writeback_orphaned" (marker in lastError);
+  the replacement shipment of the same order with the same lines adopts that Shopify fulfillment (read back: not
+  cancelled/failed, same lines, not taken by another live shipment) — SENT without fulfillmentCreate,
+  trackingNumber cleared so its tracking follows as a TRACKING row; no fulfillmentCancel path; (5) DRY_RUN rows
+  re-armed for LIVE drop their request (fresh read-back key); fulfillment read-back pages fulfillmentLineItems /
+  events (reverse: true) with pageInfo.hasNextPage — an incomplete page throws (retry before send, UNCERTAIN
+  after an unknown outcome). Open for the owner before merge: existing LIVE stores start sending tracking updates
+  and status events (DELIVERED may trigger Shopify's customer notification) for shipments of the last 14 days
+  with a FULFIL row, and the additive Store / ShopifyWriteBack columns need the owner's OK (CLAUDE.md).
 
 ## Open questions
 See SPEC.md §11.

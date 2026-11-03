@@ -3,6 +3,7 @@ import { ShopifyClient, type ShopifyClientOptions } from "@/integrations/shopify
 import {
   FULFILLMENT_EVENT_CREATE_MUTATION,
   FULFILLMENT_TRACKING_UPDATE_MUTATION,
+  sameLines,
   shopifyTrackingCompany,
   WRITE_BACK_STATE_QUERY,
   type WriteBackRead,
@@ -85,6 +86,8 @@ const state = (
     tracking?: string[];
     events?: string[];
     lines?: { id: string; q: number }[];
+    moreLines?: boolean;
+    moreEvents?: boolean;
   } = {},
 ) => ({
   fulfillment: {
@@ -93,9 +96,11 @@ const state = (
     trackingInfo: (over.tracking ?? []).map((n) => ({ number: n, company: null, url: null })),
     fulfillmentLineItems: {
       nodes: (over.lines ?? [{ id: LINE_GID, q: 2 }]).map((l) => ({ quantity: l.q, lineItem: { id: l.id } })),
+      pageInfo: { hasNextPage: over.moreLines ?? false },
     },
     events: {
       nodes: (over.events ?? []).map((s, i) => ({ id: `gid://shopify/FulfillmentEvent/${i}`, status: s })),
+      pageInfo: { hasNextPage: over.moreEvents ?? false },
     },
   },
 });
@@ -146,9 +151,15 @@ describe("lifecycle rules (pure)", () => {
     // No "in transit" after "delivered", no "failure" after "delivered" (a later customer return).
     expect(dependentRowsDue("SHIPPED", ["T1"], [fulfil("T1"), ev("DELIVERED")])).toEqual([]);
     expect(dependentRowsDue("RETURNING", ["T1"], [fulfil("T1"), ev("DELIVERED")])).toEqual([]);
+    // A courier exception is not final: DELAYED, and DELIVERED (or a return's FAILURE) still follows it.
     expect(dependentRowsDue("EXCEPTION", ["T1"], [fulfil("T1"), ev("IN_TRANSIT")])).toEqual([
-      { kind: "EVENT", value: "FAILURE" },
+      { kind: "EVENT", value: "DELAYED" },
     ]);
+    expect(dependentRowsDue("DELIVERED", ["T1"], [fulfil("T1"), ev("IN_TRANSIT"), ev("DELAYED")])).toEqual([
+      { kind: "EVENT", value: "DELIVERED" },
+    ]);
+    expect(dependentRowsDue("SHIPPED", ["T1"], [fulfil("T1"), ev("DELAYED")])).toEqual([]);
+    expect(dependentRowsDue("DELIVERED", ["T1"], [fulfil("T1"), ev("FAILURE")])).toEqual([]);
     expect(dependentRowsDue("ACCEPTED", [], [fulfil(null)])).toEqual([]);
   });
   it("tracking company: Shopify's documented spelling when known, else our name", () => {
@@ -536,6 +547,218 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
     ]);
     expect(rs.sort()).toEqual(["SENT", "skipped"]);
     expect(shop.count("FulfillmentTrackingWriteBack")).toBe(1);
+  });
+
+  // Shopify state that remembers the events we sent (and starts with the given ones).
+  function liveShop(initial: string[] = []) {
+    const events = [...initial];
+    return fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created(),
+      FulfillmentWriteBackState: () => state({ events }),
+      FulfillmentTrackingWriteBack: trackingOk,
+      FulfillmentEventWriteBack: (v) => {
+        events.push((v.fulfillmentEvent as { status: string }).status);
+        return eventOk(v);
+      },
+    });
+  }
+
+  it("a final status already in Shopify supersedes the other final one: no FAILURE after DELIVERED, no DELIVERED after FAILURE", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const a = await shipment("SHIPPED", ["TRK-F1"]);
+    const b = await shipment("SHIPPED", ["TRK-F2"]);
+    await sweepWriteBacks();
+    const create = liveShop();
+    for (const x of [a, b])
+      expect(await processWriteBack((await row(x.f.id, "FULFIL")).id, create.clients)).toBe("SENT");
+    // a: the carrier put DELIVERED on the Shopify fulfillment; our shipment then goes RETURNING.
+    await move(a.f.id, "RETURNING");
+    await sweepWriteBacks();
+    const shopA = liveShop(["DELIVERED"]);
+    expect(await processWriteBack((await row(a.f.id, "EVENT", "IN_TRANSIT")).id, shopA.clients)).toBe(
+      "REFUSED",
+    );
+    expect(await processWriteBack((await row(a.f.id, "EVENT", "FAILURE")).id, shopA.clients)).toBe("REFUSED");
+    expect((await row(a.f.id, "EVENT", "FAILURE")).lastError).toBe("superseded_by_delivered");
+    expect(shopA.count("FulfillmentEventWriteBack")).toBe(0);
+    // b: Shopify shows FAILURE (written outside our rows); our shipment is delivered.
+    await move(b.f.id, "DELIVERED");
+    await db().shopifyWriteBack.updateMany({
+      where: { fulfillmentId: b.f.id, kind: "EVENT", value: "IN_TRANSIT" },
+      data: { status: "SENT" },
+    });
+    await sweepWriteBacks();
+    const shopB = liveShop(["FAILURE"]);
+    expect(await processWriteBack((await row(b.f.id, "EVENT", "DELIVERED")).id, shopB.clients)).toBe(
+      "REFUSED",
+    );
+    expect((await row(b.f.id, "EVENT", "DELIVERED")).lastError).toBe("superseded_by_failure");
+    expect(shopB.count("FulfillmentEventWriteBack")).toBe(0);
+  });
+
+  it("a courier exception is DELAYED, not final: DELIVERED still follows it in Shopify", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-X"]);
+    await sweepWriteBacks();
+    const shop = liveShop();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, shop.clients)).toBe("SENT");
+    expect(await processWriteBack((await row(f.id, "EVENT", "IN_TRANSIT")).id, shop.clients)).toBe("SENT");
+    await move(f.id, "EXCEPTION");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "EVENT", "DELAYED")).id, shop.clients)).toBe("SENT");
+    await move(f.id, "DELIVERED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "EVENT", "DELIVERED")).id, shop.clients)).toBe("SENT");
+    expect(
+      shop.varsOf("FulfillmentEventWriteBack").map((v) => (v.fulfillmentEvent as { status: string }).status),
+    ).toEqual(["IN_TRANSIT", "DELAYED", "DELIVERED"]);
+  });
+
+  it("FULFIL UNCERTAIN: tracking and events wait; refused ones are re-armed once an operator sets it SENT", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    const fulfilRow = await row(f.id, "FULFIL");
+    await db().shopifyWriteBack.update({
+      where: { id: fulfilRow.id },
+      data: { status: "UNCERTAIN", lastError: "read-back failed" },
+    });
+    await move(f.id, "SHIPPED", ["TRK-UN"]);
+    await sweepWriteBacks();
+    const none = fakeShopify({});
+    const tr = await row(f.id, "TRACKING");
+    const ev = await row(f.id, "EVENT", "IN_TRANSIT");
+    expect(await processWriteBack(tr.id, none.clients)).toBe("PENDING");
+    expect(await processWriteBack(ev.id, none.clients)).toBe("PENDING");
+    expect((await row(f.id, "TRACKING")).lastError).toBe("waiting_for_earlier_write");
+    // Rows refused while the fulfilment was not in Shopify (e.g. the older behaviour, or a FAILED row)…
+    await db().shopifyWriteBack.update({ where: { id: fulfilRow.id }, data: { status: "FAILED" } });
+    const later = new Date(Date.now() + 10 * 60_000);
+    expect(await processWriteBack(tr.id, none.clients, later)).toBe("REFUSED");
+    expect(await processWriteBack(ev.id, none.clients, later)).toBe("REFUSED");
+    expect(none.ops).toEqual([]);
+    // …are due again once the operator resolved the FULFIL row with the Shopify fulfillment.
+    await db().shopifyWriteBack.update({
+      where: { id: fulfilRow.id },
+      data: { status: "SENT", shopifyFulfillmentGid: FUL_GID },
+    });
+    const swept = await sweepWriteBacks();
+    expect(swept.rearmed).toBeGreaterThanOrEqual(2);
+    const shop = liveShop();
+    expect(await processWriteBack(tr.id, shop.clients)).toBe("SENT");
+    expect(await processWriteBack(ev.id, shop.clients)).toBe("SENT");
+    expect(shop.varsOf("FulfillmentTrackingWriteBack")[0]).toMatchObject({
+      fulfillmentId: FUL_GID,
+      trackingInfoInput: { number: "TRK-UN" },
+    });
+    expect(shop.count("FulfillmentEventWriteBack")).toBe(1);
+  });
+
+  it("ON_ACCEPT, cancelled after acceptance and sent again: one task; the new shipment reuses the Shopify fulfillment and its tracking updates it", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f, order } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    const first = liveShop();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, first.clients)).toBe("SENT");
+    // The warehouse cancels it.
+    await move(f.id, "CANCELLED");
+    await sweepWriteBacks();
+    await sweepWriteBacks();
+    expect(
+      await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_orphaned" } }),
+    ).toBe(1);
+    // Sent again: a new shipment of the same order and lines, already with a tracking number.
+    const line = await db().orderLine.findFirstOrThrow({ where: { orderId: order.id } });
+    const again = await db().fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: order.id,
+        connectionId: g.connection.id,
+        externalId: `LC-${n}-again`,
+        status: "SHIPPED",
+        carrier: "speedy",
+        trackingNumbers: ["TRK-AGAIN"],
+        trackingUrls: ["https://track.example/TRK-AGAIN"],
+        shippedAt: new Date(),
+        lines: { create: [{ orderLineId: line.id, quantity: 2 }] },
+      },
+    });
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      // The order's lines are fulfilled in Shopify by the old shipment's fulfillment (no tracking on it).
+      FulfillmentWriteBackRead: () => orderRead([{ id: FUL_GID, status: "SUCCESS", trackingInfo: [] }], 0),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/should-not-exist"),
+      FulfillmentWriteBackState: () => state(),
+      FulfillmentTrackingWriteBack: trackingOk,
+      FulfillmentEventWriteBack: eventOk,
+    });
+    const st = await processWriteBack((await row(again.id, "FULFIL")).id, shop.clients);
+    expect(st).toBe("SENT");
+    expect(shop.count("FulfillmentWriteBack")).toBe(0);
+    expect(await row(again.id, "FULFIL")).toMatchObject({
+      shopifyFulfillmentGid: FUL_GID,
+      trackingNumber: null,
+    });
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(again.id, "TRACKING", "TRK-AGAIN")).id, shop.clients)).toBe(
+      "SENT",
+    );
+    expect(shop.varsOf("FulfillmentTrackingWriteBack")[0]).toMatchObject({
+      fulfillmentId: FUL_GID,
+      trackingInfoInput: { number: "TRK-AGAIN" },
+    });
+    expect(await processWriteBack((await row(again.id, "EVENT", "IN_TRANSIT")).id, shop.clients)).toBe(
+      "SENT",
+    );
+    expect(shop.count("FulfillmentWriteBack")).toBe(0);
+  });
+
+  it("DRY_RUN → LIVE: the fulfilment re-runs with a fresh read-back key (a fulfillment created since is not ours)", async () => {
+    await setStore({ writeBackMode: "DRY_RUN", fulfilTrigger: "ON_ACCEPT" });
+    const { f } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    const other: Ful = { id: "gid://shopify/Fulfillment/2", status: "SUCCESS", trackingInfo: [] };
+    const byHand: Ful = { id: "gid://shopify/Fulfillment/3", status: "SUCCESS", trackingInfo: [] };
+    const dry = fakeShopify({ FulfillmentWriteBackRead: () => orderRead([other]) });
+    const r = await row(f.id, "FULFIL");
+    expect(await processWriteBack(r.id, dry.clients)).toBe("DRY_RUN_RECORDED");
+    await setStore({ writeBackMode: "LIVE" });
+    await sweepWriteBacks();
+    expect((await row(f.id, "FULFIL")).request).toBeNull();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead([other, byHand]),
+      FulfillmentWriteBackState: (v) => state({ id: String(v.id) }),
+      FulfillmentWriteBack: () => created(),
+    });
+    expect(await processWriteBack(r.id, shop.clients)).toBe("SENT");
+    expect(shop.count("FulfillmentWriteBack")).toBe(1);
+    expect((await row(f.id, "FULFIL")).shopifyFulfillmentGid).toBe(FUL_GID);
+  });
+
+  it("an incomplete read-back page (more events / lines than one page) is never taken as 'not there'", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-PG"]);
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    const shop = fakeShopify({
+      FulfillmentWriteBackState: () => state({ events: ["OUT_FOR_DELIVERY"], moreEvents: true }),
+      FulfillmentEventWriteBack: eventOk,
+    });
+    expect(await processWriteBack((await row(f.id, "EVENT")).id, shop.clients)).toBe("PENDING");
+    expect((await row(f.id, "EVENT")).lastError).toMatch(/more events/);
+    expect(shop.count("FulfillmentEventWriteBack")).toBe(0);
+    // Lost answer, and the read-back page is incomplete: UNCERTAIN, not retried.
+    const lostShop = fakeShopify({
+      FulfillmentWriteBackState: [() => state(), () => state({ moreEvents: true })],
+      FulfillmentEventWriteBack: lost,
+    });
+    const later = new Date(Date.now() + 2 * 60 * 60_000);
+    expect(await processWriteBack((await row(f.id, "EVENT")).id, lostShop.clients, later)).toBe("UNCERTAIN");
+    expect(lostShop.count("FulfillmentEventWriteBack")).toBe(1);
+    expect(() => sameLines(state({ moreLines: true }), [{ lineItemId: LINE_GID, quantity: 2 }])).toThrow(
+      /more line items/,
+    );
   });
 
   it("tenant scope: another account sees none of these writes", async () => {
