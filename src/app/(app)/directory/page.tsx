@@ -278,11 +278,30 @@ async function OfficesTab({ ctx, sp, types }: TabProps & { sp: Search }) {
                 {data.rows.map((r) => (
                   <tr key={r.key} data-testid={`office-${r.vendor}-${r.code}`}>
                     <td className={mono}>
-                      <div className="flex items-center gap-2">
-                        <span>{r.code}</span>
-                        <CopyButton value={r.code} label={t("copyCode")} />
-                      </div>
-                      {r.courierCode && <div className="text-xs text-muted">{r.courierCode}</div>}
+                      {r.vendor === "fhb" ? (
+                        // FHB does not say whether delivery_point takes the point's `id` or `external_code`
+                        // (open question, INTEGRATION_NOTES §2.5): both, labelled, equally prominent.
+                        <>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted">id</span>
+                            <span>{r.code}</span>
+                            <CopyButton value={r.code} label={t("copyCode")} />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted">external_code</span>
+                            <span>{r.courierCode ?? "—"}</span>
+                            {r.courierCode && <CopyButton value={r.courierCode} label={t("copyCode")} />}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <span>{r.code}</span>
+                            <CopyButton value={r.code} label={t("copyCode")} />
+                          </div>
+                          {r.courierCode && <div className="text-xs text-muted">{r.courierCode}</div>}
+                        </>
+                      )}
                     </td>
                     <td className={tdCls}>
                       <Link
@@ -384,13 +403,35 @@ async function OfficeDetail({ d, closeHref }: { d: Detail; closeHref: string }) 
             {t("close")}
           </Link>
         </div>
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded-[10px] bg-accent-soft p-3">
-          <span className="text-sm">{t(d.vendor === "eu" ? "d.pasteEu" : "d.pasteFhb")}</span>
-          <span className="font-mono text-lg font-semibold" data-testid="office-detail-code">
-            {d.code}
-          </span>
-          <CopyButton value={d.code} label={t("copyCode")} />
-        </div>
+        {d.vendor === "eu" ? (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-[10px] bg-accent-soft p-3">
+            <span className="text-sm">{t("d.pasteEu")}</span>
+            <span className="font-mono text-lg font-semibold" data-testid="office-detail-code">
+              {d.code}
+            </span>
+            <CopyButton value={d.code} label={t("copyCode")} />
+          </div>
+        ) : (
+          <div className="mb-3 rounded-[10px] bg-accent-soft p-3" data-testid="office-detail-fhb-codes">
+            <p className="m-0 mb-2 text-sm">{t("d.fhbCodesOpen")}</p>
+            <div className="flex flex-wrap items-center gap-6">
+              {(
+                [
+                  ["id", d.point.vendorId],
+                  ["external_code", d.point.externalCode],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label} className="flex items-center gap-2">
+                  <span className="text-xs text-muted">{label}</span>
+                  <span className="font-mono text-lg font-semibold" data-testid={`office-detail-${label}`}>
+                    {value ?? "—"}
+                  </span>
+                  {value && <CopyButton value={value} label={t("copyCode")} />}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <dl className="m-0 grid gap-x-6 gap-y-2 sm:grid-cols-[200px_1fr]">
           {rows.map(([k, v]) => (
             <div key={k} className="contents">

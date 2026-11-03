@@ -39,6 +39,15 @@ test("directory: offices + PUDO search, paging, detail with copy; couriers, citi
   await filters.getByLabel("Вид").selectOption("pudo");
   await filters.getByRole("button", { name: "Приложи" }).click();
   await expect(page.getByTestId("offices-total")).toContainText("2 резултата");
+  // FHB point: delivery_point takes `id` or `external_code` (FHB does not say) — both shown, labelled, equally.
+  const fhbRow = page.getByTestId("office-fhb-3190001");
+  await expect(fhbRow).toContainText("external_code");
+  await fhbRow.getByRole("link", { name: "Synth PUDO Debrecen" }).click();
+  const codes = page.getByTestId("office-detail-fhb-codes");
+  await expect(codes).toContainText("отворен въпрос");
+  await expect(page.getByTestId("office-detail-id")).toHaveText("3190001");
+  await expect(page.getByTestId("office-detail-external_code")).toHaveText("X-1");
+  await expect(codes.getByRole("button", { name: /Копирай кода/ })).toHaveCount(2);
 
   // Search by name/code/address across 65+ rows.
   await page.goto("/directory?tab=offices");

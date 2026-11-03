@@ -2652,7 +2652,7 @@
       "saturday": "Opening hours (Saturday)",
       "queryCountry": "Loaded for country",
       "pasteEu": "Code for orders (recipient.officeId):",
-      "pasteFhb": "Code for orders (delivery_point):"
+      "fhbCodesOpen": "FHB does not say whether delivery_point takes the point's id or its external_code (open question to FHB) — both values:"
     },
     "yes": "yes",
     "no": "no",

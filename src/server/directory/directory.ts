@@ -227,11 +227,44 @@ function euOfficeWhere(
   return { AND: and };
 }
 
-function fhbPointWhere(connectionIds: string[], f: OfficeFilter): Prisma.FhbPickupPointWhereInput | null {
+/**
+ * FhbPickupPoint keeps one list per queried country (sync replaces exactly that (service, queryCountry) list),
+ * so a service loaded once without a country and once for "SK" stores the SK points twice. When a service has a
+ * no-country ("") list, that list is the whole catalogue: only it is used and the per-country lists of the same
+ * service are left out, so each point is listed and counted once.
+ */
+async function fhbPointBase(
+  accountId: string,
+  connectionIds: string[],
+): Promise<Prisma.FhbPickupPointWhereInput> {
+  const full = connectionIds.length
+    ? await accountDb(accountId).fhbPickupPoint.groupBy({
+        by: ["connectionId", "service"],
+        where: { connectionId: { in: connectionIds }, queryCountry: "" },
+      })
+    : [];
+  return {
+    connectionId: { in: connectionIds },
+    ...(full.length
+      ? {
+          OR: [
+            { queryCountry: "" },
+            { NOT: { OR: full.map((x) => ({ connectionId: x.connectionId, service: x.service })) } },
+          ],
+        }
+      : {}),
+  };
+}
+
+function fhbPointWhere(
+  base: Prisma.FhbPickupPointWhereInput,
+  connectionIds: string[],
+  f: OfficeFilter,
+): Prisma.FhbPickupPointWhereInput | null {
   if (f.vendor === "eu" || f.courier?.startsWith("eu:")) return null;
   if (f.type && f.type !== "pudo") return null;
   if (connectionIds.length === 0) return null;
-  const and: Prisma.FhbPickupPointWhereInput[] = [{ connectionId: { in: connectionIds } }];
+  const and: Prisma.FhbPickupPointWhereInput[] = [base];
   if (f.courier) and.push({ service: f.courier.slice(4) });
   if (f.country) and.push({ country: f.country });
   const city = blank(f.city);
@@ -269,7 +302,7 @@ export async function listOffices(ctx: DirectoryCtx, raw: unknown, connectionTyp
       })
     : [];
   const euWhere = euOfficeWhere(euIds, f, couriers);
-  const fhbWhere = fhbPointWhere(fhbIds, f);
+  const fhbWhere = fhbPointWhere(await fhbPointBase(ctx.accountId, fhbIds), fhbIds, f);
   const [euTotal, fhbTotal] = await Promise.all([
     euWhere ? db.eushipmentsOffice.count({ where: euWhere }) : 0,
     fhbWhere ? db.fhbPickupPoint.count({ where: fhbWhere }) : 0,
@@ -456,11 +489,9 @@ export async function listCouriers(ctx: DirectoryCtx, connectionTypes?: readonly
       ? db.fhbCarrier.findMany({ where: { connectionId: { in: fhbIds } }, orderBy: { code: "asc" } })
       : [],
     fhbIds.length
-      ? db.fhbPickupPoint.groupBy({
-          by: ["connectionId", "service"],
-          where: { connectionId: { in: fhbIds } },
-          _count: { _all: true },
-        })
+      ? fhbPointBase(ctx.accountId, fhbIds).then((where) =>
+          db.fhbPickupPoint.groupBy({ by: ["connectionId", "service"], where, _count: { _all: true } }),
+        )
       : [],
   ]);
   const euFull = euIds.length

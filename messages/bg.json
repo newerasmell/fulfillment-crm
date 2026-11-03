@@ -2652,7 +2652,7 @@
       "saturday": "Работно време (събота)",
       "queryCountry": "Зареден за държава",
       "pasteEu": "Код за поръчка (recipient.officeId):",
-      "pasteFhb": "Код за поръчка (delivery_point):"
+      "fhbCodesOpen": "FHB не уточнява дали delivery_point приема id или external_code на точката (отворен въпрос към FHB) — двете стойности:"
     },
     "yes": "да",
     "no": "не",

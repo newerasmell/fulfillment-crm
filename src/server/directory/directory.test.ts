@@ -241,6 +241,51 @@ describe("directory: offices and pick-up points", () => {
   });
 });
 
+describe("directory: FHB pick-up points loaded for several query countries", () => {
+  it('counts a point stored under queryCountry "" and "SK" once (offices, totals, couriers)', async () => {
+    const s = await setup();
+    const sys = systemDb();
+    const point = (queryCountry: string, vendorId: string, city: string) => ({
+      accountId: s.accountId,
+      connectionId: s.fhb.id,
+      service: "syn_sk",
+      queryCountry,
+      vendorId,
+      externalCode: `E${vendorId}`,
+      name: `PUDO ${city}`,
+      city,
+      country: "SK",
+      lastSyncAt: NOW,
+    });
+    await sys.fhbCarrier.create({
+      data: {
+        accountId: s.accountId,
+        connectionId: s.fhb.id,
+        code: "syn_sk",
+        name: "Синт SK",
+        lastSyncAt: NOW,
+      },
+    });
+    await sys.fhbPickupPoint.createMany({
+      data: [
+        point("", "41000001", "Bratislava"),
+        point("", "41000002", "Kosice"),
+        point("SK", "41000001", "Bratislava"),
+        point("SK", "41000002", "Kosice"),
+      ],
+    });
+    const sk = await listOffices(s.owner, { courier: "fhb:syn_sk" });
+    expect(sk.total).toBe(2);
+    expect(sk.rows.map((r) => r.code).sort()).toEqual(["41000001", "41000002"]);
+    const all = await listOffices(s.owner, {});
+    expect(all.totals).toEqual({ eu: 62, fhb: 4 });
+    const c = await listCouriers(s.owner);
+    expect(c.fhb.find((x) => x.code === "syn_sk")?.points).toBe(2);
+    // A service loaded ONLY per country (the HU list of syn_pudo) is still listed in full.
+    expect(c.fhb.find((x) => x.code === "syn_pudo")?.points).toBe(2);
+  });
+});
+
 describe("directory: couriers, cities, senders", () => {
   it("lists what is mirrored with counts", async () => {
     const s = await setup();
@@ -325,7 +370,98 @@ describe("invoices", () => {
       companyScope: [s.coA.id],
     };
     expect((await listInvoices(opA, {})).total).toBe(0);
+    // Counts and rows agree: "http" inside a non-URL is not a PDF; a numeric invoice_number is not a number
+    // (the reference types it as a string), so neither is rendered nor counted.
+    await mirror("SYN-6", { invoice: "javascript:alert('http')", invoice_number: 77 });
+    await mirror("SYN-7", { invoice: "see http://example.test/x", invoice_number: "" });
+    const r2 = await listInvoices(s.owner, {});
+    expect(r2.counts).toEqual({ all: 3, pdf: 1, number: 2 });
+    expect(r2.rows.map((x) => x.externalId).sort()).toEqual(["SYN-1", "SYN-2", "SYN-4"]);
     await expect(listInvoices({ ...s.owner, role: "WAREHOUSE" }, {})).rejects.toBeInstanceOf(ForbiddenError);
     expect(safeInvoiceUrl("ftp://x/y")).toBeNull();
+  });
+});
+
+describe("invoices: scope is the order's company, not the warehouse's", () => {
+  it("a shared-line FHB warehouse of coA carrying coB's order is visible to coB members only", async () => {
+    const s = await setup();
+    const sys = systemDb();
+    // FHB warehouse owned by coA; it ships one order of coA, one of coB, and has one row the CRM did not create.
+    const fhbA = await sys.fulfillmentConnection.create({
+      data: {
+        accountId: s.accountId,
+        companyId: s.coA.id,
+        name: "FHB А",
+        type: "FHB_V3",
+        credentialId: (await sys.credential.findFirstOrThrow({ where: { accountId: s.accountId } })).id,
+      },
+    });
+    const ship = async (companyId: string, externalId: string) => {
+      const order = await sys.order.create({
+        data: {
+          accountId: s.accountId,
+          companyId,
+          source: "MANUAL",
+          number: `#INV-${externalId}`,
+          currency: "EUR",
+          subtotal: 10,
+          total: 10,
+          paymentMethod: "PREPAID",
+          placedAt: NOW,
+          status: "SHIPPED",
+        },
+      });
+      await sys.fulfillment.create({
+        data: {
+          accountId: s.accountId,
+          orderId: order.id,
+          connectionId: fhbA.id,
+          externalId,
+          status: "SHIPPED",
+          trackingNumbers: [],
+        },
+      });
+      return order;
+    };
+    const mirror = (externalId: string) =>
+      sys.fhbOrderMirror.create({
+        data: {
+          accountId: s.accountId,
+          connectionId: fhbA.id,
+          externalId,
+          status: "SHIPPED",
+          rawStatus: "sent",
+          trackingNumbers: [],
+          raw: { invoice_number: `N-${externalId}` },
+          lastSyncAt: NOW,
+        },
+      });
+    await ship(s.coA.id, "SA-1");
+    const orderB = await ship(s.coB.id, "SB-1");
+    await mirror("SA-1");
+    await mirror("SB-1");
+    await mirror("SX-1"); // not created by the CRM → the connection's company (coA)
+    const op = (companyId: string): DirectoryCtx => ({
+      userId: "o",
+      accountId: s.accountId,
+      role: "OPERATOR",
+      companyScope: [companyId],
+    });
+    const ids = async (ctx: DirectoryCtx) =>
+      (await listInvoices(ctx, {})).rows.map((r) => r.externalId).sort();
+    expect(await ids(op(s.coA.id))).toEqual(["SA-1", "SX-1"]);
+    const forB = await listInvoices(op(s.coB.id), {});
+    expect(forB.rows.map((r) => r.externalId)).toEqual(["SB-1"]);
+    expect(forB.counts.all).toBe(1);
+    expect(forB.rows[0]?.order).toEqual({ id: orderB.id, number: orderB.number });
+    expect(forB.rows[0]?.connection.name).toBe("FHB А");
+    expect((await listInvoices(op(s.coB.id), { q: "SA-1" })).total).toBe(0);
+    // No `invoice` key at all (these rows) still lands in the "number" tab, and its count matches its rows.
+    const numA = await listInvoices(op(s.coA.id), { tab: "number" });
+    expect([numA.counts.number, numA.rows.length]).toEqual([2, 2]);
+    expect(await ids(s.owner)).toEqual(["SA-1", "SB-1", "SX-1"]);
+    // Sidebar company picked by the owner behaves the same way; header scope euShipments-only shows nothing.
+    expect(await ids({ ...s.owner, activeCompanyId: s.coB.id })).toEqual(["SB-1"]);
+    expect((await listInvoices(s.owner, {}, ["EUSHIPMENTS"])).total).toBe(0);
   });
 });
