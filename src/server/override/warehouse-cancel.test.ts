@@ -4,10 +4,10 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { withAccountTransaction } from "@/server/db/client";
 import { createFhbConnection } from "@/server/fhb/connection";
 import { createFhbTransportResolver } from "@/server/fhb/transport";
-import { applyOrderHistory } from "@/server/eushipments/statuses";
+import { applyOrderHistory, markGoneAtVendor } from "@/server/eushipments/statuses";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { euShipmentsTransportFor } from "@/server/eushipments/transport";
-import { processOutbound } from "@/server/outbox/outbox";
+import { confirmCanary, processOutbound } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
 import { BLOCKED_TASK_KIND, decideOrder, restartOrder } from "@/server/review";
 import {
@@ -30,13 +30,17 @@ const jsonRes = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-function euVendor(o: { del?: () => Response } = {}) {
+function euVendor(o: { del?: () => Response; history?: (refNum: string) => unknown } = {}) {
   const calls: string[] = [];
-  const fetchImpl = async (url: string) => {
+  const fetchImpl = async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname.replace("/api/v1", "");
     calls.push(path);
     if (path.startsWith("/orders-delete/"))
       return o.del ? o.del() : jsonRes({ error: null, message: "deleted" });
+    if (path === "/fulfilment/orders-history" && o.history) {
+      const body = JSON.parse(String(init.body ?? "{}")) as { orders: { refNum: string }[] };
+      return jsonRes(body.orders.map((x) => o.history!(x.refNum)));
+    }
     throw new Error(`unexpected call ${path}`);
   };
   const resolve: TransportResolver = (c) => euShipmentsTransportFor(c, { fetchImpl, sleep: async () => {} });
@@ -45,8 +49,9 @@ function euVendor(o: { del?: () => Response } = {}) {
 
 const ex = examples as unknown as Record<string, Record<string, unknown>>;
 
-function fhbVendor(o: { refuse?: boolean } = {}) {
+function fhbVendor(o: { refuse?: boolean; deleteDropped?: boolean } = {}) {
   const calls: string[] = [];
+  let deleted = false;
   const fetchImpl = async (u: string, init: RequestInit = {}) => {
     const url = new URL(u);
     if (url.pathname === "/v3/login") return jsonRes({ token: "t", expiration: "2099-01-01T00:00:00+0000" });
@@ -54,10 +59,18 @@ function fhbVendor(o: { refuse?: boolean } = {}) {
     const id = url.searchParams.get("id") ?? "";
     calls.push(`${key} ${id}`);
     if (key === "DELETE /order") {
+      // The request reached FHB and deleted the order, but the answer was lost (network error).
+      if (o.deleteDropped) {
+        deleted = true;
+        throw new TypeError("fetch failed");
+      }
       if (o.refuse) return jsonRes({ message: "Order is not in pending state", errors: {} }, 400);
       return new Response(null, { status: 204 });
     }
-    if (key === "GET /order") return jsonRes({ ...ex["POST /order 200 response"], id, status: "pending" });
+    if (key === "GET /order")
+      return deleted
+        ? jsonRes({ message: "Not found" }, 404)
+        : jsonRes({ ...ex["POST /order 200 response"], id, status: "pending" });
     throw new Error(`unexpected ${key}`);
   };
   const resolve = createFhbTransportResolver({ fetchImpl, sleep: async () => {}, random: () => 0 });
@@ -269,6 +282,142 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
       expect(
         await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancelled" } }),
       ).toBe(1);
+    });
+  });
+
+  describe("unknown outcome → read-back", () => {
+    it("euShipments 503 on orders-delete, orders-history read-back 'Deleted' → CANCELLED / BLOCKED", async () => {
+      const { order, fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id);
+      const eu = euVendor({
+        del: () => jsonRes({ error: "busy" }, 503),
+        history: (refNum) => ({
+          refNum,
+          statusesHistory: [
+            { ID: 1, STATUS: "Information received", DATE: "2026-11-03 10:00:00" },
+            { ID: 2, STATUS: "Deleted", DATE: "2026-11-03 11:00:00" },
+          ],
+        }),
+      });
+      expect(await processOutbound(r.requestId, vendors(eu))).toBe("SENT");
+      expect(eu.calls).toEqual([`/orders-delete/${fulfillment.externalId}`, "/fulfilment/orders-history"]);
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await status(order.id)).toBe("BLOCKED");
+      const info = await g.db.orderEvent.findFirstOrThrow({
+        where: { orderId: order.id, cause: "warehouse_cancelled" },
+      });
+      expect(info.reason).toBe("отказана в склада от O: sent_by_mistake: грешен склад");
+    });
+
+    it("FHB DELETE network error, GET /order 404 on read-back → shipment CANCELLED, order BLOCKED", async () => {
+      const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+      const r = await cancel(fulfillment.id);
+      const v = fhbVendor({ deleteDropped: true });
+      expect(await processOutbound(r.requestId, vendors(euVendor(), v))).toBe("SENT");
+      expect(v.calls).toEqual([
+        `DELETE /order ${fulfillment.externalId}`,
+        `GET /order ${fulfillment.externalId}`,
+      ]);
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await status(order.id)).toBe("BLOCKED");
+      expect(
+        await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancelled" } }),
+      ).toBe(1);
+    });
+  });
+
+  describe("CANARY: waits for an explicit confirmation", () => {
+    it("AWAITING_CONFIRMATION, button hidden; only confirmCanary lets the sender call the vendor", async () => {
+      const { order, fulfillment } = await shipped();
+      await setMode(g.connection.id, "CANARY");
+      try {
+        const r = await cancel(fulfillment.id);
+        expect(r.mode).toBe("CANARY");
+        const eu = euVendor();
+        expect(await processOutbound(r.requestId, vendors(eu))).toBe("AWAITING_CONFIRMATION");
+        expect(eu.calls).toEqual([]);
+        expect(await status(order.id)).toBe("ACCEPTED");
+        const row = (await warehouseCancelView(g.owner, order.id)).rows[0]!;
+        expect(row.request?.status).toBe("AWAITING_CONFIRMATION");
+        expect(row.refusal).toBe("already_requested");
+        await confirmCanary(g.owner, r.requestId);
+        expect(await processOutbound(r.requestId, vendors(eu))).toBe("SENT");
+        expect(eu.calls).toEqual([`/orders-delete/${fulfillment.externalId}`]);
+        expect(await status(order.id)).toBe("BLOCKED");
+      } finally {
+        await setMode(g.connection.id, "LIVE");
+      }
+    });
+  });
+
+  describe("a deletion outside the CRM after a cancel that never left it", () => {
+    const vendorAlerts = (fulfillmentId: string) =>
+      g.db.alert.count({ where: { kind: "eushipments_cancelled_at_vendor", entityId: fulfillmentId } });
+
+    for (const mode of ["DRY_RUN", "READ_ONLY"] as const)
+      it(`${mode} request, then history 'Deleted' → CRITICAL cabinet task, no attribution to the requester`, async () => {
+        const { order, fulfillment } = await shipped();
+        await setMode(g.connection.id, mode);
+        try {
+          const r = await cancel(fulfillment.id);
+          expect(await processOutbound(r.requestId, vendors(euVendor()))).toBe(
+            mode === "DRY_RUN" ? "DRY_RUN_RECORDED" : "REFUSED",
+          );
+        } finally {
+          await setMode(g.connection.id, "LIVE");
+        }
+        await applyOrderHistory(g.accountId, fulfillment.id, {
+          refNum: fulfillment.externalId,
+          statusesHistory: [{ ID: 4, STATUS: "Deleted", DATE: "2026-11-03 11:00:00" }],
+        } as never);
+        expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+        expect(await status(order.id)).toBe("BLOCKED");
+        expect(await vendorAlerts(fulfillment.id)).toBe(1);
+        expect(
+          await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancelled" } }),
+        ).toBe(0);
+      });
+
+    it("a vendor-refused (FAILED) request, then 'not found' twice → CRITICAL cabinet task", async () => {
+      const { order, fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id);
+      const refusing = vendors(euVendor({ del: () => jsonRes({ error: "Order cannot be deleted" }) }));
+      expect(await processOutbound(r.requestId, refusing)).toBe("FAILED");
+      expect(await markGoneAtVendor(g.accountId, fulfillment.id)).toBe(true);
+      expect(await status(order.id)).toBe("BLOCKED");
+      expect(await vendorAlerts(fulfillment.id)).toBe(1);
+      expect(
+        await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancelled" } }),
+      ).toBe(0);
+    });
+
+    it("a request that left the CRM (answer lost), then 'not found' twice → BLOCKED with attribution, no task", async () => {
+      const { order, fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id);
+      await g.db.outboundRequest.update({ where: { id: r.requestId }, data: { status: "UNCERTAIN" } });
+      expect(await markGoneAtVendor(g.accountId, fulfillment.id)).toBe(true);
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await status(order.id)).toBe("BLOCKED");
+      expect(await vendorAlerts(fulfillment.id)).toBe(0);
+      const info = await g.db.orderEvent.findFirstOrThrow({
+        where: { orderId: order.id, cause: "warehouse_cancelled" },
+      });
+      expect(info.reason).toBe("отказана в склада от O: sent_by_mistake: грешен склад");
+    });
+  });
+
+  describe("euShipments 401 on the delete is not a warehouse refusal", () => {
+    it("FAILED 'unauthenticated', no refusal task, shipment unchanged", async () => {
+      const { order, fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id);
+      const unauth = vendors(euVendor({ del: () => jsonRes({ message: "Unauthenticated." }, 401) }));
+      expect(await processOutbound(r.requestId, unauth)).toBe("FAILED");
+      const row = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: r.requestId } });
+      expect(row.lastError).toBe("unauthenticated");
+      expect(await shipStatus(fulfillment.id)).toBe("ACCEPTED");
+      expect(
+        await g.db.alert.count({ where: { entityId: order.id, kind: "warehouse_cancel_refused" } }),
+      ).toBe(0);
     });
   });
 

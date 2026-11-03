@@ -259,7 +259,9 @@ export class EuShipmentsTransport implements OutboundTransport {
           const ref = String(ctx.referenceNumber ?? "");
           const res = await client.deleteOrderByRef(ref);
           if (!res.ok) {
-            if (live) await this.effect(call, "orderDeleteRejected", ctx, res.error);
+            // 401: the vendor never evaluated the delete (our token) — not a warehouse refusal, no refusal task;
+            // the outbox row is FAILED with "unauthenticated" and the card says the cancel was not sent.
+            if (live && res.status !== 401) await this.effect(call, "orderDeleteRejected", ctx, res.error);
             return { outcome: "rejected", response: res.body, error: res.error };
           }
           if (res.data.error) {

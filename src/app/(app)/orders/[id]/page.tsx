@@ -89,9 +89,11 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   const cancelRequestText = (req: NonNullable<(typeof wc.rows)[number]["request"]>) =>
     req.status === "REFUSED" && req.lastError === "read_only"
       ? o("warehouseCancel.request.READ_ONLY")
-      : o.has(`warehouseCancel.request.${req.status}`)
-        ? o(`warehouseCancel.request.${req.status}`)
-        : o("warehouseCancel.request.other", { status: req.status });
+      : req.status === "FAILED" && req.lastError === "unauthenticated"
+        ? o("warehouseCancel.request.FAILED_AUTH")
+        : o.has(`warehouseCancel.request.${req.status}`)
+          ? o(`warehouseCancel.request.${req.status}`)
+          : o("warehouseCancel.request.other", { status: req.status });
   const optionView = (c: {
     id: string;
     name: string;
@@ -560,6 +562,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                               fulfillmentId={f.id}
                               externalId={f.externalId}
                               connection={f.connection}
+                              connectionType={f.connectionType}
                               liveMode={row.liveMode}
                               codes={reasonCodes}
                             />

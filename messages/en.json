@@ -1669,7 +1669,8 @@
         "fhb_not_pending": "FHB allows cancelling only in status pending.",
         "eushipments_not_deletable": "euShipments deletes only in New / Information received / Awaiting pickup and within 14 days.",
         "connection_type_unsupported": "This warehouse does not support cancelling.",
-        "order_status": "The order cannot be rerouted in its current status."
+        "order_status": "The order cannot be rerouted in its current status.",
+        "cancel_requested": "A cancel of this shipment at the warehouse is already requested — no reroute."
       },
       "onlyAdmins": "Rerouting after sending: owner or admin only.",
       "history": "Reroutes",
@@ -1718,12 +1719,14 @@
       "transition_not_allowed": "Not possible in the current status.",
       "transition_race": "The order changed — try again.",
       "already_requested": "The cancel was already requested — see the request status.",
+      "cancel_requested": "A cancel of this shipment at the warehouse is already requested — no reroute.",
       "label_shipment": "Labels are voided on the manual shipment page."
     },
     "warehouseCancel": {
       "open": "Cancel at warehouse",
       "title": "Cancel the shipment at the warehouse",
-      "explain": "Shipment {id} at {connection} is cancelled through the outbox. Once the warehouse confirms, the shipment becomes Cancelled and the order Blocked: then send it again (new id) or cancel the order.",
+      "explain": "Shipment {id} at {connection} is cancelled through the outbox. Once the warehouse confirms, the shipment becomes Cancelled and the order Blocked: then send it again (FHB gives a new id) or cancel the order.",
+      "explainEushipments": "Shipment {id} at {connection} is cancelled through the outbox. Once the warehouse confirms, the shipment becomes Cancelled and the order Blocked. Note: euShipments never takes the same reference again, so the order can NOT be sent to euShipments again (this or any connection on the same account) — only to another warehouse, or cancelled.",
       "ack": "I understand: the shipment at {connection} will be cancelled and this cannot be undone.",
       "submit": "Cancel at warehouse",
       "mode": {
@@ -1743,6 +1746,7 @@
         "READ_ONLY": "Read-only: the cancel was not sent",
         "REFUSED": "Cancel request: not sent",
         "FAILED": "The warehouse refused to cancel the shipment — it stays",
+        "FAILED_AUTH": "The cancel was not sent: the warehouse rejected our credentials (check the connection) — the shipment stays",
         "other": "Cancel request: {status}"
       },
       "refusal": {

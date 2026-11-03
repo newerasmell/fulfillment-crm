@@ -242,6 +242,15 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   UNCERTAIN; it is the review 'block' decision (reason required, Review record, BLOCKED_TASK_KIND Shopify task), shown
   as "Откажи поръчката" in the decision bar. No migration. Tests: src/server/override/warehouse-cancel.test.ts, e2e
   tests/e2e/cancel-at-warehouse.spec.ts (DRY_RUN request, confirmed cancel simulated by the real euShipments effect).
+  Audit fixes (same day): a delete counts as "CRM-requested" (BLOCKED with attribution, no cabinet task) only when its
+  outbox row actually left the CRM (SENDING / SENT / UNCERTAIN) — a DRY_RUN / READ_ONLY / FAILED row followed by a
+  cabinet deletion still raises the CRITICAL eushipments_cancelled_at_vendor task (cancel-effects CANCEL_LEFT_CRM).
+  A reroute is now refused ("cancel_requested") while a warehouse cancel of the shipment is in flight, and never
+  attaches to an existing cancel row. euShipments dialog says plainly that the order can NOT go to euShipments again
+  (same `{PREFIX}-{number}` reference) — only another warehouse or cancel; FHB keeps "new id". An euShipments 401 on the
+  delete is not reported as a warehouse refusal (no task; card "not sent: credentials"). Explicit accountId on the
+  membership/alert lookups. New tests: CANARY confirm path, euShipments 503 → orders-history read-back, FHB network
+  error → GET /order 404 read-back, markGoneAtVendor requested/not-requested paths, reroute-after-cancel refusal.
 
 ## Open questions
 See SPEC.md §11.

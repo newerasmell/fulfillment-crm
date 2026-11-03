@@ -450,6 +450,7 @@ export function WarehouseCancelButton({
   fulfillmentId,
   externalId,
   connection,
+  connectionType,
   liveMode,
   codes,
 }: {
@@ -457,6 +458,8 @@ export function WarehouseCancelButton({
   fulfillmentId: string;
   externalId: string;
   connection: string;
+  /** euShipments references never change ({PREFIX}-{number}): a cancelled order cannot go there again. */
+  connectionType: string;
   liveMode: string;
   codes: CodeView[];
 }) {
@@ -509,7 +512,14 @@ export function WarehouseCancelButton({
             }}
           >
             <h3 className="m-0 text-base font-semibold">{t("warehouseCancel.title")}</h3>
-            <p className="m-0 text-sm">{t("warehouseCancel.explain", { id: externalId, connection })}</p>
+            <p className="m-0 text-sm">
+              {t(
+                connectionType === "EUSHIPMENTS"
+                  ? "warehouseCancel.explainEushipments"
+                  : "warehouseCancel.explain",
+                { id: externalId, connection },
+              )}
+            </p>
             {liveMode !== "LIVE" && (
               <p className="m-0 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn">
                 {t(`warehouseCancel.mode.${liveMode}`)}

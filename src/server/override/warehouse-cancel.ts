@@ -6,7 +6,7 @@ import { assertCan, can } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import type { ScopedActor } from "@/server/stores";
-import { CANCEL_OPERATIONS, WAREHOUSE_CANCEL_MARK } from "./cancel-effects";
+import { CANCEL_IN_FLIGHT, CANCEL_OPERATIONS, WAREHOUSE_CANCEL_MARK } from "./cancel-effects";
 import { recordTimelineEvent } from "./choice";
 import { INACTIVE_SHIPMENT } from "./guards";
 import { scopedOrderForChoice } from "./options";
@@ -43,16 +43,7 @@ export const WarehouseCancelInput = z.object({
 });
 export type WarehouseCancelInput = z.input<typeof WarehouseCancelInput>;
 
-/** Outbox states in which a cancel is on its way or its outcome is not settled: no second request. */
-const IN_FLIGHT: readonly OutboundStatus[] = [
-  "PENDING",
-  "PAUSED",
-  "AWAITING_CONFIRMATION",
-  "HELD",
-  "SENDING",
-  "SENT",
-  "UNCERTAIN",
-];
+const IN_FLIGHT = CANCEL_IN_FLIGHT;
 
 export interface CancelShipmentLike {
   status: string;

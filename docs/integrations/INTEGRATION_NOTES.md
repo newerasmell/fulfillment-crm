@@ -278,7 +278,10 @@ contracts. Separate base URL, separate auth call, camelCase.
 - Delete: `DELETE /orders-delete/{refNumber}` or `/orders/{id}` — only in *Information received*,
   *Awaiting pickup* or *New*, and **not older than 14 days**. The CRM's "Откажи в склада" uses `/orders-delete/{refNumber}` through the
   outbox only inside that window; a confirmed delete (answer, or orders-history "Deleted" / "not found" for a delete
-  the CRM requested) → shipment CANCELLED, order BLOCKED; an error answer leaves the shipment and opens a task.
+  the CRM sent — not a DRY_RUN/READ_ONLY/refused row) → shipment CANCELLED, order BLOCKED; a vendor error answer
+  leaves the shipment and opens a task. After that the order can **never be sent to euShipments again** (the
+  reference is always `{PREFIX}-{number}` and a deleted reference is refused by the pre-send check, on any
+  connection sharing the credential): only another warehouse, or cancel the order.
 - Attach invoice: `POST /fulfilment/attach-pdf-files` — **only before the AWB is generated** (422 after),
   one file per request, content must be a real PDF (signature checked). Attach immediately after create.
 

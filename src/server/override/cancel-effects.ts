@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import type { OutboundStatus, Prisma } from "@/generated/prisma/client";
 import { scrubText } from "@/lib/scrub";
 import { isRerouteOwnedShipment, transition } from "@/server/pipeline";
 
@@ -41,28 +41,65 @@ export function warehouseCancelMeta(payload: unknown): WarehouseCancelMeta | nul
   return { requestedById: s(m.requestedById), reasonCode: s(m.reasonCode), reasonText: s(m.reasonText) };
 }
 
-/** The latest CRM cancel request of a shipment (any origin), newest first. */
-export function latestCancelRequest(tx: Tx, fulfillmentId: string) {
+/** Outbox states in which a cancel is on its way or its outcome is not settled: no second request, no reroute. */
+export const CANCEL_IN_FLIGHT: readonly OutboundStatus[] = [
+  "PENDING",
+  "PAUSED",
+  "AWAITING_CONFIRMATION",
+  "HELD",
+  "SENDING",
+  "SENT",
+  "UNCERTAIN",
+];
+
+/**
+ * Outbox states in which a cancel request actually LEFT the CRM (was being sent, was sent, or its outcome is
+ * unknown). A DRY_RUN_RECORDED / REFUSED (READ_ONLY) / FAILED / still-queued row never reached the vendor or was
+ * refused by it: a deletion seen afterwards was NOT requested by the CRM (someone removed it in the cabinet).
+ */
+export const CANCEL_LEFT_CRM: readonly OutboundStatus[] = ["SENDING", "SENT", "UNCERTAIN"];
+
+/** Whether a CRM delete of this shipment actually left the CRM (see CANCEL_LEFT_CRM). */
+export async function crmCancelLeft(tx: Tx, accountId: string, fulfillmentId: string) {
+  const r = await tx.outboundRequest.findFirst({
+    where: {
+      accountId,
+      fulfillmentId,
+      operation: { in: [...CANCEL_OPERATIONS] },
+      status: { in: [...CANCEL_LEFT_CRM] },
+    },
+    select: { id: true },
+  });
+  return !!r;
+}
+
+/** The latest CRM cancel request of a shipment (any origin) that left the CRM, newest first. */
+export function latestCancelRequest(tx: Tx, accountId: string, fulfillmentId: string) {
   return tx.outboundRequest.findFirst({
-    where: { fulfillmentId, operation: { in: [...CANCEL_OPERATIONS] } },
+    where: {
+      accountId,
+      fulfillmentId,
+      operation: { in: [...CANCEL_OPERATIONS] },
+      status: { in: [...CANCEL_LEFT_CRM] },
+    },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
     select: { id: true, payload: true, status: true, operation: true },
   });
 }
 
-async function userLabel(tx: Tx, userId: string | null) {
+async function userLabel(tx: Tx, accountId: string, userId: string | null) {
   if (!userId) return null;
-  // Through the account's membership (RLS-scoped like the order timeline's "who").
+  // Through the account's membership (scoped like the order timeline's "who").
   const m = await tx.membership.findFirst({
-    where: { userId },
+    where: { accountId, userId },
     select: { user: { select: { name: true, email: true } } },
   });
   return m ? (m.user.name ?? m.user.email) : null;
 }
 
 /** "отказана в склада от <user>: <reason>" (the info line on the order timeline). */
-export async function cancelReasonLine(tx: Tx, meta: WarehouseCancelMeta | null) {
-  const who = await userLabel(tx, meta?.requestedById ?? null);
+export async function cancelReasonLine(tx: Tx, accountId: string, meta: WarehouseCancelMeta | null) {
+  const who = await userLabel(tx, accountId, meta?.requestedById ?? null);
   const reason = [meta?.reasonCode, meta?.reasonText].filter(Boolean).join(": ");
   return `отказана в склада${who ? ` от ${who}` : ""}${reason ? `: ${reason}` : ""}`;
 }
@@ -79,7 +116,13 @@ async function openOrderTask(
   },
 ) {
   const open = await tx.alert.findFirst({
-    where: { kind: a.kind, entityType: "Order", entityId: a.orderId, status: { not: "RESOLVED" } },
+    where: {
+      accountId: a.accountId,
+      kind: a.kind,
+      entityType: "Order",
+      entityId: a.orderId,
+      status: { not: "RESOLVED" },
+    },
     select: { id: true },
   });
   if (open) return open.id;
@@ -109,9 +152,9 @@ export async function warehouseCancelConfirmed(
   input: { accountId: string; orderId: string; fulfillmentId: string; source: string },
 ): Promise<boolean> {
   if (await isRerouteOwnedShipment(tx, input.fulfillmentId)) return false;
-  const req = await latestCancelRequest(tx, input.fulfillmentId);
+  const req = await latestCancelRequest(tx, input.accountId, input.fulfillmentId);
   const meta = req ? warehouseCancelMeta(req.payload) : null;
-  const line = await cancelReasonLine(tx, meta);
+  const line = await cancelReasonLine(tx, input.accountId, meta);
   const t = await transition(tx, {
     orderId: input.orderId,
     to: "BLOCKED",

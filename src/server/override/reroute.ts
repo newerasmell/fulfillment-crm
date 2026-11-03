@@ -13,6 +13,7 @@ import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import type { TransportResolver } from "@/server/outbox/transport";
 import { followShipment, isAllowed, transition } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
+import { CANCEL_IN_FLIGHT, CANCEL_OPERATIONS } from "./cancel-effects";
 import { invalidateCheck, recordTimelineEvent } from "./choice";
 import { INACTIVE_SHIPMENT, isRerouteOpen } from "./guards";
 import { eligibleConnections, scopedOrderForChoice, warehouseOptions, type WarehouseOption } from "./options";
@@ -151,8 +152,23 @@ export async function rerouteView(actor: ScopedActor, orderId: string, now = new
       })
     : [];
   const shipment = active.length === 1 ? active[0]! : null;
+  // A cancel already on its way for this shipment that no reroute owns ("Откажи в склада"): no reroute on top.
+  const ownedIds = new Set(requestIds);
+  const cancelInFlight = shipment
+    ? (
+        await db.outboundRequest.findMany({
+          where: {
+            fulfillmentId: shipment.id,
+            operation: { in: [...CANCEL_OPERATIONS] },
+            status: { in: [...CANCEL_IN_FLIGHT] },
+          },
+          select: { id: true },
+        })
+      ).some((r) => !ownedIds.has(r.id))
+    : false;
   const refusal = shipment
     ? (cancelRefusal(shipment, shipment.connection.type, now) ??
+      (cancelInFlight ? "cancel_requested" : null) ??
       (isAllowed("reroute", order.status, "APPROVED", "system") ? null : "order_status"))
     : active.length > 1
       ? "several_active_shipments"
@@ -269,8 +285,21 @@ export async function requestReroute(actor: ScopedActor, raw: RerouteInput, now 
           outcome: json({ requestedMode: f.connection.liveMode }),
         },
       });
+      // A cancel of this shipment already on its way ("Откажи в склада" by someone else): never take it over —
+      // its intent (stop the order, BLOCKED) must not silently become a reroute.
+      const inFlight = await tx.outboundRequest.findFirst({
+        where: {
+          accountId: actor.accountId,
+          fulfillmentId: f.id,
+          operation: { in: [...CANCEL_OPERATIONS] },
+          status: { in: [...CANCEL_IN_FLIGHT] },
+        },
+        select: { status: true },
+      });
+      if (inFlight)
+        throw new DomainError(inFlight.status === "UNCERTAIN" ? "cancel_uncertain" : "cancel_requested");
       const write = cancelWrite(f, f.connection.type, reroute.id);
-      const { request } = await enqueueOutboundInTx(tx, {
+      const { request, created } = await enqueueOutboundInTx(tx, {
         accountId: actor.accountId,
         connectionId: f.connectionId,
         operation: write.operation,
@@ -281,6 +310,8 @@ export async function requestReroute(actor: ScopedActor, raw: RerouteInput, now 
       });
       // An earlier cancel of this shipment whose outcome is unknown must be resolved by a person first.
       if (request.status === "UNCERTAIN") throw new DomainError("cancel_uncertain");
+      // Never attach to a row someone else owns (belt and braces for the check above).
+      if (!created) throw new DomainError("cancel_requested");
       await tx.orderReroute.update({ where: { id: reroute.id }, data: { cancelRequestId: request.id } });
       const meta = {
         rerouteId: reroute.id,
