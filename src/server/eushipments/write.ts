@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import { Prisma, type Fulfillment, type OutboundStatus } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
 import {
@@ -21,6 +22,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutbound, enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { queueGate } from "@/server/pipeline";
 import type { ScopedActor } from "@/server/stores";
 import { loadEuConnection } from "./connection";
 
@@ -256,21 +258,24 @@ async function stockFindings(
   return out;
 }
 
-export async function queueEuOrder(
-  actor: ScopedActor,
-  raw: z.input<typeof QueueOrderInput>,
-  now: Date = new Date(),
-): Promise<QueueOrderResult> {
-  assertCan(actor.role, "orders.fulfill");
-  const input = QueueOrderInput.parse(raw);
-  const { connection, companyId } = await euConnectionFor(actor, input.connectionId);
-  const db = accountDb(actor.accountId);
-  const order = await db.order.findUnique({
-    where: { id: input.orderId },
-    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
-  });
-  if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
-    throw new DomainError("not_found");
+type EuPreflightOrder = Prisma.OrderGetPayload<{
+  include: { lines: { include: { product: true } }; store: { select: { code: true } } };
+}>;
+
+/**
+ * Every pre-flight finding for one order at one euShipments connection (mapping, weights, COD in local
+ * currency, stock, the vendor validators) plus the built body. Reads only; no permission or scope check —
+ * the callers do that (queueEuOrder, and the validator engine's preview via previewEuOrderFindings).
+ */
+async function euOrderPreflight(
+  accountId: string,
+  connection: { id: string },
+  companyId: number,
+  order: EuPreflightOrder,
+  input: z.output<typeof QueueOrderInput>,
+  now: Date,
+) {
+  const db = accountDb(accountId);
   const reference = referenceFor(order, order.store?.code ?? null);
   const findings: Finding[] = [];
 
@@ -278,7 +283,7 @@ export async function queueEuOrder(
   if (!lines.length)
     findings.push(block("no_lines", "products", "Поръчката няма редове.", "The order has no lines."));
   const vps = await vendorProductsFor(
-    actor.accountId,
+    accountId,
     connection.id,
     lines.map((l) => l.productId).filter((p): p is string => !!p),
   );
@@ -312,7 +317,7 @@ export async function queueEuOrder(
     );
   if (cod && order.codLocalCurrency && order.countryCode) {
     const cs = await db.countrySetting.findUnique({
-      where: { accountId_country: { accountId: actor.accountId, country: order.countryCode } },
+      where: { accountId_country: { accountId: accountId, country: order.countryCode } },
     });
     if (cs && cs.currency !== order.codLocalCurrency)
       findings.push(
@@ -330,11 +335,11 @@ export async function queueEuOrder(
     );
 
   const settings = await db.eushipmentsSettings.findUnique({
-    where: { accountId_connectionId: { accountId: actor.accountId, connectionId: connection.id } },
+    where: { accountId_connectionId: { accountId: accountId, connectionId: connection.id } },
   });
   findings.push(
     ...(await stockFindings(
-      actor.accountId,
+      accountId,
       lines,
       vps,
       settings?.stockStaleHours ?? DEFAULT_STOCK_STALE_HOURS,
@@ -365,12 +370,87 @@ export async function queueEuOrder(
   });
   findings.push(...validateEuOrder(built, { cashReceiptCod, today }));
 
+  return { reference, findings, built, lines };
+}
+
+/**
+ * The findings queueEuOrder would report for this order, without queueing anything (P4-01 validator engine).
+ * A connection without an euShipments companyId reports that as a block.
+ */
+export async function previewEuOrderFindings(
+  accountId: string,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+): Promise<Finding[]> {
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await loadEuConnection(accountId, input.connectionId);
+  if (!companyId)
+    return [
+      block(
+        "no_company_id",
+        "senderId",
+        "Връзката няма euShipments фирма (companyId).",
+        "The connection has no euShipments company (companyId).",
+      ),
+    ];
+  const order = await accountDb(accountId).order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order) throw new DomainError("not_found");
+  return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).findings;
+}
+
+/**
+ * The create-order body queueEuOrder would send for this order now (P4-04 payload preview): built by the same
+ * pre-flight, nothing queued, no vendor call. Null when the connection has no euShipments companyId.
+ */
+export async function previewEuOrderPayload(
+  accountId: string,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+) {
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await loadEuConnection(accountId, input.connectionId);
+  if (!companyId) return null;
+  const order = await accountDb(accountId).order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order) throw new DomainError("not_found");
+  return (await euOrderPreflight(accountId, connection, companyId, order, input, now)).built.body;
+}
+
+export async function queueEuOrder(
+  actor: ScopedActor,
+  raw: z.input<typeof QueueOrderInput>,
+  now: Date = new Date(),
+): Promise<QueueOrderResult> {
+  assertCan(actor.role, "orders.fulfill");
+  const input = QueueOrderInput.parse(raw);
+  const { connection, companyId } = await euConnectionFor(actor, input.connectionId);
+  const db = accountDb(actor.accountId);
+  const order = await db.order.findUnique({
+    where: { id: input.orderId },
+    include: { lines: { include: { product: true } }, store: { select: { code: true } } },
+  });
+  if (!order || (actor.companyScope && (!order.companyId || !actor.companyScope.includes(order.companyId))))
+    throw new DomainError("not_found");
+  if (await isLabelOnly(db, order.id)) throw new DomainError("label_only_order");
+  const { reference, findings, built, lines } = await euOrderPreflight(
+    actor.accountId,
+    connection,
+    companyId,
+    order,
+    input,
+    now,
+  );
   if (hasBlocks(findings)) return { status: "blocked", findings };
   const unacked = findings.filter((f) => f.severity === "warn" && !input.acknowledged.includes(f.code));
   if (unacked.length) return { status: "needs_ack", findings };
 
   const run = () =>
-    withAccountTransaction(actor.accountId, async (tx, { lockKey }) => {
+    withAccountTransaction(actor.accountId, async (tx, { lockKey, lockForUpdate }) => {
       await lockKey(`eushipments:order:${connection.id}:${reference}`);
       const existing = await tx.fulfillment.findUnique({
         where: { connectionId_externalId: { connectionId: connection.id, externalId: reference } },
@@ -392,6 +472,16 @@ export async function queueEuOrder(
         if (!ourSideOpen || (req && !REARMABLE_REQUEST.has(req.status)))
           throw new DomainError("duplicate_reference");
       }
+      // The pipeline is the gate: only an APPROVED / SUBMIT_FAILED order is queued (strict, before anything is
+      // written). The order row lock serialises this with a concurrent cancel, hold or check.
+      await lockForUpdate("Order", order.id);
+      await queueGate(tx, {
+        orderId: order.id,
+        userId: actor.userId,
+        source: "eushipments.queue",
+        connectionId: connection.id,
+        rearmQueued: existing?.status === "QUEUED",
+      });
       let fulfillment: Fulfillment;
       if (existing) {
         fulfillment = await tx.fulfillment.update({
@@ -447,10 +537,6 @@ export async function queueEuOrder(
         fulfillmentId: fulfillment.id,
         createdById: actor.userId,
       });
-      await tx.order.updateMany({
-        where: { id: order.id, status: { in: ["APPROVED", "READY", "SUBMIT_FAILED"] } },
-        data: { status: "QUEUED" },
-      });
       return { fulfillment, request };
     });
   let res;
@@ -487,6 +573,16 @@ export async function queueEuOrder(
 const DELETABLE = new Set(["new", "information received", "awaiting pickup"]);
 const DELETE_MAX_AGE_MS = 14 * 24 * 3600_000;
 
+/** Can euShipments still delete this shipment (status and the 14-day window, INTEGRATION_NOTES §4.3)? */
+export function isEuOrderDeletable(
+  f: { rawStatus: string | null; status: string; submittedAt: Date | null; createdAt: Date },
+  now: Date = new Date(),
+) {
+  const statusOk = f.rawStatus ? DELETABLE.has(normaliseStatusText(f.rawStatus)) : f.status === "ACCEPTED";
+  const since = f.submittedAt ?? f.createdAt;
+  return statusOk && now.getTime() - since.getTime() <= DELETE_MAX_AGE_MS;
+}
+
 export async function queueEuOrderDeletion(
   actor: ScopedActor,
   fulfillmentId: string,
@@ -498,10 +594,7 @@ export async function queueEuOrderDeletion(
   if (!f || (actor.companyScope && (!f.order.companyId || !actor.companyScope.includes(f.order.companyId))))
     throw new DomainError("not_found");
   await euConnectionFor(actor, f.connectionId);
-  const statusOk = f.rawStatus ? DELETABLE.has(normaliseStatusText(f.rawStatus)) : f.status === "ACCEPTED";
-  const since = f.submittedAt ?? f.createdAt;
-  if (!statusOk || now.getTime() - since.getTime() > DELETE_MAX_AGE_MS)
-    throw new DomainError("not_deletable");
+  if (!isEuOrderDeletable(f, now)) throw new DomainError("not_deletable");
   const { request, created } = await enqueueOutbound({
     accountId: actor.accountId,
     connectionId: f.connectionId,

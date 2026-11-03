@@ -5,6 +5,7 @@ import { createBoss, ensureQueues } from "@/server/jobs/boss";
 import { registerWorkers } from "@/server/jobs/handlers";
 import { resolveFhbTransport } from "@/server/fhb/transport";
 import { resolveEuShipmentsTransport } from "@/server/eushipments/transport";
+import { withLabelTransports } from "@/server/labels/transport";
 import { assertSchemaUpToDate } from "./migrations";
 
 async function main() {
@@ -17,7 +18,8 @@ async function main() {
   // Vendor transports by connection type; each resolver answers only for its own type.
   await registerWorkers({
     boss,
-    resolveTransport: (c) => resolveFhbTransport(c) ?? resolveEuShipmentsTransport(c),
+    // FHB Joy labels and euShipments AWBs are added on top (src/server/labels/transport.ts).
+    resolveTransport: withLabelTransports((c) => resolveFhbTransport(c) ?? resolveEuShipmentsTransport(c)),
   });
   logger.info("worker started");
 

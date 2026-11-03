@@ -197,6 +197,23 @@ model Account {
   webhookEvents   WebhookEvent[]
   aiPolicies      AiPolicy[]
   eushipmentsStatusMappings EushipmentsStatusMapping[]
+  fulfillBatches            FulfillBatch[]
+  shopifyWriteBacks         ShopifyWriteBack[]
+  alertNotes                AlertNote[]
+  alertNotifications        AlertNotification[]
+  reviewReasonCodes         ReviewReasonCode[]
+  productLines              ProductLine[]
+  stockSettings             StockSettings?
+  inventoryPushes           InventoryPush[]
+  returnCases               ReturnCase[]
+  returnsCodSettings        ReturnsCodSettings?
+  aiControl                 AiControl?
+  aiInteractions            AiInteraction[]
+  aiSuggestions             AiSuggestion[]
+  aiAuditSamples            AiAuditSample[]
+  aiPolicyEvents            AiPolicyEvent[]
+  aiRuleProposals           AiRuleProposal[]
+  reviewEmbeddings          ReviewEmbedding[]
 }
 
 model User {
@@ -228,10 +245,13 @@ model Company {
   name         String
   legalDetails Json?
   archivedAt   DateTime?
+  /// Product line of the company (P5-00): every company sells the goods of exactly one line. Null = not set yet.
+  lineId       String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   account     Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line        ProductLine?            @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
   stores      Store[]
   connections FulfillmentConnection[]
   orders      Order[]
@@ -377,6 +397,10 @@ model Store {
   credential   Credential?        @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   variantLinks StoreVariantLink[]
   orders       Order[]
+  writeBacks   ShopifyWriteBack[]
+  locations       StoreLocation[]
+  inventoryLevels ShopifyInventoryLevel[]
+  inventoryPushes InventoryPush[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -432,6 +456,15 @@ model FulfillmentConnection {
   eushipmentsStock           EushipmentsStock[]
   eushipmentsTracking        EushipmentsTracking[]
   eushipmentsSyncs           EushipmentsSync[]
+  masterCatalogueRuns        MasterCatalogueRun[]
+  warehouseChoices           OrderWarehouseChoice[]
+  rerouteTargets             OrderReroute[]        @relation("RerouteTarget")
+  storeLocations             StoreLocation[]
+  returnCases                ReturnCase[]
+  manualShipments            ManualShipment[]
+  shipmentLabels             ShipmentLabel[]
+  labelPrintJobs             LabelPrintJob[]
+  shippingQuotes             ShippingQuote[]
 
   @@unique([accountId, id])
   @@index([accountId])
@@ -494,10 +527,13 @@ model Product {
   countryOfOrigin String?
   images          String[]
   archived        Boolean  @default(false)
+  /// Product line of the master (P5-00). Null = not assigned to a line yet.
+  lineId          String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   account        Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line           ProductLine?       @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
   parent         Product?           @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
   testers        Product[]          @relation("TesterOf")
   eans           ProductEan[]
@@ -508,6 +544,7 @@ model Product {
 
   @@unique([accountId, id])
   @@unique([accountId, sku])
+  @@index([accountId, lineId])
 }
 
 /// Known EANs of a product with batch notes. Never a join key.
@@ -543,6 +580,7 @@ model StoreVariantLink {
   store      Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
   product    Product?    @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   orderLines OrderLine[]
+  inventoryLevels ShopifyInventoryLevel[]
 
   @@unique([accountId, id])
   @@unique([storeId, shopifyVariantGid])
@@ -697,6 +735,14 @@ model Order {
   lines        OrderLine[]
   fulfillments Fulfillment[]
   reviews      Review[]
+  events       OrderEvent[]
+  check        OrderCheck?
+  fulfillBatchItems FulfillBatchItem[]
+  shopifyWriteBacks ShopifyWriteBack[]
+  warehouseChoice   OrderWarehouseChoice?
+  reroutes          OrderReroute[]
+  manualShipment    ManualShipment?
+  aiSuggestions     AiSuggestion[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -758,6 +804,10 @@ model Fulfillment {
   events           FulfillmentEvent[]
   lines            FulfillmentLine[]
   outboundRequests OutboundRequest[]
+  shopifyWriteBack ShopifyWriteBack?
+  reroutesFrom     OrderReroute[]
+  manualShipment   ManualShipment?
+  labels           ShipmentLabel[]
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -815,7 +865,8 @@ model Review {
   createdAt    DateTime                     @default(now())
   decidedAt    DateTime?
 
-  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  order      Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  embeddings ReviewEmbedding[]
 
   @@index([accountId, createdAt])
 }
@@ -895,7 +946,9 @@ model Alert {
   createdAt  DateTime      @default(now())
   resolvedAt DateTime?
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  notes         AlertNote[]
+  notifications AlertNotification[]
 
   @@index([accountId, status, createdAt])
 }
@@ -1406,4 +1459,914 @@ model ApiWatchSource {
   /// Consecutive failed runs; an alert is raised when it reaches the threshold.
   failures      Int       @default(0)
   updatedAt     DateTime  @updatedAt
+}
+
+// ───────────────────────── wave 2 · core of phase 4 (pipeline, checks, routing) ─────────────────────────
+
+/// One CRM pipeline step of an order (SPEC §6.1). Written ONLY by src/server/pipeline (transition()), in the
+/// same transaction as the status change: the order timeline and the audit trail of every status move.
+model OrderEvent {
+  id         String          @id @default(cuid())
+  accountId  String
+  orderId    String
+  /// Null for the first event (the status the order was created with).
+  fromStatus CrmOrderStatus?
+  toStatus   CrmOrderStatus
+  /// Transition cause, e.g. check_result, approve, vendor, shopify_cancelled (src/server/pipeline/rules.ts).
+  cause      String
+  /// user | system | ai
+  actorType  String
+  userId     String?
+  /// Which code path moved it, e.g. "shopify.import", "eushipments.history", "fhb:callback".
+  source     String?
+  reason     String?
+  meta       Json?
+  createdAt  DateTime        @default(now())
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, orderId, createdAt])
+}
+
+/// Latest pre-flight result of an order (P4-01 validator engine, src/server/checks): the routing decision and
+/// every finding (order-level + the chosen warehouse's validators). One row per order, replaced on each check.
+/// connectionId / ruleId are snapshots (no relation): deleting a rule or connection keeps the history.
+model OrderCheck {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String
+  connectionId String?
+  ruleId       String?
+  /// RoutingDecision (src/server/routing/engine.ts), incl. the human-readable explanation.
+  routing      Json
+  /// [{code, severity: hard|soft, source, field, message_bg, message_en, suggestedFix?}]
+  findings     Json     @default("[]")
+  hardCount    Int      @default(0)
+  softCount    Int      @default(0)
+  /// Normalised values the senders will use (e.g. {phone: "+359…"}), shown next to the original.
+  normalised   Json     @default("{}")
+  checkedById  String?
+  checkedAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order Order @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, orderId])
+  @@index([accountId, checkedAt])
+}
+
+// ───────────────────────── wave 2 · review track (P4-04 / P4-05) ─────────────────────────
+
+/// Configurable reason codes for review decisions (SPEC §7.1: "a reason code from a fixed list"). An account
+/// without rows uses the built-in defaults (src/server/review/reasons.ts); the first change by an admin stores
+/// them. Codes are never deleted (old Review rows keep pointing at them), only deactivated.
+model ReviewReasonCode {
+  id        String   @id @default(cuid())
+  accountId String
+  /// Stable machine code stored on Review.reasonCode, e.g. "address_fixed".
+  code      String
+  labelBg   String
+  labelEn   String
+  /// Decisions this code is offered for: approve | hold | block.
+  decisions String[]
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, code])
+  @@index([accountId, sortOrder])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Wave 2 · track "fulfill" (P4-06 Fulfill, P4-07 Shopify write-back, P4-08 alerts/tasks)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One Fulfill action (a single order or a bulk selection). Every order gets a visible result row, so nothing
+/// is partial-silent (SPEC §6.1); the batch page can be reopened and resumed.
+model FulfillBatch {
+  id          String    @id @default(cuid())
+  accountId   String
+  createdById String
+  total       Int
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  account Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  items   FulfillBatchItem[]
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+/// Result of one order in a FulfillBatch. status: PENDING | RUNNING | QUEUED | BLOCKED | NEEDS_ACK | SKIPPED | FAILED.
+model FulfillBatchItem {
+  id           String    @id @default(cuid())
+  accountId    String
+  batchId      String
+  orderId      String
+  position     Int
+  status       String    @default("PENDING")
+  /// Machine-readable reason (e.g. not_approved, check_stale, fhb_already_submitted).
+  code         String?
+  /// Findings that blocked it or need acknowledging (validator engine shape).
+  findings     Json?
+  connectionId String?
+  liveMode     LiveMode?
+  /// The outbox request created (or re-armed) for this order.
+  requestId    String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  batch FulfillBatch @relation(fields: [accountId, batchId], references: [accountId, id], onDelete: Cascade)
+  order Order        @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([batchId, orderId])
+  @@index([accountId, orderId])
+}
+
+/// Shopify fulfillment write-back for one shipment (P4-07): the store-side outbox. One row per shipment (never
+/// two Shopify fulfillments for one shipment); the sender gates on Store.writeBackMode at send time (READ_ONLY:
+/// nothing, DRY_RUN: the exact mutation is recorded, LIVE: sent) and reads the order's fulfillments back by
+/// tracking number before every send and retry.
+model ShopifyWriteBack {
+  id                    String          @id @default(cuid())
+  accountId             String
+  storeId               String
+  orderId               String
+  fulfillmentId         String
+  status                OutboundStatus  @default(PENDING)
+  /// writeBackMode the sender evaluated last time.
+  evaluatedMode         StoreWriteMode?
+  trackingNumber        String
+  /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
+  request               Json?
+  attempts              Int             @default(0)
+  lastResponse          Json?
+  lastError             String?
+  shopifyFulfillmentGid String?
+  lockedAt              DateTime?
+  nextAttemptAt         DateTime?
+  sentAt                DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store       Store       @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  order       Order       @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, fulfillmentId])
+  @@index([accountId, orderId])
+  @@index([status, nextAttemptAt])
+}
+
+/// Alert/task history (P4-08): who assigned, resolved (with the note) or reopened it. Alert itself is unchanged.
+model AlertNote {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  userId    String?
+  /// assign | resolve | reopen | note | auto_resolve
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, alertId, createdAt])
+}
+
+/// One notification per alert and channel (email, telegram): the unique key makes sending idempotent.
+model AlertNotification {
+  id        String   @id @default(cuid())
+  accountId String
+  alertId   String
+  channel   String
+  /// SENDING | SENT | FAILED
+  status    String   @default("SENDING")
+  error     String?
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  alert   Alert   @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, channel])
+  @@index([accountId, createdAt])
+}
+
+// ───────────────────────── wave 3 core: product lines + master catalogue (P5-00) ─────────────────────────
+
+/// A product line of the group (e.g. cosmetics, textiles). Every company belongs to exactly one line; the companies
+/// of a line sell identical goods, so master products, matching and stock fallback stay inside the line.
+model ProductLine {
+  id         String    @id @default(cuid())
+  accountId  String
+  name       String
+  /// Colour token (src/server/lines/colors.ts), never a status or warehouse colour.
+  color      String    @default("rose")
+  sortOrder  Int       @default(0)
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  account        Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  companies      Company[]
+  products       Product[]
+  catalogueRuns  MasterCatalogueRun[]
+  mappingImports ProductMappingImport[]
+  dismissals     ProductMatchDismissal[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, name])
+}
+
+/// Background run of "create master products from warehouse X's catalogue" (worker job, small batches, resumable).
+model MasterCatalogueRun {
+  id              String    @id @default(cuid())
+  accountId       String
+  lineId          String
+  connectionId    String
+  /// QUEUED | RUNNING | DONE | FAILED
+  status          String    @default("QUEUED")
+  /// masters | autolink | done
+  phase           String    @default("masters")
+  total           Int       @default(0)
+  processed       Int       @default(0)
+  created         Int       @default(0)
+  linked          Int       @default(0)
+  adopted         Int       @default(0)
+  alreadyLinked   Int       @default(0)
+  conflicts       Int       @default(0)
+  autoLinked      Int       @default(0)
+  /// A few SKUs that could not be used (another line already has them), for the operator.
+  conflictSamples Json      @default("[]")
+  /// Last VendorProduct id processed (the run resumes after it).
+  cursor          String?
+  error           String?
+  createdById     String?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  line       ProductLine           @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, lineId, createdAt])
+}
+
+/// "Друго": an operator rejected a match suggestion (item = VendorProduct or StoreVariantLink) — not shown again.
+model ProductMatchDismissal {
+  id          String   @id @default(cuid())
+  accountId   String
+  lineId      String
+  /// vendor | variant
+  kind        String
+  itemId      String
+  productId   String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  line ProductLine @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, kind, itemId, productId])
+  @@index([accountId, lineId])
+}
+
+/// An uploaded mapping file (Excel/CSV) of one line: validated plan first (PREVIEW), applied by a person (APPLIED).
+model ProductMappingImport {
+  id          String    @id @default(cuid())
+  accountId   String
+  lineId      String
+  fileName    String
+  /// PREVIEW | INVALID | APPLYING | APPLIED | FAILED
+  status      String    @default("PREVIEW")
+  plan        Json      @default("{}")
+  errors      Json      @default("[]")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  appliedAt   DateTime?
+
+  line ProductLine @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, lineId, createdAt])
+}
+
+// ───────────────────────── wave 3 · override track (P4-09): manual warehouse choice + reroute ─────────────────────────
+
+/// "Изпрати от": a person chose the warehouse that ships this order instead of the routing decision (or a confirmed
+/// reroute bound it to a new one). While it exists every check validates for this connection and the approval /
+/// Fulfill are bound to it (OrderCheck.connectionId, routing.via = "manual"); deleting it returns to routing.
+model OrderWarehouseChoice {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String
+  connectionId String
+  /// manual (before sending) | reroute (after the old warehouse confirmed the cancellation)
+  via          String   @default("manual")
+  /// Reason code (src/server/override/reasons.ts) + free text ("Друго" requires it).
+  reasonCode   String
+  reasonText   String?
+  chosenById   String?
+  rerouteId    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  order      Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, orderId])
+  @@index([accountId, connectionId])
+}
+
+/// "Пренасочи към друг склад" after sending: the old shipment is cancelled through the outbox and ONLY when the old
+/// warehouse confirmed it (read-back) the order returns to APPROVED bound to the new connection. At most one open
+/// (CANCEL_QUEUED) per order and never two active shipments per order (database triggers, see the migration).
+model OrderReroute {
+  id                String    @id @default(cuid())
+  accountId         String
+  orderId           String
+  fromFulfillmentId String
+  fromConnectionId  String
+  toConnectionId    String
+  /// CANCEL_QUEUED → DONE | REFUSED | UNCERTAIN | SIMULATED (DRY_RUN / READ_ONLY: recorded what would happen)
+  status            String    @default("CANCEL_QUEUED")
+  cancelRequestId   String?
+  reasonCode        String
+  reasonText        String?
+  requestedById     String?
+  /// What happened (or would happen in DRY_RUN / READ_ONLY), shown on the order.
+  outcome           Json      @default("{}")
+  /// Confirmation read-backs that did not (yet) show the cancellation.
+  readBackAttempts  Int       @default(0)
+  alertId           String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  finishedAt        DateTime?
+
+  order           Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fromFulfillment Fulfillment           @relation(fields: [accountId, fromFulfillmentId], references: [accountId, id], onDelete: NoAction)
+  toConnection    FulfillmentConnection @relation("RerouteTarget", fields: [accountId, toConnectionId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId, createdAt])
+  @@index([status, updatedAt])
+}
+
+// ───────────────────────── wave 3 · stock track (P5-01 / P5-02 / P5-03) ─────────────────────────
+
+/// Stock board settings of a group (P5-01): when a number counts as a discrepancy or a snapshot as stale.
+model StockSettings {
+  id               String   @id @default(cuid())
+  accountId        String   @unique
+  /// Units Shopify may show above the CRM sellable quantity before "Разминаване със Shopify" is raised.
+  shopifyThreshold Int      @default(2)
+  /// A snapshot older than this is stale (FHB is pushed + reconciled every 30 min).
+  fhbStaleHours    Int      @default(2)
+  /// euShipments get-prod-avails is a daily snapshot (EushipmentsSettings.stockStaleHours default 30).
+  euStaleHours     Int      @default(30)
+  /// "Свършват до N дни": sellable ÷ average daily sales of the last 30 days.
+  runOutDays       Int      @default(7)
+  updatedAt        DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+/// Shopify locations of a store (read_locations) and the warehouse connection each one stands for (P5-03).
+model StoreLocation {
+  id                 String   @id @default(cuid())
+  accountId          String
+  storeId            String
+  shopifyLocationGid String
+  name               String
+  isActive           Boolean  @default(true)
+  /// Fulfillment service handle when Shopify reports the location as one (shown as a hint only).
+  fulfillmentService String?
+  /// The warehouse this location represents; null = not mapped (never pushed).
+  connectionId       String?
+  fetchedAt          DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  store      Store                  @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection? @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@unique([storeId, shopifyLocationGid])
+  @@unique([storeId, connectionId])
+  @@index([accountId])
+}
+
+/// Mirror of Shopify inventory per variant and location (read_inventory): stock board column + push compare value.
+model ShopifyInventoryLevel {
+  id               String   @id @default(cuid())
+  accountId        String
+  storeId          String
+  variantLinkId    String
+  locationGid      String
+  inventoryItemGid String
+  tracked          Boolean  @default(true)
+  available        Int
+  onHand           Int?
+  fetchedAt        DateTime
+
+  store       Store            @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  variantLink StoreVariantLink @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([variantLinkId, locationGid])
+  @@index([accountId, storeId])
+}
+
+/// One Shopify inventory push to one store (P5-03). The store's inventoryPushMode is evaluated by the sender at
+/// send time (DISABLED → REFUSED, DRY_RUN → request recorded, LIVE → inventorySetQuantities with @idempotent and
+/// compare-and-set). At most one open push per store.
+model InventoryPush {
+  id            String             @id @default(cuid())
+  accountId     String
+  storeId       String
+  /// manual | cron
+  trigger       String
+  status        OutboundStatus     @default(PENDING)
+  evaluatedMode InventoryPushMode?
+  buffer        Int
+  /// {mutation, batches:[{idempotencyKey, input, done?}]}: what DRY_RUN would send / what LIVE sends.
+  request       Json?
+  lastResponse  Json?
+  lastError     String?
+  attempts      Int                @default(0)
+  lockedAt      DateTime?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  account Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store   Store               @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  lines   InventoryPushLine[]
+
+  @@unique([accountId, id])
+  @@index([accountId, storeId, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+/// One variant at one location of a push: what the CRM had, what Shopify had, what was (or would be) set.
+model InventoryPushLine {
+  id               String  @id @default(cuid())
+  accountId        String
+  pushId           String
+  variantLinkId    String
+  productId        String?
+  connectionId     String
+  locationGid      String
+  inventoryItemGid String
+  sellable         Int
+  target           Int
+  /// Shopify "available" read right before the send (compare-and-set value).
+  shopifyBefore    Int?
+  /// planned | unchanged | dry_run | applied | stale | failed
+  status           String  @default("planned")
+  error            String?
+
+  push InventoryPush @relation(fields: [accountId, pushId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, pushId])
+}
+
+// ───────────────────────── wave 3 returns + COD (P6-01, P6-02) ─────────────────────────
+
+/// One return on the Връщания board (P6-01), built by the returns sweep from the warehouse mirrors:
+/// FHB rma/list (back from the carrier), FHB return/list (local depot returns), euShipments RETURNING /
+/// RETURN_RECEIVED shipments. One case per CRM shipment (caseKey "fulfillment:<id>"); returns the CRM cannot
+/// link get a vendor key. Never deleted; "processed" is the operator's mark that the refund/stock was handled.
+model ReturnCase {
+  id                       String    @id @default(cuid())
+  accountId                String
+  /// fulfillment:<id> | fhb-rma:<connectionId>:<externalId> | fhb-return:<connectionId>:<uid>
+  caseKey                  String
+  connectionId             String
+  fulfillmentId            String?
+  orderId                  String?
+  /// Selling company of the order, else the warehouse connection's company (company + line filters).
+  companyId                String?
+  /// Where the case was seen: FHB_RMA | FHB_LOCAL | EUSHIPMENTS (several when they describe the same parcel).
+  sources                  String[]
+  /// RETURNING | RECEIVED
+  state                    String
+  /// Vendor status as received (FHB order/return status, euShipments STATUS text).
+  rawStatus                String?
+  /// FHB return_type (return | claim | write_off) or local return type (basic | complex).
+  returnType               String?
+  /// Our order number or the vendor's order id (shown when the CRM has no order).
+  reference                String
+  trackingNumbers          String[]
+  returnTracking           String[]
+  /// [{title, sku?, quantity, condition?, action?}] — condition/action only where the vendor reports them.
+  items                    Json      @default("[]")
+  /// FHB local return photos: [{id, type}] (bytes are fetched on demand into ReturnPhoto).
+  photos                   Json      @default("[]")
+  /// FHB local return uid (when the case has one).
+  localReturnUid           String?
+  returningSince           DateTime?
+  receivedAt               DateTime?
+  processedAt              DateTime?
+  processedById            String?
+  processedNote            String?
+  /// Set by "Уведоми поддръжката"; the sweep sends and clears it.
+  supportNotifyRequestedAt DateTime?
+  supportNotifiedAt        DateTime?
+  firstSeenAt              DateTime  @default(now())
+  lastSyncAt               DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  account       Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  connection    FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  notifications ReturnNotification[]
+  photoFiles    ReturnPhoto[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, caseKey])
+  @@index([accountId, state, processedAt])
+  @@index([accountId, fulfillmentId])
+}
+
+/// "Return received — refund can be processed" to support, once per case and channel (email, telegram).
+model ReturnNotification {
+  id           String    @id @default(cuid())
+  accountId    String
+  returnCaseId String
+  channel      String
+  /// SENDING | SENT | FAILED
+  status       String    @default("SENDING")
+  error        String?
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+
+  returnCase ReturnCase @relation(fields: [accountId, returnCaseId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([returnCaseId, channel])
+  @@index([accountId, createdAt])
+}
+
+/// A FHB local return photo (GET /return/{uid}/photo/{photoId}), fetched by the worker when an operator asks.
+model ReturnPhoto {
+  id           String    @id @default(cuid())
+  accountId    String
+  returnCaseId String
+  photoId      String
+  /// package | content | document
+  type         String?
+  /// PENDING | READY | FAILED
+  status       String    @default("PENDING")
+  contentType  String?
+  bytes        Bytes?
+  error        String?
+  createdAt    DateTime  @default(now())
+  fetchedAt    DateTime?
+
+  returnCase ReturnCase @relation(fields: [accountId, returnCaseId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([returnCaseId, photoId])
+  @@index([accountId, status])
+}
+
+/// Returns + COD settings of a group (P6-01/P6-02). No row = defaults.
+model ReturnsCodSettings {
+  id                String   @id @default(cuid())
+  accountId         String   @unique
+  /// "Returning but not received after N days" alert.
+  returnOverdueDays Int      @default(14)
+  /// Delivered COD shipment with no vendor COD record after N days → task.
+  codMissingDays    Int      @default(14)
+  /// Send "return received" to support (email/Telegram; off when no channel is configured).
+  notifySupport     Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+// ───────────────────────── wave 3: manual shipments and labels (P7-01 … P7-03) ─────────────────────────
+
+/// Ръчни пратки: a shipment created by hand (not from Shopify). Always a MANUAL Order + how it ships. kind:
+/// WAREHOUSE (vendor order from stock — the normal review/Fulfill flow), JOY_LABEL (FHB Joy label for a parcel we
+/// pack), AWB (euShipments courier waybill), PRE_AWB (euShipments order without a waybill yet).
+model ManualShipment {
+  id            String    @id @default(cuid())
+  accountId     String
+  orderId       String
+  kind          String
+  connectionId  String
+  /// The shipment row (label kinds: created with the request; WAREHOUSE: when Fulfill queues it).
+  fulfillmentId String?
+  /// Parcel parameters from the form (parcels, weights, parcel service / courier, office, dispatch date, …).
+  params        Json      @default("{}")
+  /// Label tracking poller state (Joy GET /shipment, euShipments waybills-history).
+  trackedAt     DateTime?
+  stopTracking  Boolean   @default(false)
+  trackError    String?
+  /// AWB label fetch (print/{awb}) after create: attempts so far and the last error. The sweep stops at a cap
+  /// and opens one operator task instead of calling the vendor forever.
+  labelAttempts Int       @default(0)
+  labelError    String?
+  /// Idempotency key of the form submission: a double click / retried POST returns the same shipment.
+  clientRequestId String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  order       Order                 @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: NoAction)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderId])
+  @@unique([accountId, fulfillmentId])
+  @@unique([accountId, clientRequestId])
+  @@index([accountId, createdAt])
+  @@index([accountId, kind, stopTracking])
+}
+
+/// Per-group sequence of manual order numbers (M1001, M1002, …) — deterministic external ids for the vendors.
+model ManualShipmentSequence {
+  accountId String   @id
+  next      Int      @default(1001)
+  updatedAt DateTime @updatedAt
+}
+
+/// A stored label PDF (Joy label, euShipments AWB print, or a bulk print). Kept in the database: the codebase has
+/// no object store, and a vendor may refuse a reprint later (Joy: 5 days after creation).
+model ShipmentLabel {
+  id             String   @id @default(cuid())
+  accountId      String
+  connectionId   String
+  /// The single shipment this label is for (null for a bulk PDF).
+  fulfillmentId  String?
+  /// single | bulk
+  kind           String   @default("single")
+  /// PDF | ZPL
+  format         String   @default("PDF")
+  /// joy.create, joy.reprint, joy.labels, awb.print, awb.merged
+  source         String
+  content        Bytes
+  sha256         String
+  sizeBytes      Int
+  /// Shipments a bulk PDF covers, in print order.
+  fulfillmentIds String[]
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  connection  FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment?          @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@index([accountId, fulfillmentId, createdAt])
+}
+
+/// Bulk label print: one PDF per connection, built by the worker from the vendor's bulk endpoint
+/// (Joy GET /labels?ids= ≤ 100, euShipments merged/print ≤ 50). Read calls only.
+model LabelPrintJob {
+  id             String    @id @default(cuid())
+  accountId      String
+  connectionId   String
+  /// QUEUED | RUNNING | DONE | FAILED
+  status         String    @default("QUEUED")
+  fulfillmentIds String[]
+  labelId        String?
+  /// Per-shipment problems (not printable, no AWB yet, …).
+  errors         Json      @default("{}")
+  error          String?
+  createdById    String?
+  createdAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+/// euShipments shipment-price quote from the manual shipment form (a read call, run by the worker).
+model ShippingQuote {
+  id           String    @id @default(cuid())
+  accountId    String
+  connectionId String
+  request      Json
+  /// QUEUED | DONE | NO_PRICE | FAILED
+  status       String    @default("QUEUED")
+  response     Json?
+  error        String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Wave 3 · track "ai" (P8-01 similar cases, P8-02 AI reviewer, P8-03 autonomy policies, P8-04 rule mining)
+// The AI never sends anything: it writes suggestions, logs and proposals here; an L2 approval goes through the
+// pipeline's approve guard (AiPolicy loaded in the transaction). See src/ai/.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Group-level AI stop (kill switch). On: no AI review runs and no AI approval is accepted for this group,
+/// whatever the policies say. The env AI_KILL_SWITCH=1 is the global stop for every group.
+model AiControl {
+  id          String    @id @default(cuid())
+  accountId   String    @unique
+  killSwitch  Boolean   @default(false)
+  changedById String?
+  changedAt   DateTime?
+  note        String?
+  updatedAt   DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+/// Full prompt/response log of every model call (SPEC §7.5). Snapshot ids, no relations: the log outlives edits.
+model AiInteraction {
+  id           String   @id @default(cuid())
+  accountId    String
+  orderId      String?
+  /// order_review
+  purpose      String
+  /// anthropic
+  provider     String
+  model        String
+  /// The exact request body sent (no credentials).
+  request      Json
+  /// The raw response body (or the error body).
+  response     Json?
+  /// ok | api_error | network_error | refusal | max_tokens | no_tool_call | invalid_output
+  status       String
+  error        String?
+  httpStatus   Int?
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+  createdAt    DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@index([accountId, orderId, createdAt])
+}
+
+/// One AI review of one order (the tool output {decision, confidence, fixes, flags, explanation_bg}) and, once a
+/// person decided (or an audit confirmed an autopilot approval), how it compared — the agreement data of P8-03.
+model AiSuggestion {
+  id               String         @id @default(cuid())
+  accountId        String
+  orderId          String
+  interactionId    String?
+  model            String
+  /// APPROVE | EDIT_AND_APPROVE | HOLD | CANCEL
+  decision         String
+  confidence       Float
+  /// [{field, from, to, reason}] — only fields the AI may touch (guardrails applied)
+  fixes            Json           @default("[]")
+  flags            String[]
+  explanationBg    String
+  /// Guardrail notes, e.g. fix_dropped:shippingAddress.name, high_value
+  guardrails       String[]
+  /// Past reviews given to the model as similar cases (P8-01).
+  similarReviewIds String[]
+  orderStatus      CrmOrderStatus
+  /// OrderCheck fingerprint the suggestion was made on (stale once the order changes).
+  orderFingerprint String?
+  checkHardCount   Int            @default(0)
+  checkSoftCount   Int            @default(0)
+  /// Outcome: the human Review this was compared with.
+  reviewId         String?
+  humanDecision    String?
+  decisionAgreed   Boolean?
+  fixesAgreed      Boolean?
+  /// The AI said approve (confidently) where a person held/blocked, or an audit rejected an autopilot approval.
+  criticalMiss     Boolean        @default(false)
+  evaluatedAt      DateTime?
+  /// L2 autopilot approved the order on this suggestion.
+  autoApprovedAt   DateTime?
+  autoPolicyId     String?
+  createdAt        DateTime       @default(now())
+
+  account     Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order       Order          @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  auditSample AiAuditSample?
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([accountId, evaluatedAt])
+}
+
+/// Embedding of one decided Review for similar-case retrieval (P8-01). The vector is written and searched with
+/// raw SQL (src/server/db/vector.ts); vectors of different providers are never compared.
+model ReviewEmbedding {
+  id        String                       @id @default(cuid())
+  accountId String
+  reviewId  String
+  /// voyage | local-hash
+  provider  String
+  model     String
+  /// sha256 of the case text: unchanged text is not embedded again
+  textHash  String
+  embedding Unsupported("vector(1024)")?
+  createdAt DateTime                     @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  review  Review  @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, provider])
+  @@index([accountId, provider])
+}
+
+/// Daily random audit sample of autopilot approvals (P8-03): a person confirms or rejects each one.
+model AiAuditSample {
+  id           String    @id @default(cuid())
+  accountId    String
+  suggestionId String
+  orderId      String
+  day          DateTime  @db.Date
+  /// PENDING | CONFIRMED | REJECTED
+  status       String    @default("PENDING")
+  reviewerId   String?
+  note         String?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  suggestion AiSuggestion @relation(fields: [accountId, suggestionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, suggestionId])
+  @@index([accountId, status, day])
+}
+
+/// Every level / enabled change of an AiPolicy (promotion by an owner, automatic demotion, kill switch).
+model AiPolicyEvent {
+  id           String   @id @default(cuid())
+  accountId    String
+  policyId     String
+  decisionType String
+  fromLevel    AiLevel?
+  toLevel      AiLevel?
+  fromEnabled  Boolean?
+  toEnabled    Boolean?
+  /// enable | disable | promote | demote_manual | demote_critical | demote_agreement
+  cause        String
+  userId       String?
+  /// Window stats at the time of the change.
+  stats        Json?
+  createdAt    DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, decisionType, createdAt])
+}
+
+/// A deterministic validator / auto-fix proposed by the weekly rule mining (P8-04) from repeated operator
+/// corrections. Accepting only records it for a developer (Claude Code session); no code is generated at runtime.
+model AiRuleProposal {
+  id             String    @id @default(cuid())
+  accountId      String
+  /// Cluster key, e.g. phone_prefix:HU:06→+36
+  key            String
+  /// phone_prefix | zip_format | value_map | field_fill
+  kind           String
+  field          String
+  country        String?
+  pattern        Json
+  titleBg        String
+  titleEn        String
+  /// A few synthetic-safe examples {from, to} (values from Review diffs, shown to admins only).
+  examples       Json      @default("[]")
+  support        Int
+  distinctOrders Int
+  firstSeenAt    DateTime
+  lastSeenAt     DateTime
+  /// PROPOSED | ACCEPTED | REJECTED
+  status         String    @default("PROPOSED")
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionNote   String?
+  minedAt        DateTime
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, key])
+  @@index([accountId, status])
 }

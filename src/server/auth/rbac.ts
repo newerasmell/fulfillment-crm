@@ -38,6 +38,40 @@ export const PERMISSIONS = {
   "eushipments.sync": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   "apiWatch.read": ["OWNER", "ADMIN"],
   "apiWatch.manage": ["OWNER", "ADMIN"],
+  /** Routing rules (Настройки → Правила за маршрут): view, create, edit, reorder, delete. */
+  "routing.manage": ["OWNER", "ADMIN"],
+  /** Raw payloads on the order detail (Shopify order JSON, routing JSON, outbox payloads): admin only. */
+  "orders.rawPayloads": ["OWNER", "ADMIN"],
+  /** The review records list (decisions, diffs of customer data, time spent). */
+  "reviews.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Configure the review reason codes. */
+  "reviews.reasonCodes": ["OWNER", "ADMIN"],
+  /** Alerts and tasks: assign and resolve with a note (Сигнали и задачи). */
+  "alerts.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** Product lines: create/rename/archive lines and put companies into them (Настройки → Линии и фирми). */
+  "lines.manage": ["OWNER", "ADMIN"],
+  /** Master catalogue tool, mapping import and match decisions of a line (Продукти). */
+  "lines.catalogue": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** "Пренасочи към друг склад" after sending: cancel at the old warehouse, then send from another (P4-09). */
+  "orders.reroute": ["OWNER", "ADMIN"],
+  /** Stock board thresholds (discrepancy threshold, stale hours, run-out days). */
+  "stock.settings": ["OWNER", "ADMIN"],
+  /** Shopify inventory push: preview, queue a push now, map Shopify locations to warehouses. */
+  "inventory.push": ["OWNER", "ADMIN"],
+  /** Returns board: mark processed with a note, notify support, load return photos (Връщания). */
+  "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** COD board and its CSV export (amounts per shipment and company). */
+  "cod.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** AI assistant (Настройки → AI асистент): agreement dashboard, suggestions on the order detail. */
+  "ai.read": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Change AI autonomy (enable shadow mode, promote/demote, thresholds) and the group's AI stop switch. */
+  "ai.manage": ["OWNER"],
+  /** Confirm or reject the daily audit sample of autopilot approvals. */
+  "ai.audit": ["OWNER", "ADMIN", "OPERATOR"],
+  /** Accept or reject validator proposals from the weekly rule mining. */
+  "ai.rules": ["OWNER", "ADMIN"],
+  /** The full prompt/response log (it carries customer data). */
+  "ai.log": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

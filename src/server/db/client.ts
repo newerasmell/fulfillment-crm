@@ -150,10 +150,14 @@ function withRls(client: PrismaClient, settings: { accountId: string | null; byp
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
-          const scoped = settings.accountId ? scopeArgs(model, operation, args, settings.accountId) : args;
+          // `args` / `query` are typed as unions over every model's operations; with this many models TypeScript
+          // cannot represent them (TS2590), so they go through plain types here. Behaviour is unchanged.
+          const raw: unknown = args;
+          const scoped = settings.accountId ? scopeArgs(model, operation, raw, settings.accountId) : raw;
+          const run = query as unknown as (a: unknown) => Prisma.PrismaPromise<unknown>;
           const [, result] = await client.$transaction([
             client.$executeRaw`SELECT set_config('app.account_id', ${settings.accountId ?? ""}, TRUE), set_config('app.bypass_rls', ${settings.bypass ? "on" : "off"}, TRUE)`,
-            query(scoped as typeof args),
+            run(scoped),
           ]);
           return result;
         },
@@ -206,13 +210,15 @@ function scopeTransactionClient(tx: Prisma.TransactionClient, accountId: string)
 }
 
 /** Tables whose rows may be locked from an account transaction (row locks serialise racing changes). */
-const LOCKABLE: Readonly<Record<"Membership" | "FulfillmentConnection", string>> = Object.freeze(
+const LOCKABLE: Readonly<Record<"Membership" | "FulfillmentConnection" | "Order", string>> = Object.freeze(
   Object.assign(Object.create(null) as object, {
     Membership: '"Membership"',
     FulfillmentConnection: '"FulfillmentConnection"',
+    // The order pipeline: submit, cancel, hold and the checks serialise on the order row (P4-03).
+    Order: '"Order"',
   }),
 );
-export type LockableTable = "Membership" | "FulfillmentConnection";
+export type LockableTable = "Membership" | "FulfillmentConnection" | "Order";
 
 export interface AccountTxHelpers {
   /** SELECT … FOR UPDATE on this account's rows of `table` (one row when `id` is given). */

@@ -45,6 +45,30 @@ try {
     { userId: owner.user.id, accountId: owner.account.id, role: "OWNER", companyScope: null },
     company.id,
   );
+  // Review queue (wave 2, review track): its own group and OWNER, so other specs' counts stay unchanged.
+  const { seedReview } = await import("../tests/e2e/seed-review");
+  const reviewer = await seedReview();
+  // Synthetic Fulfill / write-back / alerts data (wave 2, fulfill track): tests/e2e/fulfill.spec.ts.
+  const { seedFulfill } = await import("./e2e-fulfill");
+  await seedFulfill({ userId: owner.user.id, accountId: owner.account.id }, company.id);
+  // Product lines + master catalogue (wave 3, core track): its own group and OWNER (tests/e2e/lines.spec.ts).
+  const { seedLines } = await import("../tests/e2e/seed-lines");
+  const linesOwner = await seedLines();
+  // Manual warehouse choice + reroute (wave 3, override track): its own group and OWNER (tests/e2e/override.spec.ts).
+  const { seedOverride } = await import("../tests/e2e/seed-override");
+  const overrideOwner = await seedOverride();
+  // Stock board, inbound and Shopify inventory push (wave 3, stock track): own group (tests/e2e/stock.spec.ts).
+  const { seedStock } = await import("../tests/e2e/seed-stock");
+  const stockOwner = await seedStock();
+  // Returns + COD boards (wave 3, returns track): its own group and OWNER (tests/e2e/returns-cod.spec.ts).
+  const { seedReturns } = await import("../tests/e2e/seed-returns");
+  const returnsOwner = await seedReturns();
+  // Manual shipments and labels (wave 3, labels track): its own group and OWNER (tests/e2e/labels.spec.ts).
+  const { seedLabels } = await import("../tests/e2e/seed-labels");
+  const labelsOwner = await seedLabels();
+  // AI assistant (wave 3, AI track): its own group and OWNER, reviewer run against a mocked transport (ai.spec.ts).
+  const { seedAi } = await import("../tests/e2e/seed-ai");
+  const aiOwner = await seedAi();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -61,6 +85,28 @@ try {
       E2E_OWNER_EMAIL: owner.user.email,
       E2E_OWNER_PASSWORD: "e2e-password-not-secret",
       E2E_OWNER_TOTP: owner.totpSecret,
+      E2E_REVIEW_EMAIL: reviewer.email,
+      E2E_REVIEW_PASSWORD: reviewer.password,
+      E2E_REVIEW_TOTP: reviewer.totp,
+      E2E_LINES_EMAIL: linesOwner.email,
+      E2E_LINES_PASSWORD: linesOwner.password,
+      E2E_LINES_TOTP: linesOwner.totp,
+      E2E_OVERRIDE_EMAIL: overrideOwner.email,
+      E2E_OVERRIDE_PASSWORD: overrideOwner.password,
+      E2E_OVERRIDE_TOTP: overrideOwner.totp,
+      E2E_STOCK_EMAIL: stockOwner.email,
+      E2E_STOCK_PASSWORD: stockOwner.password,
+      E2E_STOCK_TOTP: stockOwner.totp,
+      E2E_RETURNS_EMAIL: returnsOwner.email,
+      E2E_RETURNS_PASSWORD: returnsOwner.password,
+      E2E_RETURNS_TOTP: returnsOwner.totp,
+      E2E_LABELS_EMAIL: labelsOwner.email,
+      E2E_LABELS_PASSWORD: labelsOwner.password,
+      E2E_LABELS_TOTP: labelsOwner.totp,
+      E2E_LABELS_SEEDED: labelsOwner.seededNumber,
+      E2E_AI_EMAIL: aiOwner.email,
+      E2E_AI_PASSWORD: aiOwner.password,
+      E2E_AI_TOTP: aiOwner.totp,
     },
   });
   status = run.status ?? 1;

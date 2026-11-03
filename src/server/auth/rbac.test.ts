@@ -32,6 +32,23 @@ const EXPECTED: Record<Permission, string> = {
   "eushipments.sync": "11110",
   "apiWatch.read": "11000",
   "apiWatch.manage": "11000",
+  "routing.manage": "11000",
+  "orders.rawPayloads": "11000",
+  "reviews.read": "11100",
+  "reviews.reasonCodes": "11000",
+  "alerts.manage": "11110",
+  "lines.manage": "11000",
+  "lines.catalogue": "11110",
+  "orders.reroute": "11000",
+  "stock.settings": "11000",
+  "inventory.push": "11000",
+  "returns.manage": "11110",
+  "cod.read": "11100",
+  "ai.read": "11100",
+  "ai.manage": "10000",
+  "ai.audit": "11100",
+  "ai.rules": "11000",
+  "ai.log": "11000",
 };
 
 describe("role matrix", () => {

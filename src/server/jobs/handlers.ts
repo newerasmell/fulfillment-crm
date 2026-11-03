@@ -7,6 +7,15 @@ import { registerShopifyWorkers } from "@/server/shopify/jobs";
 import { registerFhbWorkers } from "@/server/fhb/jobs";
 import { registerEushipmentsWorkers } from "@/server/eushipments/jobs";
 import { registerApiWatcherWorkers } from "@/server/api-watcher/jobs";
+import { registerCheckWorkers } from "@/server/checks/jobs";
+import { registerFulfillWorkers } from "@/server/fulfill/jobs";
+import { registerAlertWorkers } from "@/server/alerts/jobs";
+import { registerLineWorkers } from "@/server/lines/jobs";
+import { registerOverrideWorkers } from "@/server/override/jobs";
+import { registerStockWorkers } from "@/server/stock/jobs";
+import { registerReturnsCodWorkers } from "@/server/returns/jobs";
+import { registerLabelWorkers } from "@/server/labels/jobs";
+import { registerAiWorkers } from "@/ai/jobs";
 import { QUEUES } from "./queues";
 
 export interface WorkerDeps {
@@ -61,6 +70,15 @@ export async function registerWorkers(deps: WorkerDeps) {
   await registerFhbWorkers(boss, opts);
   await registerEushipmentsWorkers(boss, opts);
   await registerApiWatcherWorkers(boss, opts);
+  await registerCheckWorkers(boss, opts);
+  await registerFulfillWorkers(boss, opts);
+  await registerAlertWorkers(boss, opts);
+  await registerLineWorkers(boss, opts);
+  await registerOverrideWorkers(boss, opts, resolveTransport);
+  await registerStockWorkers(boss, opts);
+  await registerReturnsCodWorkers(boss, opts);
+  await registerLabelWorkers(boss, opts);
+  await registerAiWorkers(boss, opts);
 
   await boss.work(QUEUES.outboxSweep.name, opts, async () => {
     const due = await sweepOutbox();

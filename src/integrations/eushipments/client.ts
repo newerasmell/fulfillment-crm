@@ -114,7 +114,7 @@ export class EuShipmentsClient {
     this.readRetries = opts.readRetries ?? 3;
   }
 
-  private async http(method: string, path: string, body?: unknown) {
+  protected async http(method: string, path: string, body?: unknown) {
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method,
       headers: {
@@ -139,7 +139,7 @@ export class EuShipmentsClient {
   }
 
   /** One write call: definite answers are returned, everything else throws `unknown_outcome`. */
-  private async write<S extends z.ZodTypeAny>(
+  protected async write<S extends z.ZodTypeAny>(
     op: string,
     method: string,
     path: string,
@@ -180,7 +180,7 @@ export class EuShipmentsClient {
     };
   }
 
-  private async read<S extends z.ZodTypeAny>(
+  protected async read<S extends z.ZodTypeAny>(
     op: string,
     method: string,
     path: string,

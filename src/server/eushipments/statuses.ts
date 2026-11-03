@@ -16,6 +16,7 @@ import {
 } from "@/integrations/eushipments/status-map";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
+import { followShipment, isSupersededShipment, VENDOR_FROM } from "@/server/pipeline";
 
 /**
  * euShipments status tracking on the CRM side (P3-03): the per-group mapping table, applying an
@@ -25,44 +26,23 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 
 export const EU_EVENT_SOURCE = "eushipments";
 
-const PRE_VENDOR: CrmOrderStatus[] = ["APPROVED", "QUEUED", "SUBMITTING", "SUBMIT_FAILED", "UNKNOWN"];
 /**
  * The Order follows its shipment along SPEC §6.1, forward only: each target lists the Order statuses it may
  * come from, so a late or repeated vendor status never moves an Order back (e.g. DELIVERED → SHIPPED), and
  * operator states (ON_HOLD, CANCELLED in the CRM) are never overwritten. Targets not listed leave it alone.
+ * The table now lives in the pipeline state machine (src/server/pipeline/rules.ts); re-exported here.
  */
-export const ORDER_FROM: Partial<Record<CrmOrderStatus, CrmOrderStatus[]>> = {
-  ACCEPTED: PRE_VENDOR,
-  PROCESSING: [...PRE_VENDOR, "ACCEPTED", "BLOCKED", "EXCEPTION"],
-  SHIPPED: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "BLOCKED", "EXCEPTION"],
-  DELIVERED: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "SHIPPED", "BLOCKED", "EXCEPTION"],
-  RETURNING: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "SHIPPED", "DELIVERED", "BLOCKED", "EXCEPTION"],
-  RETURN_RECEIVED: [
-    ...PRE_VENDOR,
-    "ACCEPTED",
-    "PROCESSING",
-    "SHIPPED",
-    "DELIVERED",
-    "RETURNING",
-    "BLOCKED",
-    "EXCEPTION",
-  ],
-  BLOCKED: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "EXCEPTION"],
-  EXCEPTION: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "SHIPPED", "BLOCKED"],
-  CANCELLED: [...PRE_VENDOR, "ACCEPTED", "PROCESSING", "BLOCKED", "EXCEPTION"],
-  COD_PAID: ["DELIVERED"],
-};
+export const ORDER_FROM = VENDOR_FROM;
 
-/** Moves the Order to its shipment's status when that is a forward step (ORDER_FROM). */
+/** Moves the Order to its shipment's status when that is a forward step (pipeline "vendor" cause). */
 export async function advanceOrderStatus(
   tx: Prisma.TransactionClient,
   orderId: string,
   to: CrmOrderStatus,
+  source = "eushipments",
+  fulfillmentId?: string,
 ): Promise<boolean> {
-  const from = ORDER_FROM[to];
-  if (!from) return false;
-  const r = await tx.order.updateMany({ where: { id: orderId, status: { in: from } }, data: { status: to } });
-  return r.count === 1;
+  return followShipment(tx, orderId, to, source, { fulfillmentId });
 }
 
 /** Copies the spec list into the group's mapping table (idempotent; existing rows are never overwritten). */
@@ -319,7 +299,9 @@ export async function applyOrderHistory(
       return { category: null, status: f.status, newEvents: 0, stopPolling: false, alerts };
     }
     const rule = resolveStatus(latest.record.STATUS, table);
-    const crm = CRM_STATUS[rule.category] ?? f.status; // CANCEL_PENDING keeps the previous status
+    // A shipment replaced by a confirmed reroute (P4-09) keeps its status; the order follows its new shipment.
+    const superseded = await isSupersededShipment(tx, f.id);
+    const crm = superseded ? f.status : (CRM_STATUS[rule.category] ?? f.status); // CANCEL_PENDING keeps the previous status
     const tracking = [...f.trackingNumbers];
     if (item.awb && !tracking.includes(item.awb)) tracking.push(item.awb);
     await tx.fulfillment.update({
@@ -333,7 +315,7 @@ export async function applyOrderHistory(
         ...(rule.category === "DELIVERED" && !f.deliveredAt ? { deliveredAt: latest.at ?? now } : {}),
       },
     });
-    await advanceOrderStatus(tx, f.orderId, crm);
+    if (!superseded) await advanceOrderStatus(tx, f.orderId, crm, "eushipments.history", f.id);
 
     const body = `Shipment ${f.externalId}: "${scrubText(latest.record.STATUS, 200)}"${
       latest.record.COMMENT ? ` (${scrubText(latest.record.COMMENT, 200)})` : ""

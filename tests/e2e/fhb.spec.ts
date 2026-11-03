@@ -101,8 +101,8 @@ test("FHB: new connection starts in read only, credentials never come back; stoc
 
   await page.goto("/products");
   await page.getByRole("link", { name: "Наличности в склада" }).click();
-  await expect(page.getByRole("heading", { name: "Наличности в склада" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Синтетичен парфюм EDP 50 мл" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Продукти и наличности" })).toBeVisible();
+  await expect(page.getByText("Синтетичен парфюм EDP 50 мл").first()).toBeVisible();
   await page
     .getByRole("link", { name: /Движения/ })
     .first()

@@ -3,6 +3,7 @@ import type { AttachPdfBody } from "@/integrations/eushipments/schemas";
 import { scrubText } from "@/lib/scrub";
 import { withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
+import { followShipment, transition } from "@/server/pipeline";
 
 /**
  * What a definite euShipments answer means for our records (P3-05). Runs in the worker, after the vendor
@@ -44,9 +45,8 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
               payload: { event: "submitted", orderId: r.orderId, recoveredByReadBack: r.recovered },
             },
           });
-          await db.order.updateMany({
-            where: { id: f.orderId, status: { in: [...ORDER_PRE_ACCEPT] } },
-            data: { status: "ACCEPTED" },
+          await followShipment(db, f.orderId, "ACCEPTED", "eushipments.create", {
+            onlyFrom: ORDER_PRE_ACCEPT,
           });
         }
         // Invoice: attach right after create (only possible before the AWB exists). One request per file.
@@ -76,9 +76,13 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
         const f = await db.fulfillment.findUnique({ where: { id: fulfillmentId } });
         if (!f || !(PRE_SUBMIT as readonly string[]).includes(f.status)) return;
         await db.fulfillment.update({ where: { id: fulfillmentId }, data: { status: "SUBMIT_FAILED" } });
-        await db.order.updateMany({
-          where: { id: f.orderId, status: { in: ["QUEUED", "SUBMITTING"] } },
-          data: { status: "SUBMIT_FAILED" },
+        await transition(db, {
+          orderId: f.orderId,
+          to: "SUBMIT_FAILED",
+          cause: "submit_failed",
+          actor: { kind: "system" },
+          source: "eushipments.create",
+          reason: scrubText(error, 500),
         });
         await db.alert.create({
           data: {

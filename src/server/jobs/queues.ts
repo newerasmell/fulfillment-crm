@@ -153,4 +153,138 @@ export const QUEUES = {
     options: { retryLimit: 0, expireInSeconds: 600 },
     cron: "*/30 * * * *",
   },
+  /** Pre-flight checks of one order (data: { accountId, orderId }): routing + validators → READY / NEEDS_REVIEW. */
+  ordersCheck: {
+    name: "orders.check",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 300 },
+  },
+  /** Every 5 min: queue checks for IMPORTED orders and for orders left in CHECKING by a crashed check. */
+  ordersCheckSweep: {
+    name: "orders.checkSweep",
+    options: { retryLimit: 0, expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** Every 2 min: Shopify fulfillment write-back of shipped shipments (store writeBackMode gate in the sender). */
+  shopifyWriteBack: {
+    name: "shopify.writeBack",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
+    cron: "*/2 * * * *",
+  },
+  /** Every 10 min: order-state alerts (blocked / unknown / submit failed / stuck) and email/Telegram notifications. */
+  alertsSweep: {
+    name: "alerts.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Master catalogue run of a product line (data: { accountId, runId, lineId }); one at a time per line. */
+  linesCatalogue: {
+    name: "lines.catalogue",
+    options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
+  },
+  /** Every minute: follow open reroutes (P4-09) — confirm the old warehouse's cancel by read-back, then switch. */
+  ordersRerouteSweep: {
+    name: "orders.rerouteSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "* * * * *",
+  },
+  /** Stock track (P5-01): stock discrepancy alerts (Shopify oversell, stale snapshots, negative sellable). */
+  stockDiscrepancies: {
+    name: "stock.discrepancies",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "25,55 * * * *",
+  },
+  /** Stock track (P5-02): FHB receipt read-back (GET only) per connection + inbound difference/overdue tasks. */
+  stockInboundSweep: {
+    name: "stock.inboundSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "10,40 * * * *",
+  },
+  /** Stock track (P5-03): read Shopify locations + inventory of one store (data: { accountId, storeId }). */
+  stockShopifyInventory: {
+    name: "stock.shopifyInventory",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 1800 },
+  },
+  /** Every 30 min: queue the Shopify inventory read of every connected store. */
+  stockShopifyInventoryTick: {
+    name: "stock.shopifyInventoryTick",
+    options: { retryLimit: 0, expireInSeconds: 600 },
+    cron: "5,35 * * * *",
+  },
+  /** Send one inventory push (data: { accountId, pushId }); the store's push mode is checked in the sender. */
+  stockInventoryPush: {
+    name: "stock.inventoryPush",
+    options: { ...retry, policy: "stately", retryLimit: 0, expireInSeconds: 900 },
+  },
+  /** Every 30 min: re-arm crashed pushes, create pushes for DRY_RUN/LIVE stores, queue the due ones. */
+  stockInventoryPushSweep: {
+    name: "stock.inventoryPushSweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "20,50 * * * *",
+  },
+  /** Every 10 min: return cases from the warehouse mirrors, overdue alerts, support notifications (P6-01). */
+  returnsSweep: {
+    name: "returns.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** FHB local return photos of one case (data: { accountId, caseId }); GET calls only. */
+  returnsPhotos: {
+    name: "returns.photos",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 600 },
+  },
+  /** Hourly: COD mismatches (amount / missing / unexpected) → operator tasks (P6-02). */
+  codSweep: {
+    name: "cod.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 1800 },
+    cron: "37 * * * *",
+  },
+  /** Labels (P7): every 10 min — tracking of label shipments (Joy GET /shipment, AWB waybills-history) and
+   * fetching AWB labels not stored yet. Read calls only. */
+  labelsSweep: {
+    name: "labels.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Tracking of one label connection (data: { accountId, connectionId }). */
+  labelsTrack: {
+    name: "labels.track",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 900 },
+  },
+  /** One label read: bulk PDF job, AWB/Joy label re-fetch, price quote, Joy login test (data: { accountId, kind, id }). */
+  labelsRead: {
+    name: "labels.read",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 300 },
+  },
+  /**
+   * AI reviewer: one order (data: { accountId, orderId }); one queued + one running per order. The expiry is above
+   * the LLM client's overall deadline (src/ai/llm.ts LLM_DEADLINE_MS = 240 s) plus the DB work around it.
+   */
+  aiReview: {
+    name: "ai.review",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 600 },
+  },
+  /** Every 5 min: queue AI reviews for checked orders whose current version has no suggestion yet. */
+  aiSweep: {
+    name: "ai.sweep",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "*/5 * * * *",
+  },
+  /** Every 10 min: embed decided reviews, compare decisions with AI suggestions, automatic policy demotion. */
+  aiEvaluate: {
+    name: "ai.evaluate",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "*/10 * * * *",
+  },
+  /** Daily: random audit sample of yesterday's autopilot approvals. */
+  aiAuditSample: {
+    name: "ai.auditSample",
+    options: { retryLimit: 2, policy: "stately", expireInSeconds: 600 },
+    cron: "21 4 * * *",
+  },
+  /** Weekly (Monday): cluster repeated operator corrections into validator proposals. */
+  aiRuleMining: {
+    name: "ai.ruleMining",
+    options: { retryLimit: 1, policy: "stately", expireInSeconds: 1800 },
+    cron: "37 5 * * 1",
+  },
 } satisfies Record<string, QueueDef>;

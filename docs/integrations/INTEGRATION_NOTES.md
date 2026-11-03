@@ -186,7 +186,8 @@ contracts. Separate base URL, separate auth call, camelCase.
   Required: `id, parcelService, name(≥3), street(≥3), city(≥2), zip(3–12), country, email(≤50),
   phone(6–20 intl), variableSymbol, numberOfPackages`. Optional: `province`, `cod` (local currency!), `weight[]`
   (length must equal numberOfPackages), `deliveryPoint`, `labelOrientation P|L`, `sender`, `senderName`,
-  `note`, `invoiceDetail` (customs), `_embedded.notifyLinks[{confirmed,sent,delivered,returned}]`.
+  `note` (no maximum in the reference for /shipments; the CRM applies 250 — **CRM limit, not from the
+  reference**, mirrored from `/packages`), `invoiceDetail` (customs), `_embedded.notifyLinks[{confirmed,sent,delivered,returned}]`.
   `variableSymbol` must be numeric ≤10 for `posta_expres`.
 - Asynchronous: `POST /packages` — note **`psc` (3–10)** instead of `zip`, `id` ≤30, name 3–100,
   street 3–255, city 2–50, `variableSymbol` ≤40, `note` ≤250. **`parcelService` is optional and silently
@@ -199,6 +200,13 @@ contracts. Separate base URL, separate auth call, camelCase.
   tracking numbers/links/events (`_embedded` may be `[]` when empty — handle array-vs-object).
 - 409 on create = id already exists → read back, never auto-retry with a new id.
 - Packing lists: `POST/GET/DELETE /packing-list`, `POST/DELETE /packing-list-item` (handover manifests).
+- As built (P7-01, `src/integrations/fhb-joy`): the outbox uses the synchronous `POST /shipments` only (packages
+  are in the client, unused; packing lists and anonymization are not built). Joy has **no endpoint listing the
+  parcel services enabled for an account**: their codes (and the pick-up-point-only ones) are entered on the
+  FHB_JOY connection. No test flag → DRY_RUN only records; labels leave in CANARY/LIVE. Every real create first
+  reads `GET /shipment?id=` (found → recovered, label re-fetched by reprint). The label PDF is stored in the CRM
+  (`ShipmentLabel`), never in the outbox row. Status `rejected` → CANCELLED (voided label); tracking is polled
+  (`GET /shipment`, every 30 min) — `notifyLinks` are not sent yet.
 
 ---
 
@@ -323,6 +331,13 @@ below (full list with "final" flags in `eushipments.md`); any unmapped text → 
 `createAWB` (incl. pallet and non-EU variants), `preAWB`, pickup AWB, `shipment-price` (quote),
 `print/{awb}`, `merged/print`, `delete/{awb}`, `waybills-history`, `expedited-shipments`.
 Used for manual shipments that do not leave the euShipments warehouse stock.
+As built (P7-02): createAWB / preAWB support `testMode` (DRY_RUN validates); **neither can be read back by
+reference** (waybills-history is strictly by AWB number) — an unknown outcome is UNCERTAIN + an operator task,
+never retried; our DB unique (connection, externalId) is the duplicate guard. delete reads back through
+waybills-history. Label: `print/{awb}` (printFileType 2) fetched after create and stored; bulk via
+`merged/print` (≤ 50). Tracking by AWB via waybills-history, mapped with the §4.5 status table. Not built:
+pallet / NON-EU variants, pickup AWB, INOUT label pre-AWBs, expedited-shipments. Pre-AWB orders are not tracked
+(no AWB until euShipments creates one; no documented lookup).
 
 ---
 
@@ -377,3 +392,11 @@ Rules per vendor in production:
 - Kill switch: one OWNER action sets every connection of an account back to READ_ONLY and pauses the
   outbox; queued requests stay queued, nothing is dropped.
 - Every production write is logged with request, response, user and mode, and visible on the order timeline.
+
+---
+
+## 7. Anthropic Messages API (AI reviewer, P8-02)
+
+Reference: `anthropic.md` (every header and body field we send, with the quoted reference line); untouched
+excerpts in `raw/anthropic-messages-api.md`. Not a warehouse vendor and no outbox: one read-style call per order
+version that only fills an AiSuggestion. No key in the build environment; tests mock the transport.

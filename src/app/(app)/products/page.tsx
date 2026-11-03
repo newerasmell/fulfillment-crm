@@ -8,37 +8,81 @@ import { accountDb } from "@/server/db/client";
 import { listUnmatchedVariants, stripSkuPrefix } from "@/server/shopify/products";
 import { MatchVariant } from "./forms";
 import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
+import { LineChip } from "@/components/ui/LineChip";
+import { lineCoverage } from "@/server/lines/coverage";
+import { lineProductWhere } from "@/server/lines/lines";
+import { CoverageSummary } from "./lines/coverage";
 
 export default async function ProductsPage() {
   const ctx = await requireAccountContext();
   const t = await getTranslations("products");
   const unmatched = await listUnmatchedVariants(ctx);
   const products = await accountDb(ctx.accountId).product.findMany({
-    where: { archived: false },
+    // Sidebar product line (P5-00): masters of that line only.
+    // Members who cannot pick "all lines" also keep masters without a line (partial rollout, companiesForLine).
+    where: {
+      archived: false,
+      ...(ctx.activeLineId
+        ? ctx.role === "OWNER" || ctx.role === "ADMIN"
+          ? { lineId: ctx.activeLineId }
+          : lineProductWhere(ctx.activeLineId)
+        : {}),
+    },
     select: {
       id: true,
       sku: true,
       name: true,
+      line: { select: { name: true, color: true } },
       _count: { select: { variantLinks: true } },
     },
     orderBy: { sku: "asc" },
     take: 500,
   });
   const match = can(ctx.role, "products.match");
+  const tl = await getTranslations("lines");
+  const shownLines = ctx.activeLineId ? ctx.lines.filter((l) => l.id === ctx.activeLineId) : ctx.lines;
+  const coverage = await Promise.all(
+    shownLines.map((l) => lineCoverage(ctx.accountId, l.id, ctx.companyScope)),
+  );
   return (
     <>
       <PageHeader
         title={t("title")}
         subtitle={t("intro")}
         actions={
-          <Link
-            href="/products/stock"
-            className="inline-flex min-h-10 items-center rounded-[10px] border border-line bg-surface px-3 hover:bg-hover"
-          >
-            {(await getTranslations("fhb"))("stock.title")}
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            {ctx.lines.length > 0 && (
+              <Link
+                href="/products/lines"
+                className="inline-flex min-h-10 items-center rounded-[10px] border border-line bg-surface px-3 hover:bg-hover"
+              >
+                {tl("toolLink")}
+              </Link>
+            )}
+            <Link
+              href="/products/stock"
+              className="inline-flex min-h-10 items-center rounded-[10px] border border-line bg-surface px-3 hover:bg-hover"
+            >
+              {(await getTranslations("fhb"))("stock.title")}
+            </Link>
+          </div>
         }
       />
+      {shownLines.length > 0 && (
+        <Card>
+          <h2 className="mt-0 text-base font-semibold">{tl("coverageTitle")}</h2>
+          <div className="flex flex-col gap-3">
+            {shownLines.map((l, i) => (
+              <div key={l.id} className="flex flex-wrap items-center gap-3">
+                <Link href={`/products/lines?line=${l.id}`} className="no-underline">
+                  <LineChip name={l.name} color={l.color} />
+                </Link>
+                <CoverageSummary coverage={coverage[i]!} />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("unmatchedTitle", { count: unmatched.length })}</h2>
         {products.length === 0 && unmatched.length > 0 && (
@@ -94,6 +138,7 @@ export default async function ProductsPage() {
                 <th className={thCls}>{t("sku")}</th>
                 <th className={thCls}>{t("name")}</th>
                 <th className={thCls}>{t("storeVariants")}</th>
+                {ctx.lines.length > 0 && <th className={thCls}>{tl("line")}</th>}
               </tr>
             </thead>
             <tbody>
@@ -102,6 +147,15 @@ export default async function ProductsPage() {
                   <td className={`${tdCls} font-mono text-[13px]`}>{p.sku}</td>
                   <td className={tdCls}>{p.name}</td>
                   <td className={tdCls}>{p._count.variantLinks}</td>
+                  {ctx.lines.length > 0 && (
+                    <td className={tdCls}>
+                      {p.line ? (
+                        <LineChip name={p.line.name} color={p.line.color} />
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

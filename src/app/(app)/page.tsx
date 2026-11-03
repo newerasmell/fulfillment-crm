@@ -1,8 +1,12 @@
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { getFormatter, getTranslations } from "next-intl/server";
+import { isScope, SCOPE_COOKIE, SCOPE_TYPES } from "@/components/shell/scope";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
-import { requireAccountContext } from "@/server/auth/session";
+import { alertCounts } from "@/server/alerts";
+import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { dashboardSummary } from "@/server/orders";
+import { countReturnsToProcess } from "@/server/returns";
 import { StatusChip } from "./orders/status";
 
 /** Phase 1: order-based numbers. Returns, tickets, stock-outs and warehouse splits arrive with phases 2–4. */
@@ -10,9 +14,10 @@ const ATTENTION = [
   { key: "review", href: "/orders?tab=review" },
   { key: "blocked", href: "/orders?tab=blocked" },
   { key: "errors", href: "/orders?tab=blocked" },
-  { key: "returns", href: "/returns" },
+  { key: "returns", href: "/returns?tab=todo" },
   { key: "tickets", href: "/tickets" },
   { key: "stockouts", href: "/products" },
+  { key: "alerts", href: "/alerts" },
 ] as const;
 
 export default async function HomePage() {
@@ -21,8 +26,25 @@ export default async function HomePage() {
   const format = await getFormatter();
   const today = format.dateTime(new Date(), { weekday: "long", day: "numeric", month: "long" });
   const scopeName = ctx.companies.find((c) => c.id === ctx.activeCompanyId)?.name ?? t("nav.allCompanies");
-  const summary = await dashboardSummary(ctx);
-  const value = (k: string) => (summary.attention as Record<string, number>)[k];
+  const scoped = {
+    ...actorFrom(ctx),
+    activeCompanyId: ctx.activeCompanyId,
+    lineCompanyIds: ctx.lineCompanyIds,
+  };
+  // Same header warehouse scope as the /returns board the card links to.
+  const rawScope = (await cookies()).get(SCOPE_COOKIE)?.value;
+  const scope = isScope(rawScope) ? rawScope : "all";
+  const [summary, alerts, returnsToProcess] = await Promise.all([
+    dashboardSummary(ctx),
+    alertCounts(scoped),
+    countReturnsToProcess(scoped, { connectionTypes: scope === "all" ? undefined : SCOPE_TYPES[scope] }),
+  ]);
+  const value = (k: string) =>
+    k === "alerts"
+      ? alerts.total
+      : k === "returns"
+        ? returnsToProcess
+        : (summary.attention as Record<string, number>)[k];
   const delta = (a: number, b: number) => (a === b ? "=" : a > b ? `+${a - b}` : `−${b - a}`);
   const kpis = [
     { key: "orders", now: summary.today.orders, before: summary.yesterday.orders },

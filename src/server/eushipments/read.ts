@@ -1,4 +1,5 @@
 import type { CrmOrderStatus, Prisma } from "@/generated/prisma/client";
+import { lineProductWhere } from "@/server/lines/lines";
 import type { EuShipmentsClient, EuShipmentsClientOptions } from "@/integrations/eushipments/client";
 import { classifyHistoryItem, historyItemFor } from "@/integrations/eushipments/client";
 import { ORDERS_HISTORY_BATCH } from "@/integrations/eushipments/config";
@@ -351,6 +352,8 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
     const { client, companyId, connection } = await needCompany(accountId, connectionId, deps);
     const now = deps.now ?? new Date();
     const rows = await client.getProducts(companyId);
+    // Automatic matching stays inside the connection's product line (P5-00).
+    const lineId = await lineOfConnection(accountId, connectionId);
     let created = 0;
     let matched = 0;
     const seen = new Set<string>();
@@ -373,7 +376,7 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
         });
         const link = existing?.productId
           ? null
-          : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule));
+          : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule), lineId);
         const data = {
           vendorCode: String(r.ID),
           archived: false,
@@ -404,10 +407,18 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
   });
 }
 
-async function matchMaster(tx: Tx, sku: string) {
+async function lineOfConnection(accountId: string, connectionId: string) {
+  const c = await accountDb(accountId).fulfillmentConnection.findUnique({
+    where: { id: connectionId },
+    select: { company: { select: { lineId: true } } },
+  });
+  return c?.company?.lineId ?? null;
+}
+
+async function matchMaster(tx: Tx, sku: string, lineId: string | null) {
   if (!sku) return null;
   const products = await tx.product.findMany({
-    where: { sku: { equals: sku, mode: "insensitive" }, archived: false },
+    where: { sku: { equals: sku, mode: "insensitive" }, archived: false, ...lineProductWhere(lineId) },
     select: { id: true },
     take: 2,
   });
@@ -898,7 +909,7 @@ export async function pollEuCod(accountId: string, connectionId: string, deps: R
           data: { codStatus: isPaid ? "PAID" : "REGISTERED", ...(isPaid ? { status: "COD_PAID" } : {}) },
           select: { orderId: true },
         });
-        if (isPaid) await advanceOrderStatus(tx, updated.orderId, "COD_PAID");
+        if (isPaid) await advanceOrderStatus(tx, updated.orderId, "COD_PAID", "eushipments.cod");
         if (isPaid)
           await tx.fulfillmentEvent.create({
             data: {

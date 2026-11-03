@@ -1,6 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { FhbError, type FhbClient, type FhbClientOptions } from "@/integrations/fhb-v3/client";
 import { mapFhbProductView } from "@/integrations/fhb-v3/mapper";
+import { lineProductWhere } from "@/server/lines/lines";
 import {
   crmSkuFromFhbId,
   isoDate,
@@ -108,12 +109,23 @@ const SYNC_TX = { timeout: 30_000, maxWait: 15_000 };
 const PRODUCT_TX_BATCH = 50;
 
 async function upsertProducts(ctx: SyncContext, views: FhbProductView[], skuPrefixRule: unknown) {
+  // Automatic matching stays inside the connection's product line (P5-00).
+  const conn = await accountDb(ctx.accountId).fulfillmentConnection.findUnique({
+    where: { id: ctx.connectionId },
+    select: { company: { select: { lineId: true } } },
+  });
+  const lineId = conn?.company?.lineId ?? null;
   for (let i = 0; i < views.length; i += PRODUCT_TX_BATCH) {
-    await upsertProductBatch(ctx, views.slice(i, i + PRODUCT_TX_BATCH), skuPrefixRule);
+    await upsertProductBatch(ctx, views.slice(i, i + PRODUCT_TX_BATCH), skuPrefixRule, lineId);
   }
 }
 
-async function upsertProductBatch(ctx: SyncContext, views: FhbProductView[], skuPrefixRule: unknown) {
+async function upsertProductBatch(
+  ctx: SyncContext,
+  views: FhbProductView[],
+  skuPrefixRule: unknown,
+  lineId: string | null,
+) {
   const { accountId, connectionId, now } = ctx;
   await withAccountTransaction(
     accountId,
@@ -122,7 +134,7 @@ async function upsertProductBatch(ctx: SyncContext, views: FhbProductView[], sku
         ...new Set(views.map((v) => crmSkuFromFhbId(v.id, skuPrefixRule)).filter((s): s is string => !!s)),
       ];
       const masters = await tx.product.findMany({
-        where: { accountId, sku: { in: skus }, archived: false },
+        where: { accountId, sku: { in: skus }, archived: false, ...lineProductWhere(lineId) },
         select: { id: true, sku: true },
       });
       const productBySku = new Map(masters.map((p) => [p.sku, p.id]));

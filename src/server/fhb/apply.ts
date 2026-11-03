@@ -5,12 +5,14 @@ import type { FhbOrderView, FhbProductView, FhbStockReceiptView } from "@/integr
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
+import { followShipment, isSupersededShipment, transition } from "@/server/pipeline";
 
 /**
  * Applies what FHB told us (create/update responses, read-backs, callback re-reads) to the CRM mirror:
  * Fulfillment (status + raw status, tracking, uid), VendorProduct + StockLevel, InboundShipment.
  * Idempotent: applying the same view twice changes nothing and raises no second alert.
- * Order.status (the CRM pipeline) is left to the pipeline state machine (P4-03); here only the shipment moves.
+ * Order.status follows the shipment through the pipeline state machine (src/server/pipeline): forward only,
+ * never over an operator state; a refused create moves a QUEUED/SUBMITTING order to SUBMIT_FAILED.
  */
 
 const json = (v: unknown) => JSON.parse(JSON.stringify(v ?? null)) as Prisma.InputJsonValue;
@@ -63,11 +65,13 @@ export async function applyFhbOrderView(
       where: { connectionId_externalId: { connectionId, externalId: m.externalId } },
     });
     if (!f) return null;
+    // Replaced by a confirmed reroute (P4-09): the vendor's late view is kept, but never reactivates it.
+    const superseded = await isSupersededShipment(tx, f.id);
     const changed = f.rawStatus !== m.mapping.raw || f.status !== m.mapping.status;
     await tx.fulfillment.update({
       where: { id: f.id },
       data: {
-        status: m.mapping.status,
+        status: superseded ? f.status : m.mapping.status,
         rawStatus: m.mapping.raw,
         vendorUid: m.vendorUid ?? f.vendorUid,
         carrier: m.carrier ?? f.carrier,
@@ -79,6 +83,7 @@ export async function applyFhbOrderView(
         ...(m.returnInfo ? { returnInfo: json(m.returnInfo) } : {}),
       },
     });
+    await followShipment(tx, f.orderId, m.mapping.status, `fhb:${source}`, { fulfillmentId: f.id });
     if (changed) {
       await tx.fulfillmentEvent.create({
         data: {
@@ -296,6 +301,14 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
         await withAccountTransaction(accountId, async (tx) => {
           if (e.operation === "fhb.order.create") {
             await tx.fulfillment.update({ where: { id: f.id }, data: { status: "SUBMIT_FAILED" } });
+            await transition(tx, {
+              orderId: f.orderId,
+              to: "SUBMIT_FAILED",
+              cause: "submit_failed",
+              actor: { kind: "system" },
+              source: "fhb:fhb.order.create",
+              reason: message.slice(0, 500),
+            });
           }
           await tx.fulfillmentEvent.create({
             data: {
