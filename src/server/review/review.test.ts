@@ -22,6 +22,7 @@ import {
   previewAddress,
   redactSecrets,
   releaseOrder,
+  restartOrder,
   saveReasonCode,
   setReasonCodeActive,
   SUPERSEDED_REASON,
@@ -603,6 +604,27 @@ describe("review service (database)", () => {
         })
       ).findings.map((f) => f.code),
     ).toContain("order.address.zip_missing");
+  });
+
+  it("restart: an order the warehouse blocked starts over only when no shipment of it is active", async () => {
+    const o = await checked("#3070");
+    await g.db.order.update({ where: { id: o.id }, data: { status: "BLOCKED" } });
+    const f = await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: o.id,
+        connectionId: g.connection.id,
+        externalId: `R-3070-${o.id}`,
+        status: "ACCEPTED",
+      },
+    });
+    await expect(restartOrder(g.owner, o.id)).rejects.toMatchObject({ code: "shipment_active" });
+    await expect(restartOrder({ ...g.owner, role: "VIEWER" }, o.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await g.db.fulfillment.update({ where: { id: f.id }, data: { status: "CANCELLED" } });
+    await restartOrder(g.owner, o.id);
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("READY");
+    expect(await g.db.orderEvent.count({ where: { orderId: o.id, cause: "restart" } })).toBe(1);
+    await expect(restartOrder(g.owner, o.id)).rejects.toMatchObject({ code: "transition_not_allowed" });
   });
 
   it("release: a held order starts over and is re-checked; Shopify test orders and other companies are refused", async () => {

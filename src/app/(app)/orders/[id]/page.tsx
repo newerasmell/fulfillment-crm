@@ -13,6 +13,7 @@ import {
   getOrderReview,
   isEditableField,
   PAYLOAD_PREVIEW_STATUSES,
+  RESTARTABLE_STATUSES,
   type TimelineEntry,
 } from "@/server/review";
 import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
@@ -639,6 +640,10 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           codes={codes}
           openedAt={openedAt}
           canRelease={order.status === "ON_HOLD" && !order.tags.includes(SHOPIFY_TEST_TAG)}
+          canRestart={
+            (RESTARTABLE_STATUSES as readonly string[]).includes(order.status) &&
+            data.fulfillments.every((f) => f.status === "CANCELLED" || f.status === "SUBMIT_FAILED")
+          }
           statusLabel={statusLabel}
         />
       )}
