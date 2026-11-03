@@ -16,6 +16,7 @@ import {
 } from "@/integrations/eushipments/status-map";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
+import { crmCancelLeft, warehouseCancelConfirmed } from "@/server/override/cancel-effects";
 import { followShipment, isSupersededShipment, VENDOR_FROM } from "@/server/pipeline";
 
 /**
@@ -318,15 +319,22 @@ export async function applyOrderHistory(
     // Cancelled/deleted at euShipments WITHOUT a delete request from the CRM (someone removed it in the cabinet):
     // the order is not cancelled for the customer — it is blocked with a task so a person resends it
     // ("Изпрати отново", new shipment) or cancels it in Shopify. A CRM-requested delete follows as before.
+    // Only a delete that actually left the CRM counts (not a DRY_RUN / READ_ONLY / refused one).
+    const crmDeleteRequested = crm === "CANCELLED" && (await crmCancelLeft(tx, accountId, f.id));
     const cancelledAtVendor =
-      !superseded &&
-      crm === "CANCELLED" &&
-      f.status !== "CANCELLED" &&
-      !(await tx.outboundRequest.findFirst({
-        where: { fulfillmentId: f.id, operation: "eushipments.deleteOrder" },
-        select: { id: true },
-      }));
-    if (!superseded)
+      !superseded && crm === "CANCELLED" && f.status !== "CANCELLED" && !crmDeleteRequested;
+    // Deleted after a delete the CRM asked for ("Откажи в склада"): the order goes to BLOCKED with an info entry,
+    // so a person resends it or cancels the order (never straight to CANCELLED). A shipment already CANCELLED by the
+    // delete's own answer does not move the order again.
+    if (!superseded && crmDeleteRequested) {
+      if (f.status !== "CANCELLED")
+        await warehouseCancelConfirmed(tx, {
+          accountId,
+          orderId: f.orderId,
+          fulfillmentId: f.id,
+          source: "eushipments.history",
+        });
+    } else if (!superseded)
       await advanceOrderStatus(
         tx,
         f.orderId,
@@ -395,21 +403,19 @@ export async function markGoneAtVendor(accountId: string, fulfillmentId: string)
       select: { id: true, orderId: true, externalId: true, status: true },
     });
     if (f.status === "CANCELLED" || (await isSupersededShipment(tx, f.id))) return false;
-    const requested = await tx.outboundRequest.findFirst({
-      where: { fulfillmentId: f.id, operation: "eushipments.deleteOrder" },
-      select: { id: true },
-    });
+    const requested = await crmCancelLeft(tx, accountId, f.id);
     await tx.fulfillment.update({
       where: { id: f.id },
       data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
     });
-    await advanceOrderStatus(
-      tx,
-      f.orderId,
-      requested ? "CANCELLED" : "BLOCKED",
-      "eushipments.not_found",
-      f.id,
-    );
+    if (requested)
+      await warehouseCancelConfirmed(tx, {
+        accountId,
+        orderId: f.orderId,
+        fulfillmentId: f.id,
+        source: "eushipments.not_found",
+      });
+    else await advanceOrderStatus(tx, f.orderId, "BLOCKED", "eushipments.not_found", f.id);
     if (!requested)
       await openAlertOnce(tx, {
         kind: "eushipments_cancelled_at_vendor",

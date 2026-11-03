@@ -37,7 +37,10 @@ export type TransitionCause =
    * and checked again, only while no shipment of it is active anywhere (guarded in review/service.ts).
    */
   | "restart"
-  /** Operator cancels in the CRM (never AI, never once a shipment is active at a warehouse). */
+  /**
+   * Operator cancels in the CRM (never AI, never once a shipment is active at a warehouse). From BLOCKED / EXCEPTION /
+   * UNKNOWN only when no shipment is active and no vendor write of the order is pending or uncertain.
+   */
   | "cancel"
   /** Shopify import: cancelled in Shopify before approval. */
   | "shopify_cancelled"
@@ -143,9 +146,22 @@ export const RULES: readonly TransitionRule[] = [
   },
   { cause: "release", from: ["ON_HOLD"], to: ["IMPORTED"], actors: ["user"] },
   { cause: "restart", from: ["BLOCKED", "EXCEPTION", "UNKNOWN"], to: ["IMPORTED"], actors: ["user"] },
+  // Also "Откажи поръчката" for an order the warehouse blocked / cancelled (BLOCKED, EXCEPTION, UNKNOWN): guarded in
+  // transition.ts — no active shipment and no vendor write of the order still on its way or uncertain.
   {
     cause: "cancel",
-    from: ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY", "APPROVED", "SUBMIT_FAILED", "ON_HOLD"],
+    from: [
+      "IMPORTED",
+      "CHECKING",
+      "NEEDS_REVIEW",
+      "READY",
+      "APPROVED",
+      "SUBMIT_FAILED",
+      "ON_HOLD",
+      "BLOCKED",
+      "EXCEPTION",
+      "UNKNOWN",
+    ],
     to: ["CANCELLED"],
     actors: ["user"],
   },

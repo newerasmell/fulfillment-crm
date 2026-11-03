@@ -229,7 +229,11 @@ describe("outbox sender + liveMode gate", () => {
     const logs = await systemDb().auditLog.findMany({
       where: { entityId: connection.id, action: "connection.mode_change" },
     });
-    expect(logs.map((l) => l.after)).toEqual([{ liveMode: "READ_ONLY" }, { liveMode: "CANARY" }]);
+    // findMany has no guaranteed order (both rows can share a timestamp): compare as a set.
+    expect(logs).toHaveLength(2);
+    expect(logs.map((l) => l.after)).toEqual(
+      expect.arrayContaining([{ liveMode: "READ_ONLY" }, { liveMode: "CANARY" }]),
+    );
   });
 
   it("a crashed send (stale SENDING) becomes UNCERTAIN on the next sweep", async () => {

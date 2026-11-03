@@ -56,6 +56,11 @@ export const PERMISSIONS = {
   "lines.catalogue": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   /** "Пренасочи към друг склад" after sending: cancel at the old warehouse, then send from another (P4-09). */
   "orders.reroute": ["OWNER", "ADMIN"],
+  /**
+   * "Откажи в склада" on the order page: cancel an active shipment at its warehouse from the CRM (irreversible at
+   * the vendor). OWNER/ADMIN only — a stricter subset of orders.cancelAtWarehouse (which also covers edits).
+   */
+  "orders.cancelShipment": ["OWNER", "ADMIN"],
   /** Stock board thresholds (discrepancy threshold, stale hours, run-out days). */
   "stock.settings": ["OWNER", "ADMIN"],
   /** Shopify inventory push: preview, queue a push now, map Shopify locations to warehouses. */

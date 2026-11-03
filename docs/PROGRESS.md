@@ -219,6 +219,39 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   and status events (DELIVERED may trigger Shopify's customer notification) for shipments of the last 14 days
   with a FULFIL row, and the additive Store / ShopifyWriteBack columns need the owner's OK (CLAUDE.md).
 
+- 2026-11-03 "Откажи в склада" from the CRM (owner request: "if we do not want to use the warehouse panels — how do we
+  delete from our CRM? e.g. we make a mistake"). Order page → Пратки: per active shipment a button "Откажи в склада"
+  (new permission orders.cancelShipment = OWNER/ADMIN; orders.cancelAtWarehouse stays OWNER/ADMIN/OPERATOR for edits
+  and label voids), offered only while the vendor still allows it (FHB raw `pending`; euShipments New / Information
+  received / Awaiting pickup and ≤ 14 days — the same rule reroute uses), otherwise "вече не може да се откаже оттук —
+  само в кабинета на склада". Label shipments (FHB Joy / AWB) are not offered here: their documented void stays on the
+  manual shipment page (link shown). Confirmation dialog with a required reason ("warehouse" codes; new default
+  "Изпратена по грешка") + note + acknowledgement; timeline entry + audit. Queued through the outbox with the SAME keys
+  as reroute (`fhb.order.delete:<id>`, `delete:<ref>`), marked `warehouseCancel` in the CRM-only payload context; the
+  order row lock + the outbox key make a double click / concurrent request one request ("already_requested"); refused
+  while a reroute is open. The sender's liveMode gate decides (READ_ONLY refused, DRY_RUN recorded and shown on the
+  card, CANARY confirm button, LIVE sent). Vendor confirms (FHB DELETE / read-back gone; euShipments delete effect,
+  orders-history "Deleted" or twice "not found" for a CRM delete): shipment CANCELLED, ORDER → BLOCKED (cause vendor,
+  src/server/override/cancel-effects.ts) with an info entry "отказана в склада от <user>: <reason>" — so "Изпрати
+  отново" (new id) or "Откажи поръчката". Before, a CRM-requested euShipments delete moved the order to CANCELLED and
+  an FHB delete did not move it at all. A later "Deleted" never moves BLOCKED on to CANCELLED. Vendor refuses (FHB
+  4xx, euShipments delete error — new adapter effect orderDeleteRejected): shipment unchanged, task
+  "warehouse_cancel_refused" on the order. Reroute-owned shipments are never touched (reroute flow unchanged).
+  "Откажи поръчката": the pipeline's cancel rule now also allows BLOCKED / EXCEPTION / UNKNOWN (user only), guarded:
+  no active shipment and (from those states) no vendor write of the order PENDING/PAUSED/AWAITING/HELD/SENDING/
+  UNCERTAIN; it is the review 'block' decision (reason required, Review record, BLOCKED_TASK_KIND Shopify task), shown
+  as "Откажи поръчката" in the decision bar. No migration. Tests: src/server/override/warehouse-cancel.test.ts, e2e
+  tests/e2e/cancel-at-warehouse.spec.ts (DRY_RUN request, confirmed cancel simulated by the real euShipments effect).
+  Audit fixes (same day): a delete counts as "CRM-requested" (BLOCKED with attribution, no cabinet task) only when its
+  outbox row actually left the CRM (SENDING / SENT / UNCERTAIN) — a DRY_RUN / READ_ONLY / FAILED row followed by a
+  cabinet deletion still raises the CRITICAL eushipments_cancelled_at_vendor task (cancel-effects CANCEL_LEFT_CRM).
+  A reroute is now refused ("cancel_requested") while a warehouse cancel of the shipment is in flight, and never
+  attaches to an existing cancel row. euShipments dialog says plainly that the order can NOT go to euShipments again
+  (same `{PREFIX}-{number}` reference) — only another warehouse or cancel; FHB keeps "new id". An euShipments 401 on the
+  delete is not reported as a warehouse refusal (no task; card "not sent: credentials"). Explicit accountId on the
+  membership/alert lookups. New tests: CANARY confirm path, euShipments 503 → orders-history read-back, FHB network
+  error → GET /order 404 read-back, markGoneAtVendor requested/not-requested paths, reroute-after-cancel refusal.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

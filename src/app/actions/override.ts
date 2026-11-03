@@ -10,6 +10,7 @@ import {
   clearWarehouseChoice,
   RerouteBlockedError,
   requestReroute,
+  requestWarehouseCancel,
   setWarehouseChoice,
 } from "@/server/override";
 
@@ -70,6 +71,27 @@ export async function rerouteAction(input: {
   const ctx = await requireAccountContext();
   try {
     const r = await requestReroute(actorFrom(ctx), input);
+    revalidatePath(orderPath(input.orderId));
+    return { ok: true, mode: r.mode };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Откажи в склада": queues the cancel of one shipment through the outbox (src/server/override/warehouse-cancel). */
+export async function warehouseCancelAction(input: {
+  orderId: string;
+  fulfillmentId: string;
+  reasonCode: string | null;
+  reasonText: string | null;
+}): Promise<OverrideActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await requestWarehouseCancel(actorFrom(ctx), {
+      fulfillmentId: input.fulfillmentId,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText,
+    });
     revalidatePath(orderPath(input.orderId));
     return { ok: true, mode: r.mode };
   } catch (err) {

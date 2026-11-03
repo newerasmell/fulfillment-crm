@@ -22,6 +22,7 @@ import {
   isTwoActiveShipments,
   processReroute,
   requestReroute,
+  requestWarehouseCancel,
   rerouteView,
   setWarehouseChoice,
   warehouseOptions,
@@ -297,7 +298,13 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
 
     it("the default reason list: няма наличност, по-бърза доставка, клиентът поиска, друго", async () => {
       const codes = (await warehouseReasonCodes(g.accountId)).map((c) => c.code);
-      expect(codes).toEqual(["no_stock", "faster_delivery", "customer_requested", "other"]);
+      expect(codes).toEqual([
+        "no_stock",
+        "faster_delivery",
+        "customer_requested",
+        "sent_by_mistake",
+        "other",
+      ]);
     });
 
     it("needs a reason (and text for Друго), an eligible warehouse and orders.review", async () => {
@@ -652,6 +659,31 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       await expect(reroute(order.id)).rejects.toMatchObject({ code: "reroute_not_allowed" });
       expect(await g.db.orderReroute.count({ where: { orderId: order.id } })).toBe(0);
       expect((await rerouteView(g.owner, order.id)).refusal).toBe("order_status");
+    });
+
+    it("a warehouse cancel already on its way refuses the reroute (it never takes the cancel over)", async () => {
+      const { order, fulfillment } = await sentAtA();
+      const wc = await requestWarehouseCancel(g.owner, {
+        fulfillmentId: fulfillment.id,
+        reasonCode: "sent_by_mistake",
+        reasonText: null,
+      });
+      for (const st of ["PENDING", "AWAITING_CONFIRMATION", "HELD", "PAUSED", "SENDING"] as const) {
+        await g.db.outboundRequest.update({ where: { id: wc.requestId }, data: { status: st } });
+        await expect(reroute(order.id)).rejects.toMatchObject({ code: "cancel_requested" });
+        expect((await rerouteView(g.owner, order.id)).refusal).toBe("cancel_requested");
+      }
+      await g.db.outboundRequest.update({ where: { id: wc.requestId }, data: { status: "UNCERTAIN" } });
+      await expect(reroute(order.id)).rejects.toMatchObject({ code: "cancel_uncertain" });
+      expect(await g.db.orderReroute.count({ where: { orderId: order.id } })).toBe(0);
+      const row = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: wc.requestId } });
+      expect(row.payload).toMatchObject({ ctx: { warehouseCancel: "1" } });
+      // A cancel that never left the CRM and is settled (DRY_RUN recorded) no longer blocks a reroute.
+      await g.db.outboundRequest.update({
+        where: { id: wc.requestId },
+        data: { status: "DRY_RUN_RECORDED" },
+      });
+      expect((await rerouteView(g.owner, order.id)).refusal).toBeNull();
     });
 
     it("a CANARY cancel waiting for confirmation opens one reminder task", async () => {

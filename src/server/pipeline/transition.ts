@@ -92,6 +92,9 @@ export type Guard = (tx: Tx, ctx: GuardContext) => Promise<string | null>;
 /** Shipment states in which something is (or may be) live at a warehouse. */
 const INACTIVE_SHIPMENT: CrmOrderStatus[] = ["SUBMIT_FAILED", "CANCELLED"];
 
+/** Statuses an order reaches only after a warehouse had it (cancel from here needs the extra guard). */
+const AFTER_VENDOR: CrmOrderStatus[] = ["BLOCKED", "EXCEPTION", "UNKNOWN"];
+
 /** Shopify test orders are held on import and must never reach a warehouse by accident. */
 export const SHOPIFY_TEST_TAG = "shopify-test";
 
@@ -146,6 +149,18 @@ const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
         where: { orderId: order.id, status: { notIn: INACTIVE_SHIPMENT } },
       });
       return active > 0 ? "active_shipment" : null;
+    },
+    // After the warehouse blocked / cancelled it: a vendor write of this order that is still on its way or whose
+    // outcome is unknown may yet leave something live there — resolve it first.
+    async (tx, { order }) => {
+      if (!(AFTER_VENDOR as readonly string[]).includes(order.status)) return null;
+      const open = await tx.outboundRequest.count({
+        where: {
+          fulfillment: { orderId: order.id },
+          status: { in: ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING", "UNCERTAIN"] },
+        },
+      });
+      return open > 0 ? "vendor_request_open" : null;
     },
   ],
   // P4-09: the old shipment must be cancelled (in the same transaction) before the order is approved again.

@@ -95,6 +95,9 @@ status list "current as of July 2026".
 - Email > 50 chars: block in pre-flight (FHB will reject). Phone: normalise to E.164 (`+…`), ≤20.
 - `PUT /order?id=` and `DELETE /order?id=` work **only while status is pending**. PUT replaces the line set
   (kept lines keep their reservation, omitted lines are removed).
+- CRM "Откажи в склада" (order page, OWNER/ADMIN) queues `DELETE /order?id=` through the outbox only while the raw
+  status is `pending`; success (or a read-back `GET /order` that no longer finds it) → shipment CANCELLED and the
+  order BLOCKED (resend with a new `-N` id or cancel the order). A 4xx refusal leaves the shipment and opens a task.
 - PUT "rewrites order with that ID … parameters are the same as for the POST method" (raw spec): the body is
   the POST body **without** `id`, `validate` and `invoice_number` (those three are not in the PUT schema).
   Because it is a rewrite, every update must re-send what the order was created with — `parcel_service`,
@@ -273,7 +276,12 @@ contracts. Separate base URL, separate auth call, camelCase.
 - PUDO/office: **use `recipient.officeId`** from `GET /offices-by-courier/{courierId}` (the docs contradict
   themselves on the `streetName` keyword — "to office:" vs "office" — so never rely on it).
 - Delete: `DELETE /orders-delete/{refNumber}` or `/orders/{id}` — only in *Information received*,
-  *Awaiting pickup* or *New*, and **not older than 14 days**.
+  *Awaiting pickup* or *New*, and **not older than 14 days**. The CRM's "Откажи в склада" uses `/orders-delete/{refNumber}` through the
+  outbox only inside that window; a confirmed delete (answer, or orders-history "Deleted" / "not found" for a delete
+  the CRM sent — not a DRY_RUN/READ_ONLY/refused row) → shipment CANCELLED, order BLOCKED; a vendor error answer
+  leaves the shipment and opens a task. After that the order can **never be sent to euShipments again** (the
+  reference is always `{PREFIX}-{number}` and a deleted reference is refused by the pre-send check, on any
+  connection sharing the credential): only another warehouse, or cancel the order.
 - Attach invoice: `POST /fulfilment/attach-pdf-files` — **only before the AWB is generated** (422 after),
   one file per request, content must be a real PDF (signature checked). Attach immediately after create.
 
