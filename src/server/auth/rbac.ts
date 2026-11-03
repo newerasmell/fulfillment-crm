@@ -72,6 +72,8 @@ export const PERMISSIONS = {
   "ai.rules": ["OWNER", "ADMIN"],
   /** The full prompt/response log (it carries customer data). */
   "ai.log": ["OWNER", "ADMIN"],
+  /** Фактури (P10-05): per-order invoice numbers / PDF links from the FHB order mirror. */
+  "invoices.read": ["OWNER", "ADMIN", "OPERATOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
