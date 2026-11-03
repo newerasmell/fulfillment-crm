@@ -129,6 +129,26 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   docs/audits/wave-4.md; notes: docs/wave-4-notes.md. Owner questions: euShipments cabinet URL for link-outs; FHB: does order
   delivery_point take the delivery-point id or external_code; euShipments per-AWB invoice fields could be read later.
 
+- 2026-11-03 (fix at the source, owner request): per-country phone rules and master product weights.
+  Настройки → Държави lists every country: the euShipments guideline rules (BG RO GR PL CZ HU SK HR) read-only, our
+  own rules (CountrySetting.phoneRules, Zod-checked) for the others; normalisePhone / normalisePhoneE164 take the
+  group's rule through every caller (euShipments orders and AWBs, FHB orders, Joy labels, order checks, review
+  edits); built-in always wins. On the order screen a phone finding of an undocumented country offers
+  "Добави правило за <CC>" (pre-filled from the order's phone, live preview, warning to confirm with the warehouse);
+  saving re-checks every open (pre-approval) order of the group to that country (25 inline, the rest via
+  orders.check). euShipments weight_missing now names the product (`product:<id>.weightGrams`) and the order screen
+  offers "Въведи тегло"; the master weight is also editable on Продукти → product page (OWNER/ADMIN/OPERATOR,
+  `products.weight`), audited with source/author, and re-checks open orders with that product. Suggestions: euShipments
+  get-products WEIGHT (kg), FHB product weight (unit undocumented — shown, one click only), Shopify variant weight
+  (`inventoryItem.measurement.weight`, now read by the variant sync). "Попълни теглата от склада" fills only masters
+  without a weight from euShipments (conditional update, never overwrites). Optional "Обнови теглото и в Shopify":
+  ShopifyWeightWrite, one row per (variant, weight), gated in the sender by the new per-store "Тегло към Shopify"
+  mode (DISABLED default → DRY_RUN records the exact productVariantsBulkUpdate payload → LIVE reads back, sends,
+  reads back on an unclear answer; raising is OWNER-only). Migration additive (nullable columns, a defaulted column,
+  one new table with RLS). Shopify 2026-10 fields checked with the Shopify docs/schema tools. Owner to do: add the
+  `write_products` scope to the Shopify app (release + reinstall) before raising the weight mode to LIVE; confirm
+  the CY phone format (+357 + 8 digits) with euShipments; then DRY_RUN → check the recorded payload → LIVE.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

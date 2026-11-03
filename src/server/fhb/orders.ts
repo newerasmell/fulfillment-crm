@@ -8,6 +8,7 @@ import {
   type FhbOrderDraft,
 } from "@/integrations/fhb-v3/mapper";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
+import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { isFhbOrderEditable } from "@/integrations/fhb-v3/status-map";
 import {
   hasHardBlock,
@@ -136,6 +137,7 @@ async function fhbPreflight(
       })
     : null;
   const localCurrency = setting?.currency?.toUpperCase() ?? null;
+  const phoneRule = customPhoneRule(setting?.phoneRules);
 
   // Product mapping for this connection and the mirrored stock.
   const productIds = [...new Set(order.lines.map((l) => l.productId).filter((x): x is string => !!x))];
@@ -198,6 +200,7 @@ async function fhbPreflight(
     zip: addr.zip ?? null,
     email: order.email,
     phone,
+    phoneRule,
     lines: lineChecks,
     isCod,
     codAmount,
@@ -212,7 +215,20 @@ async function fhbPreflight(
     valueNotConverted,
     stockMaxAgeMs: input.stockMaxAgeMs,
   });
-  return { order, connection, findings, addr, street, country, phone, lineChecks, isCod, codAmount, value };
+  return {
+    order,
+    connection,
+    findings,
+    addr,
+    street,
+    country,
+    phone,
+    phoneRule,
+    lineChecks,
+    isCod,
+    codAmount,
+    value,
+  };
 }
 
 /** The FHB order draft from a pre-flight result (only valid when the pre-flight has no hard block). */
@@ -222,7 +238,7 @@ function fhbDraft(
   ids: { externalId: string; variableSymbol: string },
   notification: FhbOrderDraft["notification"],
 ): FhbOrderDraft {
-  const { order, addr, street, country, phone, lineChecks, isCod, codAmount, value } = pre;
+  const { order, addr, street, country, phone, phoneRule, lineChecks, isCod, codAmount, value } = pre;
   return {
     externalId: ids.externalId,
     variableSymbol: ids.variableSymbol,
@@ -235,7 +251,8 @@ function fhbDraft(
       country: country!,
     },
     email: order.email!,
-    phone: normalisePhoneE164(phone, country)!,
+    phone: normalisePhoneE164(phone, country, phoneRule)!,
+    phoneRule,
     items: lineChecks.map((l) => ({ id: l.vendorProductId!, quantity: l.quantity })),
     cod: isCod ? codAmount : null,
     value,

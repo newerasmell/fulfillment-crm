@@ -59,6 +59,8 @@ export interface FhbOrderDraft {
   };
   email: string;
   phone: string;
+  /** The group's own phone rule for the destination (used only for a country the ITU table lacks). */
+  phoneRule?: { cc: string; trunk: string } | null;
   /** FHB product ids with quantities; the same id on several lines is merged. */
   items: { id: string; quantity: number }[];
   /** Already in the destination's local currency. 0 / null = not COD. */
@@ -80,7 +82,7 @@ function mergeItems(items: { id: string; quantity: number }[]) {
 }
 
 function orderCore(d: FhbOrderDraft) {
-  const phone = normalisePhoneE164(d.phone, d.address.country) ?? d.phone.trim();
+  const phone = normalisePhoneE164(d.phone, d.address.country, d.phoneRule) ?? d.phone.trim();
   const notification = Object.fromEntries(
     Object.entries(d.notification ?? {}).filter(([, url]) => !!url && url.length <= FHB_URL_MAX),
   );

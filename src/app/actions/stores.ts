@@ -71,6 +71,9 @@ export async function saveStoreSettingsAction(
       notifyCustomer: form.get("notifyCustomer") === "on",
       writeBackMode: String(form.get("writeBackMode")) as "READ_ONLY",
       inventoryPushMode: String(form.get("inventoryPushMode")) as "DISABLED",
+      ...(form.get("weightWriteMode")
+        ? { weightWriteMode: String(form.get("weightWriteMode")) as "DISABLED" }
+        : {}),
       inventoryBuffer: Number(form.get("inventoryBuffer") ?? 0),
     });
   } catch (err) {

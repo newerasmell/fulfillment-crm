@@ -205,6 +205,7 @@ model Account {
   productLines              ProductLine[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
+  shopifyWeightWrites       ShopifyWeightWrite[]
   returnCases               ReturnCase[]
   returnsCodSettings        ReturnsCodSettings?
   aiControl                 AiControl?
@@ -390,6 +391,8 @@ model Store {
   writeBackMode     StoreWriteMode    @default(READ_ONLY)
   inventoryPushMode InventoryPushMode @default(DISABLED)
   inventoryBuffer   Int               @default(0)
+  /// "Тегло към Shopify": product weight write-back (DISABLED → DRY_RUN → LIVE); raising it is OWNER-only.
+  weightWriteMode   InventoryPushMode @default(DISABLED)
   notifyCustomer    Boolean           @default(true)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -403,6 +406,7 @@ model Store {
   locations       StoreLocation[]
   inventoryLevels ShopifyInventoryLevel[]
   inventoryPushes InventoryPush[]
+  weightWrites    ShopifyWeightWrite[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -510,39 +514,44 @@ model CountrySetting {
 // ───────────────────────── catalog & stock ─────────────────────────
 
 model Product {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   accountId       String
   sku             String
   name            String
   brand           String?
   /// EDT / EDP / Parfum / Elixir / Intense … — distinct products.
   type            String?
-  attributes      Json     @default("{}")
-  isTester        Boolean  @default(false)
+  attributes      Json      @default("{}")
+  isTester        Boolean   @default(false)
   /// A tester points to its original (for "Тестерите под оригинала").
   parentProductId String?
   weightGrams     Int?
+  /// Where weightGrams came from: manual | eushipments | fhb | shopify (null = before this was tracked).
+  weightSource    String?
+  weightSetAt     DateTime?
+  weightSetById   String?
   lengthMm        Int?
   widthMm         Int?
   heightMm        Int?
   hsCode          String?
   countryOfOrigin String?
   images          String[]
-  archived        Boolean  @default(false)
+  archived        Boolean   @default(false)
   /// Product line of the master (P5-00). Null = not assigned to a line yet.
   lineId          String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  account        Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  line           ProductLine?       @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
-  parent         Product?           @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
-  testers        Product[]          @relation("TesterOf")
+  account        Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line           ProductLine?         @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
+  parent         Product?             @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
+  testers        Product[]            @relation("TesterOf")
   eans           ProductEan[]
   variantLinks   StoreVariantLink[]
   vendorProducts VendorProduct[]
   orderLines     OrderLine[]
   inboundLines   InboundLine[]
+  weightWrites   ShopifyWeightWrite[]
 
   @@unique([accountId, id])
   @@unique([accountId, sku])
@@ -565,24 +574,27 @@ model ProductEan {
 }
 
 model StoreVariantLink {
-  id                String    @id @default(cuid())
-  accountId         String
-  storeId           String
-  shopifyVariantGid String
-  shopifyProductGid String
-  sku               String?
-  barcode           String?
-  title             String
-  productId         String?
-  matchMethod       String?
-  matchedAt         DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  accountId          String
+  storeId            String
+  shopifyVariantGid  String
+  shopifyProductGid  String
+  sku                String?
+  barcode            String?
+  title              String
+  productId          String?
+  matchMethod        String?
+  matchedAt          DateTime?
+  /// Variant weight in grams as Shopify reported it on the last product sync (a suggestion, never a key).
+  shopifyWeightGrams Int?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   store           Store                   @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
   product         Product?                @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   orderLines      OrderLine[]
   inventoryLevels ShopifyInventoryLevel[]
+  weightWrites    ShopifyWeightWrite[]
 
   @@unique([accountId, id])
   @@unique([storeId, shopifyVariantGid])
@@ -2443,4 +2455,41 @@ model FhbTicketEvent {
 
   @@unique([webhookEventId])
   @@index([accountId, ticketId, receivedAt])
+}
+
+// ───────────────────────── product weight write-back to Shopify ─────────────────────────
+
+/// One "set this variant's weight in Shopify" request (Продукти → тегло, "Обнови теглото и в Shopify").
+/// Idempotent per (variant, weight). The sender gates on Store.weightWriteMode at send time: DISABLED → REFUSED,
+/// DRY_RUN → the exact mutation + variables are recorded, LIVE → read back, then productVariantsBulkUpdate.
+model ShopifyWeightWrite {
+  id            String             @id @default(cuid())
+  accountId     String
+  storeId       String
+  productId     String
+  variantLinkId String
+  weightGrams   Int
+  status        OutboundStatus     @default(PENDING)
+  evaluatedMode InventoryPushMode?
+  /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
+  request       Json?
+  lastResponse  Json?
+  lastError     String?
+  attempts      Int                @default(0)
+  lockedAt      DateTime?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  account     Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store       Store            @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  product     Product          @relation(fields: [accountId, productId], references: [accountId, id], onDelete: Cascade)
+  variantLink StoreVariantLink @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([variantLinkId, weightGrams])
+  @@index([accountId, productId, createdAt])
+  @@index([status, nextAttemptAt])
 }

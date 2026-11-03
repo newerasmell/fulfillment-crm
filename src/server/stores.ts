@@ -153,6 +153,8 @@ export const StoreSettingsInput = z.object({
   notifyCustomer: z.boolean(),
   writeBackMode: z.enum(["READ_ONLY", "DRY_RUN", "LIVE"]),
   inventoryPushMode: z.enum(["DISABLED", "DRY_RUN", "LIVE"]),
+  /** "Тегло към Shopify" (product weight write-back); absent = unchanged. */
+  weightWriteMode: z.enum(["DISABLED", "DRY_RUN", "LIVE"]).optional(),
   inventoryBuffer: z.number().int().min(0).max(10_000),
 });
 
@@ -167,7 +169,9 @@ export async function updateStoreSettings(
   const before = await getStore(actor, storeId);
   if (
     WRITE_RANK[input.writeBackMode] > WRITE_RANK[before.writeBackMode] ||
-    PUSH_RANK[input.inventoryPushMode] > PUSH_RANK[before.inventoryPushMode]
+    PUSH_RANK[input.inventoryPushMode] > PUSH_RANK[before.inventoryPushMode] ||
+    (input.weightWriteMode !== undefined &&
+      PUSH_RANK[input.weightWriteMode] > PUSH_RANK[before.weightWriteMode])
   ) {
     assertCan(actor.role, "stores.raiseMode");
   }
@@ -186,6 +190,7 @@ export async function updateStoreSettings(
       notifyCustomer: before.notifyCustomer,
       writeBackMode: before.writeBackMode,
       inventoryPushMode: before.inventoryPushMode,
+      weightWriteMode: before.weightWriteMode,
       inventoryBuffer: before.inventoryBuffer,
     },
     after: input,

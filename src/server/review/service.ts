@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { customPhoneRule } from "@/integrations/eushipments/phone";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
@@ -233,6 +234,7 @@ export async function previewAddress(actor: ScopedActor, orderId: string, values
     },
     {
       localCurrency: setting?.currency ?? null,
+      phoneRule: customPhoneRule(setting?.phoneRules),
       routing: routing ?? {
         connectionId: "preview",
         connectionName: null,

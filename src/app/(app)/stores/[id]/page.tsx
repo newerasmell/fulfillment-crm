@@ -129,6 +129,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
               notifyCustomer: store.notifyCustomer,
               writeBackMode: store.writeBackMode,
               inventoryPushMode: store.inventoryPushMode,
+              weightWriteMode: store.weightWriteMode,
               inventoryBuffer: store.inventoryBuffer,
             }}
           />

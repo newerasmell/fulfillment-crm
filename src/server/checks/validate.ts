@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
@@ -236,7 +237,13 @@ export async function validateOrder(
       tags: order.tags,
       lines: order.lines,
     },
-    { localCurrency: setting?.currency ?? null, routing, stock, duplicates },
+    {
+      localCurrency: setting?.currency ?? null,
+      phoneRule: customPhoneRule(setting?.phoneRules),
+      routing,
+      stock,
+      duplicates,
+    },
   );
   const vendor = connection ? await vendorFindings(accountId, order.id, connection, routing, now) : [];
   const manualRouting =

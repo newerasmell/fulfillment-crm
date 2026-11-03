@@ -69,12 +69,19 @@ export const callingCodeOf = (country: string | null | undefined) =>
  * Returns the E.164 form (`+` and 8–15 digits), or null when the number cannot be made international with
  * confidence. Never adds a second prefix: a number that already carries the country code keeps it.
  */
-export function normalisePhoneE164(raw: string | null | undefined, country: string | null | undefined) {
+export function normalisePhoneE164(
+  raw: string | null | undefined,
+  country: string | null | undefined,
+  /** The group's own phone rule for the country (CountrySetting.phoneRules): used only for a country this
+   *  table does not know — its calling code and trunk prefix. The ITU table above always wins. */
+  custom?: { cc: string; trunk: string } | null,
+) {
   if (!raw) return null;
   let s = raw.trim().replace(/[\s\-()./]/g, "");
   if (s.startsWith("00")) s = `+${s.slice(2)}`;
-  const cc = callingCodeOf(country);
-  const trunk = country ? TRUNK[country.toUpperCase()] : undefined;
+  const known = callingCodeOf(country);
+  const cc = known ?? custom?.cc ?? null;
+  const trunk = known ? (country ? TRUNK[country.toUpperCase()] : undefined) : custom?.trunk || undefined;
   let digits: string;
   if (s.startsWith("+")) {
     digits = s.slice(1);

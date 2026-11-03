@@ -36,7 +36,8 @@
     "group": "Group",
     "allCompanies": "All companies",
     "alerts": "Alerts and tasks",
-    "lines": "Lines and companies"
+    "lines": "Lines and companies",
+    "countries": "Countries"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -334,7 +335,14 @@
       "LIVE": "Live"
     },
     "jobQueued": "Queued in the background — the result appears here within a minute.",
-    "jobAlready": "Already waiting in the queue — the result appears here within a minute."
+    "jobAlready": "Already waiting in the queue — the result appears here within a minute.",
+    "weightWriteMode": "Weight to Shopify",
+    "weightWriteModeHint": "Writes the product weight to the Shopify variants when a person saves it with \"Also update in Shopify\". Needs the write_products scope.",
+    "weightModes": {
+      "DISABLED": "Disabled",
+      "DRY_RUN": "Dry run (request recorded only)",
+      "LIVE": "Live"
+    }
   },
   "products": {
     "title": "Products & stock",
@@ -3115,5 +3123,102 @@
       "note": "A snapshot of now (the period does not apply). Same numbers as Products and stock for the selected line: sellable = free at the warehouse minus CRM-reserved; run-out from average sales over the last {window} days. Open = orders not at a warehouse yet. Batches and expiry dates stay in ZOE.",
       "truncated": "Only the first products of the line are shown; narrow the line for the full list."
     }
+  },
+  "countries": {
+    "title": "Countries",
+    "intro": "Local currency and phone format per destination country — they apply to every order of the group.",
+    "country": "Country",
+    "currency": "Local currency",
+    "phoneRule": "Phone rule",
+    "builtin": "From the euShipments guideline (not editable)",
+    "custom": "Our rule",
+    "none": "No rule — orders to this country stop at the phone check",
+    "customIgnored": "The stored rule of ours is not used: the country has a rule from the euShipments guideline.",
+    "addCountry": "Add country",
+    "edit": "Edit",
+    "save": "Save rule",
+    "remove": "Remove rule",
+    "style": "Format to send",
+    "styleInternational": "International (+code and number)",
+    "styleNational": "National (without the country code)",
+    "cc": "Country calling code",
+    "trunk": "National trunk prefix (e.g. 0)",
+    "lengths": "Digits after the code",
+    "lengthsHint": "One or more numbers, comma separated (e.g. 8 or 9, 10).",
+    "warning": "The euShipments guideline does not document a format for {cc}. Confirm the format with the warehouse before sending orders — the rule applies to every order to {cc}.",
+    "preview": "How it will be sent",
+    "previewPhone": "Phone to try",
+    "previewEu": "euShipments",
+    "previewFhb": "FHB / Joy (E.164)",
+    "previewInvalid": "cannot be sent ({reason})",
+    "reasons": {
+      "empty": "missing",
+      "invalid_characters": "letters or symbols",
+      "foreign_number": "another country's code",
+      "wrong_length": "wrong number of digits",
+      "no_rule": "no rule"
+    },
+    "saved": "Saved. Re-checked: {checked} orders (no blocking problem: {cleared}); in the background: {queued}.",
+    "addRule": "Add a rule for {cc}",
+    "addRuleTitle": "Phone rule for {cc}",
+    "currencyRequired": "The country has no setting yet — enter its local currency (e.g. EUR).",
+    "close": "Close",
+    "errors": {
+      "forbidden": "You are not allowed to do this.",
+      "invalid": "Check the fields.",
+      "builtin_phone_rule": "This country has a rule from the euShipments guideline — it cannot be changed.",
+      "currency_required": "Enter the local currency.",
+      "not_found": "Not found."
+    }
+  },
+  "weights": {
+    "title": "Weight",
+    "grams": "Weight (grams)",
+    "enter": "Enter weight",
+    "save": "Save weight",
+    "current": "Now: {grams} g",
+    "missing": "No weight",
+    "saved": "Saved for every order. Re-checked: {checked} (no blocking problem: {cleared}); in the background: {queued}.",
+    "suggestions": "Suggestions",
+    "use": "Use",
+    "noSuggestions": "No weight from a warehouse or Shopify.",
+    "source": {
+      "manual": "entered by hand",
+      "eushipments": "from euShipments",
+      "fhb": "from FHB",
+      "shopify": "from Shopify"
+    },
+    "unitAssumed": "FHB does not document the unit — read as kg",
+    "writeShopify": "Also update the weight in Shopify",
+    "writeShopifyOff": "\"Weight to Shopify\" is disabled for the linked stores (Stores → Settings).",
+    "shopifyQueued": "Shopify: {queued} variants",
+    "skippedStores": "not written (disabled): {stores}",
+    "writesTitle": "Weight to Shopify",
+    "request": "Exact request",
+    "status": {
+      "PENDING": "waiting to be sent",
+      "PAUSED": "paused",
+      "REFUSED": "not sent",
+      "DRY_RUN_RECORDED": "dry run — request recorded",
+      "SENDING": "sending",
+      "SENT": "set in Shopify",
+      "FAILED": "error",
+      "UNCERTAIN": "unclear",
+      "HELD": "held",
+      "AWAITING_CONFIRMATION": "awaiting confirmation"
+    },
+    "bulk": "Fill weights from the warehouse",
+    "bulkHint": "Only products without a weight, from euShipments (kg). A weight a person entered is never changed.",
+    "bulkDone": "Filled: {filled} of {candidates} without a weight; no data: {noSuggestion}; different values: {conflicts}.",
+    "setBy": "{source} · {who}",
+    "variants": "Shopify variants",
+    "shopifyWeight": "in Shopify: {grams} g",
+    "errors": {
+      "forbidden": "You are not allowed to do this.",
+      "invalid": "Weight from 1 to 100000 grams.",
+      "not_found": "Not found."
+    },
+    "productLink": "Weight and details",
+    "column": "Weight"
   }
 }

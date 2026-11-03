@@ -127,6 +127,7 @@ export interface StoreSettingsView {
   notifyCustomer: boolean;
   writeBackMode: string;
   inventoryPushMode: string;
+  weightWriteMode: string;
   inventoryBuffer: number;
 }
 
@@ -189,6 +190,17 @@ export function StoreSettingsForm({
             </option>
           ))}
         </select>
+      </label>
+      <label className={labelCls}>
+        {t("weightWriteMode")}
+        <select name="weightWriteMode" defaultValue={s.weightWriteMode} className={inputCls}>
+          {pushModes.map((m) => (
+            <option key={m} value={m} disabled={!allowed(pushModes, s.weightWriteMode, m)}>
+              {t(`weightModes.${m}`)}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs font-normal text-muted">{t("weightWriteModeHint")}</span>
       </label>
       <label className={labelCls}>
         {t("inventoryBuffer")}

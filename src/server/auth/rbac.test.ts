@@ -53,6 +53,8 @@ const EXPECTED: Record<Permission, string> = {
   "shipments.settings": "11000",
   "invoices.read": "11100",
   "reports.read": "11100",
+  "countries.manage": "11000",
+  "products.weight": "11100",
 };
 
 describe("role matrix", () => {

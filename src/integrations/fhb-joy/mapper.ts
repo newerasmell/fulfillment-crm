@@ -25,7 +25,7 @@ export function buildJoyShipment(
     zip: d.zip!.trim(),
     country,
     email: d.email!.trim(),
-    phone: normalisePhoneE164(d.phone, country),
+    phone: normalisePhoneE164(d.phone, country, d.phoneRule),
     variableSymbol: d.variableSymbol,
     ...(d.cod && d.cod > 0 ? { cod: round2(d.cod) } : {}),
     ...(d.sender?.trim() ? { sender: d.sender.trim() } : {}),

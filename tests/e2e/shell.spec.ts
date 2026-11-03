@@ -16,6 +16,7 @@ const PAGES: [string, string][] = [
   ["/warehouses", "Складове и връзки"],
   ["/stores", "Магазини"],
   ["/routing", "Правила за маршрут"],
+  ["/settings/countries", "Държави"],
   ["/ai", "AI асистент"],
   ["/directory", "Офиси, PUDO, потребители"],
   ["/settings/members", "Фирми и потребители"],

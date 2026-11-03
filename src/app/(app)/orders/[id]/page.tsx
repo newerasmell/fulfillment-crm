@@ -24,6 +24,13 @@ import type { StockCheck } from "@/server/routing";
 import { CancelCanaryConfirm, RerouteForm, WarehouseChooser, type OptionView } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
+import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
+import { WeightForm } from "@/components/rules-weights/WeightForm";
+import {
+  orderSourceFixes,
+  PHONE_FINDING_CODES,
+  productOfWeightFinding,
+} from "@/server/countries/order-fixes";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
 
@@ -85,6 +92,12 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
       }
     : null;
   const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
+  // Fixes at the source (a country's phone rule, a product's weight) for the findings that allow them.
+  const fixes = await orderSourceFixes(actorFrom(ctx), order, check?.findings ?? []);
+  const cf = await getTranslations("countries");
+  const wt = await getTranslations("weights");
+  // The phone rule form is offered once, on the first phone finding.
+  const phoneFixAt = (check?.findings ?? []).findIndex((f) => PHONE_FINDING_CODES.has(f.code));
   const tw = await getTranslations("fulfill.writeBack");
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
   const when = (d: Date) => format.dateTime(d, { dateStyle: "medium", timeStyle: "short" });
@@ -357,6 +370,45 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                           <code className="font-mono">{f.code}</code>
                           {f.field && <code className="font-mono">{f.field}</code>}
                         </div>
+                        {fixes.phone && i === phoneFixAt && (
+                          <details className="mt-2" data-testid="phone-rule-fix">
+                            <summary className="cursor-pointer text-sm font-semibold text-accent">
+                              {cf("addRule", { cc: fixes.phone.country })}
+                            </summary>
+                            <div className="mt-2 rounded-lg bg-surface p-3">
+                              <PhoneRuleForm
+                                country={fixes.phone.country}
+                                initial={fixes.phone.initial}
+                                samplePhone={fixes.phone.samplePhone}
+                                needsCurrency={fixes.phone.needsCurrency}
+                                defaultCurrency={fixes.phone.defaultCurrency}
+                                canRemove={false}
+                              />
+                            </div>
+                          </details>
+                        )}
+                        {(() => {
+                          const pid = productOfWeightFinding(f);
+                          const w = pid ? fixes.weights.get(pid) : undefined;
+                          if (!w) return null;
+                          return (
+                            <details className="mt-2" data-testid="weight-fix" open>
+                              <summary className="cursor-pointer text-sm font-semibold text-accent">
+                                {wt("enter")} · {w.label}
+                              </summary>
+                              <div className="mt-2 rounded-lg bg-surface p-3">
+                                <WeightForm
+                                  productId={w.productId}
+                                  productLabel={w.label}
+                                  current={w.current}
+                                  suggestions={w.suggestions}
+                                  shopifyAllowed={w.shopifyAllowed}
+                                  compact
+                                />
+                              </div>
+                            </details>
+                          );
+                        })()}
                         {f.suggestedFix &&
                           (isEditableField(f.suggestedFix.field) && data.editable && data.canReview ? (
                             <div className="mt-2">

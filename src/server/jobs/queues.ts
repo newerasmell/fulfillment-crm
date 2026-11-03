@@ -170,6 +170,12 @@ export const QUEUES = {
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
     cron: "*/2 * * * *",
   },
+  /** Every 2 min: product weight → Shopify (store weightWriteMode gate in the sender). */
+  shopifyWeightWrite: {
+    name: "shopify.weightWrite",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
+    cron: "*/2 * * * *",
+  },
   /** Every 10 min: order-state alerts (blocked / unknown / submit failed / stuck) and email/Telegram notifications. */
   alertsSweep: {
     name: "alerts.sweep",

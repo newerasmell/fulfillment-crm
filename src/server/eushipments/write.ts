@@ -15,6 +15,7 @@ import {
   CreateTransferBody,
   SERVICE_NAMES,
 } from "@/integrations/eushipments/schemas";
+import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { normaliseStatusText } from "@/integrations/eushipments/status-map";
 import { hasBlocks, sofiaToday, validateEuOrder, type Finding } from "@/integrations/eushipments/validators";
 import { DomainError } from "@/server/accounts";
@@ -299,11 +300,30 @@ async function euOrderPreflight(
         ),
       );
   }
-  const weights = lines.map((l) => l.product?.weightGrams ?? null);
-  if (weights.some((w) => !w))
+  // One finding per product without a weight, so the order screen can offer "Въведи тегло" per line. The
+  // weight lives on the master product (Продукти) and applies to every order.
+  const missingWeight = new Map<string, string>();
+  for (const l of lines)
+    if (!l.product?.weightGrams) missingWeight.set(l.productId ?? `line:${l.id}`, l.product?.name ?? l.title);
+  for (const [key, name] of missingWeight)
     findings.push(
-      block("weight_missing", "awb.totalWeight", "Липсва тегло на продукт.", "A product has no weight."),
+      block(
+        "weight_missing",
+        key.startsWith("line:") ? "awb.totalWeight" : `product:${key}.weightGrams`,
+        `Липсва тегло на продукт „${name}“.`,
+        `The product "${name}" has no weight.`,
+      ),
     );
+
+  const destination =
+    ((order.shippingAddress ?? {}) as Record<string, string | null>).countryCode?.toUpperCase() ??
+    order.countryCode?.toUpperCase() ??
+    null;
+  const countrySetting = destination
+    ? await db.countrySetting.findUnique({
+        where: { accountId_country: { accountId, country: destination } },
+      })
+    : null;
 
   const cod = order.paymentMethod === "COD";
   if (cod && (order.codLocalAmount == null || !order.codLocalCurrency))
@@ -316,9 +336,12 @@ async function euOrderPreflight(
       ),
     );
   if (cod && order.codLocalCurrency && order.countryCode) {
-    const cs = await db.countrySetting.findUnique({
-      where: { accountId_country: { accountId: accountId, country: order.countryCode } },
-    });
+    const cs =
+      destination === order.countryCode.toUpperCase()
+        ? countrySetting
+        : await db.countrySetting.findUnique({
+            where: { accountId_country: { accountId: accountId, country: order.countryCode } },
+          });
     if (cs && cs.currency !== order.codLocalCurrency)
       findings.push(
         block(
@@ -358,6 +381,7 @@ async function euOrderPreflight(
     shipmentPayer: input.shipmentPayer,
     address: (order.shippingAddress ?? {}) as Record<string, string | null>,
     phone: order.phone,
+    phoneRule: customPhoneRule(countrySetting?.phoneRules),
     email: order.email,
     codLocal: cod ? order.codLocalAmount?.toString() : null,
     lines: lines.map((l) => ({

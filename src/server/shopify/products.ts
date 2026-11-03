@@ -9,6 +9,7 @@ import {
   VariantsPage,
   type ShopifyVariant,
 } from "@/integrations/shopify/products";
+import { weightToGrams } from "@/integrations/shopify/weights";
 import { DomainError, type Actor } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
@@ -73,6 +74,8 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
       sku: v.sku?.trim() || null,
       barcode: v.barcodes.nodes[0]?.value ?? null,
       title: v.displayName,
+      // Shopify's variant weight is kept as a suggestion for the master weight (never applied by itself).
+      shopifyWeightGrams: weightToGrams(v.inventoryItem?.measurement?.weight),
     };
     const lineId =
       store.lineId !== undefined

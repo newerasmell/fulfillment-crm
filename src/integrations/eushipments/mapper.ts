@@ -1,4 +1,4 @@
-import { normalisePhone, type PhoneResult } from "./phone";
+import { normalisePhone, type PhoneResult, type PhoneRule } from "./phone";
 import type { CreateOrderBody, CreateProductBody, CreateRequestBody, CreateTransferBody } from "./schemas";
 
 /**
@@ -82,6 +82,8 @@ export interface BuildOrderInput {
   address: OrderAddress;
   /** Order-level phone (fallback when the address has none). */
   phone?: string | null;
+  /** The group's own phone rule for the destination (only for a country without a built-in rule). */
+  phoneRule?: PhoneRule | null;
   email?: string | null;
   /** PUDO: office id from offices-by-courier (INTEGRATION_NOTES §4.3 — never the streetName keyword). */
   officeId?: number | null;
@@ -114,7 +116,7 @@ const clean = (v: string | null | undefined) => {
 export function buildCreateOrder(input: BuildOrderInput): BuiltOrder {
   const a = input.address;
   const country = clean(a.countryCode)?.toUpperCase() ?? null;
-  const phone = normalisePhone(a.phone ?? input.phone, country);
+  const phone = normalisePhone(a.phone ?? input.phone, country, input.phoneRule);
   const cod = input.codLocal == null ? 0 : Number(input.codLocal);
 
   let products: CreateOrderBody["products"] = input.lines.map((l) => ({

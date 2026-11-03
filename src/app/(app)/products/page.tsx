@@ -7,6 +7,7 @@ import { requireAccountContext } from "@/server/auth/session";
 import { accountDb } from "@/server/db/client";
 import { listUnmatchedVariants, stripSkuPrefix } from "@/server/shopify/products";
 import { MatchVariant } from "./forms";
+import { FillWeightsButton } from "@/components/rules-weights/WeightForm";
 import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
 import { LineChip } from "@/components/ui/LineChip";
 import { lineCoverage } from "@/server/lines/coverage";
@@ -32,6 +33,7 @@ export default async function ProductsPage() {
       id: true,
       sku: true,
       name: true,
+      weightGrams: true,
       line: { select: { name: true, color: true } },
       _count: { select: { variantLinks: true } },
     },
@@ -39,6 +41,7 @@ export default async function ProductsPage() {
     take: 500,
   });
   const match = can(ctx.role, "products.match");
+  const tw = await getTranslations("weights");
   const tl = await getTranslations("lines");
   const shownLines = ctx.activeLineId ? ctx.lines.filter((l) => l.id === ctx.activeLineId) : ctx.lines;
   const coverage = await Promise.all(
@@ -128,7 +131,10 @@ export default async function ProductsPage() {
         )}
       </Card>
       <Card>
-        <h2 className="mt-0 text-base font-semibold">{t("masterTitle", { count: products.length })}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="m-0 text-base font-semibold">{t("masterTitle", { count: products.length })}</h2>
+          {can(ctx.role, "products.weight") && <FillWeightsButton />}
+        </div>
         {products.length === 0 ? (
           <p className="m-0 text-muted">{t("masterEmpty")}</p>
         ) : (
@@ -138,6 +144,7 @@ export default async function ProductsPage() {
                 <th className={thCls}>{t("sku")}</th>
                 <th className={thCls}>{t("name")}</th>
                 <th className={thCls}>{t("storeVariants")}</th>
+                <th className={`${thCls} text-right`}>{tw("column")}</th>
                 {ctx.lines.length > 0 && <th className={thCls}>{tl("line")}</th>}
               </tr>
             </thead>
@@ -145,8 +152,20 @@ export default async function ProductsPage() {
               {products.map((p) => (
                 <tr key={p.id}>
                   <td className={`${tdCls} font-mono text-[13px]`}>{p.sku}</td>
-                  <td className={tdCls}>{p.name}</td>
+                  <td className={tdCls}>
+                    <Link href={`/products/${p.id}`} className="hover:underline">
+                      {p.name}
+                    </Link>
+                  </td>
                   <td className={tdCls}>{p._count.variantLinks}</td>
+                  <td className={`${tdCls} text-right font-mono`}>
+                    <Link
+                      href={`/products/${p.id}`}
+                      className={p.weightGrams ? "hover:underline" : "text-block hover:underline"}
+                    >
+                      {p.weightGrams ? `${p.weightGrams} g` : tw("missing")}
+                    </Link>
+                  </td>
                   {ctx.lines.length > 0 && (
                     <td className={tdCls}>
                       {p.line ? (
