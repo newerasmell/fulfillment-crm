@@ -2567,5 +2567,175 @@
       "not_found": "Не е намерено.",
       "not_editable": "Адресът вече не може да се променя."
     }
+  },
+  "shipmentList": {
+    "title": "Товарителници",
+    "subtitle": "Всички пратки от двата склада — FHB, FHB Joy етикети и euShipments товарителници — с проследяване.",
+    "export": "Експорт CSV",
+    "tabsLabel": "Статус на пратките",
+    "tabs": {
+      "preparing": "В подготовка",
+      "shipped": "Изпратени",
+      "delivered": "Доставени",
+      "returning": "Връщат се",
+      "problem": "Проблем",
+      "cancelled": "Отказани",
+      "all": "Всички",
+      "delayed": "Забавени"
+    },
+    "delayedHint": "„Забавени“: изпратени, но недоставени след {days} дни.",
+    "filters": "Филтри",
+    "filter": {
+      "warehouse": "Склад",
+      "allWarehouses": "Всички складове",
+      "carrier": "Куриер",
+      "allCarriers": "Всички куриери",
+      "from": "Създадена от",
+      "to": "до",
+      "search": "Търсене",
+      "searchPlaceholder": "Поръчка, товарителница, клиент, телефон…",
+      "apply": "Приложи",
+      "clear": "Изчисти"
+    },
+    "type": {
+      "FHB_V3": "FHB",
+      "FHB_JOY": "FHB Joy",
+      "EUSHIPMENTS": "euShipments"
+    },
+    "col": {
+      "order": "Поръчка",
+      "company": "Фирма",
+      "warehouse": "Склад",
+      "carrier": "Куриер",
+      "tracking": "Товарителница",
+      "status": "Статус",
+      "cod": "Наложен платеж",
+      "dates": "Дати",
+      "age": "Възраст"
+    },
+    "date": {
+      "created": "създадена",
+      "submitted": "изпратена към склада",
+      "shipped": "изпратена",
+      "delivered": "доставена"
+    },
+    "days": "{n, plural, one {# ден} other {# дни}}",
+    "rawStatus": "Статус, както го изпраща складът",
+    "delayed": "Забавена",
+    "rerouted": "Пренасочена ({status})",
+    "rerouteStatus": {
+      "CANCEL_QUEUED": "чака отказ",
+      "DONE": "готово",
+      "REFUSED": "отказано от склада",
+      "UNCERTAIN": "неясно",
+      "SIMULATED": "симулация"
+    },
+    "ticket": "Тикет: {state}",
+    "ticketState": {
+      "OPEN": "отворен",
+      "UPDATED": "обновен",
+      "CLOSED": "затворен"
+    },
+    "trackingLink": "Проследяване {n}",
+    "manualKind": {
+      "WAREHOUSE": "Ръчна от склад",
+      "JOY_LABEL": "Етикет FHB Joy",
+      "AWB": "Товарителница euShipments",
+      "PRE_AWB": "Pre-AWB euShipments"
+    },
+    "empty": "Няма пратки за този филтър.",
+    "pagination": "Страници",
+    "prev": "Предишна",
+    "next": "Следваща",
+    "pageOf": "Страница {page} от {pages} · {total} пратки",
+    "detail": {
+      "title": "Пратка {id}",
+      "open": "Детайли за пратка {id}",
+      "close": "Затвори",
+      "order": "Поръчка",
+      "timeline": "(пълна история на поръчката)",
+      "vendorId": "Номер в склада",
+      "vendorUid": "UID в склада",
+      "variableSymbol": "Вариабилен символ",
+      "deliveryPoint": "Точка за доставка",
+      "ticket": "Тикет от склада",
+      "ticketEvents": "{count, plural, one {# известие} other {# известия}}",
+      "events": "Събития от склада",
+      "noEvents": "Още няма събития от склада.",
+      "openZoe": "Още за пратката в ZOE ↗",
+      "moreInEu": "Подробностите извън тези данни са в кабинета на euShipments (API-то не дава повече за пратката)."
+    },
+    "settings": {
+      "title": "Настройки на товарителниците",
+      "form": "Настройки на товарителниците",
+      "delayedDays": "„Забавена“ след (дни без доставка)",
+      "save": "Запази",
+      "saved": "Записано."
+    },
+    "error": {
+      "forbidden": "Нямате права за това.",
+      "invalid_days": "Въведете цяло число от 1 до 60."
+    }
+  },
+  "tickets": {
+    "title": "Тикети от склада",
+    "subtitle": "Известия за тикети от FHB по пратка. Текстът и отговорите са в ZOE.",
+    "openZoe": "Отвори в ZOE ↗",
+    "about": {
+      "fhb": "FHB изпраща по API само известия за тикет на поръчка (създаден / обновен / затворен) — без текст и отговори. Прочетете и отговорете в ZOE, после маркирайте тикета като прегледан тук.",
+      "eu": "euShipments няма API за тикети: техните запитвания остават в кабинета на euShipments."
+    },
+    "tabsLabel": "Състояние на тикетите",
+    "tabs": {
+      "open": "Отворени",
+      "unreviewed": "Непрегледани",
+      "closed": "Затворени",
+      "all": "Всички"
+    },
+    "search": "Поръчка, пратка, товарителница…",
+    "apply": "Търси",
+    "empty": "Няма тикети за този филтър.",
+    "col": {
+      "state": "Състояние",
+      "shipment": "Поръчка / пратка",
+      "warehouse": "Склад",
+      "company": "Фирма",
+      "events": "Известия",
+      "age": "Възраст",
+      "review": "Преглед"
+    },
+    "state": {
+      "OPEN": "Отворен",
+      "UPDATED": "Обновен",
+      "CLOSED": "Затворен"
+    },
+    "vendorEvent": "Последното известие, както го изпраща FHB",
+    "eventCount": "{count, plural, one {# известие} other {# известия}}",
+    "first": "първо: {date}",
+    "last": "последно: {date}",
+    "days": "{n, plural, one {# ден} other {# дни}}",
+    "markReviewed": "Маркирай като прегледан",
+    "reviewForm": "Преглед на тикет {reference}",
+    "noteLabel": "Бележка",
+    "notePlaceholder": "Какво е направено (напр. отговорено в ZOE)",
+    "confirmReviewed": "Прегледан",
+    "cancel": "Отказ",
+    "reviewedBy": "Прегледан от {name}, {date}",
+    "reviewedBefore": "Прегледан от {name}, {date} — има ново известие след това",
+    "note": "Бележка: {note}",
+    "error": {
+      "forbidden": "Нямате права за това.",
+      "note_required": "Напишете бележка (поне 2 знака).",
+      "not_found": "Тикетът не е намерен."
+    }
+  },
+  "globalSearch": {
+    "label": "Търсене",
+    "placeholder": "Поръчка, товарителница, клиент, телефон…",
+    "hint": "Търси поръчки по номер, клиент, телефон или e-mail и пратки по номер на товарителница. Enter отваря първия резултат.",
+    "loading": "Търси…",
+    "none": "Нищо не е намерено.",
+    "orders": "Поръчки",
+    "shipments": "Товарителници"
   }
 }

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { logoutAction, setLocaleAction, setScopeAction } from "@/app/actions/session";
 import { Icon } from "@/components/icons";
+import { GlobalSearchPanel } from "./GlobalSearch";
 import type { Scope } from "./scope";
 
 const SCOPE_DOT: Record<Scope, string> = { all: "bg-muted", fhb: "bg-fhb", eu: "bg-eu" };
@@ -135,18 +136,7 @@ export function SearchBox() {
           className="fixed inset-0 z-30 flex items-start justify-center bg-black/30 p-4 pt-[12vh]"
         >
           <div className="w-full max-w-xl rounded-2xl bg-surface p-4 shadow-xl">
-            <label className="flex min-h-11 items-center gap-2 rounded-[10px] border border-line px-3">
-              <Icon name="search" size={16} />
-              <span className="sr-only">{t("search")}</span>
-              <input
-                autoFocus
-                type="search"
-                placeholder={t("searchPlaceholder")}
-                onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
-                className="flex-1 bg-transparent outline-none"
-              />
-            </label>
-            <p className="mt-3 text-muted">{ts("hint")}</p>
+            <GlobalSearchPanel onClose={() => setOpen(false)} />
             <div className="mt-3 flex justify-end">
               <button
                 type="button"

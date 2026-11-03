@@ -2567,5 +2567,175 @@
       "not_found": "Not found.",
       "not_editable": "The address can no longer be changed."
     }
+  },
+  "shipmentList": {
+    "title": "Shipments",
+    "subtitle": "Every shipment from both warehouses — FHB, FHB Joy labels and euShipments waybills — with tracking.",
+    "export": "Export CSV",
+    "tabsLabel": "Shipment status",
+    "tabs": {
+      "preparing": "Preparing",
+      "shipped": "Shipped",
+      "delivered": "Delivered",
+      "returning": "Returning",
+      "problem": "Problem",
+      "cancelled": "Cancelled",
+      "all": "All",
+      "delayed": "Delayed"
+    },
+    "delayedHint": "\"Delayed\": shipped but not delivered after {days} days.",
+    "filters": "Filters",
+    "filter": {
+      "warehouse": "Warehouse",
+      "allWarehouses": "All warehouses",
+      "carrier": "Carrier",
+      "allCarriers": "All carriers",
+      "from": "Created from",
+      "to": "to",
+      "search": "Search",
+      "searchPlaceholder": "Order, tracking, customer, phone…",
+      "apply": "Apply",
+      "clear": "Clear"
+    },
+    "type": {
+      "FHB_V3": "FHB",
+      "FHB_JOY": "FHB Joy",
+      "EUSHIPMENTS": "euShipments"
+    },
+    "col": {
+      "order": "Order",
+      "company": "Company",
+      "warehouse": "Warehouse",
+      "carrier": "Carrier",
+      "tracking": "Tracking",
+      "status": "Status",
+      "cod": "COD",
+      "dates": "Dates",
+      "age": "Age"
+    },
+    "date": {
+      "created": "created",
+      "submitted": "sent to warehouse",
+      "shipped": "shipped",
+      "delivered": "delivered"
+    },
+    "days": "{n, plural, one {# day} other {# days}}",
+    "rawStatus": "Status as the warehouse sends it",
+    "delayed": "Delayed",
+    "rerouted": "Rerouted ({status})",
+    "rerouteStatus": {
+      "CANCEL_QUEUED": "waiting for cancellation",
+      "DONE": "done",
+      "REFUSED": "refused by the warehouse",
+      "UNCERTAIN": "uncertain",
+      "SIMULATED": "simulated"
+    },
+    "ticket": "Ticket: {state}",
+    "ticketState": {
+      "OPEN": "open",
+      "UPDATED": "updated",
+      "CLOSED": "closed"
+    },
+    "trackingLink": "Tracking {n}",
+    "manualKind": {
+      "WAREHOUSE": "Manual from stock",
+      "JOY_LABEL": "FHB Joy label",
+      "AWB": "euShipments waybill",
+      "PRE_AWB": "euShipments pre-AWB"
+    },
+    "empty": "No shipments for this filter.",
+    "pagination": "Pages",
+    "prev": "Previous",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages} · {total} shipments",
+    "detail": {
+      "title": "Shipment {id}",
+      "open": "Details of shipment {id}",
+      "close": "Close",
+      "order": "Order",
+      "timeline": "(full order history)",
+      "vendorId": "Warehouse number",
+      "vendorUid": "Warehouse UID",
+      "variableSymbol": "Variable symbol",
+      "deliveryPoint": "Delivery point",
+      "ticket": "Warehouse ticket",
+      "ticketEvents": "{count, plural, one {# notification} other {# notifications}}",
+      "events": "Warehouse events",
+      "noEvents": "No warehouse events yet.",
+      "openZoe": "More about the shipment in ZOE ↗",
+      "moreInEu": "Anything beyond this data is in the euShipments cabinet (the API gives nothing more for the shipment)."
+    },
+    "settings": {
+      "title": "Shipment settings",
+      "form": "Shipment settings",
+      "delayedDays": "\"Delayed\" after (days without delivery)",
+      "save": "Save",
+      "saved": "Saved."
+    },
+    "error": {
+      "forbidden": "You do not have permission for this.",
+      "invalid_days": "Enter a whole number from 1 to 60."
+    }
+  },
+  "tickets": {
+    "title": "Warehouse tickets",
+    "subtitle": "FHB ticket notifications per shipment. Text and replies are in ZOE.",
+    "openZoe": "Open in ZOE ↗",
+    "about": {
+      "fhb": "Through the API FHB only sends ticket notifications for an order (created / updated / closed) — no text or replies. Read and answer in ZOE, then mark the ticket reviewed here.",
+      "eu": "euShipments has no ticket API: their enquiries stay in the euShipments cabinet."
+    },
+    "tabsLabel": "Ticket state",
+    "tabs": {
+      "open": "Open",
+      "unreviewed": "Not reviewed",
+      "closed": "Closed",
+      "all": "All"
+    },
+    "search": "Order, shipment, tracking…",
+    "apply": "Search",
+    "empty": "No tickets for this filter.",
+    "col": {
+      "state": "State",
+      "shipment": "Order / shipment",
+      "warehouse": "Warehouse",
+      "company": "Company",
+      "events": "Notifications",
+      "age": "Age",
+      "review": "Review"
+    },
+    "state": {
+      "OPEN": "Open",
+      "UPDATED": "Updated",
+      "CLOSED": "Closed"
+    },
+    "vendorEvent": "Latest notification as FHB sends it",
+    "eventCount": "{count, plural, one {# notification} other {# notifications}}",
+    "first": "first: {date}",
+    "last": "last: {date}",
+    "days": "{n, plural, one {# day} other {# days}}",
+    "markReviewed": "Mark as reviewed",
+    "reviewForm": "Review ticket {reference}",
+    "noteLabel": "Note",
+    "notePlaceholder": "What was done (e.g. answered in ZOE)",
+    "confirmReviewed": "Reviewed",
+    "cancel": "Cancel",
+    "reviewedBy": "Reviewed by {name}, {date}",
+    "reviewedBefore": "Reviewed by {name}, {date} — a newer notification arrived since",
+    "note": "Note: {note}",
+    "error": {
+      "forbidden": "You do not have permission for this.",
+      "note_required": "Write a note (at least 2 characters).",
+      "not_found": "Ticket not found."
+    }
+  },
+  "globalSearch": {
+    "label": "Search",
+    "placeholder": "Order, tracking, customer, phone…",
+    "hint": "Finds orders by number, customer, phone or e-mail and shipments by tracking number. Enter opens the first hit.",
+    "loading": "Searching…",
+    "none": "Nothing found.",
+    "orders": "Orders",
+    "shipments": "Shipments"
   }
 }

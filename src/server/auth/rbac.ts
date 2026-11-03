@@ -72,6 +72,10 @@ export const PERMISSIONS = {
   "ai.rules": ["OWNER", "ADMIN"],
   /** The full prompt/response log (it carries customer data). */
   "ai.log": ["OWNER", "ADMIN"],
+  /** Тикети от склада: mark an FHB ticket "прегледан" with a note (P10-02). */
+  "tickets.review": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** Товарителници: the "забавени" threshold (days shipped without delivery) (P10-01). */
+  "shipments.settings": ["OWNER", "ADMIN"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
