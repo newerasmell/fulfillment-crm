@@ -67,6 +67,8 @@ export const PERMISSIONS = {
   "stock.settings": ["OWNER", "ADMIN"],
   /** Shopify inventory push: preview, queue a push now, map Shopify locations to warehouses. */
   "inventory.push": ["OWNER", "ADMIN"],
+  /** Shopify write that creates inventory levels (inventoryActivate at a mapped location): OWNER only. */
+  "inventory.activate": ["OWNER"],
   /** Returns board: mark processed with a note, notify support, load return photos (Връщания). */
   "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   /** COD board and its CSV export (amounts per shipment and company). */

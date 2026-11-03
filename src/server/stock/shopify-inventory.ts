@@ -8,6 +8,7 @@ import {
   LOCATIONS_PAGE,
   LOCATIONS_QUERY,
   LocationsPage,
+  locationDisplayName,
 } from "@/integrations/shopify/inventory";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
@@ -63,13 +64,13 @@ export async function syncStoreInventory(
           accountId,
           storeId,
           shopifyLocationGid: l.id,
-          name: l.name,
+          name: locationDisplayName(l),
           isActive: l.isActive,
           fulfillmentService: l.fulfillmentService?.handle ?? null,
           fetchedAt: now,
         },
         update: {
-          name: l.name,
+          name: locationDisplayName(l),
           isActive: l.isActive,
           fulfillmentService: l.fulfillmentService?.handle ?? null,
           fetchedAt: now,

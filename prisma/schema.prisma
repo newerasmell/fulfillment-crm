@@ -221,6 +221,7 @@ model Account {
   suspiciousLinks           SuspiciousLink[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
+  inventoryActivations      InventoryActivation[]
   shopifyWeightWrites       ShopifyWeightWrite[]
   returnCases               ReturnCase[]
   returnsCodSettings        ReturnsCodSettings?
@@ -421,16 +422,17 @@ model Store {
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
-  account         Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  company         Company?                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
-  credential      Credential?             @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
-  variantLinks    StoreVariantLink[]
-  orders          Order[]
-  writeBacks      ShopifyWriteBack[]
-  locations       StoreLocation[]
-  inventoryLevels ShopifyInventoryLevel[]
-  inventoryPushes InventoryPush[]
-  weightWrites    ShopifyWeightWrite[]
+  account              Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company              Company?                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
+  credential           Credential?             @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  variantLinks         StoreVariantLink[]
+  orders               Order[]
+  writeBacks           ShopifyWriteBack[]
+  locations            StoreLocation[]
+  inventoryLevels      ShopifyInventoryLevel[]
+  inventoryPushes      InventoryPush[]
+  inventoryActivations InventoryActivation[]
+  weightWrites         ShopifyWeightWrite[]
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -2000,6 +2002,63 @@ model InventoryPushLine {
   push InventoryPush @relation(fields: [accountId, pushId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, pushId])
+}
+
+/// "Активирай продуктите в тази локация" (owner request 2026-11-03): stock linked Shopify inventory items at a
+/// mapped location where they are not stocked yet, with inventoryActivate (no quantities: the level starts at 0 and
+/// the normal push sets the warehouse number afterwards). Same outbox discipline as InventoryPush: the store's
+/// inventoryPushMode is checked at send time (DISABLED → REFUSED, DRY_RUN → requests recorded, LIVE → sent), an
+/// @idempotent key per (store, item, location), unknown outcomes resolved by reading the level back. At most one
+/// open activation per store + location (advisory lock in createInventoryActivation).
+model InventoryActivation {
+  id            String             @id @default(cuid())
+  accountId     String
+  storeId       String
+  /// Shopify location gid (StoreLocation.shopifyLocationGid); the sender re-checks it is still mapped and active.
+  locationGid   String
+  status        OutboundStatus     @default(PENDING)
+  evaluatedMode InventoryPushMode?
+  /// The store's inventoryPushMode when the owner confirmed (what the confirmation dialog said). The sender sends
+  /// only when this AND the current mode are LIVE: a job confirmed as a dry run never becomes a live write.
+  createdMode   InventoryPushMode?
+  /// {mutation, items: [{lineId, variables}]}: the exact requests (built at creation; shown in DRY_RUN).
+  request       Json?
+  lastError     String?
+  attempts      Int                @default(0)
+  lockedAt      DateTime?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  account Account                   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store   Store                     @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+  lines   InventoryActivationLine[]
+
+  @@unique([accountId, id])
+  @@index([accountId, storeId, locationGid, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+/// One inventory item of an activation.
+model InventoryActivationLine {
+  id               String  @id @default(cuid())
+  accountId        String
+  activationId     String
+  variantLinkId    String
+  inventoryItemGid String
+  idempotencyKey   String
+  generation       Int     @default(0)
+  /// true once a request for this line may have reached Shopify (a level seen afterwards counts as activated)
+  attempted        Boolean @default(false)
+  /// planned | dry_run | activated | already | failed
+  status           String  @default("planned")
+  error            String?
+
+  activation InventoryActivation @relation(fields: [accountId, activationId], references: [accountId, id], onDelete: Cascade)
+
+  @@index([accountId, activationId])
 }
 
 // ───────────────────────── wave 3 returns + COD (P6-01, P6-02) ─────────────────────────

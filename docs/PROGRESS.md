@@ -291,6 +291,36 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   master's CURRENT line, not the copy taken at refresh. Tests added for link_changed, >500-row paging (find + stale
   removal), unlink vs FHB/eu sync and autoLinkLine, vendor-side order finding.
 
+- 2026-11-03 "Активирай продуктите в тази локация" (owner request after the live test: a store with two Shopify
+  locations mapped to two warehouses; the push preview only showed the first, because the products are not stocked at
+  the second and the plan skips them as not_stocked_at_location). On Магазин → Наличности към Shopify every mapped,
+  active location has the button with N = linked variants (productId set, tracked) whose inventory item has no level
+  there but is known from another location's level (src/server/stock/activate.ts, one entry per item). OWNER only (new
+  permission inventory.activate), a second click confirms the count (the job is not queued when the count changed),
+  audited (inventory.activation_queued / _dry_run / _sent / _failed). Writes: inventoryActivate(inventoryItemId,
+  locationId) @idempotent(key) — 2026-10 schema/reference checked; no available/onHand (level starts at 0, the next
+  push sets the warehouse number). Not inventoryBulkToggleActivation: it toggles one item across many locations (no
+  batching for many items at one location), can deactivate, and does not document @idempotent. Own outbox
+  (InventoryActivation + lines, new tables only, RLS): the store's inventoryPushMode at send time (DISABLED → REFUSED,
+  DRY_RUN → the exact requests stored at creation are shown on the page, LIVE → sent), kill switch / OUTBOX_PAUSED →
+  PAUSED, an unmapped location → REFUSED, one open job per store + location (advisory lock), row-lock claim, the write
+  client never retries; per item a deterministic key per (store, item, location) (activationIdempotencyKey); batches
+  of 50 are read back first (nodes → inventoryLevel(locationId)) so an already-stocked item is "already" (success); a
+  userError with a level afterwards is "already", without one "failed" (message shown); an unknown outcome is read
+  back (level → activated, else retried later with the same key). After a LIVE success the worker queues the store's
+  Shopify inventory read. The preview's "Пропуснати" shows not_stocked_at_location per location with a hint to the
+  button. Location names: "#2" / "#3" are the merchant's real Shopify names; owner decision — the CRM shows
+  every location exactly as Shopify names it and never replaces it (the mapped warehouse is shown next to it).
+  Tests: src/server/stock/activate.test.ts, src/integrations/shopify/inventory.test.ts, e2e tests/e2e/stock.spec.ts.
+  Auditor fixes (same day): the job stores the mode the owner confirmed under (InventoryActivation.createdMode,
+  additive nullable column, migration 20261103200000) and sends only when that AND the current mode are LIVE — a job
+  confirmed as a dry run and raised to LIVE while it waited is REFUSED `mode_raised_after_confirm` (new click needed);
+  THROTTLED / HTTP 429 on inventoryActivate (not executed) stops the run and re-arms it in 30 s with the same keys
+  without spending an attempt (was: an unknown outcome that used up attempts); lockedAt is refreshed per item and
+  finalize/heartbeat require the claim's attempts number, so a long run is not processed twice after a stale re-arm;
+  the per-location hint now counts exactly the button's items (tracked, one per inventory item). The 2026-10
+  reference excerpt (args, payload, required @idempotent, deprecated stockAtLegacyLocation) is in INTEGRATION_NOTES §6.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —
