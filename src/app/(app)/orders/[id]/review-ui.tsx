@@ -9,6 +9,7 @@ import {
   recheckAction,
   rawPayloadAction,
   releaseAction,
+  restartAction,
   saveAddressAction,
 } from "@/app/actions/review";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
@@ -324,6 +325,7 @@ export function DecisionBar({
   codes,
   openedAt,
   canRelease,
+  canRestart = false,
   statusLabel,
 }: {
   orderId: string;
@@ -333,6 +335,8 @@ export function DecisionBar({
   codes: Code[];
   openedAt: string;
   canRelease: boolean;
+  /** BLOCKED / EXCEPTION / UNKNOWN with no active shipment: "Изпрати отново". */
+  canRestart?: boolean;
   statusLabel: string;
 }) {
   const t = useTranslations("review");
@@ -394,6 +398,13 @@ export function DecisionBar({
       if (r?.error) setError(errorText(r.error));
     });
 
+  const restart = () =>
+    start(async () => {
+      const r = await restartAction(orderId);
+      if (r?.error) return setError(errorText(r.error));
+      router.refresh();
+    });
+
   const tone: Record<Kind, string> = {
     approve: "bg-ok text-white",
     hold: "bg-warn text-white",
@@ -407,7 +418,7 @@ export function DecisionBar({
       className="sticky bottom-0 z-10 -mx-1 mt-2 rounded-[14px] bg-dark px-4 py-3 text-white shadow-lg"
     >
       <div className="flex flex-wrap items-center gap-3">
-        {allowed.length === 0 && !canRelease && (
+        {allowed.length === 0 && !canRelease && !canRestart && (
           <span className="text-sm text-white/80">{t("decide.noActions", { status: statusLabel })}</span>
         )}
         {(["approve", "hold", "block"] as const)
@@ -429,6 +440,19 @@ export function DecisionBar({
               {t(`decide.${k}`)}
             </button>
           ))}
+        {canRestart && (
+          <>
+            <button
+              type="button"
+              onClick={restart}
+              disabled={pending}
+              className="min-h-11 rounded-[10px] bg-ok px-4 font-semibold text-white"
+            >
+              {t("decide.restart")}
+            </button>
+            <span className="text-sm text-white/80">{t("decide.restartHint")}</span>
+          </>
+        )}
         {canRelease && (
           <button
             type="button"

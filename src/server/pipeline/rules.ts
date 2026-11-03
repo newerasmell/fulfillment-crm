@@ -32,6 +32,11 @@ export type TransitionCause =
   | "hold"
   /** Operator releases a hold: the order starts over at IMPORTED and is checked again. */
   | "release"
+  /**
+   * Operator restarts an order the warehouse blocked or cancelled (e.g. cancelled by hand in ZOE): back to IMPORTED
+   * and checked again, only while no shipment of it is active anywhere (guarded in review/service.ts).
+   */
+  | "restart"
   /** Operator cancels in the CRM (never AI, never once a shipment is active at a warehouse). */
   | "cancel"
   /** Shopify import: cancelled in Shopify before approval. */
@@ -66,6 +71,7 @@ export const CAUSES: readonly TransitionCause[] = [
   "reopen",
   "hold",
   "release",
+  "restart",
   "cancel",
   "shopify_cancelled",
   "shopify_fulfilled",
@@ -136,6 +142,7 @@ export const RULES: readonly TransitionRule[] = [
     actors: ["user"],
   },
   { cause: "release", from: ["ON_HOLD"], to: ["IMPORTED"], actors: ["user"] },
+  { cause: "restart", from: ["BLOCKED", "EXCEPTION", "UNKNOWN"], to: ["IMPORTED"], actors: ["user"] },
   {
     cause: "cancel",
     from: ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY", "APPROVED", "SUBMIT_FAILED", "ON_HOLD"],

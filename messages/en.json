@@ -1195,7 +1195,9 @@
       "done": "Decision saved.",
       "release": "Release",
       "noActions": "No decision to take in status \"{status}\".",
-      "blockAck": "I understand this cannot be undone."
+      "blockAck": "I understand this cannot be undone.",
+      "restart": "Send again",
+      "restartHint": "The order starts over: it is checked, you approve it and it goes out with a new warehouse id."
     },
     "decision": {
       "APPROVE": "Approved",
@@ -1268,7 +1270,8 @@
       "transition_guard__no_check": "The order has not been checked yet.",
       "transition_not_allowed": "Not possible in the current status.",
       "transition_race": "The order changed — try again.",
-      "generic": "The action failed."
+      "generic": "The action failed.",
+      "shipment_active": "The order still has an active shipment at a warehouse — it must be cancelled there first."
     },
     "payload": {
       "title": "What will be sent",

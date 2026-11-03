@@ -12,6 +12,7 @@ import {
   getOrderRawPayload,
   previewAddress,
   releaseOrder,
+  restartOrder,
   saveReasonCode,
   setReasonCodeActive,
   type DecisionKind,
@@ -145,4 +146,16 @@ export async function toggleReasonCodeAction(code: string, active: boolean): Pro
     toError(err); // known refusals (forbidden, not_found, "other" must stay on) leave the list unchanged
   }
   revalidatePath("/orders/reviews");
+}
+
+/** "Изпрати отново" for an order the warehouse blocked or cancelled: starts over and is checked again. */
+export async function restartAction(orderId: string): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await restartOrder(actorFrom(ctx), orderId);
+    revalidatePath(orderPath(orderId));
+    return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
 }

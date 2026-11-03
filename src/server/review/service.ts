@@ -427,3 +427,33 @@ export async function releaseOrder(actor: ScopedActor, orderId: string) {
   });
   return checkOrder(actor.accountId, orderId, { actor: { kind: "user", userId: actor.userId } });
 }
+
+/** Statuses a person may restart from (the warehouse blocked or cancelled the order). */
+export const RESTARTABLE_STATUSES = ["BLOCKED", "EXCEPTION", "UNKNOWN"] as const;
+
+/**
+ * "Изпрати отново": an order the warehouse blocked or cancelled (e.g. cancelled by hand in ZOE) starts over
+ * (IMPORTED) and is checked again; the operator then approves and Fulfill sends it with a NEW warehouse id
+ * (-2, -3 …). Refused while any shipment of the order is still active at a warehouse (never two shipments).
+ */
+export async function restartOrder(actor: ScopedActor, orderId: string) {
+  assertCan(actor.role, "orders.review");
+  await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    await lockForUpdate("Order", orderId);
+    await scopedOrder(tx, actor, orderId); // company scope: not_found outside it
+    const active = await tx.fulfillment.findFirst({
+      where: { orderId, status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+      select: { id: true },
+    });
+    if (active) throw new DomainError("shipment_active");
+    await transition(tx, {
+      orderId,
+      to: "IMPORTED",
+      cause: "restart",
+      actor: { kind: "user", userId: actor.userId },
+      source: "review",
+      mode: "strict",
+    });
+  });
+  return checkOrder(actor.accountId, orderId, { actor: { kind: "user", userId: actor.userId } });
+}
