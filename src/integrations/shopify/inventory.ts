@@ -235,18 +235,12 @@ export const DEFINITE_PUSH_ERRORS = new Set([
  * only a placeholder ("#2", "2", empty — what the owner saw on 2026-11-03 for the two warehouse locations) falls
  * back to the fulfillment service's serviceName, then the address city, and keeps the raw name otherwise.
  */
-export function locationDisplayName(l: {
-  name: string;
-  address?: { city?: string | null } | null;
-  fulfillmentService?: { serviceName?: string | null } | null;
-}) {
-  const raw = l.name.trim();
-  if (raw && !/^#?\s*\d*$/.test(raw)) return raw;
-  const service = l.fulfillmentService?.serviceName?.trim();
-  if (service) return raw ? `${service} (${raw})` : service;
-  const city = l.address?.city?.trim();
-  if (city) return raw ? `${city} (${raw})` : city;
-  return raw || "—";
+/**
+ * The name we show for a Shopify location: exactly the merchant's Location.name (owner decision 2026-11-03: locations
+ * keep their Shopify names, e.g. "#2" — the CRM never renames them; the mapped warehouse is shown next to it).
+ */
+export function locationDisplayName(l: { name: string }) {
+  return l.name.trim() || "—";
 }
 
 // ───────────── inventoryActivate (stock an item at a location) ─────────────

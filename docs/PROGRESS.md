@@ -270,10 +270,8 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   userError with a level afterwards is "already", without one "failed" (message shown); an unknown outcome is read
   back (level → activated, else retried later with the same key). After a LIVE success the worker queues the store's
   Shopify inventory read. The preview's "Пропуснати" shows not_stocked_at_location per location with a hint to the
-  button. Location names "#2" / "#3": the CRM stores Location.name exactly as the locations query returns it (no other
-  source), so those placeholders came from Shopify itself; the read now also asks for fulfillmentService.serviceName
-  and address.city and uses them when the name is only a placeholder ("#2", "2", empty) — "<service> (#2)" — and the
-  page shows the location number under the name. Needs a Shopify inventory read after deploy to rename stored rows.
+  button. Location names: "#2" / "#3" are the merchant's real Shopify names; owner decision — the CRM shows
+  every location exactly as Shopify names it and never replaces it (the mapped warehouse is shown next to it).
   Tests: src/server/stock/activate.test.ts, src/integrations/shopify/inventory.test.ts, e2e tests/e2e/stock.spec.ts.
   Auditor fixes (same day): the job stores the mode the owner confirmed under (InventoryActivation.createdMode,
   additive nullable column, migration 20261103200000) and sends only when that AND the current mode are LIVE — a job

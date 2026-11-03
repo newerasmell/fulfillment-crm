@@ -562,7 +562,7 @@ describe("activation: auditor fixes", () => {
 });
 
 describe("location names from the read", () => {
-  it("a placeholder Shopify name falls back to the fulfillment service name", async () => {
+  it("location names are stored exactly as Shopify names them ('#2' stays '#2')", async () => {
     const s = await setup("names");
     const client = {
       async query(doc: string, _vars: unknown, schema: { parse: (x: unknown) => unknown }) {
@@ -595,6 +595,6 @@ describe("location names from the read", () => {
     } as unknown as ShopifyClient;
     await syncStoreInventory(s.accountId, s.store.id, async () => ({ client }));
     const names = await s.db.storeLocation.findMany({ orderBy: { shopifyLocationGid: "asc" } });
-    expect(names.map((l) => l.name)).toEqual(["Синтетичен склад А (#2)", "Склад Б"]);
+    expect(names.map((l) => l.name)).toEqual(["#2", "Склад Б"]);
   });
 });

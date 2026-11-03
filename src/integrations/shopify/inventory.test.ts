@@ -58,13 +58,10 @@ describe("Shopify inventory documents", () => {
     ).not.toBe(k);
   });
 
-  it("location names: the merchant's name wins; placeholders fall back to the service name, then the city", () => {
+  it("location names are exactly the merchant's Shopify names (never replaced)", () => {
     expect(locationDisplayName({ name: "Склад София" })).toBe("Склад София");
-    expect(locationDisplayName({ name: "#2", fulfillmentService: { serviceName: "Синтетичен склад" } })).toBe(
-      "Синтетичен склад (#2)",
-    );
-    expect(locationDisplayName({ name: "3", address: { city: "Пловдив" } })).toBe("Пловдив (3)");
-    expect(locationDisplayName({ name: "#2", fulfillmentService: null, address: null })).toBe("#2");
-    expect(locationDisplayName({ name: " ", fulfillmentService: { serviceName: "X" } })).toBe("X");
+    expect(locationDisplayName({ name: "#2" })).toBe("#2");
+    expect(locationDisplayName({ name: " #3 " })).toBe("#3");
+    expect(locationDisplayName({ name: " " })).toBe("—");
   });
 });
