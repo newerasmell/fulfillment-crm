@@ -275,6 +275,14 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   and address.city and uses them when the name is only a placeholder ("#2", "2", empty) — "<service> (#2)" — and the
   page shows the location number under the name. Needs a Shopify inventory read after deploy to rename stored rows.
   Tests: src/server/stock/activate.test.ts, src/integrations/shopify/inventory.test.ts, e2e tests/e2e/stock.spec.ts.
+  Auditor fixes (same day): the job stores the mode the owner confirmed under (InventoryActivation.createdMode,
+  additive nullable column, migration 20261103200000) and sends only when that AND the current mode are LIVE — a job
+  confirmed as a dry run and raised to LIVE while it waited is REFUSED `mode_raised_after_confirm` (new click needed);
+  THROTTLED / HTTP 429 on inventoryActivate (not executed) stops the run and re-arms it in 30 s with the same keys
+  without spending an attempt (was: an unknown outcome that used up attempts); lockedAt is refreshed per item and
+  finalize/heartbeat require the claim's attempts number, so a long run is not processed twice after a stale re-arm;
+  the per-location hint now counts exactly the button's items (tracked, one per inventory item). The 2026-10
+  reference excerpt (args, payload, required @idempotent, deprecated stockAtLegacyLocation) is in INTEGRATION_NOTES §6.
 
 ## Open questions
 See SPEC.md §11.

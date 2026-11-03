@@ -34,7 +34,12 @@ import type { PushClients } from "./push";
  * Outbox discipline as the push (src/server/stock/push.ts):
  *  - the sender evaluates the store's CURRENT inventoryPushMode at send time: DISABLED → REFUSED (nothing read or
  *    sent), DRY_RUN → the exact requests (built at creation, shown on the page) are recorded, nothing sent, LIVE →
- *    sent; the account kill switch / OUTBOX_PAUSED park it as PAUSED; an unmapped location is REFUSED;
+ *    sent — but only when the owner also confirmed it in LIVE (createdMode): a job confirmed as a dry run whose
+ *    store was raised to LIVE meanwhile is REFUSED (mode_raised_after_confirm), the owner clicks again; the account
+ *    kill switch / OUTBOX_PAUSED park it as PAUSED; an unmapped location is REFUSED;
+ *  - Shopify throttling (THROTTLED / HTTP 429: the request was not executed) stops the run and re-arms it shortly
+ *    with the same keys without spending an attempt; lockedAt is refreshed per item (a long run is not re-armed
+ *    under a live worker) and a worker whose claim was taken over stops;
  *  - claimed under a row lock (double processing is skipped); at most one open job per store + location;
  *  - every item carries a deterministic @idempotent key per (store, item, location); the write client never
  *    retries by itself; an unknown outcome is resolved by reading the item's level at the location back;
@@ -43,6 +48,8 @@ import type { PushClients } from "./push";
 
 export const ACTIVATION_MAX_ATTEMPTS = 5;
 export const ACTIVATION_STALE_MS = 10 * 60_000;
+/** Delay before a throttled run continues (Shopify restores 100+ points/s; one inventoryActivate costs 10). */
+export const THROTTLE_BACKOFF_MS = 30_000;
 const OPEN: OutboundStatus[] = ["PENDING", "SENDING", "PAUSED"];
 const backoffMs = (attempt: number) => Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, attempt - 1));
 const json = (v: unknown) => JSON.parse(JSON.stringify(v ?? null)) as Prisma.InputJsonValue;
@@ -170,6 +177,7 @@ export async function createInventoryActivation(
         storeId: store.id,
         locationGid: gid,
         createdById: actor.userId,
+        createdMode: store.inventoryPushMode,
         createdAt: now,
         lines: {
           create: candidates.map((c) => ({
@@ -297,7 +305,9 @@ export async function processInventoryActivation(
         ? "inventory_push_disabled"
         : !loc
           ? "location_not_mapped"
-          : null;
+          : mode === "LIVE" && row.createdMode !== "LIVE"
+            ? "mode_raised_after_confirm" // confirmed as a dry run: a live write needs a new OWNER click
+            : null;
     if (refused) {
       await tx.inventoryActivation.update({
         where: { id },
@@ -338,7 +348,7 @@ export async function processInventoryActivation(
   return run(claim, clients, now);
 }
 
-type LineState = "activated" | "already" | "failed" | "pending";
+type LineState = "activated" | "already" | "failed" | "pending" | "throttled";
 
 async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, now: Date) {
   const db = systemDb();
@@ -348,7 +358,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     status: OutboundStatus,
   ) => {
     const res = await db.inventoryActivation.updateMany({
-      where: { id: row.id, status: "SENDING" },
+      where: { id: row.id, status: "SENDING", attempts: claim.attempts },
       data: { ...data, status },
     });
     if (res.count === 1) return status;
@@ -369,6 +379,27 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     );
     return { status: s, refreshInventory: false };
   };
+
+  /** Throttled: nothing was executed; come back shortly with the same keys and give the attempt back. */
+  const retryThrottled = async (): Promise<ActivationResult> => {
+    const s = await finalize(
+      {
+        attempts: claim.attempts - 1,
+        lastError: "THROTTLED: waiting for the Shopify rate limit",
+        nextAttemptAt: new Date(now.getTime() + THROTTLE_BACKOFF_MS),
+      },
+      "PENDING",
+    );
+    return { status: s, refreshInventory: false };
+  };
+  /** Keeps the claim fresh during a long run; false when another worker took the job over (stop then). */
+  const heartbeat = async () =>
+    (
+      await db.inventoryActivation.updateMany({
+        where: { id: row.id, status: "SENDING", attempts: claim.attempts },
+        data: { lockedAt: new Date(Math.max(now.getTime(), Date.now())) },
+      })
+    ).count === 1;
 
   let reader: ShopifyClient;
   let writer: ShopifyClient;
@@ -395,6 +426,8 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     }
     return out;
   };
+  const currentStatus = async () =>
+    (await db.inventoryActivation.findUnique({ where: { id: row.id }, select: { status: true } }))?.status;
   const setLine = (lineId: string, data: Prisma.InventoryActivationLineUpdateInput) =>
     db.inventoryActivationLine.update({ where: { id: lineId }, data });
 
@@ -404,8 +437,13 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
   });
   const failures: string[] = [];
   let pending = 0;
+  const lost = async (): Promise<ActivationResult> => ({
+    status: (await currentStatus()) ?? "SENDING",
+    refreshInventory: false,
+  });
   for (let i = 0; i < open.length; i += ACTIVATE_BATCH) {
     const batch = open.slice(i, i + ACTIVATE_BATCH);
+    if (!(await heartbeat())) return lost();
     let before: Map<string, boolean | null>;
     try {
       before = await readLevels(batch.map((l) => l.inventoryItemGid));
@@ -413,6 +451,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
       return retryLater(`read failed: ${scrubText((err as Error).message)}`);
     }
     for (const line of batch) {
+      if (!(await heartbeat())) return lost();
       const has = before.get(line.inventoryItemGid);
       if (has === null) {
         await setLine(line.id, { status: "failed", error: "inventory_item_not_found" });
@@ -425,6 +464,8 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
         continue;
       }
       const state = await sendOne(line);
+      if (state === "throttled")
+        return pending > 0 ? retryLater(`THROTTLED after ${pending} unknown outcome(s)`) : retryThrottled();
       if (state === "pending") pending++;
     }
   }
@@ -444,6 +485,14 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     } catch (err) {
       const detail = scrubText((err as Error).message);
       const codes = err instanceof ShopifyError ? err.graphqlCodes : [];
+      if (
+        err instanceof ShopifyError &&
+        (err.code === "throttled" || err.status === 429 || codes.includes("THROTTLED"))
+      ) {
+        // Rate limited: Shopify did not execute it. The line stays planned with the same key.
+        await setLine(line.id, { error: "THROTTLED" });
+        return "throttled";
+      }
       if (codes.includes("IDEMPOTENCY_CONCURRENT_REQUEST")) {
         await setLine(line.id, { error: "IDEMPOTENCY_CONCURRENT_REQUEST" });
         return "pending"; // the same key is still being processed: ask again later with the same key

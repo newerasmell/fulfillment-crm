@@ -26,6 +26,7 @@ import { shopifyClientForStore } from "@/server/shopify/store-client";
 import type { ScopedActor } from "@/server/stores";
 import { crmReservations, isStale, reservationKey, sellableOf } from "./levels";
 import { getStockSettings, staleHoursFor } from "./settings";
+import { selectActivationCandidates } from "./activate";
 
 /**
  * Shopify inventory push (P5-03, SPEC §4, INTEGRATION_NOTES §6). Sellable stock of the warehouse a Shopify
@@ -143,9 +144,18 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     no_snapshot: 0,
     stale_snapshot: 0,
   };
-  /** not_stocked_at_location per Shopify location gid (the hint next to "Активирай продуктите в тази локация"). */
+  /**
+   * Per Shopify location gid, the inventory items "Активирай продуктите в тази локация" would activate there (the
+   * hint next to the button): the same predicate and count as the button (tracked, one per inventory item), not the
+   * raw not_stocked_at_location count of variant × location skips.
+   */
   const notStockedByLocation: Record<string, number> = Object.fromEntries(
-    locations.map((l) => [l.shopifyLocationGid, 0]),
+    [
+      ...selectActivationCandidates(
+        locations.map((l) => l.shopifyLocationGid),
+        links,
+      ),
+    ].map(([gid, list]) => [gid, list.length]),
   );
   for (const link of links) {
     for (const loc of locations) {
@@ -156,7 +166,6 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       const level = link.inventoryLevels.find((l) => l.locationGid === loc.shopifyLocationGid);
       if (!level) {
         skipped.not_stocked_at_location++;
-        notStockedByLocation[loc.shopifyLocationGid]!++;
         continue;
       }
       if (!level.tracked) {

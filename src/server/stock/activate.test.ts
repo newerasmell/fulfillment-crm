@@ -13,6 +13,7 @@ import {
   selectActivationCandidates,
   storeActivations,
   sweepInventoryActivations,
+  THROTTLE_BACKOFF_MS,
   type StoredActivationRequest,
 } from "./activate";
 import { planInventoryPush, type PushClients } from "./push";
@@ -409,6 +410,154 @@ describe("activate products at a location", () => {
     expect(sh.calls).toHaveLength(0);
     await systemDb().account.update({ where: { id: s.accountId }, data: { outboxPaused: false } });
     expect((await sweepInventoryActivations()).ready.map((x) => x.id)).toContain(r.activationId);
+  });
+});
+
+describe("activation: auditor fixes", () => {
+  let s: S;
+  beforeEach(async () => {
+    s = await setup("fix");
+  });
+
+  it("confirmed as a dry run, paused, then the store raised to LIVE: REFUSED, nothing sent", async () => {
+    const r = await queue(s, 2); // store is DRY_RUN: the owner saw the dry-run confirmation
+    expect(
+      (await s.db.inventoryActivation.findUniqueOrThrow({ where: { id: r.activationId! } })).createdMode,
+    ).toBe("DRY_RUN");
+    await systemDb().account.update({ where: { id: s.accountId }, data: { outboxPaused: true } });
+    const sh = fakeShopify(new Set());
+    expect(await processInventoryActivation(r.activationId!, sh.clients)).toMatchObject({ status: "PAUSED" });
+    await s.db.store.update({ where: { id: s.store.id }, data: { inventoryPushMode: "LIVE" } });
+    await systemDb().account.update({ where: { id: s.accountId }, data: { outboxPaused: false } });
+    const { ready } = await sweepInventoryActivations();
+    expect(ready.map((x) => x.id)).toContain(r.activationId);
+    await processInventoryActivation(r.activationId!, sh.clients);
+    expect(sh.count("InventoryActivate")).toBe(0);
+    expect(sh.calls).toHaveLength(0);
+    const job = await s.db.inventoryActivation.findUniqueOrThrow({ where: { id: r.activationId! } });
+    expect(job).toMatchObject({
+      status: "REFUSED",
+      lastError: "mode_raised_after_confirm",
+      evaluatedMode: "LIVE",
+    });
+    // a new OWNER click in LIVE is what sends
+    const again = await queue(s, 2);
+    expect(again.created).toBe(true);
+    expect(await processInventoryActivation(again.activationId!, sh.clients)).toMatchObject({
+      status: "SENT",
+    });
+    expect(sh.count("InventoryActivate")).toBe(2);
+  });
+
+  it("THROTTLED: the line stays planned, the attempt is given back, the next run sends it with the same key", async () => {
+    await s.db.store.update({ where: { id: s.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const r = await queue(s);
+    const stocked = new Set<string>();
+    const keys: string[] = [];
+    let throttle = true;
+    const sh = fakeShopify(stocked, (vars) => {
+      keys.push(`${vars.inventoryItemId as string}|${vars.idempotencyKey as string}`);
+      if (throttle) throw new ShopifyError("throttled", "still throttled after retries");
+      stocked.add(vars.inventoryItemId as string);
+      return { inventoryActivate: { inventoryLevel: { id: "x" }, userErrors: [] } };
+    });
+    const t0 = new Date();
+    expect(await processInventoryActivation(r.activationId!, sh.clients, t0)).toEqual({
+      status: "PENDING",
+      refreshInventory: false,
+    });
+    expect(sh.count("InventoryActivate")).toBe(1); // the run stops at the first throttle
+    const job = await s.db.inventoryActivation.findUniqueOrThrow({
+      where: { id: r.activationId! },
+      include: { lines: true },
+    });
+    expect(job.attempts).toBe(0);
+    expect(job.nextAttemptAt!.getTime()).toBe(t0.getTime() + THROTTLE_BACKOFF_MS);
+    expect(job.lines.every((l) => l.status === "planned")).toBe(true);
+    // a GraphQL THROTTLED code (definite-rejection list) and an HTTP 429 are throttling too, never "failed"
+    for (const [i, err] of [
+      new ShopifyError("graphql_error", "Throttled", undefined, ["THROTTLED"]),
+      new ShopifyError("http_error", "HTTP 429", 429),
+    ].entries()) {
+      const sh2 = fakeShopify(stocked, () => {
+        throw err;
+      });
+      const later = new Date(t0.getTime() + THROTTLE_BACKOFF_MS * (i + 1));
+      expect(await processInventoryActivation(r.activationId!, sh2.clients, later)).toMatchObject({
+        status: "PENDING",
+      });
+      expect((await s.db.inventoryActivationLine.findMany()).every((l) => l.status === "planned")).toBe(true);
+    }
+    throttle = false;
+    expect(
+      await processInventoryActivation(r.activationId!, sh.clients, new Date(t0.getTime() + 3_600_000)),
+    ).toEqual({ status: "SENT", refreshInventory: true });
+    const lines = await s.db.inventoryActivationLine.findMany({ orderBy: { inventoryItemGid: "asc" } });
+    expect(lines.map((l) => l.status)).toEqual(["activated", "activated"]);
+    const byItem = (n: number) => keys.filter((k) => k.startsWith(`${item(n)}|`));
+    expect(new Set(byItem(1))).toEqual(
+      new Set([`${item(1)}|${activationIdempotencyKey(s.store.id, item(1), LOC_B)}`]),
+    );
+  });
+
+  it("a worker whose claim was taken over (stale re-arm + new claim) stops before the next item", async () => {
+    await s.db.store.update({ where: { id: s.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const r = await queue(s);
+    const stocked = new Set<string>();
+    const sh = fakeShopify(stocked, async (vars) => {
+      stocked.add(vars.inventoryItemId as string);
+      // meanwhile: the sweep re-armed it and another worker claimed it (attempts moved on)
+      await systemDb().inventoryActivation.update({
+        where: { id: r.activationId! },
+        data: { status: "SENDING", attempts: 2 },
+      });
+      return { inventoryActivate: { inventoryLevel: { id: "x" }, userErrors: [] } };
+    });
+    const res = await processInventoryActivation(r.activationId!, sh.clients);
+    expect(res).toEqual({ status: "SENDING", refreshInventory: false });
+    expect(sh.count("InventoryActivate")).toBe(1);
+    // the first worker neither finalized nor audited the job it no longer owns
+    const job = await s.db.inventoryActivation.findUniqueOrThrow({ where: { id: r.activationId! } });
+    expect(job).toMatchObject({ status: "SENDING", attempts: 2, sentAt: null });
+  });
+
+  it("the per-location hint counts exactly what the button activates (tracked, one per inventory item)", async () => {
+    const now = new Date();
+    const link = async (n: number, inventoryItemGid: string, tracked: boolean) => {
+      const p = await s.db.product.create({
+        data: { accountId: s.accountId, sku: `ACT-X${n}`, name: `Синтетичен X${n}` },
+      });
+      const l = await s.db.storeVariantLink.create({
+        data: {
+          accountId: s.accountId,
+          storeId: s.store.id,
+          shopifyVariantGid: `gid://shopify/ProductVariant/9${n}`,
+          shopifyProductGid: `gid://shopify/Product/9${n}`,
+          sku: `SH-ACT-X${n}`,
+          title: `SH-ACT-X${n}`,
+          productId: p.id,
+        },
+      });
+      await s.db.shopifyInventoryLevel.create({
+        data: {
+          accountId: s.accountId,
+          storeId: s.store.id,
+          variantLinkId: l.id,
+          locationGid: LOC_A,
+          inventoryItemGid,
+          available: 1,
+          tracked,
+          fetchedAt: now,
+        },
+      });
+    };
+    await link(1, item(3), false); // untracked: the push skips it, the button does not activate it
+    await link(2, item(1), true); // a second link sharing item 1: activated once
+    const plan = await planInventoryPush(s.accountId, s.store.id);
+    const button = (await activationCandidates(s.accountId, s.store.id)).get(LOC_B)!;
+    expect(button).toHaveLength(2);
+    expect(plan.notStockedByLocation[LOC_B]).toBe(button.length);
+    expect(plan.skipped.not_stocked_at_location).toBe(4); // the raw skip count stays variant × location
   });
 });
 

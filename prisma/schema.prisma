@@ -2014,6 +2014,9 @@ model InventoryActivation {
   locationGid   String
   status        OutboundStatus     @default(PENDING)
   evaluatedMode InventoryPushMode?
+  /// The store's inventoryPushMode when the owner confirmed (what the confirmation dialog said). The sender sends
+  /// only when this AND the current mode are LIVE: a job confirmed as a dry run never becomes a live write.
+  createdMode   InventoryPushMode?
   /// {mutation, items: [{lineId, variables}]}: the exact requests (built at creation; shown in DRY_RUN).
   request       Json?
   lastError     String?
