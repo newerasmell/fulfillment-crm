@@ -89,3 +89,10 @@ Every task: tests written, `pnpm typecheck && pnpm lint && pnpm test` green, aud
 ## Phase 9 — API change watcher
 - [x] P9-01 Daily spec fetch + normalise + hash + diff + ApiSpecVersion history + alert + upgrade brief.
 - [x] P9-02 Daily read-only live schema check in the deployed app; affected connections drop to DRY_RUN on breaking change.
+
+## Phase 10 — Remaining screens (added 2026-11-03: they were in the menu but had no task)
+- [x] P10-01 Товарителници: every shipment (FHB, euShipments, Joy, AWB) with status chips, delayed, tracking, search, CSV; header search.
+- [x] P10-02 Тикети от склада: FHB ticket notifications stored per shipment, alert on new ticket, review with note, link to ZOE.
+- [x] P10-03 Офиси, PUDO, потребители: searchable directory over the mirrored offices, pick-up points, couriers, cities, sender data.
+- [x] P10-04 Справки: orders, shipments and rates, processing times, COD, review/AI, stock — aggregate, scoped, CSV.
+- [x] P10-05 Фактури: per-order invoice fields from the FHB mirror; warehouse invoices stay in the vendor cabinets (no list API).
