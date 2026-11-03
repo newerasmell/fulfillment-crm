@@ -227,6 +227,14 @@ export const QUEUES = {
     options: { ...retry, policy: "stately", retryLimit: 0, expireInSeconds: 900 },
   },
   /**
+   * Send one "activate products at this location" job (data: { accountId, activationId }); the store's push mode is
+   * checked in the sender. Due/re-armed jobs are queued by stock.inventoryPushSweep.
+   */
+  stockInventoryActivate: {
+    name: "stock.inventoryActivate",
+    options: { ...retry, policy: "stately", retryLimit: 0, expireInSeconds: 900 },
+  },
+  /**
    * Every 10 min (owner request 2026-11-03), 3 min after the Shopify read: re-arm crashed pushes, create pushes for
    * DRY_RUN/LIVE stores, queue the due ones. At most one open push per store, so runs never pile up.
    */

@@ -6,6 +6,7 @@ import { systemDb } from "@/server/db/client";
 import { QUEUES } from "@/server/jobs/queues";
 import { sweepStockAlerts } from "./discrepancies";
 import { pollFhbReceipts, sweepInboundAlerts } from "./inbound";
+import { processInventoryActivation, sweepInventoryActivations } from "./activate";
 import { processInventoryPush, sweepInventoryPushes } from "./push";
 import { syncStoreInventory } from "./shopify-inventory";
 
@@ -15,12 +16,16 @@ const StoreJob = z.object({ accountId: z.string().min(1), storeId: z.string().mi
 const PushJob = z.object({ accountId: z.string().min(1), pushId: z.string().min(1) });
 export type StockStoreJob = z.infer<typeof StoreJob>;
 export type StockPushJob = z.infer<typeof PushJob>;
+const ActivateJob = z.object({ accountId: z.string().min(1), activationId: z.string().min(1) });
+export type StockActivateJob = z.infer<typeof ActivateJob>;
 
 export const enqueueStock = {
   shopifyInventory: (boss: PgBoss, d: StockStoreJob) =>
     boss.send(QUEUES.stockShopifyInventory.name, StoreJob.parse(d), { singletonKey: d.storeId }),
   push: (boss: PgBoss, d: StockPushJob) =>
     boss.send(QUEUES.stockInventoryPush.name, PushJob.parse(d), { singletonKey: d.pushId }),
+  activate: (boss: PgBoss, d: StockActivateJob) =>
+    boss.send(QUEUES.stockInventoryActivate.name, ActivateJob.parse(d), { singletonKey: d.activationId }),
 };
 
 /** Missing scopes (read_inventory / read_locations) are a setup gap, not a job failure: logged, not retried. */
@@ -83,7 +88,26 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
     }
   });
 
+  await boss.work<StockActivateJob>(QUEUES.stockInventoryActivate.name, opts, async (jobs) => {
+    for (const job of jobs) {
+      const d = ActivateJob.parse(job.data);
+      const r = await processInventoryActivation(d.activationId);
+      logger.info({ activationId: d.activationId, result: r }, "inventory activation processed");
+      // LIVE success: read the store's Shopify inventory again so the next preview includes the new levels.
+      if (r !== "skipped" && r.refreshInventory) {
+        const a = await systemDb().inventoryActivation.findUniqueOrThrow({
+          where: { id: d.activationId },
+          select: { storeId: true },
+        });
+        await enqueueStock.shopifyInventory(boss, { accountId: d.accountId, storeId: a.storeId });
+      }
+    }
+  });
+
   await boss.work(QUEUES.stockInventoryPushSweep.name, opts, async () => {
+    const act = await sweepInventoryActivations();
+    for (const a of act.ready)
+      await enqueueStock.activate(boss, { accountId: a.accountId, activationId: a.id });
     const r = await sweepInventoryPushes();
     for (const p of r.ready) await enqueueStock.push(boss, { accountId: p.accountId, pushId: p.id });
     if (r.created || r.ready.length || r.stale)

@@ -143,6 +143,10 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     no_snapshot: 0,
     stale_snapshot: 0,
   };
+  /** not_stocked_at_location per Shopify location gid (the hint next to "Активирай продуктите в тази локация"). */
+  const notStockedByLocation: Record<string, number> = Object.fromEntries(
+    locations.map((l) => [l.shopifyLocationGid, 0]),
+  );
   for (const link of links) {
     for (const loc of locations) {
       if (!link.productId) {
@@ -152,6 +156,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       const level = link.inventoryLevels.find((l) => l.locationGid === loc.shopifyLocationGid);
       if (!level) {
         skipped.not_stocked_at_location++;
+        notStockedByLocation[loc.shopifyLocationGid]!++;
         continue;
       }
       if (!level.tracked) {
@@ -194,6 +199,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     lines,
     changes: lines.filter((l) => l.target !== l.shopifyNow),
     skipped,
+    notStockedByLocation,
   };
 }
 

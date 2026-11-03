@@ -1898,7 +1898,12 @@
       "connection_disabled": "The warehouse connection is disabled.",
       "no_company_id": "The euShipments connection has no company selected.",
       "invalid_booking": "Invalid booking request.",
-      "fhb_already_submitted": "The receipt was already sent to FHB."
+      "fhb_already_submitted": "The receipt was already sent to FHB.",
+      "nothing_to_activate": "Nothing to activate at this location.",
+      "activation_open": "An activation for this location is already in progress — it will be processed.",
+      "activation_count_changed": "The number of products changed — reload the page and confirm again.",
+      "location_not_mapped": "The location is not mapped to a warehouse or is inactive.",
+      "store_archived": "The store is archived."
     },
     "inbound": {
       "title": "Stock receipts",
@@ -2054,7 +2059,26 @@
         "cron": "automatic"
       },
       "lineCounts": "{total} lines · applied {applied} · dry run {dry} · unchanged {unchanged} · stale {stale} · failed {failed}",
-      "showRequest": "Show the exact request"
+      "showRequest": "Show the exact request",
+      "activate": "Activate the products at this location ({n})",
+      "activateFor": "Activate products at {name}",
+      "activateConfirmDry": "Dry run: {n} inventoryActivate requests will be recorded, nothing is sent to Shopify.",
+      "activateConfirmLive": "Live: {n} products will be activated in Shopify at this location with 0 available (the next push sets the real number).",
+      "activateConfirm": "Confirm ({n})",
+      "cancel": "Cancel",
+      "activateQueued": "The activation is queued.",
+      "activateHint": "Products Shopify does not stock at this location but does at another location of the store. Owner only.",
+      "notStockedHint": "{name}: {n} not stocked at the location — use “Activate the products at this location” above.",
+      "activations": "Product activation at locations",
+      "activationCounts": "{total} products · activated {activated} · already active {already} · dry run {dry} · failed {failed} · waiting {planned}",
+      "showRequests": "Show the exact requests",
+      "lineStatus": {
+        "planned": "waiting",
+        "dry_run": "dry run",
+        "activated": "activated",
+        "already": "already active",
+        "failed": "failed"
+      }
     }
   },
   "returns": {

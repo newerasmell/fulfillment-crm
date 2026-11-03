@@ -17,6 +17,7 @@ import {
   resolveInboundLines,
   type ResolvedLine,
 } from "@/server/stock/inbound";
+import { createInventoryActivation } from "@/server/stock/activate";
 import { enqueueStock } from "@/server/stock/jobs";
 import { createInventoryPush } from "@/server/stock/push";
 import { updateStockSettings } from "@/server/stock/settings";
@@ -191,6 +192,33 @@ export async function pushInventoryNowAction(
     if (!r.pushId) return { error: r.reason ?? "nothing_to_push" };
     await enqueueStock.push(await webBoss(), { accountId: ctx.accountId, pushId: r.pushId });
     if (!r.created) return { error: "push_open" };
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath(`/stores/${storeId}/inventory`);
+  return { ok: true };
+}
+
+/**
+ * "Активирай продуктите в тази локация" (OWNER): queues inventoryActivate for the confirmed count of items. The
+ * store's push mode decides at send time (DRY_RUN records the requests, LIVE sends).
+ */
+export async function activateLocationAction(
+  storeId: string,
+  _prev: Result,
+  form: FormData,
+): Promise<Result> {
+  const ctx = await requireAccountContext();
+  try {
+    const expected = Number(str(form, "expected"));
+    const r = await createInventoryActivation(actorFrom(ctx), {
+      storeId,
+      locationId: str(form, "locationId"),
+      expected: Number.isInteger(expected) && expected >= 0 ? expected : undefined,
+    });
+    if (!r.activationId) return { error: r.reason ?? "nothing_to_activate" };
+    await enqueueStock.activate(await webBoss(), { accountId: ctx.accountId, activationId: r.activationId });
+    if (!r.created) return { error: "activation_open" };
   } catch (err) {
     return toError(err);
   }

@@ -412,6 +412,9 @@ Rules per vendor in production:
   *New* and within 14 days.
 - **Shopify:** fulfillment write-back and inventory push follow the same modes per store
   (READ_ONLY → DRY_RUN preview → LIVE). Inventory push starts disabled.
+  "Activate products at this location" (inventoryActivate, write_inventory, @idempotent required since 2026-04) uses
+  the store's inventory push mode at send time too: DRY_RUN records the exact requests, LIVE sends; an item already
+  stocked at the location is a success; unknown outcomes are read back (InventoryItem.inventoryLevel(locationId)).
   The write-back covers the whole lifecycle per shipment (2026-11): fulfillmentCreate (on tracking, or on
   acceptance without tracking and without a customer e-mail), fulfillmentTrackingInfoUpdate per new tracking
   number, fulfillmentEventCreate per status (IN_TRANSIT, DELAYED for a courier exception, then DELIVERED or
