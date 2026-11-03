@@ -26,6 +26,7 @@ import { shopifyClientForStore } from "@/server/shopify/store-client";
 import type { ScopedActor } from "@/server/stores";
 import { crmReservations, isStale, reservationKey, sellableOf } from "./levels";
 import { getStockSettings, staleHoursFor } from "./settings";
+import { suspiciousItemIds } from "@/server/products/suspicious";
 
 /**
  * Shopify inventory push (P5-03, SPEC §4, INTEGRATION_NOTES §6). Sellable stock of the warehouse a Shopify
@@ -69,7 +70,9 @@ export type SkipReason =
   | "untracked"
   | "not_at_warehouse"
   | "no_snapshot"
-  | "stale_snapshot";
+  | "stale_snapshot"
+  /** The variant's (or the warehouse product's) link names a different product — "Съмнителни връзки". */
+  | "suspicious_link";
 
 export interface PlanLine {
   variantLinkId: string;
@@ -126,7 +129,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       connectionId: { in: locations.map((l) => l.connection!.id) },
       archived: false,
     },
-    select: { connectionId: true, productId: true, stockLevel: true },
+    select: { id: true, connectionId: true, productId: true, stockLevel: true },
     orderBy: { id: "asc" },
   });
   const vpOf = new Map<string, (typeof vps)[number]>();
@@ -142,7 +145,13 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     not_at_warehouse: 0,
     no_snapshot: 0,
     stale_snapshot: 0,
+    suspicious_link: 0,
   };
+  // Live from the current names (never a stale flag): a link whose names disagree is not pushed until confirmed.
+  const suspicious = await suspiciousItemIds(accountId, {
+    variants: { storeId },
+    vendors: { id: { in: vps.map((v) => v.id) } },
+  });
   for (const link of links) {
     for (const loc of locations) {
       if (!link.productId) {
@@ -162,6 +171,10 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       const vp = vpOf.get(reservationKey(c.id, link.productId));
       if (!vp) {
         skipped.not_at_warehouse++;
+        continue;
+      }
+      if (suspicious.has(link.id) || suspicious.has(vp.id)) {
+        skipped.suspicious_link++;
         continue;
       }
       if (!vp.stockLevel) {

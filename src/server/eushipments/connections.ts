@@ -9,6 +9,7 @@ import { setConnectionMode } from "@/server/outbox/outbox";
 import { saveCredential } from "@/server/security/credentials";
 import type { ScopedActor } from "@/server/stores";
 import { EuVendorIds } from "./connection";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * euShipments connections: create, settings, token rotation, mode. One connection = one API token (in the
@@ -376,4 +377,5 @@ export async function linkEuVendorProduct(actor: ScopedActor, raw: z.input<typeo
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
+  await refreshSuspiciousLinksSafe(actor.accountId, { vendors: { id: vp.id } }, "eushipments_link");
 }

@@ -16,6 +16,7 @@ const EXPECTED: Record<Permission, string> = {
   "stores.archive": "10000",
   "stores.sync": "11100",
   "products.match": "11110",
+  "products.suspicious": "11100",
   "connections.manage": "11000",
   "connections.raiseMode": "10000",
   "outbox.killSwitch": "10000",

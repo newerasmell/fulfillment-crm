@@ -252,6 +252,29 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   membership/alert lookups. New tests: CANARY confirm path, euShipments 503 → orders-history read-back, FHB network
   error → GET /order 404 read-back, markGoneAtVendor requested/not-requested paths, reroute-after-cancel refusal.
 
+- 2026-11-03 "Съмнителни връзки" (owner report: SKUs were reused — an old product's SKU now belongs to another
+  perfume, and the SKU link joined them silently). SKU after prefix stays the only matching key (owner decision); names
+  are now CHECKED on every existing link: src/server/products/name-agreement.ts (pure) normalises both names (accents,
+  case, punctuation, "Default Title", Cyrillic → Latin + spelling folds, noise words decant/tester/eau/de/…, the
+  master's brand, SKUs repeated in a name), keeps volumes in ml and the concentration (EDP/EDT/EDC/extrait) as
+  separate signals and compares the core words (typos tolerated; words shared by many masters — brands — weigh less).
+  Flag = score < 0.55, or a different volume / concentration; a name that is only the SKU / "Default Title" is no
+  signal. Store variant → master name and warehouse product (raw.name) → master name are checked separately.
+  New table SuspiciousLink (additive migration 20261103180000, RLS) holds flagged / confirmed links for the screens;
+  refreshed batched after the Shopify product sync / product webhook, FHB and euShipments product syncs, manual links
+  (matching queue, suggestions, warehouse link screens), catalogue runs and mapping imports. The safety brakes do NOT
+  rely on that table: they evaluate live from current names — the Shopify inventory push skips such a variant (or a
+  variant whose warehouse product at that location is flagged) with skipped reason "suspicious_link" + hint, and the
+  order check adds the SOFT finding order.line_name_mismatch ("Името в магазина и в склада се различават — проверете
+  връзката"), never hard. Card "Съмнителни връзки (N)" on Продукти и наличности and on Основни продукти по линии
+  (master SKU, both names, score, reasons) + count on the coverage card; actions (new permission products.suspicious:
+  OWNER/ADMIN/OPERATOR): "Потвърди (същият продукт е)" stores the confirmation with the product + both names (any name
+  change re-flags) and "Развържи" unlinks (audited; a variant is marked matchMethod "unlinked" so the Shopify sync and
+  the catalogue auto-link never re-link it by SKU; lines of orders not sent anywhere lose the product). Both re-check
+  the affected open orders. Known limit: an unlinked WAREHOUSE product can be re-linked by its next sync (no
+  matchMethod there) — it is then flagged again at once, so the brake still holds. Tests:
+  src/server/products/suspicious.test.ts; e2e tests/e2e/suspicious.spec.ts (seed tests/e2e/seed-suspicious.ts).
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

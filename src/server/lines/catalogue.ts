@@ -7,6 +7,7 @@ import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction, type AccountTxHelpers } from "@/server/db/client";
 import type { CompanyScope } from "@/server/companies";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
+import { UNLINKED_BY_PERSON } from "@/server/shopify/products";
 import {
   assertLineInScope,
   connectionPrefix,
@@ -15,6 +16,7 @@ import {
   skuAfterPrefix,
   type ScopedActor,
 } from "./lines";
+import { ALL_LINKS, refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * Master catalogue tool (P5-00): "Създай основни продукти от каталога на склад X". Creates master products of a
@@ -252,7 +254,13 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
     let cursor: string | undefined;
     for (;;) {
       const rows = await db.storeVariantLink.findMany({
-        where: { storeId: store.id, productId: null, ...(cursor ? { id: { gt: cursor } } : {}) },
+        where: {
+          storeId: store.id,
+          productId: null,
+          // A variant a person unlinked (suspicious link) is never re-linked automatically.
+          OR: [{ matchMethod: null }, { matchMethod: { not: UNLINKED_BY_PERSON } }],
+          ...(cursor ? { id: { gt: cursor } } : {}),
+        },
         select: { id: true, sku: true },
         orderBy: { id: "asc" },
         take: AUTOLINK_BATCH,
@@ -367,6 +375,8 @@ export async function processCatalogueRun(
       { runId, created: done.created, linked: done.linked, conflicts: done.conflicts, autoLinked },
       "master catalogue run done",
     );
+    // New links and masters: re-check every link of the account (batched).
+    await refreshSuspiciousLinksSafe(accountId, ALL_LINKS, "catalogue_run");
     return done;
   } catch (err) {
     await db.masterCatalogueRun

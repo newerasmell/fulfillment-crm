@@ -18,6 +18,7 @@ import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/d
 import { logger } from "@/lib/logger";
 import { lineProductWhere } from "@/server/lines/lines";
 import { PRE_APPROVAL } from "./statuses";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * Shopify variants → StoreVariantLink, matched to the group's master Product (SPEC §3). One physical product
@@ -29,6 +30,9 @@ import { PRE_APPROVAL } from "./statuses";
 
 /** Orders whose lines may still be re-pointed to another product (nothing sent to a warehouse yet). */
 const RELINKABLE: CrmOrderStatus[] = [...PRE_APPROVAL];
+
+/** matchMethod of a variant a person unlinked: automatic SKU matching leaves it alone. */
+export const UNLINKED_BY_PERSON = "unlinked";
 
 export function stripSkuPrefix(
   sku: string | null | undefined,
@@ -86,7 +90,11 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
               select: { company: { select: { lineId: true } } },
             })
           )?.company?.lineId ?? null);
-    const match = existing?.productId ? null : await matchBySku(tx, v.sku, store.skuPrefix, lineId);
+    // A variant a person unlinked ("Съмнителни връзки" → Развържи) is never re-linked by SKU automatically.
+    const match =
+      existing?.productId || existing?.matchMethod === UNLINKED_BY_PERSON
+        ? null
+        : await matchBySku(tx, v.sku, store.skuPrefix, lineId);
     const link = existing
       ? await tx.storeVariantLink.update({ where: { id: existing.id }, data: { ...data, ...(match ?? {}) } })
       : await tx.storeVariantLink.create({
@@ -123,6 +131,8 @@ export async function syncStoreProducts(accountId: string, store: StoreForSync, 
     after = res.productVariants.pageInfo.endCursor ?? null;
   }
   logger.info({ storeId: store.id, ...counts }, "shopify products synced");
+  // Names may have changed (or a SKU now names another product): re-check this store's links, batched.
+  await refreshSuspiciousLinksSafe(accountId, { variants: { storeId: store.id } }, "shopify_products");
   return counts;
 }
 
@@ -150,9 +160,14 @@ export async function refreshShopifyProduct(
     );
     if (!res.product) return;
     for (const v of res.product.variants.nodes) await upsertVariant(accountId, store, v);
-    if (!res.product.variants.pageInfo.hasNextPage) return;
+    if (!res.product.variants.pageInfo.hasNextPage) break;
     after = res.product.variants.pageInfo.endCursor ?? null;
   }
+  await refreshSuspiciousLinksSafe(
+    accountId,
+    { variants: { storeId: store.id, shopifyProductGid: productGid } },
+    "shopify_product_update",
+  );
 }
 
 // ───────────── the "unmatched" work queue ─────────────
@@ -245,6 +260,7 @@ export async function linkVariant(actor: ScopedActor, linkId: string, productSku
     return { before: link.productId, productId: product.id };
   });
   await auditLink(actor, linkId, before, productId, "manual");
+  await refreshSuspiciousLinksSafe(actor.accountId, { variants: { id: linkId } }, "variant_link");
 }
 
 /** Creates the master product from a Shopify variant (SKU without the store prefix) and links it — atomically. */
@@ -285,6 +301,7 @@ export async function createProductFromVariant(actor: ScopedActor, linkId: strin
     throw err;
   });
   await auditLink(actor, linkId, result.before, result.product.id, "created");
+  await refreshSuspiciousLinksSafe(actor.accountId, { variants: { id: linkId } }, "variant_link");
   return result.product;
 }
 

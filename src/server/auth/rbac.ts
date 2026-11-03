@@ -18,6 +18,8 @@ export const PERMISSIONS = {
   "stores.archive": ["OWNER"],
   "stores.sync": ["OWNER", "ADMIN", "OPERATOR"],
   "products.match": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** "Съмнителни връзки": confirm a link whose names disagree, or unlink it (stock push + order checks). */
+  "products.suspicious": ["OWNER", "ADMIN", "OPERATOR"],
   "connections.manage": ["OWNER", "ADMIN"],
   "connections.raiseMode": ["OWNER"],
   "outbox.killSwitch": ["OWNER"],

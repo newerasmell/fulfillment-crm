@@ -1,5 +1,6 @@
 import type { CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
+import { countSuspicious } from "@/server/products/suspicious";
 import { lineMembers } from "./lines";
 
 /**
@@ -26,6 +27,8 @@ export interface LineCoverage {
   /** 0..1 over everything; 1 when there is nothing to link. */
   ratio: number;
   meetsTarget: boolean;
+  /** Flagged "Съмнителни връзки" of the line's warehouses and stores (names disagree, not confirmed). */
+  suspicious: number;
 }
 
 export const ratioOf = (linked: number, total: number) => (total ? linked / total : 1);
@@ -40,7 +43,7 @@ export async function lineCoverage(
   const m = await lineMembers(accountId, lineId, scope);
   const connIds = m.connections.map((c) => c.id);
   const storeIds = m.stores.map((s) => s.id);
-  const [vpAll, vpLinked, vlAll, vlLinked] = await Promise.all([
+  const [vpAll, vpLinked, vlAll, vlLinked, suspicious] = await Promise.all([
     connIds.length
       ? db.vendorProduct.groupBy({
           by: ["connectionId"],
@@ -69,6 +72,7 @@ export async function lineCoverage(
           _count: { _all: true },
         })
       : [],
+    countSuspicious(accountId, [...connIds, ...storeIds], lineId),
   ]);
   const count = <K extends string>(rows: ({ _count: { _all: number } } & Record<K, string>)[], key: K) =>
     new Map(rows.map((r) => [r[key], r._count._all]));
@@ -101,5 +105,5 @@ export async function lineCoverage(
   const warehouses = sum("warehouse");
   const stores = sum("store");
   const ratio = ratioOf(warehouses.linked + stores.linked, warehouses.total + stores.total);
-  return { lineId, warehouses, stores, parts, ratio, meetsTarget: ratio >= COVERAGE_TARGET };
+  return { lineId, warehouses, stores, parts, ratio, meetsTarget: ratio >= COVERAGE_TARGET, suspicious };
 }

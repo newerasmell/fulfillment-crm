@@ -12,6 +12,7 @@ import { DomainError } from "@/server/accounts";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { euReadClientFor } from "./connection";
 import { advanceOrderStatus, applyOrderHistory, EU_EVENT_SOURCE, markGoneAtVendor } from "./statuses";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * euShipments read side (P3-02). Only GET/list calls (plus the documented read-only POSTs
@@ -403,6 +404,7 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
     const unmatched = await accountDb(accountId).vendorProduct.count({
       where: { connectionId, archived: false, productId: null },
     });
+    await refreshSuspiciousLinksSafe(accountId, { vendors: { connectionId } }, "eushipments_products");
     return { rows: seen.size, created, matched, unmatched, archived: archived.count };
   });
 }

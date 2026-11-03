@@ -1617,7 +1617,8 @@
       "no_file": "Choose a file.",
       "file_too_large": "The file is over 900 KB — split it into parts.",
       "bad_file": "The file cannot be read — save it as .xlsx or .csv."
-    }
+    },
+    "coverageSuspicious": "Suspicious links: {count}"
   },
   "override": {
     "title": "Ship from",
@@ -2030,7 +2031,8 @@
         "untracked": "Shopify does not track it",
         "not_at_warehouse": "not at the warehouse",
         "no_snapshot": "no warehouse data",
-        "stale_snapshot": "stale warehouse data"
+        "stale_snapshot": "stale warehouse data",
+        "suspicious_link": "suspicious link — the store and warehouse names differ; confirm or unlink in \"Products & stock\" → \"Suspicious links\""
       },
       "pushLive": "Push {n} changes to Shopify",
       "pushDryRun": "Dry-run push ({n})",
@@ -3334,5 +3336,39 @@
     },
     "productLink": "Weight and details",
     "column": "Weight"
+  },
+  "suspicious": {
+    "title": "Suspicious links ({count})",
+    "badge": "check",
+    "intro": "SKU links where the warehouse or store name does not match the master product (a SKU reused for another product, or another volume). Until you confirm them, the variant is not pushed to Shopify stock and its orders get a warning.",
+    "empty": "No suspicious links.",
+    "masterSku": "SKU (master)",
+    "masterName": "Master product",
+    "itemName": "Warehouse / store name",
+    "score": "Agreement",
+    "store": "Store",
+    "warehouse": "Warehouse",
+    "reason": {
+      "name": "different names",
+      "volume": "different volume",
+      "concentration": "different concentration"
+    },
+    "confirm": "Confirm (same product)",
+    "confirmAria": "Confirm the link {label}",
+    "unlink": "Unlink",
+    "unlinkAria": "Unlink {label}",
+    "unlinkSure": "Yes, unlink",
+    "unlinkSureAria": "Yes, unlink {label}",
+    "cancel": "Cancel",
+    "confirmed": "Confirmed — not flagged again unless a name changes.",
+    "unlinked": "Unlinked.",
+    "more": "Showing {shown} of {total}.",
+    "errors": {
+      "forbidden": "You may not do this.",
+      "invalid": "Invalid data.",
+      "not_found": "The link was not found.",
+      "link_changed": "The link or its names changed meanwhile — reload the page.",
+      "other": "The action failed."
+    }
   }
 }

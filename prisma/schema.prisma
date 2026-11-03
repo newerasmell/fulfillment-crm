@@ -218,6 +218,7 @@ model Account {
   alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
   productLines              ProductLine[]
+  suspiciousLinks           SuspiciousLink[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
   shopifyWeightWrites       ShopifyWeightWrite[]
@@ -2520,4 +2521,41 @@ model ShopifyWeightWrite {
   @@unique([variantLinkId, weightGrams])
   @@index([accountId, productId, createdAt])
   @@index([status, nextAttemptAt])
+}
+
+/// "Съмнителни връзки" (owner report 2026-11-03): a link (warehouse product or store variant → master) whose two
+/// names disagree (score below the threshold, or a different volume / concentration). One row per linked item that
+/// is flagged or was confirmed by a person; recomputed (batched) after product/variant syncs, manual links, catalogue
+/// runs and imports. `confirmedKey` = the product + both names at confirmation: a later name change re-flags.
+model SuspiciousLink {
+  id            String    @id @default(cuid())
+  accountId     String
+  /// vendor | variant
+  kind          String
+  itemId        String
+  productId     String
+  /// Master's line at compute time (lines screen filter).
+  lineId        String?
+  /// Store (variant) or connection (vendor) of the item — company scope of the listing.
+  sourceId      String
+  itemName      String
+  itemCode      String?
+  productSku    String
+  productName   String
+  /// 0..1; null = no name signal.
+  score         Float?
+  reasons       Json      @default("[]")
+  flagged       Boolean   @default(true)
+  nameKey       String
+  confirmedKey  String?
+  confirmedAt   DateTime?
+  confirmedById String?
+  computedAt    DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, kind, itemId])
+  @@index([accountId, flagged])
 }
