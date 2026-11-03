@@ -7,6 +7,7 @@ import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction, type AccountTxHelpers } from "@/server/db/client";
 import type { CompanyScope } from "@/server/companies";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
+import { UNLINKED_BY_PERSON } from "@/server/shopify/products";
 import {
   assertLineInScope,
   connectionPrefix,
@@ -15,6 +16,7 @@ import {
   skuAfterPrefix,
   type ScopedActor,
 } from "./lines";
+import { ALL_LINKS, refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * Master catalogue tool (P5-00): "Създай основни продукти от каталога на склад X". Creates master products of a
@@ -127,7 +129,7 @@ export async function mastersBatch(
   accountId: string,
   lineId: string,
   prefix: string,
-  rows: { id: string; vendorId: string; productId: string | null; raw: unknown }[],
+  rows: { id: string; vendorId: string; productId: string | null; raw: unknown; unlinkedAt?: Date | null }[],
   c: Counters,
 ) {
   await lockLine(helpers, lineId);
@@ -158,6 +160,8 @@ export async function mastersBatch(
       }
       continue;
     }
+    // Unlinked by a person (suspicious link): never re-linked (nor a master created for it) automatically.
+    if (r.unlinkedAt) continue;
     const sku = skuAfterPrefix(r.vendorId, prefix);
     if (!sku) continue;
     const candidates = (byLower.get(sku.toLowerCase()) ?? []).filter((m) => !m.archived);
@@ -188,7 +192,7 @@ export async function mastersBatch(
     }
     // Conditional: the batch was read before this transaction; a link a person or a sync made meanwhile wins.
     const res = await tx.vendorProduct.updateMany({
-      where: { id: r.id, productId: null },
+      where: { id: r.id, productId: null, unlinkedAt: null },
       data: { productId },
     });
     if (res.count === 1) c.linked++;
@@ -221,6 +225,8 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
           connectionId: conn.id,
           archived: false,
           productId: null,
+          // A warehouse product a person unlinked (suspicious link) is never re-linked automatically.
+          unlinkedAt: null,
           ...(cursor ? { id: { gt: cursor } } : {}),
         },
         select: { id: true, vendorId: true },
@@ -240,7 +246,10 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
           if (!productId) continue;
           // Conditional: a link made meanwhile (sync, person) is never overwritten.
           n += (
-            await tx.vendorProduct.updateMany({ where: { id: r.id, productId: null }, data: { productId } })
+            await tx.vendorProduct.updateMany({
+              where: { id: r.id, productId: null, unlinkedAt: null },
+              data: { productId },
+            })
           ).count;
         }
         return n;
@@ -252,7 +261,13 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
     let cursor: string | undefined;
     for (;;) {
       const rows = await db.storeVariantLink.findMany({
-        where: { storeId: store.id, productId: null, ...(cursor ? { id: { gt: cursor } } : {}) },
+        where: {
+          storeId: store.id,
+          productId: null,
+          // A variant a person unlinked (suspicious link) is never re-linked automatically.
+          OR: [{ matchMethod: null }, { matchMethod: { not: UNLINKED_BY_PERSON } }],
+          ...(cursor ? { id: { gt: cursor } } : {}),
+        },
         select: { id: true, sku: true },
         orderBy: { id: "asc" },
         take: AUTOLINK_BATCH,
@@ -318,7 +333,7 @@ export async function processCatalogueRun(
             archived: false,
             ...(cursor ? { id: { gt: cursor } } : {}),
           },
-          select: { id: true, vendorId: true, productId: true, raw: true },
+          select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
           orderBy: { id: "asc" },
           take: batchSize,
         });
@@ -367,6 +382,8 @@ export async function processCatalogueRun(
       { runId, created: done.created, linked: done.linked, conflicts: done.conflicts, autoLinked },
       "master catalogue run done",
     );
+    // New links and masters: re-check every link of the account (batched).
+    await refreshSuspiciousLinksSafe(accountId, ALL_LINKS, "catalogue_run");
     return done;
   } catch (err) {
     await db.masterCatalogueRun

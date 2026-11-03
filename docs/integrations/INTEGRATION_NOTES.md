@@ -412,6 +412,21 @@ Rules per vendor in production:
   *New* and within 14 days.
 - **Shopify:** fulfillment write-back and inventory push follow the same modes per store
   (READ_ONLY → DRY_RUN preview → LIVE). Inventory push starts disabled.
+  "Activate products at this location" (inventoryActivate, write_inventory, @idempotent required since 2026-04) uses
+  the store's inventory push mode at send time too: DRY_RUN records the exact requests, LIVE sends; an item already
+  stocked at the location is a success; unknown outcomes are read back (InventoryItem.inventoryLevel(locationId)).
+  Checked 2026-11-03 against Admin API 2026-10 (Shopify MCP schema introspection + shopify.dev
+  /docs/api/admin-graphql/2026-10/mutations/inventoryActivate): args `inventoryItemId: ID!`, `locationId: ID!`,
+  `available: Int`, `onHand: Int` (both default 0 when omitted — we omit them); returns
+  `InventoryActivatePayload { inventoryLevel: InventoryLevel, userErrors: [UserError!]! }` (UserError = field,
+  message); "As of version 2026-04, the idempotency key is required and must be provided using the @idempotent
+  directive". The docs also list `stockAtLegacyLocation: Boolean` as **Deprecated, default false** (introspection
+  no longer shows it); we do not send it. If a mapped location is a legacy fulfillment-service location Shopify
+  answers with a userError: the item ends `failed` with Shopify's message shown on the page and an operator task
+  when every item fails — the fix is on the Shopify side (migrate the fulfillment service location), not a retry.
+  The send is LIVE only when the store was LIVE both when the owner confirmed and at send time (a job confirmed as a
+  dry run is REFUSED with `mode_raised_after_confirm` after a raise). Throttling (THROTTLED, HTTP 429) is "not
+  executed": the run stops and re-arms in 30 s with the same keys, without spending an attempt.
   The write-back covers the whole lifecycle per shipment (2026-11): fulfillmentCreate (on tracking, or on
   acceptance without tracking and without a customer e-mail), fulfillmentTrackingInfoUpdate per new tracking
   number, fulfillmentEventCreate per status (IN_TRANSIT, DELAYED for a courier exception, then DELIVERED or

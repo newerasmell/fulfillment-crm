@@ -87,6 +87,9 @@ try {
   // Store edit / archive / delete (Магазини): its own group and OWNER (tests/e2e/stores-edit.spec.ts).
   const { seedStoresEdit } = await import("../tests/e2e/seed-stores-edit");
   const storesOwner = await seedStoresEdit();
+  // "Съмнителни връзки" (SKU reused for another product): its own group and OWNER (tests/e2e/suspicious.spec.ts).
+  const { seedSuspicious } = await import("../tests/e2e/seed-suspicious");
+  const suspiciousOwner = await seedSuspicious();
   // The web app only enqueues; the queue schema is created here because no worker runs during e2e.
   const { createBoss, ensureQueues } = await import("@/server/jobs/boss");
   const boss = createBoss({ worker: true });
@@ -143,6 +146,10 @@ try {
       E2E_STORES_EMAIL: storesOwner.email,
       E2E_STORES_PASSWORD: storesOwner.password,
       E2E_STORES_TOTP: storesOwner.totp,
+      E2E_SUS_EMAIL: suspiciousOwner.email,
+      E2E_SUS_PASSWORD: suspiciousOwner.password,
+      E2E_SUS_TOTP: suspiciousOwner.totp,
+      E2E_SUS_STORE: suspiciousOwner.storeId,
     },
   });
   status = run.status ?? 1;

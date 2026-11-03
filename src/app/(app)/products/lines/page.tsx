@@ -12,6 +12,8 @@ import { lineCoverage } from "@/server/lines/coverage";
 import { lineMembers } from "@/server/lines/lines";
 import { listSuggestions } from "@/server/lines/suggestions";
 import { CoverageSummary } from "./coverage";
+import { listSuspiciousLinks } from "@/server/products/suspicious";
+import { SuspiciousLinksCard } from "../suspicious";
 import { AutoRefresh, ImportForm, StartCatalogueForm, SuggestionActions } from "./forms";
 
 type Search = Record<string, string | string[] | undefined>;
@@ -61,10 +63,11 @@ export default async function ProductLinesPage({ searchParams }: { searchParams:
       })
     : [];
   const countOf = new Map(counts.map((c) => [c.connectionId, c._count._all]));
-  const [coverage, runs, suggestions] = await Promise.all([
+  const [coverage, runs, suggestions, suspicious] = await Promise.all([
     lineCoverage(ctx.accountId, line.id, ctx.companyScope),
     listCatalogueRuns(ctx.accountId, line.id, { scope: ctx.companyScope }),
     listSuggestions(actor, line.id, page),
+    listSuspiciousLinks({ accountId: ctx.accountId, companyScope: ctx.companyScope }, { lineId: line.id }),
   ]);
   const running = runs.some((r) => r.status === "QUEUED" || r.status === "RUNNING");
   const mayWork = can(ctx.role, "lines.catalogue");
@@ -105,6 +108,12 @@ export default async function ProductLinesPage({ searchParams }: { searchParams:
         </div>
         <CoverageSummary coverage={coverage} detailed />
       </Card>
+
+      <SuspiciousLinksCard
+        rows={suspicious.rows}
+        total={suspicious.total}
+        canDecide={can(ctx.role, "products.suspicious")}
+      />
 
       {mayWork && (
         <Card>

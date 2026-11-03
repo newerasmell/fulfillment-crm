@@ -13,6 +13,12 @@ import { z } from "zod";
  *    InventorySetQuantitiesPayload {inventoryAdjustmentGroup {id}, userErrors {code field message}}.
  *    Since 2026-04 the @idempotent(key:) directive is REQUIRED on this mutation (docs, 2026-10 reference), and
  *    changeFromQuantity is the compare-and-set value (null opts out — we never opt out).
+ *  - Location {address {city}} and FulfillmentService {handle serviceName} (2026-10 schema): the fallbacks for a
+ *    location whose own name is only a placeholder (see locationDisplayName).
+ *  - Mutation.inventoryActivate(inventoryItemId: ID!, locationId: ID!, available: Int, onHand: Int) →
+ *    InventoryActivatePayload {inventoryLevel: InventoryLevel, userErrors: [UserError {field message}]} (no code on
+ *    UserError). "Requires write_inventory access scope"; since 2026-04 the @idempotent(key:) directive is REQUIRED
+ *    (2026-10 reference, which has the exact example we send). Without available/onHand both start at 0.
  * Scopes: read_locations, read_inventory, write_inventory.
  */
 
@@ -33,8 +39,12 @@ export const LOCATIONS_QUERY = /* GraphQL */ `
         id
         name
         isActive
+        address {
+          city
+        }
         fulfillmentService {
           handle
+          serviceName
         }
       }
       pageInfo {
@@ -52,7 +62,8 @@ export const LocationsPage = z.object({
         id: z.string(),
         name: z.string(),
         isActive: z.boolean(),
-        fulfillmentService: z.object({ handle: z.string() }).nullable(),
+        address: z.object({ city: z.string().nullish() }).nullish(),
+        fulfillmentService: z.object({ handle: z.string(), serviceName: z.string().nullish() }).nullable(),
       }),
     ),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullish() }),
@@ -218,3 +229,69 @@ export const DEFINITE_PUSH_ERRORS = new Set([
   "IDEMPOTENCY_KEY_PARAMETER_MISMATCH",
   "COMPARE_QUANTITY_REQUIRED",
 ]);
+
+/**
+ * The name we show for a Shopify location. Location.name is the merchant's name and normally wins; a name that is
+ * only a placeholder ("#2", "2", empty — what the owner saw on 2026-11-03 for the two warehouse locations) falls
+ * back to the fulfillment service's serviceName, then the address city, and keeps the raw name otherwise.
+ */
+/**
+ * The name we show for a Shopify location: exactly the merchant's Location.name (owner decision 2026-11-03: locations
+ * keep their Shopify names, e.g. "#2" — the CRM never renames them; the mapped warehouse is shown next to it).
+ */
+export function locationDisplayName(l: { name: string }) {
+  return l.name.trim() || "—";
+}
+
+// ───────────── inventoryActivate (stock an item at a location) ─────────────
+
+/** Items per activation run: one read-back (nodes) per batch, then one inventoryActivate per missing item. */
+export const ACTIVATE_BATCH = 50;
+
+export const ACTIVATE_MUTATION = /* GraphQL */ `
+  mutation InventoryActivate($inventoryItemId: ID!, $locationId: ID!, $idempotencyKey: String!) {
+    inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId)
+      @idempotent(key: $idempotencyKey) {
+      inventoryLevel {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+export const ActivatePayload = z.object({
+  inventoryActivate: z
+    .object({
+      inventoryLevel: z.object({ id: z.string() }).nullable(),
+      userErrors: z.array(z.object({ field: z.array(z.string()).nullable(), message: z.string() })),
+    })
+    .nullable(),
+});
+export type ActivatePayload = z.infer<typeof ActivatePayload>;
+
+export interface ActivateVariables {
+  inventoryItemId: string;
+  locationId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Deterministic idempotency key (UUID-shaped) for activating one inventory item at one location of one store: a
+ * retry, a second job or a double click for the same pair carries the same key, so Shopify creates the level at
+ * most once. `generation` moves on only after Shopify said an earlier attempt with that key failed.
+ */
+export function activationIdempotencyKey(
+  storeId: string,
+  inventoryItemId: string,
+  locationId: string,
+  generation = 0,
+) {
+  const h = createHash("sha256")
+    .update(`inventory-activate:${storeId}:${inventoryItemId}:${locationId}:${generation}`)
+    .digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}

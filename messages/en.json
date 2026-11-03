@@ -1617,7 +1617,8 @@
       "no_file": "Choose a file.",
       "file_too_large": "The file is over 900 KB — split it into parts.",
       "bad_file": "The file cannot be read — save it as .xlsx or .csv."
-    }
+    },
+    "coverageSuspicious": "Suspicious links: {count}"
   },
   "override": {
     "title": "Ship from",
@@ -1898,7 +1899,12 @@
       "connection_disabled": "The warehouse connection is disabled.",
       "no_company_id": "The euShipments connection has no company selected.",
       "invalid_booking": "Invalid booking request.",
-      "fhb_already_submitted": "The receipt was already sent to FHB."
+      "fhb_already_submitted": "The receipt was already sent to FHB.",
+      "nothing_to_activate": "Nothing to activate at this location.",
+      "activation_open": "An activation for this location is already in progress — it will be processed.",
+      "activation_count_changed": "The number of products changed — reload the page and confirm again.",
+      "location_not_mapped": "The location is not mapped to a warehouse or is inactive.",
+      "store_archived": "The store is archived."
     },
     "inbound": {
       "title": "Stock receipts",
@@ -2030,7 +2036,8 @@
         "untracked": "Shopify does not track it",
         "not_at_warehouse": "not at the warehouse",
         "no_snapshot": "no warehouse data",
-        "stale_snapshot": "stale warehouse data"
+        "stale_snapshot": "stale warehouse data",
+        "suspicious_link": "suspicious link — the store and warehouse names differ; confirm or unlink in \"Products & stock\" → \"Suspicious links\""
       },
       "pushLive": "Push {n} changes to Shopify",
       "pushDryRun": "Dry-run push ({n})",
@@ -2054,7 +2061,26 @@
         "cron": "automatic"
       },
       "lineCounts": "{total} lines · applied {applied} · dry run {dry} · unchanged {unchanged} · stale {stale} · failed {failed}",
-      "showRequest": "Show the exact request"
+      "showRequest": "Show the exact request",
+      "activate": "Activate the products at this location ({n})",
+      "activateFor": "Activate products at {name}",
+      "activateConfirmDry": "Dry run: {n} inventoryActivate requests will be recorded, nothing is sent to Shopify.",
+      "activateConfirmLive": "Live: {n} products will be activated in Shopify at this location with 0 available (the next push sets the real number).",
+      "activateConfirm": "Confirm ({n})",
+      "cancel": "Cancel",
+      "activateQueued": "The activation is queued.",
+      "activateHint": "Products Shopify does not stock at this location but does at another location of the store. Owner only.",
+      "notStockedHint": "{name}: {n} not stocked at the location — use “Activate the products at this location” above.",
+      "activations": "Product activation at locations",
+      "activationCounts": "{total} products · activated {activated} · already active {already} · dry run {dry} · failed {failed} · waiting {planned}",
+      "showRequests": "Show the exact requests",
+      "lineStatus": {
+        "planned": "waiting",
+        "dry_run": "dry run",
+        "activated": "activated",
+        "already": "already active",
+        "failed": "failed"
+      }
     }
   },
   "returns": {
@@ -3334,5 +3360,42 @@
     },
     "productLink": "Weight and details",
     "column": "Weight"
+  },
+  "suspicious": {
+    "title": "Suspicious links ({count})",
+    "badge": "check",
+    "intro": "SKU links where the warehouse or store name does not match the master product (a SKU reused for another product, or another volume). Until you confirm them, the variant is not pushed to Shopify stock and its orders get a warning.",
+    "empty": "No suspicious links.",
+    "masterSku": "SKU (master)",
+    "masterName": "Master product",
+    "itemName": "Warehouse / store name",
+    "score": "Agreement",
+    "store": "Store",
+    "warehouse": "Warehouse",
+    "reason": {
+      "name": "different names",
+      "volume": "different volume",
+      "concentration": "different concentration",
+      "flanker": "another version (Intense, Elixir, …)",
+      "gender": "different gender",
+      "number": "different number in the name"
+    },
+    "confirm": "Confirm (same product)",
+    "confirmAria": "Confirm the link {label}",
+    "unlink": "Unlink",
+    "unlinkAria": "Unlink {label}",
+    "unlinkSure": "Yes, unlink",
+    "unlinkSureAria": "Yes, unlink {label}",
+    "cancel": "Cancel",
+    "confirmed": "Confirmed — not flagged again unless a name changes.",
+    "unlinked": "Unlinked.",
+    "more": "Showing {shown} of {total}.",
+    "errors": {
+      "forbidden": "You may not do this.",
+      "invalid": "Invalid data.",
+      "not_found": "The link was not found.",
+      "link_changed": "The link or its names changed meanwhile — reload the page.",
+      "other": "The action failed."
+    }
   }
 }

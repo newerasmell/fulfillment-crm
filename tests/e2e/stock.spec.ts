@@ -124,4 +124,27 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await expect(page.getByText("Изпращането е в опашката.")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("push-history-item").first()).toContainText("Чака");
+
+  // Second location (euShipments): nothing stocked there in Shopify → hint in "Пропуснати" + activation (DRY_RUN).
+  await expect(page.getByTestId("not-stocked-hints")).toContainText("Склад EU: 3 не се водят в локацията");
+  const activate = page.getByRole("form", { name: "Активиране на продуктите в Склад EU" });
+  await activate.getByRole("button", { name: "Активирай продуктите в тази локация (3)" }).click();
+  await expect(activate).toContainText("Пробно: ще се запишат 3 заявки inventoryActivate");
+  await activate.getByRole("button", { name: "Потвърди (3)" }).click();
+  await expect(activate.getByText("Активирането е в опашката.")).toBeVisible();
+  await page.reload();
+  const job = page.getByTestId("activation-item").first();
+  await expect(job).toContainText("Склад EU");
+  await expect(job).toContainText("3 продукта");
+  await expect(job.getByTestId("activation-request")).toContainText("inventoryActivate");
+  await expect(job.getByTestId("activation-request")).toContainText("gid://shopify/InventoryItem/8801");
+  await expect(job.getByTestId("activation-request")).toContainText("gid://shopify/Location/9903");
+  await expect(job.getByTestId("activation-request")).not.toContainText("available");
+  // A second click while the job is open queues nothing new.
+  await activate.getByRole("button", { name: "Активирай продуктите в тази локация (3)" }).click();
+  await activate.getByRole("button", { name: "Потвърди (3)" }).click();
+  await expect(activate.getByText("Вече има активиране в процес за тази локация")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("activation-item")).toHaveCount(1);
+  await page.screenshot({ path: "docs/screens/p5-inventory-activate.png", fullPage: true });
 });

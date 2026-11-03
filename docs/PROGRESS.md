@@ -252,6 +252,75 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   membership/alert lookups. New tests: CANARY confirm path, euShipments 503 → orders-history read-back, FHB network
   error → GET /order 404 read-back, markGoneAtVendor requested/not-requested paths, reroute-after-cancel refusal.
 
+- 2026-11-03 "Съмнителни връзки" (owner report: SKUs were reused — an old product's SKU now belongs to another
+  perfume, and the SKU link joined them silently). SKU after prefix stays the only matching key (owner decision); names
+  are now CHECKED on every existing link: src/server/products/name-agreement.ts (pure) normalises both names (accents,
+  case, punctuation, "Default Title", Cyrillic → Latin + spelling folds, noise words decant/tester/eau/de/…, the
+  master's brand, SKUs repeated in a name), keeps volumes in ml and the concentration (EDP/EDT/EDC/extrait) as
+  separate signals and compares the core words (typos tolerated; words shared by many masters — brands — weigh less).
+  Flag = score < 0.55, or a different volume / concentration; a name that is only the SKU / "Default Title" is no
+  signal. Store variant → master name and warehouse product (raw.name) → master name are checked separately.
+  New table SuspiciousLink (additive migration 20261103180000, RLS) holds flagged / confirmed links for the screens;
+  refreshed batched after the Shopify product sync / product webhook, FHB and euShipments product syncs, manual links
+  (matching queue, suggestions, warehouse link screens), catalogue runs and mapping imports. The safety brakes do NOT
+  rely on that table: they evaluate live from current names — the Shopify inventory push skips such a variant (or a
+  variant whose warehouse product at that location is flagged) with skipped reason "suspicious_link" + hint, and the
+  order check adds the SOFT finding order.line_name_mismatch ("Името в магазина и в склада се различават — проверете
+  връзката"), never hard. Card "Съмнителни връзки (N)" on Продукти и наличности and on Основни продукти по линии
+  (master SKU, both names, score, reasons) + count on the coverage card; actions (new permission products.suspicious:
+  OWNER/ADMIN/OPERATOR): "Потвърди (същият продукт е)" stores the confirmation with the product + both names (any name
+  change re-flags) and "Развържи" unlinks (audited; a variant is marked matchMethod "unlinked" so the Shopify sync and
+  the catalogue auto-link never re-link it by SKU; lines of orders not sent anywhere lose the product). Both re-check
+  the affected open orders. Tests:
+  src/server/products/suspicious.test.ts; e2e tests/e2e/suspicious.spec.ts (seed tests/e2e/seed-suspicious.ts).
+- 2026-11-03 Suspicious links, audit fixes. (1) Same-family products were missed (the containment overlap made any
+  subset name agree: "X" vs "X Elixir", "X EDP" vs "X Intense EDP"). The score is now the weighted Dice alone plus
+  explicit signals, each its own reason: flanker words (intense/elixir/extreme/absolu/sport/noir/night/profondo/
+  limited/edition/prive/oud/very/…, one side has one the other lacks → "flanker"), gender (men vs women incl. the
+  Bulgarian forms, both named and different → "gender"; unisex is compatible), numbers other than sizes ("… 2" vs
+  "… 3" or on one side only → "number"; a bare "100" equal to the other side's 100 ml is fine), parfum / le parfum /
+  extrait as a concentration of its own (not EDP), and a word SUBSTITUTION (each side has a heavy word, weight ≥ 0.5,
+  the other lacks → "name"). Extra words on ONE side only (a brand in a store title) are still tolerated unless they
+  are flanker words — a one-sided unknown word is deliberately not flagged (brand-style prefixes/suffixes would flood
+  the list and stop the stock push). Volumes also parse oz / fl oz (→ ml, rounded to the sold size) and g / гр.
+  (2) "Развържи" on a warehouse product now sticks: VendorProduct.unlinkedAt (additive nullable migration
+  20261103200000); FHB product sync, FHB apply, euShipments product sync and create effect, catalogue masters phase
+  and line auto-link all skip it; a person's own link (warehouse link screens, suggestions, mapping import) clears it,
+  the euShipments manual unlink sets it. (3) Confirm is idempotent (conditional update: a second / concurrent click
+  returns alreadyConfirmed, audited once). (4) The line filter of the suspicious list / coverage count uses the
+  master's CURRENT line, not the copy taken at refresh. Tests added for link_changed, >500-row paging (find + stale
+  removal), unlink vs FHB/eu sync and autoLinkLine, vendor-side order finding.
+
+- 2026-11-03 "Активирай продуктите в тази локация" (owner request after the live test: a store with two Shopify
+  locations mapped to two warehouses; the push preview only showed the first, because the products are not stocked at
+  the second and the plan skips them as not_stocked_at_location). On Магазин → Наличности към Shopify every mapped,
+  active location has the button with N = linked variants (productId set, tracked) whose inventory item has no level
+  there but is known from another location's level (src/server/stock/activate.ts, one entry per item). OWNER only (new
+  permission inventory.activate), a second click confirms the count (the job is not queued when the count changed),
+  audited (inventory.activation_queued / _dry_run / _sent / _failed). Writes: inventoryActivate(inventoryItemId,
+  locationId) @idempotent(key) — 2026-10 schema/reference checked; no available/onHand (level starts at 0, the next
+  push sets the warehouse number). Not inventoryBulkToggleActivation: it toggles one item across many locations (no
+  batching for many items at one location), can deactivate, and does not document @idempotent. Own outbox
+  (InventoryActivation + lines, new tables only, RLS): the store's inventoryPushMode at send time (DISABLED → REFUSED,
+  DRY_RUN → the exact requests stored at creation are shown on the page, LIVE → sent), kill switch / OUTBOX_PAUSED →
+  PAUSED, an unmapped location → REFUSED, one open job per store + location (advisory lock), row-lock claim, the write
+  client never retries; per item a deterministic key per (store, item, location) (activationIdempotencyKey); batches
+  of 50 are read back first (nodes → inventoryLevel(locationId)) so an already-stocked item is "already" (success); a
+  userError with a level afterwards is "already", without one "failed" (message shown); an unknown outcome is read
+  back (level → activated, else retried later with the same key). After a LIVE success the worker queues the store's
+  Shopify inventory read. The preview's "Пропуснати" shows not_stocked_at_location per location with a hint to the
+  button. Location names: "#2" / "#3" are the merchant's real Shopify names; owner decision — the CRM shows
+  every location exactly as Shopify names it and never replaces it (the mapped warehouse is shown next to it).
+  Tests: src/server/stock/activate.test.ts, src/integrations/shopify/inventory.test.ts, e2e tests/e2e/stock.spec.ts.
+  Auditor fixes (same day): the job stores the mode the owner confirmed under (InventoryActivation.createdMode,
+  additive nullable column, migration 20261103200000) and sends only when that AND the current mode are LIVE — a job
+  confirmed as a dry run and raised to LIVE while it waited is REFUSED `mode_raised_after_confirm` (new click needed);
+  THROTTLED / HTTP 429 on inventoryActivate (not executed) stops the run and re-arms it in 30 s with the same keys
+  without spending an attempt (was: an unknown outcome that used up attempts); lockedAt is refreshed per item and
+  finalize/heartbeat require the claim's attempts number, so a long run is not processed twice after a stale re-arm;
+  the per-location hint now counts exactly the button's items (tracked, one per inventory item). The 2026-10
+  reference excerpt (args, payload, required @idempotent, deprecated stockAtLegacyLocation) is in INTEGRATION_NOTES §6.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

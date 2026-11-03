@@ -42,6 +42,13 @@ export async function CoverageSummary({
             pct: pct(coverage.stores.linked, coverage.stores.total),
           })}
         </span>
+        <a
+          href="#suspicious-links"
+          data-testid={`coverage-suspicious-${coverage.lineId}`}
+          className={`rounded-full px-2 py-0.5 text-xs font-semibold no-underline ${coverage.suspicious > 0 ? "bg-warn-bg text-warn" : "bg-ok-bg text-ok"}`}
+        >
+          {t("coverageSuspicious", { count: coverage.suspicious })}
+        </a>
       </div>
       {detailed && coverage.parts.length > 0 && (
         <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">

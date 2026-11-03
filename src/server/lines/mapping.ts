@@ -7,6 +7,7 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 import type { CompanyScope } from "@/server/companies";
 import { assertLineInScope, lineMembers, lockLine, type LineMembers, type ScopedActor } from "./lines";
 import { linkItemInTx, type ItemKind } from "./suggestions";
+import { ALL_LINKS, refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * Excel/CSV export and import of a line's product mapping (P5-00). Columns: master SKU, name, then one column per
@@ -480,6 +481,7 @@ export async function applyImport(actor: ScopedActor, importId: string) {
       ip: actor.ip,
       userAgent: actor.userAgent,
     });
+    await refreshSuspiciousLinksSafe(actor.accountId, ALL_LINKS, "mapping_import");
     return { applied };
   } catch (err) {
     // Batches already committed stay (each is consistent); the import is marked so it is not applied twice.

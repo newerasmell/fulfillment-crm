@@ -12,6 +12,7 @@ import { DomainError } from "@/server/accounts";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { euReadClientFor } from "./connection";
 import { advanceOrderStatus, applyOrderHistory, EU_EVENT_SOURCE, markGoneAtVendor } from "./statuses";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * euShipments read side (P3-02). Only GET/list calls (plus the documented read-only POSTs
@@ -372,11 +373,13 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
       const res = await withAccountTransaction(accountId, async (tx) => {
         const existing = await tx.vendorProduct.findUnique({
           where: { connectionId_vendorId: { connectionId, vendorId } },
-          select: { id: true, productId: true },
+          select: { id: true, productId: true, unlinkedAt: true },
         });
-        const link = existing?.productId
-          ? null
-          : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule), lineId);
+        // Linked already, or unlinked by a person (suspicious link): never matched by SKU again.
+        const link =
+          existing?.productId || existing?.unlinkedAt
+            ? null
+            : await matchMaster(tx, masterSkuFor(vendorId, connection.skuPrefixRule), lineId);
         const data = {
           vendorCode: String(r.ID),
           archived: false,
@@ -403,6 +406,7 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
     const unmatched = await accountDb(accountId).vendorProduct.count({
       where: { connectionId, archived: false, productId: null },
     });
+    await refreshSuspiciousLinksSafe(accountId, { vendors: { connectionId } }, "eushipments_products");
     return { rows: seen.size, created, matched, unmatched, archived: archived.count };
   });
 }
@@ -526,7 +530,9 @@ export async function syncEuStock(accountId: string, connectionId: string, deps:
             where: { vendorProductId: vp.id },
             select: { reserved: true },
           });
-          if (!existing && free === 0) continue;
+          // A product missing from get-prod-avails has 0 at the warehouse: record the 0 (with a fresh snapshot) so
+          // the stock board and the Shopify push show it as sold out instead of "no data" (which kept Shopify's old
+          // positive number and could oversell).
           const reserved = existing?.reserved ?? 0;
           const data = {
             physical: free,

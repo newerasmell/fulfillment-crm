@@ -18,6 +18,8 @@ export const PERMISSIONS = {
   "stores.archive": ["OWNER"],
   "stores.sync": ["OWNER", "ADMIN", "OPERATOR"],
   "products.match": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
+  /** "Съмнителни връзки": confirm a link whose names disagree, or unlink it (stock push + order checks). */
+  "products.suspicious": ["OWNER", "ADMIN", "OPERATOR"],
   "connections.manage": ["OWNER", "ADMIN"],
   "connections.raiseMode": ["OWNER"],
   "outbox.killSwitch": ["OWNER"],
@@ -65,6 +67,8 @@ export const PERMISSIONS = {
   "stock.settings": ["OWNER", "ADMIN"],
   /** Shopify inventory push: preview, queue a push now, map Shopify locations to warehouses. */
   "inventory.push": ["OWNER", "ADMIN"],
+  /** Shopify write that creates inventory levels (inventoryActivate at a mapped location): OWNER only. */
+  "inventory.activate": ["OWNER"],
   /** Returns board: mark processed with a note, notify support, load return photos (Връщания). */
   "returns.manage": ["OWNER", "ADMIN", "OPERATOR", "WAREHOUSE"],
   /** COD board and its CSV export (amounts per shipment and company). */

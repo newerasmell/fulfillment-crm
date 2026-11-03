@@ -167,7 +167,7 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
           await db.vendorProduct.update({
             where: { id: existing.id },
             data: {
-              productId: existing.productId ?? productId,
+              productId: existing.productId ?? (existing.unlinkedAt ? null : productId),
               ...(r.vendorProductId ? { vendorCode: r.vendorProductId } : {}),
               lastSyncAt: new Date(),
               raw,

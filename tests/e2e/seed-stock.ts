@@ -4,7 +4,8 @@
 //   FHB "FHB Склад С" (DRY_RUN) and euShipments "euShipments Склад С" (DRY_RUN, warehouse "Склад София")
 //   STK-ORIG (+ tester STK-TEST), STK-ZERO (nothing on stock), STK-FAST (sells fast: runs out within 7 days)
 //   Store "Магазин С" (push DRY_RUN, buffer 1), its location "Склад FHB" mapped to the FHB connection; Shopify
-//   shows 50 of STK-ORIG (more than the CRM can sell → "Разминаване със Shopify").
+//   shows 50 of STK-ORIG (more than the CRM can sell → "Разминаване със Shopify"). A second location "Склад EU"
+//   is mapped to euShipments with nothing stocked there yet ("Активирай продуктите в тази локация (3)").
 import { bootstrapOwner } from "@/server/auth/users";
 import { systemDb } from "@/server/db/client";
 
@@ -117,6 +118,16 @@ export async function seedStock() {
       storeId: store.id,
       shopifyLocationGid: "gid://shopify/Location/9902",
       name: "Офис",
+      fetchedAt: now,
+    },
+  });
+  await sys.storeLocation.create({
+    data: {
+      accountId,
+      storeId: store.id,
+      shopifyLocationGid: "gid://shopify/Location/9903",
+      name: "Склад EU",
+      connectionId: eu.id,
       fetchedAt: now,
     },
   });

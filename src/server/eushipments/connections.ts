@@ -9,6 +9,7 @@ import { setConnectionMode } from "@/server/outbox/outbox";
 import { saveCredential } from "@/server/security/credentials";
 import type { ScopedActor } from "@/server/stores";
 import { EuVendorIds } from "./connection";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * euShipments connections: create, settings, token rotation, mode. One connection = one API token (in the
@@ -364,7 +365,11 @@ export async function linkEuVendorProduct(actor: ScopedActor, raw: z.input<typeo
     if (products.length !== 1) throw new DomainError(products.length ? "ambiguous_sku" : "unknown_sku");
     productId = products[0]!.id;
   }
-  await db.vendorProduct.update({ where: { id: vp.id }, data: { productId } });
+  // A person's decision either way: a link clears an earlier unlink, an unlink is remembered.
+  await db.vendorProduct.update({
+    where: { id: vp.id },
+    data: { productId, unlinkedAt: productId ? null : new Date() },
+  });
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
@@ -376,4 +381,5 @@ export async function linkEuVendorProduct(actor: ScopedActor, raw: z.input<typeo
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
+  await refreshSuspiciousLinksSafe(actor.accountId, { vendors: { id: vp.id } }, "eushipments_link");
 }

@@ -16,6 +16,7 @@ import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { applyFhbOrderView, fhbStornoBase, raiseAlertOnce } from "./apply";
 import { fhbClientForConnection } from "./connection";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * FHB read side (P2-02): GET/list calls only, so they run in every liveMode including READ_ONLY (the mode gates
@@ -144,7 +145,7 @@ async function upsertProductBatch(
         const match = sku ? (productBySku.get(sku) ?? null) : null;
         const existing = await tx.vendorProduct.findUnique({
           where: { connectionId_vendorId: { connectionId, vendorId: p.vendorId } },
-          select: { id: true, productId: true },
+          select: { id: true, productId: true, unlinkedAt: true },
         });
         const data = {
           vendorCode: p.vendorCode,
@@ -157,7 +158,11 @@ async function upsertProductBatch(
         const vp = existing
           ? await tx.vendorProduct.update({
               where: { id: existing.id },
-              data: { ...data, ...(!existing.productId && match ? { productId: match } : {}) },
+              data: {
+                ...data,
+                // Never re-link one a person unlinked (suspicious link).
+                ...(!existing.productId && !existing.unlinkedAt && match ? { productId: match } : {}),
+              },
               select: { id: true },
             })
           : await tx.vendorProduct.create({
@@ -202,6 +207,12 @@ export async function syncFhbProducts(ctx: SyncContext) {
     },
     PAGE_SIZE.products,
     (items) => upsertProducts(ctx, items, connection.skuPrefixRule),
+  );
+  // Warehouse names may have changed (a SKU reused for another product): re-check this warehouse's links.
+  await refreshSuspiciousLinksSafe(
+    ctx.accountId,
+    { vendors: { connectionId: ctx.connectionId } },
+    "fhb_products",
   );
   return { count };
 }
@@ -706,7 +717,14 @@ export async function linkVendorProductToSku(
       select: { id: true },
     });
     if (!product) return "no_product";
-    await tx.vendorProduct.update({ where: { id: vp.id }, data: { productId: product.id } });
-    return "linked";
+    await tx.vendorProduct.update({
+      where: { id: vp.id },
+      data: { productId: product.id, unlinkedAt: null },
+    });
+    return "linked" as const;
+  }).then(async (r) => {
+    if (r === "linked")
+      await refreshSuspiciousLinksSafe(accountId, { vendors: { id: vendorProductId } }, "fhb_link");
+    return r;
   });
 }

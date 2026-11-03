@@ -229,6 +229,22 @@ describe("euShipments read side (DB)", () => {
     await g.db.vendorProduct.update({ where: { id: vps[1]!.id }, data: { productId: master.id } });
   });
 
+  it("products: one a person unlinked (suspicious link) is never re-matched by SKU", async () => {
+    const vp = await g.db.vendorProduct.findUniqueOrThrow({
+      where: { connectionId_vendorId: { connectionId: g.connection.id, vendorId: "ref-test-54202" } },
+    });
+    const productId = vp.productId;
+    expect(productId).not.toBeNull();
+    await g.db.vendorProduct.update({
+      where: { id: vp.id },
+      data: { productId: null, unlinkedAt: new Date() },
+    });
+    const info = await syncEuProducts(g.accountId, g.connection.id, vendor(routes).deps);
+    expect(info.matched).toBe(0);
+    expect((await g.db.vendorProduct.findUniqueOrThrow({ where: { id: vp.id } })).productId).toBeNull();
+    await g.db.vendorProduct.update({ where: { id: vp.id }, data: { productId, unlinkedAt: null } });
+  });
+
   it("products gone from get-products are archived after the grace period, and come back", async () => {
     const later = new Date(Date.now() + 2 * 3600_000);
     const v = vendor({ "/fulfilment/get-products": () => json([products[0]]) });
@@ -251,6 +267,13 @@ describe("euShipments read side (DB)", () => {
       include: { stockLevel: true },
     });
     expect(vp.stockLevel).toMatchObject({ physical: 90, free: 90, sellable: 90, source: "POLL" });
+    // A product the warehouse does not list has 0 (not "no data"): every active product of the connection has a level.
+    const active = await g.db.vendorProduct.findMany({
+      where: { connectionId: g.connection.id, archived: false },
+      include: { stockLevel: true },
+    });
+    expect(active.every((p) => p.stockLevel)).toBe(true);
+    expect(active.filter((p) => p.id !== vp.id).every((p) => p.stockLevel!.free === 0)).toBe(true);
     // AVAIL_DATE "2026-11-02 06:00:00" read as Europe/Sofia
     expect(vp.stockLevel!.snapshotAt.toISOString()).toBe("2026-11-02T04:00:00.000Z");
     // the next snapshot without that product sets it to 0 and drops the old per-warehouse rows

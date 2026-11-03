@@ -1,6 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
+import { suspiciousItemIds } from "@/server/products/suspicious";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
@@ -153,7 +154,16 @@ export async function validateOrder(
   const order = await db.order.findUnique({
     where: { id: orderId },
     include: {
-      lines: { select: { title: true, sku: true, productId: true, quantity: true, unitPrice: true } },
+      lines: {
+        select: {
+          title: true,
+          sku: true,
+          productId: true,
+          quantity: true,
+          unitPrice: true,
+          variantLinkId: true,
+        },
+      },
       company: { select: { lineId: true } },
       // "Изпрати от" (P4-09): a person's warehouse choice replaces the routing decision until it is cleared.
       warehouseChoice: true,
@@ -220,6 +230,30 @@ export async function validateOrder(
       })
     : [];
 
+  // "Съмнителни връзки", live from the current names: the variant's link, or the shipping warehouse's product link.
+  const variantIds = order.lines.map((l) => l.variantLinkId).filter((x): x is string => !!x);
+  const productIds = order.lines.map((l) => l.productId).filter((x): x is string => !!x);
+  const suspicious =
+    variantIds.length || productIds.length
+      ? await suspiciousItemIds(accountId, {
+          variants: { id: { in: variantIds } },
+          vendors: {
+            productId: { in: productIds },
+            ...(connection ? { connectionId: connection.id } : {}),
+          },
+        })
+      : new Set<string>();
+  const suspiciousProducts = suspicious.size
+    ? new Set(
+        (
+          await db.vendorProduct.findMany({
+            where: { id: { in: [...suspicious] } },
+            select: { productId: true },
+          })
+        ).map((v) => v.productId),
+      )
+    : new Set<string | null>();
+
   const level = orderLevelFindings(
     {
       number: order.number,
@@ -235,7 +269,12 @@ export async function validateOrder(
       codLocalAmount: num(order.codLocalAmount),
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
-      lines: order.lines,
+      lines: order.lines.map((l) => ({
+        ...l,
+        suspiciousLink:
+          (!!l.variantLinkId && suspicious.has(l.variantLinkId)) ||
+          (!!l.productId && suspiciousProducts.has(l.productId)),
+      })),
     },
     {
       localCurrency: setting?.currency ?? null,

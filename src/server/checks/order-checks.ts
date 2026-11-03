@@ -33,7 +33,14 @@ export interface CheckOrder {
   codLocalAmount: number | null;
   codLocalCurrency: string | null;
   tags: string[];
-  lines: { title: string; sku: string | null; productId: string | null; quantity: number }[];
+  lines: {
+    title: string;
+    sku: string | null;
+    productId: string | null;
+    quantity: number;
+    /** "Съмнителни връзки": the line's store variant (or the shipping warehouse's product) names another product. */
+    suspiciousLink?: boolean;
+  }[];
 }
 
 export interface OrderCheckContext {
@@ -105,6 +112,20 @@ export function orderLevelFindings(o: CheckOrder, ctx: OrderCheckContext): Order
           `lines[${i}].product`,
           `„${l.sku ?? l.title}“ не е свързан с продукт (опашка „Несвързани“).`,
           `"${l.sku ?? l.title}" is not linked to a product (see the unmatched queue).`,
+        ),
+      );
+  });
+
+  // A link whose names disagree (SKU reused for another product): a person must look — never a hard block.
+  o.lines.forEach((l, i) => {
+    if (l.quantity > 0 && l.productId && l.suspiciousLink)
+      out.push(
+        f(
+          "order.line_name_mismatch",
+          "soft",
+          `lines[${i}].product`,
+          `„${l.sku ?? l.title}“: Името в магазина и в склада се различават — проверете връзката.`,
+          `"${l.sku ?? l.title}": The store and warehouse names differ — check the link.`,
         ),
       );
   });

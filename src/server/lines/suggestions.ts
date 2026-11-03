@@ -6,6 +6,7 @@ import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
 import { assertLineInScope, connectionPrefix, lineMembers, skuAfterPrefix, type ScopedActor } from "./lines";
+import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
  * Match suggestions inside one line (P5-00). SKU after prefix (exact, case-insensitive) is the only key — those
@@ -291,7 +292,8 @@ export async function linkItemInTx(
         id: itemId,
         ...(opts.expectProductId !== undefined ? { productId: opts.expectProductId } : {}),
       },
-      data: { productId },
+      // A person's link (suggestion, manual, import) clears an earlier "unlinked by person".
+      data: { productId, unlinkedAt: null },
     });
     return res.count === 1;
   }
@@ -358,6 +360,11 @@ export async function confirmSuggestion(
     return p;
   });
   await auditDecision(actor, "product.match_confirmed", input, { productId: product.id, sku: product.sku });
+  await refreshSuspiciousLinksSafe(
+    actor.accountId,
+    input.kind === "vendor" ? { vendors: { id: input.itemId } } : { variants: { id: input.itemId } },
+    "suggestion",
+  );
 }
 
 /** "Друго" with a SKU: link to another master of the line, and hide the rejected suggestion. */
@@ -382,6 +389,11 @@ export async function linkItemToSku(
     return p;
   });
   await auditDecision(actor, "product.match_other", input, { productId: product.id, sku: product.sku });
+  await refreshSuspiciousLinksSafe(
+    actor.accountId,
+    input.kind === "vendor" ? { vendors: { id: input.itemId } } : { variants: { id: input.itemId } },
+    "suggestion",
+  );
 }
 
 async function dismissInTx(

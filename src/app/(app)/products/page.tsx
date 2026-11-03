@@ -13,6 +13,8 @@ import { LineChip } from "@/components/ui/LineChip";
 import { lineCoverage } from "@/server/lines/coverage";
 import { lineProductWhere } from "@/server/lines/lines";
 import { CoverageSummary } from "./lines/coverage";
+import { listSuspiciousLinks } from "@/server/products/suspicious";
+import { SuspiciousLinksCard } from "./suspicious";
 
 export default async function ProductsPage() {
   const ctx = await requireAccountContext();
@@ -47,6 +49,7 @@ export default async function ProductsPage() {
   const coverage = await Promise.all(
     shownLines.map((l) => lineCoverage(ctx.accountId, l.id, ctx.companyScope)),
   );
+  const suspicious = await listSuspiciousLinks(ctx, { lineId: ctx.activeLineId });
   return (
     <>
       <PageHeader
@@ -87,6 +90,11 @@ export default async function ProductsPage() {
           </div>
         </Card>
       )}
+      <SuspiciousLinksCard
+        rows={suspicious.rows}
+        total={suspicious.total}
+        canDecide={can(ctx.role, "products.suspicious")}
+      />
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("unmatchedTitle", { count: unmatched.length })}</h2>
         {products.length === 0 && unmatched.length > 0 && (
