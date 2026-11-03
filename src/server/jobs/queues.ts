@@ -215,22 +215,25 @@ export const QUEUES = {
     name: "stock.shopifyInventory",
     options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 1800 },
   },
-  /** Every 30 min: queue the Shopify inventory read of every connected store. */
+  /** Every 10 min (owner request 2026-11-03): queue the Shopify inventory read of every connected store. */
   stockShopifyInventoryTick: {
     name: "stock.shopifyInventoryTick",
-    options: { retryLimit: 0, expireInSeconds: 600 },
-    cron: "5,35 * * * *",
+    options: { retryLimit: 0, expireInSeconds: 540 },
+    cron: "2,12,22,32,42,52 * * * *",
   },
   /** Send one inventory push (data: { accountId, pushId }); the store's push mode is checked in the sender. */
   stockInventoryPush: {
     name: "stock.inventoryPush",
     options: { ...retry, policy: "stately", retryLimit: 0, expireInSeconds: 900 },
   },
-  /** Every 30 min: re-arm crashed pushes, create pushes for DRY_RUN/LIVE stores, queue the due ones. */
+  /**
+   * Every 10 min (owner request 2026-11-03), 3 min after the Shopify read: re-arm crashed pushes, create pushes for
+   * DRY_RUN/LIVE stores, queue the due ones. At most one open push per store, so runs never pile up.
+   */
   stockInventoryPushSweep: {
     name: "stock.inventoryPushSweep",
-    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
-    cron: "20,50 * * * *",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },
+    cron: "5,15,25,35,45,55 * * * *",
   },
   /** Every 10 min: return cases from the warehouse mirrors, overdue alerts, support notifications (P6-01). */
   returnsSweep: {
