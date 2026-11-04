@@ -352,6 +352,22 @@ async function Board({
                               <div className={`${monoCls} ${sc.mismatch ? "font-semibold text-warn" : ""}`}>
                                 {sc.available}
                               </div>
+                              {sc.variants.length > 1 && (
+                                <div
+                                  className="text-[11px] text-muted"
+                                  title={sc.variants
+                                    .map(
+                                      (v) =>
+                                        `${v.title ?? "—"} · ${v.sku ?? "—"} · ${v.variantGid?.split("/").pop() ?? ""}: ${v.available}`,
+                                    )
+                                    .join("\n")}
+                                >
+                                  {t("shopifyListings", {
+                                    n: sc.variants.length,
+                                    each: sc.variants.map((v) => v.available).join(" + "),
+                                  })}
+                                </div>
+                              )}
                               {sc.mismatch && <div className="text-[11px] text-warn">{t("mismatch")}</div>}
                             </>
                           )}
