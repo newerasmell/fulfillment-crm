@@ -2002,6 +2002,8 @@ model InventoryPushLine {
   push InventoryPush @relation(fields: [accountId, pushId], references: [accountId, id], onDelete: Cascade)
 
   @@index([accountId, pushId])
+  /// The stock board's "latest push per variant × location" (why a Shopify number differs).
+  @@index([accountId, variantLinkId, locationGid])
 }
 
 /// "Активирай продуктите в тази локация" (owner request 2026-11-03): stock linked Shopify inventory items at a

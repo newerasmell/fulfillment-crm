@@ -2082,7 +2082,32 @@
         "failed": "failed"
       }
     },
-    "shopifyListings": "{n} Shopify listings: {each} (sum)"
+    "shopifyListings": "{n} Shopify listings: {each} (sum)",
+    "shopifyOtherLocations": "+{n} at other locations (not pushed)",
+    "why": {
+      "store": {
+        "push_off": "inventory push to this store is off",
+        "push_dry": "inventory push to this store is in dry run (nothing is written)",
+        "disconnected": "the store is not connected (check the connection)",
+        "paused": "sending is paused (kill switch)",
+        "no_location": "no active location mapped to a warehouse"
+      },
+      "loc": {
+        "unlinked": "the variant is not linked to a product",
+        "not_stocked_at_location": "not activated at this location",
+        "untracked": "Shopify does not track this variant's stock",
+        "not_at_warehouse": "the product is not at this warehouse — not pushed",
+        "no_snapshot": "no stock snapshot from the warehouse",
+        "stale_snapshot": "the warehouse snapshot is stale — not pushed",
+        "suspicious_link": "held: suspicious link — confirm or unlink",
+        "will_push": "{target} will be set with the next push (within 10 min)",
+        "applied_waiting_read": "{target} set ({at}) — shows after the next read (within 10 min)",
+        "overwritten": "{target} set ({at}), changed in Shopify afterwards — is another app writing stock?",
+        "failed": "the send failed ({at}): {error}",
+        "would_set": "the push would set {target}, but it is stopped (see above)"
+      },
+      "perLocation": "{name}: Shopify {shopify}, warehouse {sellable}"
+    }
   },
   "returns": {
     "title": "Returns",

@@ -1,7 +1,8 @@
-import type { ConnectionType, Prisma } from "@/generated/prisma/client";
+import { Prisma, type ConnectionType } from "@/generated/prisma/client";
 import type { CompanyScope } from "@/server/companies";
 import { companyFilter } from "@/server/companies";
-import { accountDb } from "@/server/db/client";
+import { accountDb, withSystemTransaction } from "@/server/db/client";
+import { globalOutboxPaused } from "@/server/outbox/outbox";
 import { lineProductWhere } from "@/server/lines/lines";
 import { STOCK_CONNECTION_TYPES } from "@/server/routing/engine";
 import {
@@ -14,6 +15,7 @@ import {
   type WarehouseCell,
 } from "./levels";
 import { getStockSettings, staleHoursFor, type StockSettingsValues } from "./settings";
+import { planInventoryPush, type SkipReason } from "./push";
 
 /**
  * "Продукти и наличности" (DESIGN.md screen 4, SPEC §6.3) per MASTER product of the selected product line: one
@@ -99,8 +101,35 @@ export interface ShopifyCell {
    * listings in the store sell the same physical product; `available` above is then their SUM, not one listing.
    */
   variants: { sku: string | null; title: string | null; variantGid: string | null; available: number }[];
+  /** Variant link ids behind this cell (for the "why does it differ" explanation). */
+  linkIds: string[];
+  /** Available at locations NOT mapped to a warehouse (e.g. an old app's location): in `available`, never pushed. */
+  unmappedAvailable: number;
   fetchedAt: Date | null;
   mismatch: boolean;
+  /** Filled for mismatching cells of the shown page only (explainMismatches). */
+  why: MismatchWhy | null;
+}
+
+/** Store-wide reasons a push does not run (as the sweep and the sender decide). */
+export type StoreBlock = "push_off" | "push_dry" | "disconnected" | "paused" | "no_location";
+
+/** Per variant × mapped location that differs: the push planner's own skip reason, or what the last push did. */
+export type LocationWhy =
+  | { kind: SkipReason }
+  /** Planned with these numbers: the next sweep (every 10 min) sends it. */
+  | { kind: "will_push"; target: number }
+  /** What the push would set, while a store-wide block keeps it from being sent. */
+  | { kind: "would_set"; target: number }
+  /** Applied after our last read of Shopify: the next inventory read (every 10 min) shows it. */
+  | { kind: "applied_waiting_read"; target: number; at: Date }
+  /** Applied, and a LATER Shopify read shows another number: something else wrote the quantity. */
+  | { kind: "overwritten"; target: number; at: Date }
+  | { kind: "failed"; at: Date; error: string | null };
+
+export interface MismatchWhy {
+  store: StoreBlock[];
+  locations: { locationName: string; sku: string | null; why: LocationWhy }[];
 }
 
 export interface BoardRow {
@@ -143,6 +172,7 @@ function productSelect(connectionIds: string[], storeIds: string[]) {
     variantLinks: {
       where: { storeId: { in: storeIds } },
       select: {
+        id: true,
         storeId: true,
         sku: true,
         title: true,
@@ -163,6 +193,8 @@ export function buildRow(
     settings: StockSettingsValues;
     /** storeId → (locationGid → connectionId) for mapped locations. */
     locationMap: Map<string, Map<string, string>>;
+    /** storeId → safety buffer the push subtracts (Shopify is compared with sellable − buffer). */
+    buffers?: Map<string, number>;
     now: Date;
   },
 ): BoardRow {
@@ -199,10 +231,14 @@ export function buildRow(
       available: null,
       mapped: [],
       variants: [],
+      linkIds: [],
+      unmappedAvailable: 0,
       fetchedAt: null,
       mismatch: false,
+      why: null,
     });
     const mapping = opts.locationMap.get(link.storeId) ?? new Map<string, string>();
+    cell.linkIds.push(link.id);
     const tracked = link.inventoryLevels.filter((l) => l.tracked);
     if (tracked.length)
       cell.variants.push({
@@ -222,13 +258,16 @@ export function buildRow(
           available: lvl.available,
           sellable: cells[connectionId]?.sellable ?? null,
         });
+      else cell.unmappedAvailable += lvl.available;
     }
   }
   for (const cell of Object.values(shopify)) {
     if (cell.available === null) continue;
+    const buffer = opts.buffers?.get(cell.storeId) ?? 0;
+    const expected = (sellable: number) => Math.max(0, sellable - buffer);
     cell.mismatch = cell.mapped.length
-      ? cell.mapped.some((m) => Math.abs(m.available - (m.sellable ?? 0)) > settings.shopifyThreshold)
-      : Math.abs(cell.available - totalSellable) > settings.shopifyThreshold;
+      ? cell.mapped.some((m) => Math.abs(m.available - expected(m.sellable ?? 0)) > settings.shopifyThreshold)
+      : Math.abs(cell.available - expected(totalSellable)) > settings.shopifyThreshold;
   }
   const sold = opts.sales.get(p.id) ?? 0;
   const left = daysLeft(totalSellable, sold, SALES_WINDOW_DAYS);
@@ -289,7 +328,8 @@ export function groupTesters<T extends { sku: string; isTester: boolean; parentS
 
 export async function locationMaps(accountId: string, storeIds: string[]) {
   const rows = await accountDb(accountId).storeLocation.findMany({
-    where: { storeId: { in: storeIds }, connectionId: { not: null } },
+    // Inactive locations are never pushed (planInventoryPush), so they are not compared either.
+    where: { storeId: { in: storeIds }, connectionId: { not: null }, isActive: true },
     select: { storeId: true, shopifyLocationGid: true, connectionId: true },
   });
   const out = new Map<string, Map<string, string>>();
@@ -342,8 +382,9 @@ export async function stockBoard(
     orderBy: { sku: "asc" },
     take: BOARD_MAX_PRODUCTS,
   });
+  const buffers = new Map(stores.map((s) => [s.id, s.inventoryBuffer]));
   const rows = products.map((p) =>
-    buildRow(p, { connections, reservations, sales, settings, locationMap: maps, now }),
+    buildRow(p, { connections, reservations, sales, settings, locationMap: maps, buffers, now }),
   );
   const counts = Object.fromEntries(
     BOARD_FILTERS.map((f) => [f, rows.filter((r) => matchesFilter(r, f)).length]),
@@ -357,6 +398,10 @@ export async function stockBoard(
   );
   const page = Math.max(1, opts.page ?? 1);
   const size = Math.min(BOARD_MAX_PRODUCTS, Math.max(1, opts.pageSize ?? BOARD_PAGE_SIZE));
+  const shown = sorted.slice((page - 1) * size, page * size);
+  // Only for the page on screen (a full report page of 5000 rows does not need it).
+  if (size <= BOARD_PAGE_SIZE)
+    await explainMismatches(ctx.accountId, shown, { threshold: settings.shopifyThreshold, buffers, now });
   return {
     connections,
     stores,
@@ -364,8 +409,148 @@ export async function stockBoard(
     counts,
     total: sorted.length,
     truncated: products.length >= BOARD_MAX_PRODUCTS,
-    rows: sorted.slice((page - 1) * size, page * size),
+    rows: shown,
   };
+}
+
+/**
+ * Fills `why` on every differing Shopify cell of these rows from the push planner itself (planInventoryPush, limited
+ * to these masters), so the board never states a reason the push does not use, plus the store-wide blocks and the
+ * latest push line per variant × location. Reads the local DB only.
+ */
+export async function explainMismatches(
+  accountId: string,
+  rows: BoardRow[],
+  opts: { threshold: number; buffers: Map<string, number>; now?: Date },
+) {
+  const now = opts.now ?? new Date();
+  const threshold = opts.threshold;
+  const byStore = new Map<string, { productIds: Set<string>; cells: ShopifyCell[] }>();
+  for (const r of rows)
+    for (const c of Object.values(r.shopify)) {
+      if (!c.mismatch) continue;
+      const e = byStore.get(c.storeId) ?? { productIds: new Set<string>(), cells: [] };
+      e.productIds.add(r.id);
+      e.cells.push(c);
+      byStore.set(c.storeId, e);
+    }
+  if (!byStore.size) return;
+  const db = accountDb(accountId);
+  const linkIds = [...new Set([...byStore.values()].flatMap((e) => e.cells.flatMap((c) => c.linkIds)))];
+  const [stores, latest] = await Promise.all([
+    db.store.findMany({
+      where: { id: { in: [...byStore.keys()] } },
+      select: {
+        id: true,
+        inventoryPushMode: true,
+        connectionStatus: true,
+        account: { select: { outboxPaused: true } },
+      },
+    }),
+    latestPushLines(accountId, linkIds),
+  ]);
+  for (const store of stores) {
+    const entry = byStore.get(store.id)!;
+    const plan = await planInventoryPush(accountId, store.id, now, { productIds: [...entry.productIds] });
+    const buffer = opts.buffers.get(store.id) ?? 0;
+    const expected = (sellable: number) => Math.max(0, sellable - buffer);
+    const blocks: StoreBlock[] = [];
+    if (store.inventoryPushMode === "DISABLED") blocks.push("push_off");
+    if (store.inventoryPushMode === "DRY_RUN") blocks.push("push_dry");
+    if ((store.connectionStatus as { ok?: boolean } | null)?.ok !== true) blocks.push("disconnected");
+    if (globalOutboxPaused() || store.account.outboxPaused) blocks.push("paused");
+    if (plan.mappedLocations === 0) blocks.push("no_location");
+    const key = (linkId: string, gid: string) => `${linkId}|${gid}`;
+    const lineOf = new Map(plan.lines.map((l) => [key(l.variantLinkId, l.locationGid), l]));
+    const skipOf = new Map(plan.skips.map((k) => [key(k.variantLinkId, k.locationGid), k]));
+    const gids = [...new Set([...plan.lines, ...plan.skips].map((x) => x.locationGid))];
+    for (const cell of entry.cells) {
+      const locations: MismatchWhy["locations"] = [];
+      for (const linkId of cell.linkIds)
+        for (const gid of gids) {
+          const sk = skipOf.get(key(linkId, gid));
+          const line = lineOf.get(key(linkId, gid));
+          const sku = cell.variants.length > 1 ? (sk?.sku ?? line?.sku ?? null) : null;
+          if (sk) {
+            // Only where this location is part of the difference: no level there, it differs, or the cell is
+            // compared as a total (no mapped level at all). A skip at a location that agrees is not a cause.
+            const here = cell.mapped.filter((m) => m.connectionId === sk.connectionId);
+            const relevant =
+              !cell.mapped.length ||
+              !here.length ||
+              here.some((m) => Math.abs(m.available - expected(m.sellable ?? 0)) > threshold);
+            if (relevant) locations.push({ locationName: sk.locationName, sku, why: { kind: sk.reason } });
+            continue;
+          }
+          if (!line || Math.abs(line.target - line.shopifyNow) <= threshold) continue; // agrees here
+          const last = latest.get(key(linkId, gid));
+          // A store-wide block (push off, dry run, disconnected, paused) means nothing is sent "next time".
+          let why: LocationWhy = blocks.length
+            ? { kind: "would_set", target: line.target }
+            : { kind: "will_push", target: line.target };
+          if (
+            last &&
+            (last.status === "applied" || last.status === "unchanged") &&
+            last.target === line.target
+          )
+            why =
+              line.shopifyFetchedAt > last.at
+                ? { kind: "overwritten", target: last.target, at: last.at }
+                : { kind: "applied_waiting_read", target: last.target, at: last.at };
+          else if (last && last.status === "failed") why = { kind: "failed", at: last.at, error: last.error };
+          else if (
+            last &&
+            last.pushStatus === "FAILED" &&
+            last.pushError &&
+            !last.pushError.startsWith("plan_expired")
+          )
+            why = { kind: "failed", at: last.at, error: last.pushError };
+          locations.push({ locationName: line.locationName, sku, why });
+        }
+      cell.why = { store: blocks, locations };
+    }
+  }
+}
+
+/** The newest push line per variant × location (one row each, newest push first). */
+async function latestPushLines(accountId: string, linkIds: string[]) {
+  const out = new Map<
+    string,
+    {
+      status: string;
+      target: number;
+      error: string | null;
+      pushStatus: string;
+      pushError: string | null;
+      at: Date;
+    }
+  >();
+  if (!linkIds.length) return out;
+  // Raw SQL (DISTINCT ON) runs only on the system client; it is scoped by the explicit accountId filter below.
+  const rows = await withSystemTransaction(
+    (tx) =>
+      tx.$queryRaw<
+        {
+          variantLinkId: string;
+          locationGid: string;
+          status: string;
+          target: number;
+          error: string | null;
+          pushStatus: string;
+          pushError: string | null;
+          at: Date;
+        }[]
+      >`
+      SELECT DISTINCT ON (l."variantLinkId", l."locationGid")
+        l."variantLinkId", l."locationGid", l.status, l.target, l.error,
+        p.status::text AS "pushStatus", p."lastError" AS "pushError", COALESCE(p."sentAt", p."createdAt") AS at
+      FROM "InventoryPushLine" l
+      JOIN "InventoryPush" p ON p."accountId" = l."accountId" AND p.id = l."pushId"
+      WHERE l."accountId" = ${accountId} AND l."variantLinkId" IN (${Prisma.join(linkIds)})
+      ORDER BY l."variantLinkId", l."locationGid", p."createdAt" DESC`,
+  );
+  for (const r of rows) out.set(`${r.variantLinkId}|${r.locationGid}`, r);
+  return out;
 }
 
 /** Right panel: codes, EAN history, stock per warehouse (euShipments per physical warehouse), Shopify, movements. */
@@ -414,7 +599,15 @@ export async function stockProductDetail(ctx: StockCtx, productId: string, now: 
   ]);
   const row = buildRow(
     { ...product, vendorProducts: product.vendorProducts.filter((v) => !v.archived) } as unknown as Loaded,
-    { connections, reservations, sales, settings, locationMap: maps, now },
+    {
+      connections,
+      reservations,
+      sales,
+      settings,
+      locationMap: maps,
+      buffers: new Map(stores.map((s) => [s.id, s.inventoryBuffer])),
+      now,
+    },
   );
   const vpIds = product.vendorProducts.map((v) => v.id);
   const [movements, euStock, inbound, shopifyLevels] = await Promise.all([

@@ -105,62 +105,63 @@ describe("pure helpers", () => {
 
   it("board row: Shopify at a mapped location is compared with that warehouse", () => {
     const now = new Date();
-    const row = buildRow(
-      {
-        id: "p1",
-        sku: "A",
-        name: "A",
-        isTester: false,
-        parentProductId: null,
-        archived: false,
-        parent: null,
-        eans: [],
-        vendorProducts: [
-          {
-            id: "vp1",
-            connectionId: "c1",
-            vendorId: "RA",
-            vendorCode: null,
-            raw: null,
-            stockLevel: {
-              id: "l",
-              accountId: "x",
-              vendorProductId: "vp1",
-              physical: 10,
-              free: 10,
-              reserved: 0,
-              sellable: 10,
-              snapshotAt: now,
-              source: "PUSH",
-            },
+    const p = {
+      id: "p1",
+      sku: "A",
+      name: "A",
+      isTester: false,
+      parentProductId: null,
+      archived: false,
+      parent: null,
+      eans: [],
+      vendorProducts: [
+        {
+          id: "vp1",
+          connectionId: "c1",
+          vendorId: "RA",
+          vendorCode: null,
+          raw: null,
+          stockLevel: {
+            id: "l",
+            accountId: "x",
+            vendorProductId: "vp1",
+            physical: 10,
+            free: 10,
+            reserved: 0,
+            sellable: 10,
+            snapshotAt: now,
+            source: "PUSH",
           },
-        ],
-        variantLinks: [
-          {
-            storeId: "s1",
-            sku: "V-1",
-            title: "Listing A",
-            shopifyVariantGid: "gid://shopify/ProductVariant/1",
-            inventoryLevels: [{ locationGid: "L1", available: 20, fetchedAt: now, tracked: true }],
-          },
-          {
-            storeId: "s1",
-            sku: "V-2",
-            title: "Listing B",
-            shopifyVariantGid: "gid://shopify/ProductVariant/2",
-            inventoryLevels: [{ locationGid: "L1", available: 7, fetchedAt: now, tracked: true }],
-          },
-        ],
-      },
-      {
-        connections: [{ id: "c1", type: "FHB_V3" }],
-        reservations: new Map([["c1:p1", 3]]),
-        sales: new Map([["p1", 60]]),
-        settings: DEFAULT_STOCK_SETTINGS,
-        locationMap: new Map([["s1", new Map([["L1", "c1"]])]]),
-        now,
-      },
-    );
+        },
+      ],
+      variantLinks: [
+        {
+          id: "vl1",
+          storeId: "s1",
+          sku: "V-1",
+          title: "Listing A",
+          shopifyVariantGid: "gid://shopify/ProductVariant/1",
+          inventoryLevels: [{ locationGid: "L1", available: 20, fetchedAt: now, tracked: true }],
+        },
+        {
+          id: "vl2",
+          storeId: "s1",
+          sku: "V-2",
+          title: "Listing B",
+          shopifyVariantGid: "gid://shopify/ProductVariant/2",
+          inventoryLevels: [{ locationGid: "L1", available: 7, fetchedAt: now, tracked: true }],
+        },
+      ],
+    } satisfies Parameters<typeof buildRow>[0];
+    const opts = {
+      connections: [{ id: "c1", type: "FHB_V3" as const }],
+      reservations: new Map([["c1:p1", 3]]),
+      sales: new Map([["p1", 60]]),
+      settings: DEFAULT_STOCK_SETTINGS,
+      locationMap: new Map([["s1", new Map([["L1", "c1"]])]]),
+      now,
+    };
+    const row = buildRow(p, opts);
     expect(row.cells.c1).toMatchObject({ physical: 10, free: 10, reserved: 3, sellable: 7, stale: false });
     // Two Shopify listings of the same product: the cell is their sum, and each listing is reported.
     expect(row.shopify.s1).toMatchObject({ available: 27, mismatch: true });
@@ -169,6 +170,102 @@ describe("pure helpers", () => {
       { sku: "V-2", title: "Listing B", variantGid: "gid://shopify/ProductVariant/2", available: 7 },
     ]);
     expect(row.flags).toMatchObject({ inStock: true, runningOut: true, shopifyMismatch: true });
+    expect(row.shopify.s1).toMatchObject({ linkIds: ["vl1", "vl2"], unmappedAvailable: 0 });
+  });
+
+  it("board row: the store buffer, unmapped locations and a mapped location that does not stock the variant", () => {
+    const now = new Date();
+    const base = {
+      id: "p2",
+      sku: "B",
+      name: "B",
+      isTester: false,
+      parentProductId: null,
+      archived: false,
+      parent: null,
+      eans: [],
+      vendorProducts: [
+        {
+          id: "vp2",
+          connectionId: "c1",
+          vendorId: "RB",
+          vendorCode: null,
+          raw: null,
+          stockLevel: {
+            id: "l2",
+            accountId: "x",
+            vendorProductId: "vp2",
+            physical: 10,
+            free: 10,
+            reserved: 0,
+            sellable: 10,
+            snapshotAt: now,
+            source: "PUSH",
+          },
+        },
+        {
+          id: "vp3",
+          connectionId: "c2",
+          vendorId: "EB",
+          vendorCode: null,
+          raw: null,
+          stockLevel: null,
+        },
+      ],
+      variantLinks: [
+        {
+          id: "vl3",
+          storeId: "s1",
+          sku: "B",
+          title: "B",
+          shopifyVariantGid: "gid://shopify/ProductVariant/3",
+          inventoryLevels: [
+            // Mapped to c1: 5 = 10 sellable − buffer 5, so it agrees.
+            { locationGid: "L1", available: 5, fetchedAt: now, tracked: true },
+            // An old app's location, not mapped: counted in the sum, never compared or pushed.
+            { locationGid: "OLD", available: 5, fetchedAt: now, tracked: true },
+          ],
+        },
+      ],
+    } satisfies Parameters<typeof buildRow>[0];
+    const row = buildRow(base, {
+      connections: [
+        { id: "c1", type: "FHB_V3" as const },
+        { id: "c2", type: "EUSHIPMENTS" as const },
+      ],
+      reservations: new Map(),
+      sales: new Map(),
+      settings: DEFAULT_STOCK_SETTINGS,
+      // L2 (the euShipments location) is mapped but the variant is not stocked there.
+      locationMap: new Map([
+        [
+          "s1",
+          new Map([
+            ["L1", "c1"],
+            ["L2", "c2"],
+          ]),
+        ],
+      ]),
+      buffers: new Map([["s1", 5]]),
+      now,
+    });
+    expect(row.shopify.s1).toMatchObject({
+      available: 10,
+      unmappedAvailable: 5,
+      mismatch: false,
+      why: null,
+    });
+    // Without the buffer the same 5 vs 10 is a difference (threshold 2).
+    expect(
+      buildRow(base, {
+        connections: [{ id: "c1", type: "FHB_V3" as const }],
+        reservations: new Map(),
+        sales: new Map(),
+        settings: DEFAULT_STOCK_SETTINGS,
+        locationMap: new Map([["s1", new Map([["L1", "c1"]])]]),
+        now,
+      }).shopify.s1!.mismatch,
+    ).toBe(true);
   });
 });
 
@@ -785,6 +882,137 @@ async function mapped(g: G, productId: string, connectionId: string, available: 
 
 const targetOf = async (g: G, gid: string) =>
   (await planInventoryPush(g.accountId, g.store.id)).lines.find((l) => l.locationGid === gid)?.target;
+
+describe("stock board explains a differing Shopify cell with the push planner's own reasons", () => {
+  const LOC_N = 8301;
+  it("store blocks, will push, applied (waiting for the read / overwritten), failed, skips", async () => {
+    const g = await group("why");
+    const now = new Date();
+    const a = await g.product("WHY-A");
+    await g.vp(g.fhb.id, a.id, "R-WHY-A", { physical: 10, free: 10 });
+    const { gid, link } = await mapped(g, a.id, g.fhb.id, 3, LOC_N);
+    // At the mapped warehouse only as a stale snapshot.
+    const stale = await g.product("WHY-S");
+    await g.vp(g.fhb.id, stale.id, "R-WHY-S", {
+      physical: 5,
+      free: 5,
+      snapshotAt: new Date(now.getTime() - 30 * 86_400_000),
+    });
+    const ls = await g.link(stale.id, LOC_N + 1, "SH-WHY-S");
+    // Only at the OTHER (unmapped) warehouse, yet stocked at the mapped location.
+    const other = await g.product("WHY-O");
+    await g.vp(g.eu.id, other.id, "EU-WHY-O", { physical: 6, free: 6 });
+    const lo = await g.link(other.id, LOC_N + 2, "SH-WHY-O");
+    for (const [l, n] of [
+      [ls, LOC_N + 1],
+      [lo, LOC_N + 2],
+    ] as const)
+      await g.db.shopifyInventoryLevel.create({
+        data: {
+          accountId: g.accountId,
+          storeId: g.store.id,
+          variantLinkId: l.id,
+          locationGid: gid,
+          inventoryItemGid: `gid://shopify/InventoryItem/${n}`,
+          available: 9,
+          fetchedAt: now,
+        },
+      });
+    const why = async (sku: string) =>
+      (await stockBoard(g.ctx, {})).rows.find((r) => r.sku === sku)!.shopify[g.store.id]!.why;
+
+    expect(await why("WHY-A")).toEqual({
+      store: ["push_off"],
+      // Push is off: what it WOULD set, never "within 10 min".
+      locations: [{ locationName: `L${LOC_N}`, sku: null, why: { kind: "would_set", target: 10 } }],
+    });
+    expect((await why("WHY-S"))!.locations[0]!.why).toEqual({ kind: "stale_snapshot" });
+    expect((await why("WHY-O"))!.locations[0]!.why).toEqual({ kind: "not_at_warehouse" });
+
+    await g.db.store.update({ where: { id: g.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const sentAt = new Date(now.getTime() + 60_000);
+    const push = (status: string, target: number, at: Date) =>
+      g.db.inventoryPush.create({
+        data: {
+          accountId: g.accountId,
+          storeId: g.store.id,
+          trigger: "cron",
+          status: "SENT",
+          buffer: 0,
+          sentAt: at,
+          createdAt: at,
+          lines: {
+            create: {
+              variantLinkId: link.id,
+              productId: a.id,
+              connectionId: g.fhb.id,
+              locationGid: gid,
+              inventoryItemGid: `gid://shopify/InventoryItem/${LOC_N}`,
+              sellable: target,
+              target,
+              shopifyBefore: 3,
+              status,
+            },
+          },
+        },
+      });
+    // An older failed line is superseded by the newest one.
+    await push("failed", 10, new Date(now.getTime() - 60_000));
+    expect((await why("WHY-A"))!.locations[0]!.why).toMatchObject({ kind: "failed" });
+    await push("applied", 10, sentAt);
+    // Applied after our last read of Shopify: not "overwritten", just not read back yet.
+    expect(await why("WHY-A")).toEqual({
+      store: [],
+      locations: [
+        {
+          locationName: `L${LOC_N}`,
+          sku: null,
+          why: { kind: "applied_waiting_read", target: 10, at: sentAt },
+        },
+      ],
+    });
+    // A later read still shows 3: something else wrote it.
+    await g.db.shopifyInventoryLevel.updateMany({
+      where: { variantLinkId: link.id },
+      data: { fetchedAt: new Date(sentAt.getTime() + 60_000) },
+    });
+    expect((await why("WHY-A"))!.locations[0]!.why).toEqual({ kind: "overwritten", target: 10, at: sentAt });
+    // Another account's newer push line with the same ids never leaks in (the raw query is scoped by account).
+    const o = await group("why-other");
+    await o.db.inventoryPush.create({
+      data: {
+        accountId: o.accountId,
+        storeId: o.store.id,
+        trigger: "cron",
+        status: "FAILED",
+        lastError: "other account",
+        buffer: 0,
+        createdAt: new Date(sentAt.getTime() + 120_000),
+        lines: {
+          create: {
+            variantLinkId: link.id,
+            connectionId: o.fhb.id,
+            locationGid: gid,
+            inventoryItemGid: "gid://shopify/InventoryItem/1",
+            sellable: 1,
+            target: 1,
+            status: "failed",
+            error: "other account",
+          },
+        },
+      },
+    });
+    expect((await why("WHY-A"))!.locations[0]!.why).toEqual({ kind: "overwritten", target: 10, at: sentAt });
+    // Disconnected store: a store-wide block.
+    await g.db.store.update({ where: { id: g.store.id }, data: { connectionStatus: { ok: false } } });
+    expect((await why("WHY-A"))!.store).toEqual(["disconnected"]);
+    // What already happened (the overwrite) is still reported next to the block.
+    expect((await why("WHY-A"))!.locations[0]!.why).toMatchObject({ kind: "overwritten" });
+    // No active mapped location: nothing is ever pushed to this store.
+    await g.db.storeLocation.updateMany({ where: { storeId: g.store.id }, data: { isActive: false } });
+    expect((await why("WHY-A"))!.store).toEqual(["disconnected", "no_location"]);
+  });
+});
 
 describe("reservations cover every order not inside the warehouse numbers yet", () => {
   it("an order in NEEDS_REVIEW (routed or not) lowers the push target", async () => {
