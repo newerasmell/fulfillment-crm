@@ -2103,7 +2103,8 @@
         "will_push": "{target} will be set with the next push (within 10 min)",
         "applied_waiting_read": "{target} set ({at}) — shows after the next read (within 10 min)",
         "overwritten": "{target} set ({at}), changed in Shopify afterwards — is another app writing stock?",
-        "failed": "the send failed ({at}): {error}"
+        "failed": "the send failed ({at}): {error}",
+        "would_set": "the push would set {target}, but it is stopped (see above)"
       },
       "perLocation": "{name}: Shopify {shopify}, warehouse {sellable}"
     }

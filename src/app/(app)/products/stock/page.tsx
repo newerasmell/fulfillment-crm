@@ -430,8 +430,8 @@ async function MismatchWhyHint({
     const w = l.why;
     const where = l.sku ? `${l.locationName} (${l.sku})` : l.locationName;
     const text =
-      w.kind === "will_push"
-        ? t("loc.will_push", { target: w.target })
+      w.kind === "will_push" || w.kind === "would_set"
+        ? t(`loc.${w.kind}`, { target: w.target })
         : w.kind === "applied_waiting_read"
           ? t("loc.applied_waiting_read", { target: w.target, at: at(w.at) })
           : w.kind === "overwritten"

@@ -95,6 +95,7 @@ export interface PlanLine {
 /** One variant × mapped location the plan does NOT push, with the reason (the stock board explains differences). */
 export interface PlanSkip {
   variantLinkId: string;
+  sku: string | null;
   locationGid: string;
   locationName: string;
   connectionId: string;
@@ -174,7 +175,7 @@ export async function planInventoryPush(
   };
   // Live from the current names (never a stale flag): a link whose names disagree is not pushed until confirmed.
   const suspicious = await suspiciousItemIds(accountId, {
-    variants: { storeId },
+    variants: { storeId, ...(opts.productIds ? { productId: { in: opts.productIds } } : {}) },
     vendors: { id: { in: vps.map((v) => v.id) } },
   });
   /**
@@ -190,10 +191,15 @@ export async function planInventoryPush(
       ),
     ].map(([gid, list]) => [gid, list.length]),
   );
-  const skip = (variantLinkId: string, loc: (typeof locations)[number], reason: SkipReason) => {
+  const skip = (
+    link: { id: string; sku: string | null },
+    loc: (typeof locations)[number],
+    reason: SkipReason,
+  ) => {
     skipped[reason]++;
     skips.push({
-      variantLinkId,
+      variantLinkId: link.id,
+      sku: link.sku,
       locationGid: loc.shopifyLocationGid,
       locationName: loc.name,
       connectionId: loc.connection!.id,
@@ -203,34 +209,34 @@ export async function planInventoryPush(
   for (const link of links) {
     for (const loc of locations) {
       if (!link.productId) {
-        skip(link.id, loc, "unlinked");
+        skip(link, loc, "unlinked");
         continue;
       }
       const level = link.inventoryLevels.find((l) => l.locationGid === loc.shopifyLocationGid);
       if (!level) {
-        skip(link.id, loc, "not_stocked_at_location");
+        skip(link, loc, "not_stocked_at_location");
         continue;
       }
       if (!level.tracked) {
-        skip(link.id, loc, "untracked");
+        skip(link, loc, "untracked");
         continue;
       }
       const c = loc.connection!;
       const vp = vpOf.get(reservationKey(c.id, link.productId));
       if (!vp) {
-        skip(link.id, loc, "not_at_warehouse");
+        skip(link, loc, "not_at_warehouse");
         continue;
       }
       if (suspicious.has(link.id) || suspicious.has(vp.id)) {
-        skip(link.id, loc, "suspicious_link");
+        skip(link, loc, "suspicious_link");
         continue;
       }
       if (!vp.stockLevel) {
-        skip(link.id, loc, "no_snapshot");
+        skip(link, loc, "no_snapshot");
         continue;
       }
       if (isStale(vp.stockLevel.snapshotAt, staleHoursFor(settings, c.type), now)) {
-        skip(link.id, loc, "stale_snapshot");
+        skip(link, loc, "stale_snapshot");
         continue;
       }
       const sellable = sellableOf(vp.stockLevel, reservations.get(reservationKey(c.id, link.productId)) ?? 0);

@@ -923,7 +923,8 @@ describe("stock board explains a differing Shopify cell with the push planner's 
 
     expect(await why("WHY-A")).toEqual({
       store: ["push_off"],
-      locations: [{ locationName: `L${LOC_N}`, sku: null, why: { kind: "will_push", target: 10 } }],
+      // Push is off: what it WOULD set, never "within 10 min".
+      locations: [{ locationName: `L${LOC_N}`, sku: null, why: { kind: "would_set", target: 10 } }],
     });
     expect((await why("WHY-S"))!.locations[0]!.why).toEqual({ kind: "stale_snapshot" });
     expect((await why("WHY-O"))!.locations[0]!.why).toEqual({ kind: "not_at_warehouse" });
@@ -976,9 +977,40 @@ describe("stock board explains a differing Shopify cell with the push planner's 
       data: { fetchedAt: new Date(sentAt.getTime() + 60_000) },
     });
     expect((await why("WHY-A"))!.locations[0]!.why).toEqual({ kind: "overwritten", target: 10, at: sentAt });
+    // Another account's newer push line with the same ids never leaks in (the raw query is scoped by account).
+    const o = await group("why-other");
+    await o.db.inventoryPush.create({
+      data: {
+        accountId: o.accountId,
+        storeId: o.store.id,
+        trigger: "cron",
+        status: "FAILED",
+        lastError: "other account",
+        buffer: 0,
+        createdAt: new Date(sentAt.getTime() + 120_000),
+        lines: {
+          create: {
+            variantLinkId: link.id,
+            connectionId: o.fhb.id,
+            locationGid: gid,
+            inventoryItemGid: "gid://shopify/InventoryItem/1",
+            sellable: 1,
+            target: 1,
+            status: "failed",
+            error: "other account",
+          },
+        },
+      },
+    });
+    expect((await why("WHY-A"))!.locations[0]!.why).toEqual({ kind: "overwritten", target: 10, at: sentAt });
     // Disconnected store: a store-wide block.
     await g.db.store.update({ where: { id: g.store.id }, data: { connectionStatus: { ok: false } } });
     expect((await why("WHY-A"))!.store).toEqual(["disconnected"]);
+    // What already happened (the overwrite) is still reported next to the block.
+    expect((await why("WHY-A"))!.locations[0]!.why).toMatchObject({ kind: "overwritten" });
+    // No active mapped location: nothing is ever pushed to this store.
+    await g.db.storeLocation.updateMany({ where: { storeId: g.store.id }, data: { isActive: false } });
+    expect((await why("WHY-A"))!.store).toEqual(["disconnected", "no_location"]);
   });
 });
 

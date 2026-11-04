@@ -119,6 +119,8 @@ export type LocationWhy =
   | { kind: SkipReason }
   /** Planned with these numbers: the next sweep (every 10 min) sends it. */
   | { kind: "will_push"; target: number }
+  /** What the push would set, while a store-wide block keeps it from being sent. */
+  | { kind: "would_set"; target: number }
   /** Applied after our last read of Shopify: the next inventory read (every 10 min) shows it. */
   | { kind: "applied_waiting_read"; target: number; at: Date }
   /** Applied, and a LATER Shopify read shows another number: something else wrote the quantity. */
@@ -398,7 +400,8 @@ export async function stockBoard(
   const size = Math.min(BOARD_MAX_PRODUCTS, Math.max(1, opts.pageSize ?? BOARD_PAGE_SIZE));
   const shown = sorted.slice((page - 1) * size, page * size);
   // Only for the page on screen (a full report page of 5000 rows does not need it).
-  if (size <= BOARD_PAGE_SIZE) await explainMismatches(ctx.accountId, shown, now);
+  if (size <= BOARD_PAGE_SIZE)
+    await explainMismatches(ctx.accountId, shown, { threshold: settings.shopifyThreshold, buffers, now });
   return {
     connections,
     stores,
@@ -415,7 +418,13 @@ export async function stockBoard(
  * to these masters), so the board never states a reason the push does not use, plus the store-wide blocks and the
  * latest push line per variant × location. Reads the local DB only.
  */
-export async function explainMismatches(accountId: string, rows: BoardRow[], now: Date = new Date()) {
+export async function explainMismatches(
+  accountId: string,
+  rows: BoardRow[],
+  opts: { threshold: number; buffers: Map<string, number>; now?: Date },
+) {
+  const now = opts.now ?? new Date();
+  const threshold = opts.threshold;
   const byStore = new Map<string, { productIds: Set<string>; cells: ShopifyCell[] }>();
   for (const r of rows)
     for (const c of Object.values(r.shopify)) {
@@ -443,6 +452,8 @@ export async function explainMismatches(accountId: string, rows: BoardRow[], now
   for (const store of stores) {
     const entry = byStore.get(store.id)!;
     const plan = await planInventoryPush(accountId, store.id, now, { productIds: [...entry.productIds] });
+    const buffer = opts.buffers.get(store.id) ?? 0;
+    const expected = (sellable: number) => Math.max(0, sellable - buffer);
     const blocks: StoreBlock[] = [];
     if (store.inventoryPushMode === "DISABLED") blocks.push("push_off");
     if (store.inventoryPushMode === "DRY_RUN") blocks.push("push_dry");
@@ -457,19 +468,26 @@ export async function explainMismatches(accountId: string, rows: BoardRow[], now
       const locations: MismatchWhy["locations"] = [];
       for (const linkId of cell.linkIds)
         for (const gid of gids) {
-          const sku =
-            cell.variants.length > 1
-              ? (plan.lines.find((l) => l.variantLinkId === linkId)?.sku ?? null)
-              : null;
           const sk = skipOf.get(key(linkId, gid));
+          const line = lineOf.get(key(linkId, gid));
+          const sku = cell.variants.length > 1 ? (sk?.sku ?? line?.sku ?? null) : null;
           if (sk) {
-            locations.push({ locationName: sk.locationName, sku, why: { kind: sk.reason } });
+            // Only where this location is part of the difference: no level there, it differs, or the cell is
+            // compared as a total (no mapped level at all). A skip at a location that agrees is not a cause.
+            const here = cell.mapped.filter((m) => m.connectionId === sk.connectionId);
+            const relevant =
+              !cell.mapped.length ||
+              !here.length ||
+              here.some((m) => Math.abs(m.available - expected(m.sellable ?? 0)) > threshold);
+            if (relevant) locations.push({ locationName: sk.locationName, sku, why: { kind: sk.reason } });
             continue;
           }
-          const line = lineOf.get(key(linkId, gid));
-          if (!line || line.target === line.shopifyNow) continue; // agrees at this location
+          if (!line || Math.abs(line.target - line.shopifyNow) <= threshold) continue; // agrees here
           const last = latest.get(key(linkId, gid));
-          let why: LocationWhy = { kind: "will_push", target: line.target };
+          // A store-wide block (push off, dry run, disconnected, paused) means nothing is sent "next time".
+          let why: LocationWhy = blocks.length
+            ? { kind: "would_set", target: line.target }
+            : { kind: "will_push", target: line.target };
           if (
             last &&
             (last.status === "applied" || last.status === "unchanged") &&

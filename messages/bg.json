@@ -2103,7 +2103,8 @@
         "will_push": "ще се зададе {target} при следващото изпращане (до 10 мин)",
         "applied_waiting_read": "зададено {target} ({at}) — ще се види при следващото четене (до 10 мин)",
         "overwritten": "зададено {target} ({at}), после е сменено в Shopify — друго приложение ли пише наличностите?",
-        "failed": "изпращането не мина ({at}): {error}"
+        "failed": "изпращането не мина ({at}): {error}",
+        "would_set": "изпращането би задало {target}, но е спряно (виж горе)"
       },
       "perLocation": "{name}: Shopify {shopify}, в склада {sellable}"
     }
