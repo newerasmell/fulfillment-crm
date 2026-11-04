@@ -88,10 +88,27 @@ export interface PlanLine {
   target: number;
   /** Shopify available from the mirror (the sender reads it again right before sending). */
   shopifyNow: number;
+  /** When that mirror value was read from Shopify. */
+  shopifyFetchedAt: Date;
+}
+
+/** One variant × mapped location the plan does NOT push, with the reason (the stock board explains differences). */
+export interface PlanSkip {
+  variantLinkId: string;
+  locationGid: string;
+  locationName: string;
+  connectionId: string;
+  reason: SkipReason;
 }
 
 /** What a push of this store would set now, from the local mirrors (the dry-run preview). */
-export async function planInventoryPush(accountId: string, storeId: string, now: Date = new Date()) {
+export async function planInventoryPush(
+  accountId: string,
+  storeId: string,
+  now: Date = new Date(),
+  /** Only these masters' variants (the stock board explaining one page); default the whole store. */
+  opts: { productIds?: string[] } = {},
+) {
   const db = accountDb(accountId);
   const store = await db.store.findUnique({
     where: { id: storeId },
@@ -110,14 +127,20 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       },
     }),
     db.storeVariantLink.findMany({
-      where: { storeId },
+      where: { storeId, ...(opts.productIds ? { productId: { in: opts.productIds } } : {}) },
       select: {
         id: true,
         sku: true,
         title: true,
         productId: true,
         inventoryLevels: {
-          select: { locationGid: true, inventoryItemGid: true, tracked: true, available: true },
+          select: {
+            locationGid: true,
+            inventoryItemGid: true,
+            tracked: true,
+            available: true,
+            fetchedAt: true,
+          },
         },
       },
       orderBy: { sku: "asc" },
@@ -139,6 +162,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     if (!vpOf.has(k)) vpOf.set(k, v);
   }
   const lines: PlanLine[] = [];
+  const skips: PlanSkip[] = [];
   const skipped: Record<SkipReason, number> = {
     unlinked: 0,
     not_stocked_at_location: 0,
@@ -166,37 +190,47 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
       ),
     ].map(([gid, list]) => [gid, list.length]),
   );
+  const skip = (variantLinkId: string, loc: (typeof locations)[number], reason: SkipReason) => {
+    skipped[reason]++;
+    skips.push({
+      variantLinkId,
+      locationGid: loc.shopifyLocationGid,
+      locationName: loc.name,
+      connectionId: loc.connection!.id,
+      reason,
+    });
+  };
   for (const link of links) {
     for (const loc of locations) {
       if (!link.productId) {
-        skipped.unlinked++;
+        skip(link.id, loc, "unlinked");
         continue;
       }
       const level = link.inventoryLevels.find((l) => l.locationGid === loc.shopifyLocationGid);
       if (!level) {
-        skipped.not_stocked_at_location++;
+        skip(link.id, loc, "not_stocked_at_location");
         continue;
       }
       if (!level.tracked) {
-        skipped.untracked++;
+        skip(link.id, loc, "untracked");
         continue;
       }
       const c = loc.connection!;
       const vp = vpOf.get(reservationKey(c.id, link.productId));
       if (!vp) {
-        skipped.not_at_warehouse++;
+        skip(link.id, loc, "not_at_warehouse");
         continue;
       }
       if (suspicious.has(link.id) || suspicious.has(vp.id)) {
-        skipped.suspicious_link++;
+        skip(link.id, loc, "suspicious_link");
         continue;
       }
       if (!vp.stockLevel) {
-        skipped.no_snapshot++;
+        skip(link.id, loc, "no_snapshot");
         continue;
       }
       if (isStale(vp.stockLevel.snapshotAt, staleHoursFor(settings, c.type), now)) {
-        skipped.stale_snapshot++;
+        skip(link.id, loc, "stale_snapshot");
         continue;
       }
       const sellable = sellableOf(vp.stockLevel, reservations.get(reservationKey(c.id, link.productId)) ?? 0);
@@ -212,6 +246,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
         sellable,
         target: Math.max(0, sellable - store.inventoryBuffer),
         shopifyNow: level.available,
+        shopifyFetchedAt: level.fetchedAt,
       });
     }
   }
@@ -221,6 +256,7 @@ export async function planInventoryPush(accountId: string, storeId: string, now:
     lines,
     changes: lines.filter((l) => l.target !== l.shopifyNow),
     skipped,
+    skips,
     notStockedByLocation,
   };
 }

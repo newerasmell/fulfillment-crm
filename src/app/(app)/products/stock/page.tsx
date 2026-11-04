@@ -17,6 +17,7 @@ import {
   type BoardFilter,
   type BoardRow,
   type BoardView,
+  type MismatchWhy,
 } from "@/server/stock/board";
 import { STOCK_ALERT_KINDS } from "@/server/stock/discrepancies";
 import { INBOUND_ALERT_KINDS } from "@/server/stock/inbound";
@@ -368,7 +369,22 @@ async function Board({
                                   })}
                                 </div>
                               )}
+                              {sc.unmappedAvailable > 0 && sc.mapped.length > 0 && (
+                                <div className="text-[11px] text-muted">
+                                  {t("shopifyOtherLocations", { n: sc.unmappedAvailable })}
+                                </div>
+                              )}
                               {sc.mismatch && <div className="text-[11px] text-warn">{t("mismatch")}</div>}
+                              {sc.mismatch && (
+                                <MismatchWhyHint
+                                  why={sc.why}
+                                  mapped={sc.mapped.map((m) => ({
+                                    name: board.connections.find((c) => c.id === m.connectionId)?.name ?? "—",
+                                    available: m.available,
+                                    sellable: m.sellable,
+                                  }))}
+                                />
+                              )}
                             </>
                           )}
                         </td>
@@ -393,6 +409,57 @@ async function Board({
           )}
         </Card>
       </aside>
+    </div>
+  );
+}
+
+/** Why a differing Shopify cell is not corrected by the push: the planner's own reasons, one short line each. */
+async function MismatchWhyHint({
+  why,
+  mapped,
+}: {
+  why: MismatchWhy | null;
+  mapped: { name: string; available: number; sellable: number | null }[];
+}) {
+  if (!why) return null;
+  const t = await getTranslations("stock.why");
+  const format = await getFormatter();
+  const at = (d: Date) => format.dateTime(d, { dateStyle: "short", timeStyle: "short" });
+  const lines: React.ReactNode[] = why.store.map((b) => t(`store.${b}`));
+  for (const l of why.locations) {
+    const w = l.why;
+    const where = l.sku ? `${l.locationName} (${l.sku})` : l.locationName;
+    const text =
+      w.kind === "will_push"
+        ? t("loc.will_push", { target: w.target })
+        : w.kind === "applied_waiting_read"
+          ? t("loc.applied_waiting_read", { target: w.target, at: at(w.at) })
+          : w.kind === "overwritten"
+            ? t("loc.overwritten", { target: w.target, at: at(w.at) })
+            : w.kind === "failed"
+              ? t("loc.failed", { at: at(w.at), error: w.error ?? "—" })
+              : t(`loc.${w.kind}`);
+    lines.push(
+      w.kind === "suspicious_link" ? (
+        <Link href="/products#suspicious-links" className="underline">
+          {`${where}: ${text}`}
+        </Link>
+      ) : (
+        `${where}: ${text}`
+      ),
+    );
+  }
+  if (!lines.length) return null;
+  return (
+    <div
+      className="ml-auto max-w-[16rem] text-[11px] text-muted"
+      title={mapped
+        .map((m) => t("perLocation", { name: m.name, shopify: m.available, sellable: m.sellable ?? 0 }))
+        .join("\n")}
+    >
+      {lines.map((r, i) => (
+        <div key={i}>{r}</div>
+      ))}
     </div>
   );
 }
