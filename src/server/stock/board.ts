@@ -98,7 +98,7 @@ export interface ShopifyCell {
    * One entry per Shopify variant linked to this product (sum over its locations). More than one = several
    * listings in the store sell the same physical product; `available` above is then their SUM, not one listing.
    */
-  variants: { sku: string | null; available: number }[];
+  variants: { sku: string | null; title: string | null; variantGid: string | null; available: number }[];
   fetchedAt: Date | null;
   mismatch: boolean;
 }
@@ -145,6 +145,8 @@ function productSelect(connectionIds: string[], storeIds: string[]) {
       select: {
         storeId: true,
         sku: true,
+        title: true,
+        shopifyVariantGid: true,
         inventoryLevels: { select: { locationGid: true, available: true, fetchedAt: true, tracked: true } },
       },
     },
@@ -203,7 +205,12 @@ export function buildRow(
     const mapping = opts.locationMap.get(link.storeId) ?? new Map<string, string>();
     const tracked = link.inventoryLevels.filter((l) => l.tracked);
     if (tracked.length)
-      cell.variants.push({ sku: link.sku ?? null, available: tracked.reduce((a, l) => a + l.available, 0) });
+      cell.variants.push({
+        sku: link.sku ?? null,
+        title: link.title ?? null,
+        variantGid: link.shopifyVariantGid ?? null,
+        available: tracked.reduce((a, l) => a + l.available, 0),
+      });
     for (const lvl of link.inventoryLevels) {
       if (!lvl.tracked) continue;
       cell.available = (cell.available ?? 0) + lvl.available;

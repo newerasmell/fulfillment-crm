@@ -355,7 +355,12 @@ async function Board({
                               {sc.variants.length > 1 && (
                                 <div
                                   className="text-[11px] text-muted"
-                                  title={sc.variants.map((v) => `${v.sku ?? "—"}: ${v.available}`).join("\n")}
+                                  title={sc.variants
+                                    .map(
+                                      (v) =>
+                                        `${v.title ?? "—"} · ${v.sku ?? "—"} · ${v.variantGid?.split("/").pop() ?? ""}: ${v.available}`,
+                                    )
+                                    .join("\n")}
                                 >
                                   {t("shopifyListings", {
                                     n: sc.variants.length,

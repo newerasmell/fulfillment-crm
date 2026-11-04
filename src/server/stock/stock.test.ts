@@ -139,11 +139,15 @@ describe("pure helpers", () => {
           {
             storeId: "s1",
             sku: "V-1",
+            title: "Listing A",
+            shopifyVariantGid: "gid://shopify/ProductVariant/1",
             inventoryLevels: [{ locationGid: "L1", available: 20, fetchedAt: now, tracked: true }],
           },
           {
             storeId: "s1",
             sku: "V-2",
+            title: "Listing B",
+            shopifyVariantGid: "gid://shopify/ProductVariant/2",
             inventoryLevels: [{ locationGid: "L1", available: 7, fetchedAt: now, tracked: true }],
           },
         ],
@@ -161,8 +165,8 @@ describe("pure helpers", () => {
     // Two Shopify listings of the same product: the cell is their sum, and each listing is reported.
     expect(row.shopify.s1).toMatchObject({ available: 27, mismatch: true });
     expect(row.shopify.s1!.variants).toEqual([
-      { sku: "V-1", available: 20 },
-      { sku: "V-2", available: 7 },
+      { sku: "V-1", title: "Listing A", variantGid: "gid://shopify/ProductVariant/1", available: 20 },
+      { sku: "V-2", title: "Listing B", variantGid: "gid://shopify/ProductVariant/2", available: 7 },
     ]);
     expect(row.flags).toMatchObject({ inStock: true, runningOut: true, shopifyMismatch: true });
   });
