@@ -2081,7 +2081,8 @@
         "already": "вече активен",
         "failed": "грешка"
       }
-    }
+    },
+    "shopifyListings": "{n} обяви в Shopify: {each} (сбор)"
   },
   "returns": {
     "title": "Връщания",

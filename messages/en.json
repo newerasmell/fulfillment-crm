@@ -2081,7 +2081,8 @@
         "already": "already active",
         "failed": "failed"
       }
-    }
+    },
+    "shopifyListings": "{n} Shopify listings: {each} (sum)"
   },
   "returns": {
     "title": "Returns",
