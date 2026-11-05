@@ -6,6 +6,7 @@ import {
   createEuConnectionAction,
   linkEuProductAction,
   replaceEuTokenAction,
+  saveCountryCourierAction,
   saveEuSettingsAction,
   setEuModeAction,
   syncEuCitiesAction,
@@ -374,6 +375,72 @@ export function LinkEuProduct({
         {t("link")}
       </button>
       <Feedback state={state} okKey="linked" />
+    </form>
+  );
+}
+
+/** One destination country: its default courier (and optional service) for create-order. */
+export function CountryCourierForm({
+  id,
+  country,
+  couriers,
+  courierId,
+  serviceName,
+  services,
+  disabled,
+}: {
+  id: string;
+  country: string;
+  couriers: { courierId: number; name: string; toAddress: boolean; toOffice: boolean }[];
+  courierId: number | null;
+  serviceName: string | null;
+  services: readonly string[];
+  disabled: boolean;
+}) {
+  const t = useTranslations("eushipments.countryCourier");
+  const [state, action, pending] = useActionState(saveCountryCourierAction.bind(null, id), undefined);
+  return (
+    <form
+      action={action}
+      className="flex flex-wrap items-center gap-2"
+      data-testid={`country-courier-${country}`}
+    >
+      <input type="hidden" name="country" value={country} />
+      <select
+        name="courierId"
+        defaultValue={courierId ?? ""}
+        disabled={disabled}
+        className={`${inputCls} min-w-56`}
+        aria-label={t("courier", { country })}
+      >
+        <option value="">{t("none")}</option>
+        {couriers.map((c) => (
+          <option key={c.courierId} value={c.courierId}>
+            {c.name} · {c.courierId}
+            {c.toAddress ? "" : ` · ${t("officeOnly")}`}
+          </option>
+        ))}
+      </select>
+      <select
+        name="serviceName"
+        defaultValue={serviceName ?? ""}
+        disabled={disabled}
+        className={inputCls}
+        aria-label={t("service", { country })}
+      >
+        <option value="">{t("serviceAuto")}</option>
+        {services.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      {!disabled && (
+        <button type="submit" disabled={pending} className={ghostButtonCls}>
+          {t("save")}
+        </button>
+      )}
+      <Feedback state={state} />
     </form>
   );
 }

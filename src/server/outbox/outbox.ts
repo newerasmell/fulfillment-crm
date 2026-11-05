@@ -12,6 +12,9 @@ import {
   withSystemTransaction,
 } from "@/server/db/client";
 import { logger } from "@/lib/logger";
+import { paymentUnclear } from "@/server/checks/order-checks";
+import { transition } from "@/server/pipeline";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { scrubText } from "@/lib/scrub";
 import { evaluateGate, isRaise } from "./gate";
 import type { OutboundCall, OutboundTransport, TransportResolver } from "./transport";
@@ -137,6 +140,58 @@ async function createUncertainTask(accountId: string, requestId: string, operati
   });
 }
 
+/** Create-order operations that hand a shipment (and its COD) to a warehouse. */
+const CREATE_ORDER_OPS = new Set(["fhb.order.create", "eushipments.createOrder"]);
+
+async function createOrderPaymentUnclear(
+  tx: Prisma.TransactionClient,
+  req: { operation: string; fulfillmentId: string | null },
+) {
+  if (!CREATE_ORDER_OPS.has(req.operation) || !req.fulfillmentId) return null;
+  const f = await tx.fulfillment.findUnique({
+    where: { id: req.fulfillmentId },
+    select: { order: { select: { source: true, paymentMethod: true, currency: true, raw: true } } },
+  });
+  if (!f || f.order.source !== "SHOPIFY") return null;
+  return paymentUnclear({
+    paymentMethod: f.order.paymentMethod,
+    currency: f.order.currency,
+    shopifyPayment: shopifyPaymentOf(f.order.raw),
+  });
+}
+
+async function failUnclearPayment(
+  tx: Prisma.TransactionClient,
+  req: { accountId: string; fulfillmentId: string | null },
+  unclear: { bg: string; en: string },
+) {
+  const f = await tx.fulfillment.findUnique({ where: { id: req.fulfillmentId! } });
+  if (!f) return;
+  if (["QUEUED", "SUBMITTING"].includes(f.status))
+    await tx.fulfillment.update({ where: { id: f.id }, data: { status: "SUBMIT_FAILED" } });
+  await transition(tx, {
+    orderId: f.orderId,
+    to: "SUBMIT_FAILED",
+    cause: "submit_failed",
+    actor: { kind: "system" },
+    source: "outbox.payment_guard",
+    reason: "payment_unclear",
+    mode: "follow",
+  });
+  await tx.alert.create({
+    data: {
+      accountId: req.accountId,
+      kind: "order_payment_unclear",
+      isTask: true,
+      severity: "CRITICAL",
+      title: `Not sent: ${f.externalId} is prepaid in the CRM but money is still owed in Shopify`,
+      body: unclear.en,
+      entityType: "Order",
+      entityId: f.orderId,
+    },
+  });
+}
+
 /**
  * Processes one outbound request: evaluates the liveMode gate with the connection's CURRENT mode and,
  * if allowed, sends it. Safe to call concurrently and repeatedly (row locks + status machine).
@@ -208,6 +263,20 @@ export async function processOutbound(
       });
       return { kind: "done" as const, status };
     };
+
+    // Last line before a warehouse gets a create-order: a Shopify order recorded PREPAID with money still owed (an
+    // unknown custom COD method) is never sent — even one queued before the order checks knew this rule.
+    if (
+      decision.action === "send" ||
+      decision.action === "send_test_mode" ||
+      decision.action === "record_dry_run"
+    ) {
+      const unclear = await createOrderPaymentUnclear(tx, req);
+      if (unclear) {
+        await failUnclearPayment(tx, req, unclear);
+        return finish("REFUSED", "payment_unclear");
+      }
+    }
 
     switch (decision.action) {
       case "pause":

@@ -1,3 +1,5 @@
+import { paymentUnclear } from "@/server/checks/order-checks";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { z } from "zod";
 import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import { Prisma, type Fulfillment, type OutboundStatus } from "@/generated/prisma/client";
@@ -323,6 +325,97 @@ type EuPreflightOrder = Prisma.OrderGetPayload<{
  * currency, stock, the vendor validators) plus the built body. Reads only; no permission or scope check —
  * the callers do that (queueEuOrder, and the validator engine's preview via previewEuOrderFindings).
  */
+/**
+ * courierId / serviceName for one order: an explicit one from the caller, else the connection's default for the
+ * destination country (Куриери → "Куриер по подразбиране"). When the account has SEVERAL couriers for the country
+ * (couriers mirror) and none is chosen, euShipments refuses create-order ("Please provide a courier ID") — that is
+ * caught here as a block before anything is sent. A chosen courier missing from a non-empty mirror is a block too.
+ */
+export async function courierFor(
+  accountId: string,
+  connectionId: string,
+  country: string | null,
+  input: { courierId?: number; serviceName?: (typeof SERVICE_NAMES)[number]; officeId?: number },
+) {
+  const db = accountDb(accountId);
+  const findings: Finding[] = [];
+  const preset = country
+    ? await db.eushipmentsCountryCourier.findUnique({
+        where: { accountId_connectionId_country: { accountId, connectionId, country } },
+      })
+    : null;
+  const courierId = input.courierId ?? preset?.courierId ?? undefined;
+  const presetService = (SERVICE_NAMES as readonly string[]).includes(preset?.serviceName ?? "")
+    ? (preset!.serviceName as (typeof SERVICE_NAMES)[number])
+    : undefined;
+  const serviceName = input.serviceName ?? (input.courierId ? undefined : presetService);
+  const mirror = await countryCouriers(accountId, connectionId, country);
+  if (!courierId && mirror.length > 1)
+    findings.push(
+      block(
+        "courier_choice_missing",
+        "courierId",
+        `За ${country} има ${mirror.length} куриера в euShipments — изберете куриер по подразбиране (Складове → euShipments → Куриери).`,
+        `There are ${mirror.length} euShipments couriers for ${country} — choose a default courier (Warehouses → euShipments → Couriers).`,
+      ),
+    );
+  if (courierId) {
+    const all = await db.eushipmentsCourier.count({ where: { connectionId } });
+    const known = await db.eushipmentsCourier.findFirst({ where: { connectionId, courierId } });
+    if (known && mirror.length && !mirror.some((c) => c.courierId === courierId))
+      findings.push(
+        block(
+          "courier_wrong_country",
+          "courierId",
+          `Куриер „${known.name}“ не работи в ${country} — изберете куриер за тази държава.`,
+          `The courier "${known.name}" does not serve ${country} — choose a courier for this country.`,
+        ),
+      );
+    if (known && !known.toAddress && !input.officeId)
+      findings.push(
+        block(
+          "courier_office_only",
+          "courierId",
+          `Куриер „${known.name}“ доставя само до офис, а поръчката е до адрес.`,
+          `The courier "${known.name}" delivers to offices only, and this order goes to an address.`,
+        ),
+      );
+    if (all > 0 && !known)
+      findings.push(
+        block(
+          "courier_unknown",
+          "courierId",
+          `Куриер ${courierId} не е сред куриерите на тази връзка — изберете друг.`,
+          `Courier ${courierId} is not one of this connection's couriers — choose another one.`,
+        ),
+      );
+  }
+  return { courierId, serviceName, findings };
+}
+
+/**
+ * Couriers of the mirror that serve an ISO country: the couriers web service names the country ("Greece"), the
+ * countries mirror maps it to ISO. Unknown mapping → [] (nothing is assumed).
+ */
+export async function countryCouriers(accountId: string, connectionId: string, iso: string | null) {
+  if (!iso) return [];
+  const db = accountDb(accountId);
+  const countries = await db.eushipmentsCountry.findMany({
+    where: { connectionId, isoCode: { equals: iso, mode: "insensitive" } },
+    select: { name: true, cyrillicName: true },
+  });
+  const names = countries
+    .flatMap((c) => [c.name, c.cyrillicName])
+    .filter((n): n is string => !!n)
+    .map((n) => n.trim().toLowerCase());
+  if (!names.length) return [];
+  const couriers = await db.eushipmentsCourier.findMany({
+    where: { connectionId },
+    orderBy: { name: "asc" },
+  });
+  return couriers.filter((c) => !!c.country && names.includes(c.country.trim().toLowerCase()));
+}
+
 async function euOrderPreflight(
   accountId: string,
   connection: { id: string },
@@ -356,6 +449,13 @@ async function euOrderPreflight(
       ),
     );
 
+  // Never ship a Shopify order as prepaid while money is still owed (custom local-language COD gateways).
+  const unclear = paymentUnclear({
+    paymentMethod: order.paymentMethod,
+    currency: order.currency,
+    shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+  });
+  if (unclear) findings.push(block("payment_unclear", "awb.bankRepayment", unclear.bg, unclear.en));
   const lines = order.lines.filter((l) => l.quantity > 0);
   if (!lines.length)
     findings.push(block("no_lines", "products", "Поръчката няма редове.", "The order has no lines."));
@@ -447,12 +547,14 @@ async function euOrderPreflight(
   );
   const cashReceiptCod = settings?.cashReceiptCod ?? false;
   const today = sofiaToday(now);
+  const courier = await courierFor(accountId, connection.id, destination, input);
+  findings.push(...courier.findings);
   const built = buildCreateOrder({
     referenceNumber: reference,
     senderId: companyId,
     waybillAvailableDate: input.waybillAvailableDate ?? today,
-    courierId: input.courierId,
-    serviceName: input.serviceName,
+    courierId: courier.courierId,
+    serviceName: courier.serviceName,
     officeId: input.officeId,
     shipmentPayer: input.shipmentPayer,
     address: (order.shippingAddress ?? {}) as Record<string, string | null>,

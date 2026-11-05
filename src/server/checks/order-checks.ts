@@ -33,6 +33,12 @@ export interface CheckOrder {
   codLocalAmount: number | null;
   codLocalCurrency: string | null;
   tags: string[];
+  /**
+   * Shopify payment facts (Shopify orders only): the gateways used and the amount still owed. A PREPAID order with
+   * money still owed is never shipped as prepaid — either the gateway is a COD method the store has not listed
+   * (custom, local-language names) or the customer has not paid yet.
+   */
+  shopifyPayment?: { gateways: string[]; outstanding: number | null } | null;
   lines: {
     title: string;
     sku: string | null;
@@ -41,6 +47,24 @@ export interface CheckOrder {
     /** "Съмнителни връзки": the line's store variant (or the shipping warehouse's product) names another product. */
     suspiciousLink?: boolean;
   }[];
+}
+
+/**
+ * A PREPAID order with money still owed in Shopify: never shipped as prepaid (a COD gateway the store has not listed,
+ * or not paid yet). Shared by the order checks and the warehouse pre-flights (the last line before a send).
+ */
+export function paymentUnclear(o: {
+  paymentMethod: string;
+  currency: string;
+  shopifyPayment?: { gateways: string[]; outstanding: number | null } | null;
+}): { bg: string; en: string } | null {
+  const owed = o.shopifyPayment?.outstanding ?? 0;
+  if (o.paymentMethod !== "PREPAID" || owed <= 0.005) return null;
+  const names = o.shopifyPayment!.gateways.map((g) => `„${g}“`).join(", ") || "—";
+  return {
+    bg: `Записана е като предплатена, но в Shopify има неплатени ${owed.toFixed(2)} ${o.currency} (метод: ${names}). Ако е наложен платеж — отбележете метода като наложен платеж за магазина; ако клиентът още не е платил — изчакайте плащането.`,
+    en: `Recorded as prepaid, but Shopify shows ${owed.toFixed(2)} ${o.currency} still owed (method: ${names}). If it is cash on delivery, mark the method as COD for the store; if the customer has not paid yet, wait for the payment.`,
+  };
 }
 
 export interface OrderCheckContext {
@@ -202,6 +226,8 @@ export function orderLevelFindings(o: CheckOrder, ctx: OrderCheckContext): Order
     );
 
   // COD: amount known, not above the total, in the destination's local currency (CLAUDE.md).
+  const unclear = paymentUnclear(o);
+  if (unclear) out.push(f("order.payment_unclear", "hard", "paymentMethod", unclear.bg, unclear.en));
   if (o.paymentMethod === "COD") {
     if (o.codAmount == null || o.codAmount <= 0)
       out.push(

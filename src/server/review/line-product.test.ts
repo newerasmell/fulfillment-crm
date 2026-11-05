@@ -83,7 +83,8 @@ describe("hand-picked product for one order line (database)", () => {
       productId: decant.id,
       note: "matches the customer's other item",
     });
-    expect(r?.hardCount).toBe(0);
+    // The pick clears the unmatched-line block (the synthetic order's other findings are not this test's subject).
+    expect(r?.findings.map((f) => f.code)).not.toContain("order.line_unmatched");
     const picked = await g.db.orderLine.findUniqueOrThrow({
       where: { id: line.id },
       include: { productChoice: true },

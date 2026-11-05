@@ -1,3 +1,5 @@
+import { paymentUnclear } from "@/server/checks/order-checks";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { Prisma } from "@/generated/prisma/client";
 import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import {
@@ -230,6 +232,20 @@ async function fhbPreflight(
     valueNotConverted,
     stockMaxAgeMs: input.stockMaxAgeMs,
   });
+  // Never ship a Shopify order as prepaid while money is still owed (custom local-language COD gateways).
+  const unclear = paymentUnclear({
+    paymentMethod: order.paymentMethod,
+    currency: order.currency,
+    shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+  });
+  if (unclear)
+    findings.push({
+      code: "payment_unclear",
+      severity: "hard",
+      field: "cod",
+      message_bg: unclear.bg,
+      message_en: unclear.en,
+    });
   return {
     order,
     connection,
