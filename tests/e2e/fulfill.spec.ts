@@ -57,7 +57,7 @@ test("Shopify write-back: a DRY_RUN record shows the exact fulfillmentCreate dat
   await login(page);
   await page.goto("/orders?tab=all&q=93004");
   await page.getByRole("link", { name: "#93004" }).click();
-  await page.getByTestId("fold-writeback").locator("summary").click();
+  await page.getByTestId("fold-writeback").locator(":scope > summary").click();
   const wb = page.locator('[data-testid="writeback"][data-kind="FULFIL"]');
   await expect(wb).toContainText("E2E-TRK-93004", { timeout: 60_000 });
   await expect(wb).toContainText("Изпълнение");

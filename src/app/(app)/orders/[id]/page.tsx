@@ -250,7 +250,9 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 <Field label={t("name")}>
                   {order.customerName ? <CopyValue value={order.customerName} /> : "—"}
                 </Field>
-                <Field label={t("email")}>{order.email ? <CopyValue value={order.email} mono /> : "—"}</Field>
+                <Field label={t("email")} wide>
+                  {order.email ? <CopyValue value={order.email} mono /> : "—"}
+                </Field>
                 <Field label={t("payment")} wide>
                   <CopyValue
                     value={

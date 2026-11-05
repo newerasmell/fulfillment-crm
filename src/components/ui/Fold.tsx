@@ -55,4 +55,4 @@ export function Field({
 }
 
 /** The responsive grid of Fields (2+ columns where there is room, 1 on a phone). */
-export const fieldGridCls = "grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-6 gap-y-3.5";
+export const fieldGridCls = "grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-6 gap-y-3.5";
