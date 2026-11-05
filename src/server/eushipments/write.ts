@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { z } from "zod";
@@ -504,7 +505,7 @@ async function euOrderPreflight(
   const cod = order.paymentMethod === "COD";
   // COD goes in the destination's local currency (CLAUDE.md). Same currency as the order: the COD itself;
   // otherwise only a stored local amount in that currency — never a made-up conversion (same rule as FHB).
-  const localCurrency = countrySetting?.currency?.toUpperCase() ?? null;
+  const localCurrency = localCurrencyFor(countrySetting, destination);
   const local = cod ? localCod(order, localCurrency) : null;
   if (cod && !local)
     findings.push(

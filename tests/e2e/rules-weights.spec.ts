@@ -64,4 +64,12 @@ test("CY order: add the country's phone rule and the product weight at the sourc
   await expect(page.getByTestId("country-CY")).toContainText("+357");
   await expect(page.getByTestId("country-CY")).toContainText("Наше правило");
   await expect(page.getByTestId("country-BG")).toContainText("От указанията на euShipments");
+  // Every country's currency is editable; GR shows its default (EUR) until a setting is saved.
+  const gr = page.getByTestId("country-GR");
+  await expect(gr.getByLabel("Местна валута за GR")).toHaveValue("EUR");
+  await expect(gr).toContainText("по подразбиране за държавата");
+  await gr.getByRole("button", { name: "Запази" }).click();
+  await expect(gr).toContainText("Запазено", { timeout: 30_000 });
+  await page.reload();
+  await expect(page.getByTestId("country-GR")).not.toContainText("по подразбиране за държавата");
 });

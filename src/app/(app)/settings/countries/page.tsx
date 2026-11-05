@@ -1,4 +1,5 @@
 import { getTranslations } from "next-intl/server";
+import { CountryCurrencyForm } from "@/components/rules-weights/CountryCurrencyForm";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { ghostButtonCls, inputCls, tdCls, thCls } from "@/components/ui/form";
@@ -46,7 +47,17 @@ export default async function CountriesPage({ searchParams }: { searchParams: Pr
               {rows.map((r) => (
                 <tr key={r.country} data-testid={`country-${r.country}`}>
                   <td className={`${tdCls} font-mono`}>{r.country}</td>
-                  <td className={`${tdCls} font-mono`}>{r.currency ?? "—"}</td>
+                  <td className={tdCls}>
+                    {manage ? (
+                      <CountryCurrencyForm country={r.country} currency={r.currency} />
+                    ) : (
+                      <span className="font-mono">{r.currency ?? "—"}</span>
+                    )}
+                    {r.currencyDefault && r.currency && (
+                      <div className="text-xs text-muted">{t("currencyDefault")}</div>
+                    )}
+                    {!r.currency && <div className="text-xs text-warn">{t("currencyMissing")}</div>}
+                  </td>
                   <td className={tdCls}>
                     {r.builtin ? (
                       <div className="flex flex-col gap-1">

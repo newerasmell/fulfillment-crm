@@ -192,9 +192,10 @@ describe("country phone rule: save, RBAC, audit, re-check of open orders", () =>
     await expect(
       saveCountrySetting(g.owner, { country: "BG", currency: "EUR", rule: CY_RULE }),
     ).rejects.toMatchObject({ code: "builtin_phone_rule" });
-    await expect(saveCountrySetting(g.owner, { country: "CY", rule: CY_RULE })).rejects.toMatchObject({
-      code: "currency_required",
-    });
+    // A country without a known default currency needs one (CY now defaults to EUR).
+    await expect(
+      saveCountrySetting(g.owner, { country: "MK", rule: { ...CY_RULE, cc: "389" } }),
+    ).rejects.toMatchObject({ code: "currency_required" });
   });
 
   it("saving the CY rule removes the phone finding of every open CY order of the group, not of another group", async () => {

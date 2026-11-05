@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import type { Prisma } from "@/generated/prisma/client";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
@@ -283,7 +284,7 @@ export async function validateOrder(
       })),
     },
     {
-      localCurrency: setting?.currency ?? null,
+      localCurrency: localCurrencyFor(setting, country),
       phoneRule: customPhoneRule(setting?.phoneRules),
       routing,
       stock,

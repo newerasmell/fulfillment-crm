@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { Prisma } from "@/generated/prisma/client";
@@ -153,7 +154,7 @@ async function fhbPreflight(
         where: { accountId_country: { accountId: accountId, country } },
       })
     : null;
-  const localCurrency = setting?.currency?.toUpperCase() ?? null;
+  const localCurrency = localCurrencyFor(setting, country);
   const phoneRule = customPhoneRule(setting?.phoneRules);
 
   // Product mapping for this connection and the mirrored stock.

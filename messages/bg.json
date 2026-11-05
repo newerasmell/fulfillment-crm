@@ -3382,7 +3382,12 @@
       "currency_required": "Въведете местната валута.",
       "calling_code_mismatch": "Кодът за набиране не съответства на държавата.",
       "not_found": "Не е намерено."
-    }
+    },
+    "currencyFor": "Местна валута за {country}",
+    "saveCurrency": "Запази",
+    "savedCurrency": "Запазено",
+    "currencyDefault": "по подразбиране за държавата — може да се смени",
+    "currencyMissing": "Непозната валута — въведете я"
   },
   "weights": {
     "title": "Тегло",

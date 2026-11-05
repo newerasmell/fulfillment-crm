@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import { z } from "zod";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { customPhoneRule } from "@/integrations/eushipments/phone";
@@ -235,7 +236,7 @@ export async function previewAddress(actor: ScopedActor, orderId: string, values
       lines: order.lines,
     },
     {
-      localCurrency: setting?.currency ?? null,
+      localCurrency: localCurrencyFor(setting, country),
       phoneRule: customPhoneRule(setting?.phoneRules),
       routing: routing ?? {
         connectionId: "preview",
