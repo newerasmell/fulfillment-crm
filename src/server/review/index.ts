@@ -11,3 +11,4 @@ export * from "./diff";
 export * from "./reasons";
 export * from "./service";
 export * from "./detail";
+export * from "./line-product";

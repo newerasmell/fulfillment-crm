@@ -1280,7 +1280,8 @@
       "transition_race": "The order changed — try again.",
       "generic": "The action failed.",
       "shipment_active": "The order still has an active shipment at a warehouse — it must be cancelled there first.",
-      "transition_guard__vendor_request_open": "A warehouse request of this order is still on its way or uncertain — resolve it first."
+      "transition_guard__vendor_request_open": "A warehouse request of this order is still on its way or uncertain — resolve it first.",
+      "product_not_found": "Product not found or not in the company's product line."
     },
     "payload": {
       "title": "What will be sent",
@@ -1288,6 +1289,25 @@
       "blocked": "The body for {connection} cannot be built while hard findings remain.",
       "noRoute": "No warehouse chosen — nothing to preview.",
       "sent": "The order was already sent — see the raw payloads and the timeline."
+    },
+    "lineProduct": {
+      "choose": "Choose product",
+      "change": "Change product",
+      "clear": "Remove choice",
+      "title": "Which product to send for “{title}”?",
+      "hint": "This order only: the Shopify link is not changed, so the next such order asks again. The order is checked again after the choice.",
+      "search": "Search by SKU, name or warehouse code",
+      "note": "Note (optional), e.g. why this one",
+      "cancel": "Cancel",
+      "searching": "Searching…",
+      "none": "No products found.",
+      "name": "Product",
+      "pick": "Choose",
+      "chosenBadge": "chosen by hand for this order",
+      "error": {
+        "product_not_found": "Product not found or not in the company's product line.",
+        "not_editable": "The order is no longer in review — the product cannot be changed."
+      }
     }
   },
   "fulfill": {

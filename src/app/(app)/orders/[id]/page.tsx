@@ -37,6 +37,7 @@ import {
 } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
+import { LineProductPicker } from "./line-product-ui";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
 import { WeightForm } from "@/components/rules-weights/WeightForm";
 import {
@@ -267,11 +268,34 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                       <td className={`${tdCls} font-mono text-[13px]`}>{l.sku ?? "—"}</td>
                       <td className={tdCls}>
                         {l.product ? (
-                          <span className="font-mono text-[13px]">{l.product.sku}</span>
+                          <span className="font-mono text-[13px]" title={l.product.name}>
+                            {l.product.sku}
+                          </span>
                         ) : (
                           <Link href="/products" className="text-warn hover:underline">
                             {t("unmatched")}
                           </Link>
+                        )}
+                        {l.productChoice && (
+                          <div
+                            className="text-[11px] text-muted"
+                            title={l.productChoice.note ?? undefined}
+                            data-testid={`line-product-chosen-${l.id}`}
+                          >
+                            {r("lineProduct.chosenBadge")}
+                            {l.productChoice.note ? ` · ${l.productChoice.note}` : ""}
+                          </div>
+                        )}
+                        {data.editable && data.canReview && (
+                          <div className="mt-1">
+                            <LineProductPicker
+                              orderId={order.id}
+                              lineId={l.id}
+                              title={l.title}
+                              chosen={!!l.productChoice}
+                              qty={l.quantity}
+                            />
+                          </div>
                         )}
                       </td>
                       <td className={`${tdCls} text-right font-mono`}>{l.quantity}</td>

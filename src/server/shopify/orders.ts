@@ -332,11 +332,20 @@ async function replaceLines(
   }
   const keep = o.lineItems.nodes.filter((l) => l.currentQuantity > 0);
   await tx.orderLine.deleteMany({ where: { orderId, shopifyLineGid: { notIn: keep.map((l) => l.id) } } });
+  // A product a person chose by hand for a line (OrderLineProductChoice) survives every re-import.
+  const chosen = new Map(
+    (
+      await tx.orderLine.findMany({
+        where: { orderId, productChoice: { isNot: null } },
+        select: { shopifyLineGid: true, productChoice: { select: { productId: true } } },
+      })
+    ).map((l) => [l.shopifyLineGid, l.productChoice!.productId]),
+  );
   for (const l of keep) {
     const link = l.variant ? linkByGid.get(l.variant.id) : undefined;
     const data = {
       variantLinkId: link?.id ?? null,
-      productId: link?.productId ?? null,
+      productId: chosen.get(l.id) ?? link?.productId ?? null,
       sku: l.sku ?? null,
       title: l.name,
       quantity: l.currentQuantity,

@@ -291,7 +291,12 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
           n++;
           // Same as the Shopify sync's automatic match: only lines without a product, of orders not sent anywhere.
           await tx.orderLine.updateMany({
-            where: { variantLinkId: r.id, productId: null, order: { status: { in: RELINKABLE } } },
+            where: {
+              variantLinkId: r.id,
+              productId: null,
+              order: { status: { in: RELINKABLE } },
+              productChoice: { is: null },
+            },
             data: { productId },
           });
         }
