@@ -230,10 +230,10 @@ export async function previewAddress(actor: ScopedActor, orderId: string, values
       paymentMethod: order.paymentMethod,
       codAmount: order.codAmount == null ? null : Number(order.codAmount),
       codLocalAmount: order.codLocalAmount == null ? null : Number(order.codLocalAmount),
-      shopifyPayment:
-        order.source === "SHOPIFY" && !(await db.orderCodOverride.findFirst({ where: { orderId } }))
-          ? shopifyPaymentOf(order.raw)
-          : null,
+      shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+      codManual: !!(await db.orderCodOverride.findUnique({
+        where: { accountId_orderId: { accountId: actor.accountId, orderId } },
+      })),
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
       lines: order.lines,

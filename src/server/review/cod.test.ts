@@ -3,6 +3,7 @@ import { SYNTHETIC_ORDERS } from "@/integrations/shopify/__fixtures__/orders";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { euTestGroup } from "@/server/eushipments/test-fixtures";
 import { importShopifyOrder } from "@/server/shopify/orders";
+import { reclassifyStorePayments } from "@/server/shopify/payment";
 import { clearOrderCod, setOrderCod } from "./index";
 
 // Synthetic data only; nothing calls Shopify or a warehouse.
@@ -24,7 +25,10 @@ describe("manual COD for one order (database)", () => {
     await expect(
       setOrderCod({ ...g.owner, role: "VIEWER" }, { orderId, amount: "60" }),
     ).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(setOrderCod(g.owner, { orderId, amount: "-1" })).rejects.toThrow();
+    // Only a plain decimal: an empty field is never read as 0 (that would silently drop the COD).
+    for (const bad of ["-1", "", " ", "0x10", "1e2", "12.345", "abc"])
+      await expect(setOrderCod(g.owner, { orderId, amount: bad })).rejects.toThrow();
+    await expect(setOrderCod(g.owner, { orderId, amount: null as never })).rejects.toThrow();
 
     await setOrderCod(g.owner, { orderId, amount: "60.50", note: "product swapped" });
     let o = await g.db.order.findUniqueOrThrow({
@@ -35,7 +39,7 @@ describe("manual COD for one order (database)", () => {
     expect(o.codAmount?.toString()).toBe("60.5");
     expect(o.codOverride).toMatchObject({
       note: "product swapped",
-      previous: { paymentMethod: "COD", codAmount: "45" },
+      previous: { paymentMethod: "COD", codAmount: "45", shopifyOwed: 45 },
     });
     expect(await g.db.auditLog.count({ where: { action: "order.cod_changed", entityId: orderId } })).toBe(1);
 
@@ -50,17 +54,20 @@ describe("manual COD for one order (database)", () => {
     });
     expect(o.codAmount?.toString()).toBe("60.5");
 
-    // 0 = prepaid: no "money still owed" block, because a person decided it.
-    await setOrderCod(g.owner, { orderId, amount: 0 });
+    // 0 = prepaid while Shopify shows money owed: only with a reason; then no "money owed" block, a soft note.
+    await expect(setOrderCod(g.owner, { orderId, amount: 0 })).rejects.toMatchObject({
+      code: "cod_zero_needs_reason",
+    });
+    await setOrderCod(g.owner, { orderId, amount: "0", note: "paid in cash at the office" });
     o = await g.db.order.findUniqueOrThrow({
       where: { id: orderId },
       include: { codOverride: true, check: true },
     });
     expect(o.paymentMethod).toBe("PREPAID");
     expect(o.codAmount).toBeNull();
-    expect((o.check?.findings as { code: string }[]).map((f) => f.code)).not.toContain(
-      "order.payment_unclear",
-    );
+    const codes = (o.check?.findings as { code: string }[]).map((f) => f.code);
+    expect(codes).not.toContain("order.payment_unclear");
+    expect(codes).toContain("order.cod_manual_differs");
 
     // Restore: Shopify's payment (COD 45.00) again.
     await clearOrderCod(g.owner, orderId);
@@ -94,5 +101,31 @@ describe("manual COD for one order (database)", () => {
     await expect(setOrderCod(other.owner, { orderId, amount: "10" })).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+
+  it("a COD in the order currency to a country with another local currency is refused", async () => {
+    const store = await g.db.store.findUniqueOrThrow({ where: { id: g.store.id } });
+    const { orderId } = await importShopifyOrder(g.accountId, store, SYNTHETIC_ORDERS[2]!);
+    await g.db.order.update({
+      where: { id: orderId },
+      data: { status: "NEEDS_REVIEW", countryCode: "RO", shippingAddress: { countryCode: "RO" } },
+    });
+    await expect(setOrderCod(g.owner, { orderId, amount: "10" })).rejects.toMatchObject({
+      code: "cod_currency_mismatch",
+    });
+  });
+
+  it("a manual COD is never re-classified by a COD-list change", async () => {
+    const store = await g.db.store.findUniqueOrThrow({ where: { id: g.store.id } });
+    const { orderId } = await importShopifyOrder(g.accountId, store, {
+      ...SYNTHETIC_ORDERS[0]!,
+      id: "gid://shopify/Order/990077",
+      name: "#C-9977",
+    });
+    await g.db.order.update({ where: { id: orderId }, data: { status: "NEEDS_REVIEW" } });
+    await setOrderCod(g.owner, { orderId, amount: "12.00" });
+    await g.db.store.update({ where: { id: g.store.id }, data: { codGateways: [] } });
+    expect(await reclassifyStorePayments(g.accountId, g.store.id, g.owner.userId)).not.toContain(orderId);
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: orderId } })).codAmount?.toString()).toBe("12");
   });
 });

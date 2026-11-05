@@ -264,7 +264,8 @@ export function CodEditor({
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
-  const errText = (code: string) => (te.has(`error.${code}`) ? te(`error.${code}`) : code);
+  const errText = (code: string) =>
+    t.has(`error.${code}`) ? t(`error.${code}`) : te.has(`error.${code}`) ? te(`error.${code}`) : code;
   if (!open)
     return (
       <span className="inline-flex flex-wrap items-center gap-2">

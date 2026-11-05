@@ -39,6 +39,8 @@ export interface CheckOrder {
    * (custom, local-language names) or the customer has not paid yet.
    */
   shopifyPayment?: { gateways: string[]; outstanding: number | null } | null;
+  /** A person set the COD by hand (OrderCodOverride): it decides; a difference to Shopify is only shown. */
+  codManual?: boolean;
   lines: {
     title: string;
     sku: string | null;
@@ -226,7 +228,24 @@ export function orderLevelFindings(o: CheckOrder, ctx: OrderCheckContext): Order
     );
 
   // COD: amount known, not above the total, in the destination's local currency (CLAUDE.md).
-  const unclear = paymentUnclear(o);
+  const unclear = o.codManual ? null : paymentUnclear(o);
+  const owedNow = o.shopifyPayment?.outstanding;
+  if (
+    o.codManual &&
+    owedNow != null &&
+    Math.abs(owedNow - (o.paymentMethod === "COD" ? (o.codAmount ?? 0) : 0)) > 0.005
+  ) {
+    const manual = o.paymentMethod === "COD" ? (o.codAmount ?? 0).toFixed(2) : "0.00";
+    out.push(
+      f(
+        "order.cod_manual_differs",
+        "soft",
+        "codAmount",
+        `Наложеният платеж е променен ръчно на ${manual} ${o.currency}, а в Shopify неплатената сума е ${owedNow.toFixed(2)} ${o.currency}.`,
+        `The COD was changed by hand to ${manual} ${o.currency}; Shopify shows ${owedNow.toFixed(2)} ${o.currency} still owed.`,
+      ),
+    );
+  }
   if (unclear) out.push(f("order.payment_unclear", "hard", "paymentMethod", unclear.bg, unclear.en));
   if (o.paymentMethod === "COD") {
     if (o.codAmount == null || o.codAmount <= 0)

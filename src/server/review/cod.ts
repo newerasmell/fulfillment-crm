@@ -4,7 +4,9 @@ import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { checkOrder } from "@/server/checks";
 import { withAccountTransaction } from "@/server/db/client";
+import { localCurrencyFor } from "@/server/countries/currency";
 import { classifyPayment } from "@/server/shopify/payment";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import type { ScopedActor } from "@/server/stores";
 import { EDITABLE_STATUSES } from "./service";
 
@@ -18,8 +20,15 @@ import { EDITABLE_STATUSES } from "./service";
 
 export const SetCodInput = z.object({
   orderId: z.string().min(1).max(64),
-  /** In the order currency; 0 = prepaid. */
-  amount: z.coerce.number().min(0).max(1_000_000).multipleOf(0.01),
+  /**
+   * In the order currency; 0 = prepaid. A plain decimal only ("12", "12.5", "12,50"): an empty field is NEVER read
+   * as 0 (that would silently make a COD order prepaid).
+   */
+  amount: z
+    .union([z.string(), z.number()])
+    .transform((v) => String(v).trim())
+    .pipe(z.string().regex(/^\d{1,7}([.,]\d{1,2})?$/))
+    .transform((v) => Number(v.replace(",", "."))),
   note: z
     .string()
     .trim()
@@ -54,13 +63,38 @@ export async function setOrderCod(actor: ScopedActor, raw: z.input<typeof SetCod
         status: true,
         paymentMethod: true,
         codAmount: true,
+        source: true,
+        raw: true,
+        currency: true,
+        countryCode: true,
+        shippingAddress: true,
         codOverride: { select: { id: true } },
       },
     });
     if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? "")))
       throw new DomainError("not_found");
     if (!isEditable(order.status)) throw new DomainError("not_editable");
-    const previous = { paymentMethod: order.paymentMethod, codAmount: order.codAmount?.toString() ?? null };
+    // Nothing to collect while Shopify still shows money owed: only with a stated reason.
+    const owed = order.source === "SHOPIFY" ? (shopifyPaymentOf(order.raw)?.outstanding ?? 0) : 0;
+    if (!cod && owed > 0.005 && !input.note) throw new DomainError("cod_zero_needs_reason");
+    // The amount is in the order currency; a COD to a country with another local currency needs the local
+    // amount, which this editor does not take — refused instead of leaving the order blocked.
+    const country = (
+      ((order.shippingAddress ?? {}) as { countryCode?: string | null }).countryCode ?? order.countryCode
+    )?.toUpperCase();
+    const setting = country
+      ? await tx.countrySetting.findUnique({
+          where: { accountId_country: { accountId: actor.accountId, country } },
+        })
+      : null;
+    const local = localCurrencyFor(setting, country);
+    if (cod && local && local !== order.currency.toUpperCase())
+      throw new DomainError("cod_currency_mismatch");
+    const previous = {
+      paymentMethod: order.paymentMethod,
+      codAmount: order.codAmount?.toString() ?? null,
+      shopifyOwed: owed,
+    };
     const data = {
       paymentMethod: cod ? ("COD" as const) : ("PREPAID" as const),
       codAmount: amount,
@@ -83,6 +117,8 @@ export async function setOrderCod(actor: ScopedActor, raw: z.input<typeof SetCod
         codRate: null,
       },
     });
+    // The stored check (and any approval of it) no longer applies: approve needs the re-check below.
+    await tx.orderCheck.deleteMany({ where: { orderId: order.id } });
     await tx.auditLog.create({
       data: {
         accountId: actor.accountId,
@@ -139,6 +175,7 @@ export async function clearOrderCod(actor: ScopedActor, orderId: string) {
       where: { id: order.id },
       data: { ...back, codLocalAmount: null, codLocalCurrency: null, codRate: null },
     });
+    await tx.orderCheck.deleteMany({ where: { orderId: order.id } });
     await tx.auditLog.create({
       data: {
         accountId: actor.accountId,

@@ -65,9 +65,16 @@ export async function reclassifyStorePayments(accountId: string, storeId: string
         await lockForUpdate("Order", o.id);
         const fresh = await tx.order.findUnique({
           where: { id: o.id },
-          select: { status: true, paymentMethod: true },
+          select: { status: true, paymentMethod: true, codOverride: { select: { id: true } } },
         });
-        if (!fresh || !RECLASSIFIABLE.includes(fresh.status) || fresh.paymentMethod === method) return false;
+        // A manual COD saved meanwhile wins (checked again under the order lock).
+        if (
+          !fresh ||
+          fresh.codOverride ||
+          !RECLASSIFIABLE.includes(fresh.status) ||
+          fresh.paymentMethod === method
+        )
+          return false;
         await tx.order.update({
           where: { id: o.id },
           data: {

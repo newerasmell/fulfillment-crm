@@ -275,7 +275,8 @@ export async function validateOrder(
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
       // A person's manual COD (OrderCodOverride) decides the payment instead of Shopify's facts.
-      shopifyPayment: order.source === "SHOPIFY" && !order.codOverride ? shopifyPaymentOf(order.raw) : null,
+      shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+      codManual: !!order.codOverride,
       lines: order.lines.map((l) => ({
         ...l,
         // A product a person picked for this line by hand is not what the shop variant links to: only the

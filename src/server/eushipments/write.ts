@@ -456,7 +456,10 @@ async function euOrderPreflight(
     currency: order.currency,
     // A person's manual COD (OrderCodOverride) decides the payment instead of Shopify's facts.
     shopifyPayment:
-      order.source === "SHOPIFY" && !(await db.orderCodOverride.findFirst({ where: { orderId: order.id } }))
+      order.source === "SHOPIFY" &&
+      !(await db.orderCodOverride.findUnique({
+        where: { accountId_orderId: { accountId, orderId: order.id } },
+      }))
         ? shopifyPaymentOf(order.raw)
         : null,
   });
