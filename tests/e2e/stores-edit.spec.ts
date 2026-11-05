@@ -18,6 +18,12 @@ test("stores: edit details, warehouse prefix, locked domain, archive + restore, 
   // 1. Edit name, countries and the warehouse prefix of a store with orders; only its domain is locked (the code is
   // internal and no longer part of warehouse order ids).
   await page.goto("/stores");
+  // Adding a store: the Dev Dashboard "Create version" screen field by field, with the values to copy.
+  const guide = page.getByTestId("shopify-setup-guide").first();
+  await expect(guide).toContainText("API access → Scopes");
+  await expect(guide.getByTestId("copy-value-Scopes")).toContainText("read_orders,read_customers");
+  await expect(guide.getByTestId("copy-value-Webhooks API version")).toHaveText("2026-10");
+  await page.screenshot({ path: "test-results/shopify-setup-guide.png", fullPage: true });
   await page.getByRole("link", { name: "Магазин с поръчки" }).click();
   await page.waitForLoadState("networkidle");
   const details = page.getByRole("form", { name: "Данни на магазина" });

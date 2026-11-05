@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
+import { ShopifySetupGuide } from "./setup-guide";
 import { tdCls, thCls } from "@/components/ui/form";
 import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
@@ -95,6 +96,9 @@ export default async function StoresPage({ searchParams }: { searchParams: Promi
         <Card>
           <h2 className="mt-0 text-base font-semibold">{t("add")}</h2>
           <p className="mt-0 text-sm text-muted">{t("addHelp")}</p>
+          <div className="mb-4">
+            <ShopifySetupGuide open />
+          </div>
           <NewStoreForm companies={ctx.companies} credentials={credentials} />
         </Card>
       )}

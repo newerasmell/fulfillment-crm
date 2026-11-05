@@ -1,6 +1,12 @@
 import { ShopifyError } from "@/integrations/shopify/errors";
 import type { ShopifyClientOptions } from "@/integrations/shopify/client";
-import { SHOP_QUERY, ShopResponse } from "@/integrations/shopify/queries";
+import {
+  APP_SCOPES_QUERY,
+  AppScopesResponse,
+  SHOP_QUERY,
+  ShopResponse,
+} from "@/integrations/shopify/queries";
+import { missingScopes } from "@/integrations/shopify/scopes";
 import { accountDb } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { shopifyClientForStore } from "./store-client";
@@ -10,6 +16,9 @@ export interface ConnectionStatus {
   at: string;
   shopName?: string;
   currency?: string;
+  /** Scopes the app holds on the store, and the required ones it lacks (null = could not be read). */
+  scopes?: string[];
+  missingScopes?: string[] | null;
   /** ShopifyError code or "unexpected"; never a secret or a raw response. */
   error?: string;
 }
@@ -31,6 +40,15 @@ export async function testStoreConnection(
         : { ok: false, at, error: "domain_mismatch" };
     if (status.ok) {
       await accountDb(accountId).store.update({ where: { id: storeId }, data: { shopName: shop.name } });
+      // Which rights the app really got: a missing one is shown on the store page (never fails the connection).
+      try {
+        const r = await client.query(APP_SCOPES_QUERY, {}, AppScopesResponse);
+        const scopes = r.currentAppInstallation.accessScopes.map((a) => a.handle).sort();
+        status = { ...status, scopes, missingScopes: missingScopes(scopes) };
+      } catch (err) {
+        logger.warn({ storeId, err: (err as Error).message }, "shopify access scopes not readable");
+        status = { ...status, missingScopes: null };
+      }
     }
   } catch (err) {
     const code = err instanceof ShopifyError ? err.code : ((err as { code?: string }).code ?? "unexpected");

@@ -55,5 +55,8 @@ test("stores and the matching queue: create the master product from a variant", 
 
   await page.goto("/orders?tab=all");
   await page.getByRole("link", { name: "#1001" }).click();
-  await expect(page.getByRole("cell", { name: "SAMPLE-EDP-50", exact: true })).toBeVisible();
+  // The master product cell also holds "Избери продукт" (a hand pick for this order only).
+  await expect(
+    page.getByRole("table", { name: "Артикули" }).getByText("SAMPLE-EDP-50", { exact: true }),
+  ).toBeVisible();
 });
