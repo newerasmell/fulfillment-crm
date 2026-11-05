@@ -17,6 +17,7 @@ import {
   cleanVariantTitle,
 } from "./products";
 import { testStoreConnection } from "./connection";
+import { missingScopes, REQUIRED_SCOPES } from "@/integrations/shopify/scopes";
 import {
   processShopifyWebhook,
   receiveShopifyWebhook,
@@ -205,6 +206,29 @@ describe("Shopify import (DB)", () => {
       error: "domain_mismatch",
     });
     await testStoreConnection(accountId, storeId, ok.opts);
+  });
+
+  it("connection test reads the granted rights and names the missing ones (never fails the connection)", async () => {
+    const granted = fakeShopify({
+      Shop: () => ({ shop: { name: "Demo", myshopifyDomain: DOMAIN, currencyCode: "EUR" } }),
+      AppScopes: () => ({
+        currentAppInstallation: {
+          accessScopes: ["write_orders", "write_products", "read_inventory"].map((handle) => ({ handle })),
+        },
+      }),
+    });
+    const r = await testStoreConnection(accountId, storeId, granted.opts);
+    expect(r.ok).toBe(true);
+    // write_X covers read_X: read_orders and read_products are not missing.
+    expect(r.missingScopes).toEqual(
+      REQUIRED_SCOPES.filter(
+        (x) => !["read_orders", "read_products", "write_products", "read_inventory"].includes(x),
+      ),
+    );
+    expect(missingScopes([...REQUIRED_SCOPES])).toEqual([]);
+    expect(((await store()).connectionStatus as { missingScopes: string[] }).missingScopes).toContain(
+      "write_inventory",
+    );
   });
 
   it("creates an order once; re-imports and older versions change nothing", async () => {

@@ -393,6 +393,23 @@
     "fulfilTriggers": {
       "ON_TRACKING": "When there is a tracking number (shipped)",
       "ON_ACCEPT": "Accepted by the warehouse"
+    },
+    "setup": {
+      "title": "How to create the app in Shopify (copy/paste)",
+      "copy": "Copy",
+      "copied": "Copied",
+      "step1": "Open the Shopify Dev Dashboard (dev.shopify.com) with the store's account → Apps → Create app (or open the existing app) → Create version.",
+      "step2": "Fill in the \"Create version\" screen exactly like this:",
+      "leaveEmpty": "leave empty",
+      "uncheck": "untick it (the CRM does not open inside Shopify)",
+      "noCheck": "unticked",
+      "leaveAll": "leave everything empty / unticked",
+      "noUrl": "The CRM address is not set (APP_URL) — ask the administrator.",
+      "release": "Click \"Release\" (bottom right).",
+      "step3": "On the app's home → Installs → \"Install app\" on this store and approve the rights.",
+      "step4": "Settings → copy the Client ID and Client secret into the CRM fields (here when adding a store, or \"Replace credentials\" on the store page). The CRM checks the connection and the rights itself.",
+      "missingTitle": "The app lacks {n} rights",
+      "missingHow": "Dev Dashboard → the app → Create version → paste the whole list into \"Scopes\" → Release → approve the new rights in the store. Then click \"Test connection\"."
     }
   },
   "products": {

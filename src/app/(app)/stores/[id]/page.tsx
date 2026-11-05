@@ -17,6 +17,7 @@ import {
 } from "@/server/store-lifecycle";
 import { ArchiveStoreForm, DeleteStoreForm, RestoreStoreForm, StoreDetailsForm } from "./lifecycle-forms";
 import { BackfillForm, ReplaceCredentialsForm, StoreSettingsForm } from "../forms";
+import { MissingScopes, ShopifySetupGuide } from "../setup-guide";
 import { ConnectionBadge } from "../status";
 import { JobButton } from "../JobButton";
 
@@ -108,6 +109,7 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           <dd className="m-0">
             <ConnectionBadge status={store.connectionStatus} />
             {store.shopName && <span className="ml-2 text-muted">{store.shopName}</span>}
+            <MissingScopes status={store.connectionStatus} />
           </dd>
           <dt className="text-muted">{t("webhooks")}</dt>
           <dd className="m-0">
@@ -145,6 +147,14 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
           <dt className="text-muted">{t("credential")}</dt>
           <dd className="m-0">{store.credentialId ? t("credentialSet") : t("credentialMissing")}</dd>
         </dl>
+        <div className="mt-3">
+          <ShopifySetupGuide
+            open={
+              (store.connectionStatus as { ok?: boolean } | null)?.ok === false ||
+              !!(store.connectionStatus as { missingScopes?: string[] } | null)?.missingScopes?.length
+            }
+          />
+        </div>
         {sync && (
           <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4">
             {job("test", t("testConnection"))}
