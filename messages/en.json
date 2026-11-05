@@ -1335,6 +1335,16 @@
       "confirm": "The method “{names}” will count as cash on delivery for this store. All its orders not yet sent to a warehouse are re-classified and checked again. Continue?",
       "done": "Done — orders re-classified: {n}.",
       "failed": "Failed ({code})."
+    },
+    "cod": {
+      "edit": "Change the COD",
+      "restore": "Restore Shopify's payment",
+      "amount": "COD ({currency})",
+      "note": "Reason (optional), e.g. product swapped",
+      "save": "Save and check",
+      "cancel": "Cancel",
+      "hint": "0 = prepaid (nothing to collect). For this order in the CRM only; the order is checked again.",
+      "manualBadge": "changed by hand"
     }
   },
   "fulfill": {

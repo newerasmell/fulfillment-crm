@@ -123,6 +123,7 @@ export async function importShopifyOrder(
           shippingAddress: true,
           shippingAddressOriginal: true,
           raw: true,
+          codOverride: { select: { paymentMethod: true, codAmount: true } },
         },
       });
       if (existing?.shopifyUpdatedAt && existing.shopifyUpdatedAt >= updatedAt) {
@@ -209,8 +210,16 @@ export async function importShopifyOrder(
         currency: o.currencyCode,
         subtotal: money(o.subtotalPriceSet),
         total: money(o.totalPriceSet),
-        paymentMethod: cod ? ("COD" as const) : ("PREPAID" as const),
-        codAmount: cod ? money(o.totalOutstandingSet) : null,
+        // A person's manual COD (OrderCodOverride) is kept over Shopify's payment facts.
+        ...(existing?.codOverride
+          ? {
+              paymentMethod: existing.codOverride.paymentMethod,
+              codAmount: existing.codOverride.codAmount,
+            }
+          : {
+              paymentMethod: cod ? ("COD" as const) : ("PREPAID" as const),
+              codAmount: cod ? money(o.totalOutstandingSet) : null,
+            }),
         tags,
         note: o.note ?? null,
         risk: json(

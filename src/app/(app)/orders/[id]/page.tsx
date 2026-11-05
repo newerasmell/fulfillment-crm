@@ -37,7 +37,7 @@ import {
 } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
-import { LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
+import { CodEditor, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
 import { WeightForm } from "@/components/rules-weights/WeightForm";
@@ -228,6 +228,25 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                       {(payment.outstanding ?? 0) > 0 &&
                         ` · ${r("payment.outstanding", { amount: money(payment.outstanding) })}`}
                     </span>
+                  )}
+                  {order.codOverride && (
+                    <div className="text-xs text-muted" data-testid="cod-manual">
+                      {r("cod.manualBadge")}
+                      {order.codOverride.note ? ` · ${order.codOverride.note}` : ""}
+                    </div>
+                  )}
+                  {data.editable && data.canReview && (
+                    <div className="mt-1">
+                      <CodEditor
+                        orderId={order.id}
+                        current={
+                          order.paymentMethod === "COD" && order.codAmount ? order.codAmount.toString() : null
+                        }
+                        total={order.total.toString()}
+                        currency={order.currency}
+                        manual={!!order.codOverride}
+                      />
+                    </div>
                   )}
                 </dd>
               </dl>

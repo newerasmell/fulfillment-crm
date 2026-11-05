@@ -50,7 +50,8 @@ export async function reclassifyStorePayments(accountId: string, storeId: string
   const store = await db.store.findUnique({ where: { id: storeId }, select: { codGateways: true } });
   if (!store) return [];
   const orders = await db.order.findMany({
-    where: { storeId, source: "SHOPIFY", status: { in: RECLASSIFIABLE } },
+    // A person's manual COD (OrderCodOverride) is never re-classified.
+    where: { storeId, source: "SHOPIFY", status: { in: RECLASSIFIABLE }, codOverride: { is: null } },
     select: { id: true, raw: true, paymentMethod: true, codAmount: true },
   });
   const changed: string[] = [];

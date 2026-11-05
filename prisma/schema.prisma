@@ -220,6 +220,7 @@ model Account {
   productLines              ProductLine[]
   suspiciousLinks           SuspiciousLink[]
   orderLineProductChoices   OrderLineProductChoice[]
+  orderCodOverrides         OrderCodOverride[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
   inventoryActivations      InventoryActivation[]
@@ -786,6 +787,7 @@ model Order {
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
   warehouseChoice   OrderWarehouseChoice?
+  codOverride       OrderCodOverride?
   reroutes          OrderReroute[]
   manualShipment    ManualShipment?
   aiSuggestions     AiSuggestion[]
@@ -2671,4 +2673,27 @@ model EushipmentsCountryCourier {
 
   @@unique([accountId, id])
   @@unique([accountId, connectionId, country])
+}
+
+/// A person set the order's COD by hand (owner request 2026-11-05: after swapping a product the amount to collect
+/// changes). While it exists, Shopify re-imports and COD-list re-classifications keep the person's payment
+/// (PREPAID when codAmount is null) and the "money still owed in Shopify" check gives way to it.
+model OrderCodOverride {
+  id            String        @id @default(cuid())
+  accountId     String
+  orderId       String
+  paymentMethod PaymentMethod
+  codAmount     Decimal?      @db.Decimal(12, 2)
+  note          String?
+  userId        String?
+  /// The payment before the first manual change: {paymentMethod, codAmount}.
+  previous      Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderId])
 }

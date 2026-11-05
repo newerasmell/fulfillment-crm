@@ -150,9 +150,20 @@ async function createOrderPaymentUnclear(
   if (!CREATE_ORDER_OPS.has(req.operation) || !req.fulfillmentId) return null;
   const f = await tx.fulfillment.findUnique({
     where: { id: req.fulfillmentId },
-    select: { order: { select: { source: true, paymentMethod: true, currency: true, raw: true } } },
+    select: {
+      order: {
+        select: {
+          source: true,
+          paymentMethod: true,
+          currency: true,
+          raw: true,
+          codOverride: { select: { id: true } },
+        },
+      },
+    },
   });
-  if (!f || f.order.source !== "SHOPIFY") return null;
+  // A person's manual COD (OrderCodOverride) decides the payment instead of Shopify's facts.
+  if (!f || f.order.source !== "SHOPIFY" || f.order.codOverride) return null;
   return paymentUnclear({
     paymentMethod: f.order.paymentMethod,
     currency: f.order.currency,

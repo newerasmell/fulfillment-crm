@@ -8,6 +8,8 @@ import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { checkOrderAs, type Finding } from "@/server/checks";
 import { markOrderGatewayCod } from "@/server/shopify/payment";
 import {
+  clearOrderCod,
+  setOrderCod,
   chooseLineProduct,
   clearLineProduct,
   searchLineProducts,
@@ -220,6 +222,35 @@ export async function markGatewaysCodAction(
     revalidatePath(orderPath(orderId));
     revalidatePath("/orders");
     return { ok: true, added: r.added, changed: r.changed };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Промени наложения платеж": a person's COD for this order (0 = prepaid). */
+export async function setOrderCodAction(input: {
+  orderId: string;
+  amount: string;
+  note?: string | null;
+}): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await setOrderCod(actorFrom(ctx), input);
+    revalidatePath(orderPath(input.orderId));
+    revalidatePath("/orders");
+    return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+export async function clearOrderCodAction(orderId: string): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await clearOrderCod(actorFrom(ctx), orderId);
+    revalidatePath(orderPath(orderId));
+    revalidatePath("/orders");
+    return { ok: true };
   } catch (err) {
     return toError(err);
   }

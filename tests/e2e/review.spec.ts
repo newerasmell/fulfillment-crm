@@ -149,6 +149,17 @@ test("a mystery line gets its product picked by hand for this order only, and th
   await expect(row).toContainText("избран ръчно за тази поръчка · подхожда на другия артикул");
   await expect(row).toContainText("4 за продажба");
   await expect(findings).not.toContainText("Mystery Decant 15 ml");
+  // The amount to collect changes with the product: set the COD by hand, then put Shopify's back.
+  await page.getByTestId("cod-edit-open").click();
+  const cod = page.getByTestId("cod-editor");
+  await cod.getByLabel("Наложен платеж (EUR)").fill("42.50");
+  await cod.getByLabel("Причина (по избор), напр. сменен продукт").fill("сменен продукт");
+  await cod.getByRole("button", { name: "Запази и провери" }).click();
+  await expect(page.getByTestId("cod-manual")).toContainText("променен ръчно · сменен продукт", {
+    timeout: 60_000,
+  });
+  await page.getByTestId("cod-restore").click();
+  await expect(page.getByTestId("cod-manual")).toHaveCount(0, { timeout: 60_000 });
   // Undo puts the line back to unmatched.
   await row.getByRole("button", { name: "Махни избора" }).click();
   await expect(row).toContainText("Несвързан", { timeout: 60_000 });

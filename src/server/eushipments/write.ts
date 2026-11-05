@@ -454,7 +454,11 @@ async function euOrderPreflight(
   const unclear = paymentUnclear({
     paymentMethod: order.paymentMethod,
     currency: order.currency,
-    shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+    // A person's manual COD (OrderCodOverride) decides the payment instead of Shopify's facts.
+    shopifyPayment:
+      order.source === "SHOPIFY" && !(await db.orderCodOverride.findFirst({ where: { orderId: order.id } }))
+        ? shopifyPaymentOf(order.raw)
+        : null,
   });
   if (unclear) findings.push(block("payment_unclear", "awb.bankRepayment", unclear.bg, unclear.en));
   const lines = order.lines.filter((l) => l.quantity > 0);
