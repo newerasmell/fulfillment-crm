@@ -34,9 +34,12 @@ test("review: fix the address with live validation, approve, hold, block; review
   await expect(page.getByRole("table", { name: "Артикули" })).toContainText("6 за продажба");
   await expect(page.getByText("Сурови данни (само за администратори)")).toBeVisible();
   // What will be sent (DESIGN principle 4): with a hard finding the body cannot be built yet.
-  await expect(page.getByRole("heading", { name: "Какво ще се изпрати" })).toBeVisible();
+  // Folded sections (owner redesign 2026-11-05): "What will be sent" and the raw payloads open on click.
+  await page.getByTestId("fold-payload").locator("summary").click();
+  await expect(page.getByTestId("fold-payload")).toContainText("Какво ще се изпрати");
   await expect(page.getByTestId("payload-preview-blocked")).toContainText("FHB Преглед");
   // Raw payloads load only when a section is opened.
+  await page.getByTestId("fold-raw").locator("summary").click();
   await page.getByText("Оригинален адрес", { exact: true }).click();
   await expect(page.locator("pre").filter({ hasText: '"countryCode"' }).first()).toBeVisible({
     timeout: 30_000,

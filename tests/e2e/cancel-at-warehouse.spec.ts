@@ -41,6 +41,7 @@ test("Откажи в склада: DRY_RUN records it; the confirmed cancel blo
   await expect(page.getByTestId("warehouse-cancel-KCK-9103")).toHaveCount(0);
 
   await openOrder(page, "#K-9101");
+  await page.getByTestId("fold-shipments").locator("summary").click();
   const row = page.getByTestId("warehouse-cancel-row-KCK-9101");
   await row.getByTestId("warehouse-cancel-KCK-9101").click();
   const dialog = page.getByRole("dialog", { name: "Отказ на пратката в склада" });
