@@ -37,7 +37,8 @@ import {
 } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
-import { LineProductPicker } from "./line-product-ui";
+import { LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
 import { WeightForm } from "@/components/rules-weights/WeightForm";
 import {
@@ -133,6 +134,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
   const when = (d: Date) => format.dateTime(d, { dateStyle: "medium", timeStyle: "short" });
   const msg = (f: Finding) => (locale === "en" ? f.message_en : f.message_bg);
+  const payment = order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null;
   const risk = order.risk as { recommendation?: string; levels?: string[] } | null;
 
   // Original (Shopify) values next to the corrected ones, both normalised the same way.
@@ -219,6 +221,14 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 <dt className="text-muted">{t("payment")}</dt>
                 <dd className="m-0">
                   {order.paymentMethod === "COD" ? `${t("cod")} · ${money(order.codAmount)}` : t("prepaid")}
+                  {payment && payment.gateways.length > 0 && (
+                    <span className="text-muted" data-testid="payment-gateways">
+                      {" "}
+                      · {payment.gateways.join(", ")}
+                      {(payment.outstanding ?? 0) > 0 &&
+                        ` · ${r("payment.outstanding", { amount: money(payment.outstanding) })}`}
+                    </span>
+                  )}
                 </dd>
               </dl>
               {order.note && <p className="mb-0 rounded-lg bg-hover px-3 py-2">{order.note}</p>}
@@ -424,6 +434,14 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                           <code className="font-mono">{f.code}</code>
                           {f.field && <code className="font-mono">{f.field}</code>}
                         </div>
+                        {f.code === "order.payment_unclear" &&
+                          payment &&
+                          payment.gateways.length > 0 &&
+                          can(ctx.role, "stores.manage") && (
+                            <div className="mt-2">
+                              <MarkGatewaysCodButton orderId={order.id} gateways={payment.gateways} />
+                            </div>
+                          )}
                         {fixes.phone && i === phoneFixAt && (
                           <details className="mt-2" data-testid="phone-rule-fix">
                             <summary className="cursor-pointer text-sm font-semibold text-accent">

@@ -463,9 +463,9 @@ model FulfillmentConnection {
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
-  account                    Account                    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  company                    Company?                   @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
-  credential                 Credential?                @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
+  account                    Account                     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company                    Company?                    @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)
+  credential                 Credential?                 @relation(fields: [accountId, credentialId], references: [accountId, id], onDelete: NoAction)
   vendorProducts             VendorProduct[]
   stockMovements             StockMovement[]
   inbounds                   InboundShipment[]
@@ -482,6 +482,7 @@ model FulfillmentConnection {
   eushipmentsTransfers       EushipmentsTransfer[]
   eushipmentsVendorCompanies EushipmentsVendorCompany[]
   eushipmentsCouriers        EushipmentsCourier[]
+  eushipmentsCountryCouriers EushipmentsCountryCourier[]
   eushipmentsWarehouses      EushipmentsWarehouse[]
   eushipmentsCountries       EushipmentsCountry[]
   eushipmentsCities          EushipmentsCity[]
@@ -491,7 +492,7 @@ model FulfillmentConnection {
   eushipmentsSyncs           EushipmentsSync[]
   masterCatalogueRuns        MasterCatalogueRun[]
   warehouseChoices           OrderWarehouseChoice[]
-  rerouteTargets             OrderReroute[]             @relation("RerouteTarget")
+  rerouteTargets             OrderReroute[]              @relation("RerouteTarget")
   storeLocations             StoreLocation[]
   returnCases                ReturnCase[]
   manualShipments            ManualShipment[]
@@ -2649,4 +2650,25 @@ model OrderLineProductChoice {
   @@unique([accountId, id])
   @@unique([accountId, orderLineId])
   @@index([accountId, productId])
+}
+
+/// Default euShipments courier per destination country of one connection (owner request 2026-11-05: an account
+/// with several couriers for a country must send courierId, or create-order fails with "Please provide a courier
+/// ID"). Sent as courierId (and serviceName when set) on every order to that country.
+model EushipmentsCountryCourier {
+  id           String   @id @default(cuid())
+  accountId    String
+  connectionId String
+  /// ISO 3166-1 alpha-2, upper case.
+  country      String
+  courierId    Int
+  serviceName  String?
+  updatedById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, connectionId, country])
 }

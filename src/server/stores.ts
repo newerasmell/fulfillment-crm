@@ -1,3 +1,4 @@
+import { reclassifyStorePayments } from "@/server/shopify/payment";
 import { z } from "zod";
 import type { InventoryPushMode, StoreWriteMode } from "@/generated/prisma/client";
 import { DomainError, type Actor } from "@/server/accounts";
@@ -187,6 +188,11 @@ export async function updateStoreSettings(
     assertCan(actor.role, "stores.raiseMode");
   }
   const after = await accountDb(actor.accountId).store.update({ where: { id: storeId }, data: input });
+  // A changed COD list re-classifies the store's orders that have not left for a warehouse (custom local-language
+  // payment names: a missing one recorded COD orders as prepaid).
+  const norm = (l: string[]) => [...l.map((g) => g.trim().toLowerCase())].sort().join("\n");
+  if (norm(before.codGateways) !== norm(input.codGateways))
+    await reclassifyStorePayments(actor.accountId, storeId, actor.userId);
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,

@@ -15,6 +15,7 @@ import {
   setEuConnectionMode,
   updateEuConnection,
 } from "@/server/eushipments/connections";
+import { setCountryCourier } from "@/server/eushipments/country-couriers";
 import { enqueueEu, enqueueManualSync, MANUAL_SYNCS, type ManualSync } from "@/server/eushipments/jobs";
 import { webBoss } from "@/server/jobs/boss";
 
@@ -146,5 +147,22 @@ export async function linkEuProductAction(
     return toError(err);
   }
   revalidatePath(base(connectionId));
+  return { ok: true };
+}
+
+/** Куриери → "Куриер по подразбиране" for one destination country (empty courier clears it). */
+export async function saveCountryCourierAction(id: string, _prev: Result, form: FormData): Promise<Result> {
+  const ctx = await requireAccountContext();
+  try {
+    await setCountryCourier(actorFrom(ctx), {
+      connectionId: id,
+      country: str(form, "country"),
+      courierId: str(form, "courierId") ? Number(str(form, "courierId")) : null,
+      serviceName: (str(form, "serviceName") || null) as never,
+    });
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath(base(id));
   return { ok: true };
 }

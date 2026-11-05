@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import {
+  markGatewaysCodAction,
   chooseLineProductAction,
   clearLineProductAction,
   searchLineProductsAction,
@@ -197,5 +198,39 @@ export function LineProductPicker({
         </div>
       )}
     </div>
+  );
+}
+
+/** On order.payment_unclear: the order's payment method(s) are cash on delivery for this store. */
+export function MarkGatewaysCodButton({ orderId, gateways }: { orderId: string; gateways: string[] }) {
+  const t = useTranslations("review.payment");
+  const te = useTranslations("review");
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        disabled={pending}
+        className={`${ghostButtonCls} text-sm`}
+        data-testid="mark-gateways-cod"
+        onClick={() => {
+          if (!window.confirm(t("confirm", { names: gateways.join(", ") }))) return;
+          start(async () => {
+            const r = await markGatewaysCodAction(orderId);
+            if (r?.error)
+              setMsg(te.has(`error.${r.error}`) ? te(`error.${r.error}`) : t("failed", { code: r.error }));
+            else {
+              setMsg(t("done", { n: r?.changed ?? 0 }));
+              router.refresh();
+            }
+          });
+        }}
+      >
+        {t("markCod", { names: gateways.join(", ") })}
+      </button>
+      {msg && <span className="text-sm text-muted">{msg}</span>}
+    </span>
   );
 }

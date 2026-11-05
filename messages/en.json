@@ -970,7 +970,22 @@
       "cities_unsupported": "euShipments has no city list for this country.",
       "unknown_sku": "None of our products has this SKU.",
       "ambiguous_sku": "More than one product matches this SKU.",
-      "db_error": "Database error while saving — try again; if it repeats, check the worker logs."
+      "db_error": "Database error while saving — try again; if it repeats, check the worker logs.",
+      "courier_unknown": "The courier is not one of this connection's couriers."
+    },
+    "countryCourier": {
+      "title": "Default courier per country",
+      "hint": "When you have more than one euShipments courier for a country, every order must name one (otherwise euShipments refuses it). Choose the courier sent by default; empty = euShipments picks (only if there is one courier).",
+      "empty": "No couriers loaded — run the nomenclature sync.",
+      "couriers": "Couriers",
+      "default": "Default",
+      "needsChoice": "Several couriers and none chosen — orders to this country stop before sending.",
+      "courier": "Courier for {country}",
+      "service": "Service for {country}",
+      "none": "— not chosen —",
+      "serviceAuto": "service: automatic",
+      "officeOnly": "office only",
+      "save": "Save"
     }
   },
   "apiWatch": {
@@ -1281,7 +1296,8 @@
       "generic": "The action failed.",
       "shipment_active": "The order still has an active shipment at a warehouse — it must be cancelled there first.",
       "transition_guard__vendor_request_open": "A warehouse request of this order is still on its way or uncertain — resolve it first.",
-      "product_not_found": "Product not found or not in the company's product line."
+      "product_not_found": "Product not found or not in the company's product line.",
+      "no_gateway": "The order has no Shopify payment method."
     },
     "payload": {
       "title": "What will be sent",
@@ -1308,6 +1324,13 @@
         "product_not_found": "Product not found or not in the company's product line.",
         "not_editable": "The order is no longer in review — the product cannot be changed."
       }
+    },
+    "payment": {
+      "outstanding": "{amount} still owed",
+      "markCod": "“{names}” is cash on delivery",
+      "confirm": "The method “{names}” will count as cash on delivery for this store. All its orders not yet sent to a warehouse are re-classified and checked again. Continue?",
+      "done": "Done — orders re-classified: {n}.",
+      "failed": "Failed ({code})."
     }
   },
   "fulfill": {

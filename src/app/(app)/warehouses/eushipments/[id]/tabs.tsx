@@ -18,7 +18,10 @@ import {
   type ProductFilter,
 } from "@/server/eushipments/mirror";
 import { masterSkuFor } from "@/server/eushipments/read";
-import { EuCitiesForm, LinkEuProduct } from "../forms";
+import { CountryCourierForm, EuCitiesForm, LinkEuProduct } from "../forms";
+import { countryCourierBoard } from "@/server/eushipments/country-couriers";
+import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
+import { can } from "@/server/auth/rbac";
 import { Freshness } from "../ui";
 
 type Search = { tab?: string; q?: string; filter?: string; page?: string };
@@ -408,11 +411,60 @@ async function CodTab({ accountId, connectionId, search }: Props) {
   );
 }
 
-async function CouriersTab({ accountId, connectionId, canSync, search }: Props) {
+async function CouriersTab({ accountId, connectionId, canSync, role, search }: Props) {
   const t = await getTranslations("eushipments");
+  const tc = await getTranslations("eushipments.countryCourier");
   const r = await mirrorCouriers(accountId, connectionId, { q: search.q });
+  const defaults = await countryCourierBoard(accountId, connectionId);
+  const canManage = can(role, "connections.manage");
   return (
     <>
+      <Card>
+        <h2 className="mt-0 text-base font-semibold">{tc("title")}</h2>
+        <p className="mt-0 text-sm text-muted">{tc("hint")}</p>
+        {defaults.length === 0 ? (
+          <Empty text={tc("empty")} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse" aria-label={tc("title")}>
+              <thead>
+                <tr>
+                  <th className={thCls}>{t("country")}</th>
+                  <th className={thCls}>{tc("couriers")}</th>
+                  <th className={thCls}>{tc("default")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {defaults.map((d) => (
+                  <tr key={d.iso}>
+                    <td className={tdCls}>
+                      {d.name} <span className="font-mono text-[13px] text-muted">{d.iso}</span>
+                      {d.needsChoice && <div className="text-xs text-block">{tc("needsChoice")}</div>}
+                    </td>
+                    <td className={mono}>{d.couriers.length}</td>
+                    <td className={tdCls}>
+                      <CountryCourierForm
+                        id={connectionId}
+                        country={d.iso}
+                        couriers={d.couriers.map((c) => ({
+                          courierId: c.courierId,
+                          name: c.name,
+                          toAddress: c.toAddress,
+                          toOffice: c.toOffice,
+                        }))}
+                        courierId={d.courierId}
+                        serviceName={d.serviceName}
+                        services={SERVICE_NAMES}
+                        disabled={!canManage}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
       <Card>
         <h2 className="mt-0 text-base font-semibold">{t("couriers")}</h2>
         {r.couriers.length === 0 ? (

@@ -1,5 +1,6 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
 import { suspiciousItemIds } from "@/server/products/suspicious";
@@ -271,6 +272,7 @@ export async function validateOrder(
       codLocalAmount: num(order.codLocalAmount),
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
+      shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
       lines: order.lines.map((l) => ({
         ...l,
         // A product a person picked for this line by hand is not what the shop variant links to: only the
