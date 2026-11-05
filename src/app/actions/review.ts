@@ -7,6 +7,9 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { checkOrderAs, type Finding } from "@/server/checks";
 import {
+  chooseLineProduct,
+  clearLineProduct,
+  searchLineProducts,
   decideOrder,
   editOrderAddress,
   getOrderRawPayload,
@@ -155,6 +158,51 @@ export async function restartAction(orderId: string): Promise<ReviewActionResult
     await restartOrder(actorFrom(ctx), orderId);
     revalidatePath(orderPath(orderId));
     return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Избери продукт за реда": a hand-picked product for one order line (this order only). */
+export async function chooseLineProductAction(input: {
+  orderId: string;
+  lineId: string;
+  productId: string;
+  note?: string | null;
+}): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await chooseLineProduct(actorFrom(ctx), input);
+    revalidatePath(orderPath(input.orderId));
+    revalidatePath("/orders");
+    return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+export async function clearLineProductAction(input: {
+  orderId: string;
+  lineId: string;
+}): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await clearLineProduct(actorFrom(ctx), input);
+    revalidatePath(orderPath(input.orderId));
+    revalidatePath("/orders");
+    return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+export async function searchLineProductsAction(
+  orderId: string,
+  q: string,
+): Promise<Awaited<ReturnType<typeof searchLineProducts>> | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    return await searchLineProducts(actorFrom(ctx), orderId, String(q ?? ""));
   } catch (err) {
     return toError(err);
   }

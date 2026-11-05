@@ -150,7 +150,10 @@ export async function getOrder(actor: Actor & { companyScope: CompanyScope }, id
       store: { select: { id: true, name: true, code: true, domain: true } },
       company: { select: { name: true } },
       lines: {
-        include: { product: { select: { id: true, sku: true, name: true } } },
+        include: {
+          product: { select: { id: true, sku: true, name: true } },
+          productChoice: { select: { userId: true, note: true, createdAt: true } },
+        },
         orderBy: { title: "asc" },
       },
     },

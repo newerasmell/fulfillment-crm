@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { login } from "./helpers";
 
-// Synthetic data only (tests/e2e/seed-review.ts): a separate group "Тест група Преглед" with orders #R-7001..3.
+// Synthetic data only (tests/e2e/seed-review.ts): a separate group "Тест група Преглед" with orders #R-7001..4.
 const REVIEWER = {
   email: process.env.E2E_REVIEW_EMAIL ?? "",
   password: process.env.E2E_REVIEW_PASSWORD ?? "",
@@ -129,4 +129,27 @@ test("review: fix the address with live validation, approve, hold, block; review
   await page.goto("/settings/audit");
   await expect(page.getByRole("cell", { name: "order.address_edited" }).first()).toBeVisible();
   await expect(page.getByRole("cell", { name: "review.reason_created" }).first()).toBeVisible();
+});
+
+test("a mystery line gets its product picked by hand for this order only, and the order is checked again", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await login(page, REVIEWER);
+  await openOrder(page, "#R-7004");
+  const findings = page.getByTestId("findings");
+  await expect(findings).toContainText("Mystery Decant 15 ml");
+  const items = page.getByRole("table", { name: "Артикули" });
+  const row = items.getByRole("row").filter({ hasText: "Mystery Decant 15 ml" });
+  await row.getByRole("button", { name: "Избери продукт" }).click();
+  await row.getByLabel("Търси по SKU, име или код в склада").fill("decant 15");
+  await row.getByLabel("Бележка (по избор), напр. защо този").fill("подхожда на другия артикул");
+  await row.getByTestId("line-product-pick-SYN-RV-DECANT-15").click();
+  await expect(row).toContainText("SYN-RV-DECANT-15", { timeout: 60_000 });
+  await expect(row).toContainText("избран ръчно за тази поръчка · подхожда на другия артикул");
+  await expect(row).toContainText("4 за продажба");
+  await expect(findings).not.toContainText("Mystery Decant 15 ml");
+  // Undo puts the line back to unmatched.
+  await row.getByRole("button", { name: "Махни избора" }).click();
+  await expect(row).toContainText("Несвързан", { timeout: 60_000 });
 });

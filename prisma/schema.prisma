@@ -219,6 +219,7 @@ model Account {
   reviewReasonCodes         ReviewReasonCode[]
   productLines              ProductLine[]
   suspiciousLinks           SuspiciousLink[]
+  orderLineProductChoices   OrderLineProductChoice[]
   stockSettings             StockSettings?
   inventoryPushes           InventoryPush[]
   inventoryActivations      InventoryActivation[]
@@ -568,14 +569,15 @@ model Product {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  account        Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  line           ProductLine?         @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
-  parent         Product?             @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
-  testers        Product[]            @relation("TesterOf")
+  account        Account                  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line           ProductLine?             @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: NoAction)
+  parent         Product?                 @relation("TesterOf", fields: [accountId, parentProductId], references: [accountId, id], onDelete: NoAction)
+  testers        Product[]                @relation("TesterOf")
   eans           ProductEan[]
   variantLinks   StoreVariantLink[]
   vendorProducts VendorProduct[]
   orderLines     OrderLine[]
+  lineChoices    OrderLineProductChoice[]
   inboundLines   InboundLine[]
   weightWrites   ShopifyWeightWrite[]
 
@@ -811,10 +813,11 @@ model OrderLine {
   /// Unit price after discounts, order currency.
   unitPrice      Decimal @db.Decimal(12, 2)
 
-  order            Order             @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
-  variantLink      StoreVariantLink? @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: NoAction)
-  product          Product?          @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+  order            Order                   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  variantLink      StoreVariantLink?       @relation(fields: [accountId, variantLinkId], references: [accountId, id], onDelete: NoAction)
+  product          Product?                @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
   fulfillmentLines FulfillmentLine[]
+  productChoice    OrderLineProductChoice?
 
   @@unique([accountId, id])
   @@unique([orderId, shopifyLineGid])
@@ -2622,4 +2625,28 @@ model SuspiciousLink {
   @@unique([accountId, id])
   @@unique([accountId, kind, itemId])
   @@index([accountId, flagged])
+}
+
+/// A person chose the product of ONE order line by hand (owner request 2026-11-05: "mystery" items whose real
+/// product is decided per order). Only this line: the Shopify variant link is not touched, so the next order of the
+/// same item asks again. While a choice exists, order re-imports and re-links keep line.productId = productId.
+model OrderLineProductChoice {
+  id                String   @id @default(cuid())
+  accountId         String
+  orderLineId       String
+  productId         String
+  /// The line's product before the first pick (restored on clear when the line has no Shopify variant).
+  previousProductId String?
+  userId            String?
+  note              String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  orderLine OrderLine @relation(fields: [accountId, orderLineId], references: [accountId, id], onDelete: Cascade)
+  product   Product   @relation(fields: [accountId, productId], references: [accountId, id], onDelete: NoAction)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderLineId])
+  @@index([accountId, productId])
 }

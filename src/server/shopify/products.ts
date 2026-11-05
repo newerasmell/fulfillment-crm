@@ -103,7 +103,7 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
     // Automatic match only fills lines that have no product yet.
     if (match)
       await tx.orderLine.updateMany({
-        where: { variantLinkId: link.id, productId: null },
+        where: { variantLinkId: link.id, productId: null, productChoice: { is: null } },
         data: { productId: match.productId },
       });
     return { linkId: link.id, matched: !!link.productId };
@@ -211,7 +211,8 @@ async function applyLink(tx: Tx, linkId: string, productId: string, method: "man
     data: { productId, matchMethod: method, matchedAt: new Date() },
   });
   await tx.orderLine.updateMany({
-    where: { variantLinkId: linkId, order: { status: { in: RELINKABLE } } },
+    // A line whose product a person chose by hand keeps it.
+    where: { variantLinkId: linkId, order: { status: { in: RELINKABLE } }, productChoice: { is: null } },
     data: { productId },
   });
 }

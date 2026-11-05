@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { PRE_APPROVAL } from "@/server/shopify/statuses";
 import { customPhoneRule } from "@/integrations/eushipments/phone";
 import { SERVICE_NAMES } from "@/integrations/eushipments/schemas";
 import { suspiciousItemIds } from "@/server/products/suspicious";
@@ -162,6 +163,7 @@ export async function validateOrder(
           quantity: true,
           unitPrice: true,
           variantLinkId: true,
+          productChoice: { select: { id: true } },
         },
       },
       company: { select: { lineId: true } },
@@ -271,8 +273,10 @@ export async function validateOrder(
       tags: order.tags,
       lines: order.lines.map((l) => ({
         ...l,
+        // A product a person picked for this line by hand is not what the shop variant links to: only the
+        // warehouse side of the chosen product can disagree.
         suspiciousLink:
-          (!!l.variantLinkId && suspicious.has(l.variantLinkId)) ||
+          (!l.productChoice && !!l.variantLinkId && suspicious.has(l.variantLinkId)) ||
           (!!l.productId && suspiciousProducts.has(l.productId)),
       })),
     },
@@ -455,6 +459,7 @@ export async function checkOrder(
   const source = "checks";
   const started = await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
     await lockForUpdate("Order", orderId);
+    await repairChosenLines(tx, orderId);
     const r = await transition(tx, {
       orderId,
       to: "CHECKING",
@@ -491,6 +496,23 @@ export async function checkOrder(
     select: { status: true },
   });
   return { ...result, status, moved };
+}
+
+/**
+ * A product a person picked for a line by hand (OrderLineProductChoice) wins over anything that rewrote the line
+ * meanwhile (a variant re-link racing the pick, a future writer): before the order is checked, every line of an
+ * order still in review gets its chosen product back. Never touches an order past review.
+ */
+async function repairChosenLines(tx: Prisma.TransactionClient, orderId: string) {
+  const order = await tx.order.findUnique({ where: { id: orderId }, select: { status: true } });
+  if (!order || !PRE_APPROVAL.has(order.status)) return;
+  const drifted = await tx.orderLine.findMany({
+    where: { orderId, productChoice: { isNot: null } },
+    select: { id: true, productId: true, productChoice: { select: { productId: true } } },
+  });
+  for (const l of drifted)
+    if (l.productChoice && l.productId !== l.productChoice.productId)
+      await tx.orderLine.update({ where: { id: l.id }, data: { productId: l.productChoice.productId } });
 }
 
 /** checkOrder for a person (re-check button, reroute): needs orders.review and the order in their scope. */

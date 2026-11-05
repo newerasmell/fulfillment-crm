@@ -304,7 +304,7 @@ export async function linkItemInTx(
   if (res.count !== 1) return false;
   // A person's decision re-points the lines of orders not sent anywhere yet (same as the matching queue).
   await tx.orderLine.updateMany({
-    where: { variantLinkId: itemId, order: { status: { in: RELINKABLE } } },
+    where: { variantLinkId: itemId, order: { status: { in: RELINKABLE } }, productChoice: { is: null } },
     data: { productId },
   });
   return true;

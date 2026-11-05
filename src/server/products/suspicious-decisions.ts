@@ -134,7 +134,12 @@ export async function unlinkSuspiciousLink(
       });
       if (res.count !== 1) throw new DomainError("link_changed");
       await tx.orderLine.updateMany({
-        where: { variantLinkId: r.itemId, productId: r.productId, order: { status: { in: RELINKABLE } } },
+        where: {
+          variantLinkId: r.itemId,
+          productId: r.productId,
+          order: { status: { in: RELINKABLE } },
+          productChoice: { is: null },
+        },
         data: { productId: null },
       });
     } else {

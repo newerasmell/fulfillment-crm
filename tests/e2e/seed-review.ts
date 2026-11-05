@@ -128,5 +128,83 @@ export async function seedReview() {
     });
     await checkOrder(accountId, id, { actor: { kind: "system" } });
   }
+  // #R-7004: a "mystery" item with no product of its own; the reviewer picks the real one for this order only.
+  const decant = await sys.product.create({
+    data: { accountId, sku: "SYN-RV-DECANT-15", name: "Synthetic Decant 15 ml" },
+  });
+  const dvp = await sys.vendorProduct.create({
+    data: {
+      accountId,
+      connectionId: c.id,
+      productId: decant.id,
+      vendorId: "RSYN-RV-DECANT-15",
+      lastSyncAt: new Date(),
+      raw: { id: "RSYN-RV-DECANT-15", name: "Synthetic Decant 15 ml", type: "single" },
+    },
+  });
+  await sys.stockLevel.create({
+    data: {
+      accountId,
+      vendorProductId: dvp.id,
+      physical: 4,
+      free: 4,
+      sellable: 4,
+      snapshotAt: new Date(),
+      source: "PUSH",
+    },
+  });
+  const address = {
+    name: "Review Buyer 4",
+    company: null,
+    address1: "Synthetic Street 4",
+    address2: null,
+    city: "Sofia",
+    province: null,
+    provinceCode: null,
+    zip: "1000",
+    country: "Bulgaria",
+    countryCode: "BG",
+    phone: "+359888000704",
+  };
+  const mysteryId = await withAccountTransaction(accountId, async (tx) => {
+    const o = await tx.order.create({
+      data: {
+        accountId,
+        companyId: company.id,
+        source: "SHOPIFY",
+        storeId: store.id,
+        shopifyOrderGid: "gid://shopify/Order/970004",
+        number: "#R-7004",
+        status: "IMPORTED",
+        customerName: address.name,
+        email: "review-buyer-4@example.com",
+        phone: address.phone,
+        shippingAddressOriginal: { ...address, countryCodeV2: "BG" },
+        shippingAddress: address,
+        currency: "EUR",
+        subtotal: "30.00",
+        total: "30.00",
+        paymentMethod: "PREPAID",
+        countryCode: "BG",
+        tags: [],
+        placedAt: new Date(Date.now() - 5 * 3600_000),
+        lines: {
+          create: [
+            { productId: product.id, sku: product.sku, title: product.name, quantity: 1, unitPrice: "30.00" },
+            { productId: null, sku: null, title: "Mystery Decant 15 ml", quantity: 1, unitPrice: "0.00" },
+          ],
+        },
+      },
+    });
+    await recordInitialStatus(tx, {
+      accountId,
+      orderId: o.id,
+      status: "IMPORTED",
+      actor: { kind: "system" },
+      source: "e2e.seed",
+    });
+    return o.id;
+  });
+  await checkOrder(accountId, mysteryId, { actor: { kind: "system" } });
   return { email: owner.user.email, password: REVIEW_PASSWORD, totp: owner.totpSecret };
 }
