@@ -6,7 +6,7 @@ import { DomainError } from "@/server/accounts";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { checkOrderAs, type Finding } from "@/server/checks";
-import { markOrderGatewaysCod } from "@/server/shopify/payment";
+import { markOrderGatewayCod } from "@/server/shopify/payment";
 import {
   chooseLineProduct,
   clearLineProduct,
@@ -212,10 +212,11 @@ export async function searchLineProductsAction(
 /** "Този метод е наложен платеж": the order's payment gateways join its store's COD list; open orders re-classified. */
 export async function markGatewaysCodAction(
   orderId: string,
-): Promise<ReviewActionResult & { added?: string[]; changed?: number }> {
+  gateway: string,
+): Promise<ReviewActionResult & { added?: boolean; changed?: number }> {
   const ctx = await requireAccountContext();
   try {
-    const r = await markOrderGatewaysCod(actorFrom(ctx), orderId);
+    const r = await markOrderGatewayCod(actorFrom(ctx), orderId, gateway);
     revalidatePath(orderPath(orderId));
     revalidatePath("/orders");
     return { ok: true, added: r.added, changed: r.changed };

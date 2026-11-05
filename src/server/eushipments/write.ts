@@ -335,7 +335,7 @@ export async function courierFor(
   accountId: string,
   connectionId: string,
   country: string | null,
-  input: { courierId?: number; serviceName?: (typeof SERVICE_NAMES)[number] },
+  input: { courierId?: number; serviceName?: (typeof SERVICE_NAMES)[number]; officeId?: number },
 ) {
   const db = accountDb(accountId);
   const findings: Finding[] = [];
@@ -362,6 +362,24 @@ export async function courierFor(
   if (courierId) {
     const all = await db.eushipmentsCourier.count({ where: { connectionId } });
     const known = await db.eushipmentsCourier.findFirst({ where: { connectionId, courierId } });
+    if (known && mirror.length && !mirror.some((c) => c.courierId === courierId))
+      findings.push(
+        block(
+          "courier_wrong_country",
+          "courierId",
+          `Куриер „${known.name}“ не работи в ${country} — изберете куриер за тази държава.`,
+          `The courier "${known.name}" does not serve ${country} — choose a courier for this country.`,
+        ),
+      );
+    if (known && !known.toAddress && !input.officeId)
+      findings.push(
+        block(
+          "courier_office_only",
+          "courierId",
+          `Куриер „${known.name}“ доставя само до офис, а поръчката е до адрес.`,
+          `The courier "${known.name}" delivers to offices only, and this order goes to an address.`,
+        ),
+      );
     if (all > 0 && !known)
       findings.push(
         block(

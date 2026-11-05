@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { enqueueOutbound, processOutbound } from "@/server/outbox/outbox";
 import { SYNTHETIC_ORDERS } from "@/integrations/shopify/__fixtures__/orders";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { checkOrder } from "@/server/checks";
@@ -7,7 +8,7 @@ import { euTestGroup } from "@/server/eushipments/test-fixtures";
 import { previewEuOrderFindings } from "@/server/eushipments/write";
 import { updateStoreSettings } from "@/server/stores";
 import { importShopifyOrder } from "./orders";
-import { classifyPayment, markOrderGatewaysCod, shopifyPaymentOf } from "./payment";
+import { classifyPayment, markOrderGatewayCod, shopifyPaymentOf } from "./payment";
 
 // Synthetic data only; nothing calls Shopify or a warehouse. "Αντικαταβολή" stands for a store's own local-language
 // cash-on-delivery method name.
@@ -68,11 +69,15 @@ describe("custom local-language COD methods (database)", () => {
       ),
     ).toContain("payment_unclear");
 
-    await expect(markOrderGatewaysCod({ ...g.owner, role: "OPERATOR" }, orderId)).rejects.toBeInstanceOf(
-      ForbiddenError,
-    );
-    const marked = await markOrderGatewaysCod(g.owner, orderId);
-    expect(marked).toEqual({ added: [LOCAL_COD], changed: 1 });
+    await expect(
+      markOrderGatewayCod({ ...g.owner, role: "OPERATOR" }, orderId, LOCAL_COD),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    // Only one of the order's own gateways, never a card/wallet one.
+    await expect(markOrderGatewayCod(g.owner, orderId, "something else")).rejects.toMatchObject({
+      code: "no_gateway",
+    });
+    const marked = await markOrderGatewayCod(g.owner, orderId, LOCAL_COD);
+    expect(marked).toEqual({ added: true, changed: 1 });
     const o = await g.db.order.findUniqueOrThrow({ where: { id: orderId }, include: { check: true } });
     expect(o.paymentMethod).toBe("COD");
     expect(o.codAmount?.toString()).toBe("45");
@@ -110,5 +115,69 @@ describe("custom local-language COD methods (database)", () => {
     expect((await g.db.order.findUniqueOrThrow({ where: { id: shipped.orderId } })).paymentMethod).toBe(
       before.paymentMethod,
     );
+  });
+
+  it("an order queued before the rule is refused by the outbox at send time; nothing reaches the warehouse", async () => {
+    const store = await g.db.store.findUniqueOrThrow({ where: { id: g.store.id } });
+    const { orderId } = await importShopifyOrder(g.accountId, store, {
+      ...SYNTHETIC_ORDERS[2]!,
+      paymentGatewayNames: ["Σύνθετη πληρωμή (άγνωστη)"],
+    });
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: orderId } })).paymentMethod).toBe("PREPAID");
+    await g.db.order.update({ where: { id: orderId }, data: { status: "QUEUED" } });
+    const f = await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId,
+        connectionId: g.connection.id,
+        externalId: "TST-PAY-1",
+        status: "QUEUED",
+      },
+    });
+    const { request: req } = await enqueueOutbound({
+      accountId: g.accountId,
+      connectionId: g.connection.id,
+      operation: "eushipments.createOrder",
+      idempotencyKey: "order:TST-PAY-1",
+      payload: { body: {}, ctx: { fulfillmentId: f.id } },
+      fulfillmentId: f.id,
+    });
+    const send = vi.fn();
+    const status = await processOutbound(
+      req.id,
+      () =>
+        ({
+          send,
+          readBack: send,
+          supportsTestMode: () => false,
+        }) as never,
+    );
+    expect(status).toBe("REFUSED");
+    expect(send).not.toHaveBeenCalled();
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe("SUBMIT_FAILED");
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("SUBMIT_FAILED");
+    expect(await g.db.alert.count({ where: { kind: "order_payment_unclear", entityId: orderId } })).toBe(1);
+  });
+
+  it("an APPROVED order whose payment changes goes back to review; card methods are never COD", async () => {
+    const store = await g.db.store.findUniqueOrThrow({ where: { id: g.store.id } });
+    const GW = "Πληρωμή στην πόρτα (συνθετικό)";
+    const { orderId } = await importShopifyOrder(g.accountId, store, {
+      ...SYNTHETIC_ORDERS[0]!,
+      id: "gid://shopify/Order/990004",
+      name: "#P-9904",
+      paymentGatewayNames: ["shopify_payments", GW],
+    });
+    await g.db.order.update({ where: { id: orderId }, data: { status: "APPROVED" } });
+    await expect(markOrderGatewayCod(g.owner, orderId, "shopify_payments")).rejects.toMatchObject({
+      code: "gateway_never_cod",
+    });
+    await markOrderGatewayCod(g.owner, orderId, GW);
+    const o = await g.db.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(o.paymentMethod).toBe("COD");
+    expect(["NEEDS_REVIEW", "READY"]).toContain(o.status);
+    const codList = (await g.db.store.findUniqueOrThrow({ where: { id: g.store.id } })).codGateways;
+    expect(codList).toContain(GW);
+    expect(codList).not.toContain("shopify_payments");
   });
 });

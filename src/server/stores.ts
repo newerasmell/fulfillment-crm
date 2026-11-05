@@ -1,3 +1,4 @@
+import { logger } from "@/lib/logger";
 import { reclassifyStorePayments } from "@/server/shopify/payment";
 import { z } from "zod";
 import type { InventoryPushMode, StoreWriteMode } from "@/generated/prisma/client";
@@ -191,8 +192,7 @@ export async function updateStoreSettings(
   // A changed COD list re-classifies the store's orders that have not left for a warehouse (custom local-language
   // payment names: a missing one recorded COD orders as prepaid).
   const norm = (l: string[]) => [...l.map((g) => g.trim().toLowerCase())].sort().join("\n");
-  if (norm(before.codGateways) !== norm(input.codGateways))
-    await reclassifyStorePayments(actor.accountId, storeId, actor.userId);
+  const codChanged = norm(before.codGateways) !== norm(input.codGateways);
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
@@ -215,6 +215,10 @@ export async function updateStoreSettings(
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
+  if (codChanged)
+    await reclassifyStorePayments(actor.accountId, storeId, actor.userId).catch((err) =>
+      logger.warn({ storeId, err: String(err) }, "payment re-classification after a COD list change failed"),
+    );
   return after;
 }
 

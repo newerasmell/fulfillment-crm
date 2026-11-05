@@ -89,6 +89,10 @@ describe("euShipments default courier per country", () => {
     await expect(
       setCountryCourier(g.owner, { connectionId: g.connection.id, country: "GR", courierId: 999 }),
     ).rejects.toMatchObject({ code: "courier_unknown" });
+    // A courier of another country is refused.
+    await expect(
+      setCountryCourier(g.owner, { connectionId: g.connection.id, country: "GR", courierId: 601 }),
+    ).rejects.toMatchObject({ code: "courier_wrong_country" });
     await setCountryCourier(g.owner, {
       connectionId: g.connection.id,
       country: "gr",

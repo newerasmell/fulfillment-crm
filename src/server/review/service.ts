@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { customPhoneRule } from "@/integrations/eushipments/phone";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
@@ -228,6 +229,7 @@ export async function previewAddress(actor: ScopedActor, orderId: string, values
       paymentMethod: order.paymentMethod,
       codAmount: order.codAmount == null ? null : Number(order.codAmount),
       codLocalAmount: order.codLocalAmount == null ? null : Number(order.codLocalAmount),
+      shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
       lines: order.lines,

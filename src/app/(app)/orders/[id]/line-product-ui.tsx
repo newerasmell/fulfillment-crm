@@ -201,7 +201,7 @@ export function LineProductPicker({
   );
 }
 
-/** On order.payment_unclear: the order's payment method(s) are cash on delivery for this store. */
+/** On order.payment_unclear: one of the order's payment methods is cash on delivery for this store. */
 export function MarkGatewaysCodButton({ orderId, gateways }: { orderId: string; gateways: string[] }) {
   const t = useTranslations("review.payment");
   const te = useTranslations("review");
@@ -210,26 +210,29 @@ export function MarkGatewaysCodButton({ orderId, gateways }: { orderId: string; 
   const [msg, setMsg] = useState<string | null>(null);
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        disabled={pending}
-        className={`${ghostButtonCls} text-sm`}
-        data-testid="mark-gateways-cod"
-        onClick={() => {
-          if (!window.confirm(t("confirm", { names: gateways.join(", ") }))) return;
-          start(async () => {
-            const r = await markGatewaysCodAction(orderId);
-            if (r?.error)
-              setMsg(te.has(`error.${r.error}`) ? te(`error.${r.error}`) : t("failed", { code: r.error }));
-            else {
-              setMsg(t("done", { n: r?.changed ?? 0 }));
-              router.refresh();
-            }
-          });
-        }}
-      >
-        {t("markCod", { names: gateways.join(", ") })}
-      </button>
+      {gateways.map((g) => (
+        <button
+          key={g}
+          type="button"
+          disabled={pending}
+          className={`${ghostButtonCls} text-sm`}
+          data-testid="mark-gateways-cod"
+          onClick={() => {
+            if (!window.confirm(t("confirm", { names: g }))) return;
+            start(async () => {
+              const r = await markGatewaysCodAction(orderId, g);
+              if (r?.error)
+                setMsg(te.has(`error.${r.error}`) ? te(`error.${r.error}`) : t("failed", { code: r.error }));
+              else {
+                setMsg(t("done", { n: r?.changed ?? 0 }));
+                router.refresh();
+              }
+            });
+          }}
+        >
+          {t("markCod", { names: g })}
+        </button>
+      ))}
       {msg && <span className="text-sm text-muted">{msg}</span>}
     </span>
   );

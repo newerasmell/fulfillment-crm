@@ -54,14 +54,15 @@ test("euShipments: connection, mode, mirror tabs and the DRY_RUN preview", async
 
   // couriers, office search, countries
   await tabs.getByRole("link", { name: /Куриери и офиси/ }).click();
-  await expect(page.getByRole("cell", { name: "Hungary GLS New" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Hungary GLS New" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Куриер по подразбиране по държава" })).toBeVisible();
   await page
     .getByRole("searchbox")
     .or(page.getByRole("textbox", { name: "Търсене" }))
     .fill("Sample");
   await page.getByRole("button", { name: "Търси" }).click();
   await expect(page.getByRole("cell", { name: "Sample Locker Two" })).toBeVisible();
-  await expect(page.getByRole("cell", { name: "Автомат" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Автомат", exact: true })).toBeVisible();
 
   await tabs.getByRole("link", { name: /Складове/ }).click();
   await expect(page.getByRole("cell", { name: "Warehouse Ruse" })).toBeVisible();

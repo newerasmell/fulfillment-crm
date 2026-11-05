@@ -5,6 +5,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
+import { countryCouriers } from "./write";
 
 /**
  * "Куриер по подразбиране" per destination country of one euShipments connection (owner request 2026-11-05).
@@ -98,6 +99,10 @@ export async function setCountryCourier(actor: ScopedActor, raw: z.input<typeof 
       select: { id: true },
     });
     if (!known) throw new DomainError("courier_unknown");
+    // Only a courier that serves this country (when the mirror can tell).
+    const serving = await countryCouriers(actor.accountId, input.connectionId, input.country);
+    if (serving.length && !serving.some((c) => c.courierId === input.courierId))
+      throw new DomainError("courier_wrong_country");
     await db.eushipmentsCountryCourier.upsert({
       where,
       create: {

@@ -210,15 +210,18 @@ function scopeTransactionClient(tx: Prisma.TransactionClient, accountId: string)
 }
 
 /** Tables whose rows may be locked from an account transaction (row locks serialise racing changes). */
-const LOCKABLE: Readonly<Record<"Membership" | "FulfillmentConnection" | "Order", string>> = Object.freeze(
-  Object.assign(Object.create(null) as object, {
-    Membership: '"Membership"',
-    FulfillmentConnection: '"FulfillmentConnection"',
-    // The order pipeline: submit, cancel, hold and the checks serialise on the order row (P4-03).
-    Order: '"Order"',
-  }),
-);
-export type LockableTable = "Membership" | "FulfillmentConnection" | "Order";
+const LOCKABLE: Readonly<Record<"Membership" | "FulfillmentConnection" | "Order" | "Store", string>> =
+  Object.freeze(
+    Object.assign(Object.create(null) as object, {
+      Membership: '"Membership"',
+      FulfillmentConnection: '"FulfillmentConnection"',
+      // The order pipeline: submit, cancel, hold and the checks serialise on the order row (P4-03).
+      Order: '"Order"',
+      // The store's COD method list (read-modify-write from the order screen).
+      Store: '"Store"',
+    }),
+  );
+export type LockableTable = "Membership" | "FulfillmentConnection" | "Order" | "Store";
 
 export interface AccountTxHelpers {
   /** SELECT … FOR UPDATE on this account's rows of `table` (one row when `id` is given). */
