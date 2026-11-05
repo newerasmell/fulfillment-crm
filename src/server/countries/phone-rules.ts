@@ -19,6 +19,7 @@ import {
   type RecheckResult,
 } from "@/server/checks/recheck";
 import { accountDb } from "@/server/db/client";
+import { localCurrencyFor } from "./currency";
 import type { ScopedActor } from "@/server/stores";
 
 /**
@@ -50,7 +51,10 @@ export const CountrySettingInput = z.object({
 
 export interface CountryRow {
   country: string;
+  /** The currency in use: the group's own setting, else the built-in default (currencyDefault). */
   currency: string | null;
+  /** True when no own setting exists and `currency` is the built-in default for the country. */
+  currencyDefault: boolean;
   builtin: PhoneRule | null;
   custom: PhoneRule | null;
   /** True when a custom rule is stored but a built-in rule exists (it is ignored). */
@@ -67,7 +71,14 @@ export async function listCountries(actor: ScopedActor): Promise<CountryRow[]> {
     const s = byCountry.get(country);
     const custom = customPhoneRule(s?.phoneRules);
     const builtin = PHONE_RULES[country] ?? null;
-    return { country, currency: s?.currency ?? null, builtin, custom, customIgnored: !!builtin && !!custom };
+    return {
+      country,
+      currency: localCurrencyFor(s, country),
+      currencyDefault: !s?.currency,
+      builtin,
+      custom,
+      customIgnored: !!builtin && !!custom,
+    };
   });
 }
 
@@ -129,6 +140,8 @@ export async function saveCountrySetting(
   const before = await db.countrySetting.findUnique({
     where: { accountId_country: { accountId: actor.accountId, country: input.country } },
   });
+  // A new setting takes the country's default currency when the form did not send one.
+  if (!before && !input.currency) input.currency = localCurrencyFor(null, input.country) ?? undefined;
   if (!before && !input.currency) throw new DomainError("currency_required");
   const data = {
     phoneRules: (rule ?? {}) as object,
@@ -160,4 +173,43 @@ export async function saveCountrySetting(
     enqueue: deps.enqueue,
   });
   return { country: input.country, rule, recheck };
+}
+
+export const CountryCurrencyInput = z.object({ country: Country, currency: Currency });
+
+/**
+ * Only the local currency of a country (every row of Настройки → Държави, including the ones with a built-in
+ * euShipments phone rule): the phone rule stays as it is. Re-checks the open orders to that country.
+ */
+export async function saveCountryCurrency(
+  actor: ScopedActor,
+  raw: z.input<typeof CountryCurrencyInput>,
+  deps: { enqueue?: EnqueueCheck } = {},
+) {
+  assertCan(actor.role, "countries.manage");
+  const input = CountryCurrencyInput.parse(raw);
+  const db = accountDb(actor.accountId);
+  const where = { accountId_country: { accountId: actor.accountId, country: input.country } };
+  const before = await db.countrySetting.findUnique({ where });
+  const after = await db.countrySetting.upsert({
+    where,
+    create: { accountId: actor.accountId, country: input.country, currency: input.currency, phoneRules: {} },
+    update: { currency: input.currency },
+  });
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "country.settings",
+    entityType: "CountrySetting",
+    entityId: after.id,
+    before: before ? { currency: before.currency } : null,
+    after: { country: input.country, currency: after.currency },
+    ip: actor.ip,
+    userAgent: actor.userAgent,
+  });
+  const recheck = await recheckOpenOrders(actor.accountId, ordersToCountry(input.country), {
+    actor: { kind: "user", userId: actor.userId },
+    enqueue: deps.enqueue,
+  });
+  return { country: input.country, currency: after.currency, recheck };
 }

@@ -8,7 +8,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { enqueueOrderCheck } from "@/server/checks/jobs";
 import type { EnqueueCheck, RecheckResult } from "@/server/checks/recheck";
-import { saveCountrySetting } from "@/server/countries/phone-rules";
+import { saveCountryCurrency, saveCountrySetting } from "@/server/countries/phone-rules";
 import { webBoss } from "@/server/jobs/boss";
 import { QUEUES } from "@/server/jobs/queues";
 import {
@@ -135,6 +135,23 @@ export async function fillWeightsAction(_prev: RecheckState, _form: FormData): P
     revalidatePath("/products", "layout");
     revalidatePath("/orders", "layout");
     return { ok: true, recheck: r.recheck, bulk: r };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** Настройки → Държави: only the local currency of one country (any row). */
+export async function saveCountryCurrencyAction(_prev: RecheckState, form: FormData): Promise<RecheckState> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await saveCountryCurrency(
+      actorFrom(ctx),
+      { country: String(form.get("country") ?? ""), currency: String(form.get("currency") ?? "") },
+      { enqueue: enqueuerFor(ctx.accountId) },
+    );
+    revalidatePath("/settings/countries");
+    revalidatePath("/orders", "layout");
+    return { ok: true, recheck: r.recheck };
   } catch (err) {
     return toError(err);
   }

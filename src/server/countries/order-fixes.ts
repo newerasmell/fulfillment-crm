@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import { customPhoneRule, hasBuiltinPhoneRule, type PhoneRule } from "@/integrations/eushipments/phone";
 import { can } from "@/server/auth/rbac";
 import type { Finding } from "@/server/checks/findings";
@@ -73,7 +74,7 @@ export async function orderSourceFixes(
         suggestPhoneRule(sample, country) ?? { style: "international", cc: "", trunk: "", lengths: [8] },
       samplePhone: sample,
       needsCurrency: !setting,
-      defaultCurrency: setting?.currency ?? order.currency,
+      defaultCurrency: localCurrencyFor(setting, country) ?? order.currency,
       hasCustom: !!custom,
     };
   }

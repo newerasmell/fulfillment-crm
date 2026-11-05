@@ -3382,7 +3382,12 @@
       "currency_required": "Enter the local currency.",
       "calling_code_mismatch": "The calling code does not match the country.",
       "not_found": "Not found."
-    }
+    },
+    "currencyFor": "Local currency for {country}",
+    "saveCurrency": "Save",
+    "savedCurrency": "Saved",
+    "currencyDefault": "the country's default — can be changed",
+    "currencyMissing": "Unknown currency — enter it"
   },
   "weights": {
     "title": "Weight",

@@ -1,3 +1,4 @@
+import { localCurrencyFor } from "@/server/countries/currency";
 import { z } from "zod";
 import { Prisma, type ConnectionType } from "@/generated/prisma/client";
 import { AWB_OPS } from "@/integrations/eushipments/awb-adapter";
@@ -264,7 +265,7 @@ interface CountryCtx {
 
 async function countryCtxOf(db: Tx, accountId: string, country: string): Promise<CountryCtx> {
   const s = await db.countrySetting.findUnique({ where: { accountId_country: { accountId, country } } });
-  return { currency: s?.currency?.toUpperCase() ?? null, phoneRule: customPhoneRule(s?.phoneRules) };
+  return { currency: localCurrencyFor(s, country), phoneRule: customPhoneRule(s?.phoneRules) };
 }
 
 function joyDraftOf(
