@@ -1335,6 +1335,22 @@
       "confirm": "The method “{names}” will count as cash on delivery for this store. All its orders not yet sent to a warehouse are re-classified and checked again. Continue?",
       "done": "Done — orders re-classified: {n}.",
       "failed": "Failed ({code})."
+    },
+    "cod": {
+      "edit": "Change the COD",
+      "restore": "Restore Shopify's payment",
+      "amount": "COD ({currency})",
+      "note": "Reason (optional), e.g. product swapped",
+      "save": "Save and check",
+      "cancel": "Cancel",
+      "hint": "0 = prepaid (nothing to collect). For this order in the CRM only; the order is checked again.",
+      "manualBadge": "changed by hand",
+      "error": {
+        "not_editable": "The order is no longer in review — the COD cannot be changed.",
+        "invalid": "Enter an amount, e.g. 45 or 45.50 (0 = prepaid).",
+        "cod_zero_needs_reason": "Shopify still shows money owed — for 0 (prepaid) write the reason.",
+        "cod_currency_mismatch": "The country's local currency differs from the order currency — the amount must be in the local currency; change it in Shopify."
+      }
     }
   },
   "fulfill": {

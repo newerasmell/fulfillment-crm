@@ -169,6 +169,7 @@ export async function validateOrder(
         },
       },
       company: { select: { lineId: true } },
+      codOverride: { select: { id: true } },
       // "Изпрати от" (P4-09): a person's warehouse choice replaces the routing decision until it is cleared.
       warehouseChoice: true,
     },
@@ -273,7 +274,9 @@ export async function validateOrder(
       codLocalAmount: num(order.codLocalAmount),
       codLocalCurrency: order.codLocalCurrency,
       tags: order.tags,
+      // A person's manual COD (OrderCodOverride) decides the payment instead of Shopify's facts.
       shopifyPayment: order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null,
+      codManual: !!order.codOverride,
       lines: order.lines.map((l) => ({
         ...l,
         // A product a person picked for this line by hand is not what the shop variant links to: only the

@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import {
+  clearOrderCodAction,
+  setOrderCodAction,
   markGatewaysCodAction,
   chooseLineProductAction,
   clearLineProductAction,
@@ -235,5 +237,113 @@ export function MarkGatewaysCodButton({ orderId, gateways }: { orderId: string; 
       ))}
       {msg && <span className="text-sm text-muted">{msg}</span>}
     </span>
+  );
+}
+
+/** "Промени наложения платеж": the amount to collect for this order (0 = prepaid), e.g. after a product swap. */
+export function CodEditor({
+  orderId,
+  current,
+  total,
+  currency,
+  manual,
+}: {
+  orderId: string;
+  /** Current COD amount, null when prepaid. */
+  current: string | null;
+  total: string;
+  currency: string;
+  /** The COD was set by a person (shows "Върни от Shopify"). */
+  manual: boolean;
+}) {
+  const t = useTranslations("review.cod");
+  const te = useTranslations("review");
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(current ?? total);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const errText = (code: string) =>
+    t.has(`error.${code}`) ? t(`error.${code}`) : te.has(`error.${code}`) ? te(`error.${code}`) : code;
+  if (!open)
+    return (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className={`${ghostButtonCls} px-2 py-0.5 text-xs`}
+          onClick={() => setOpen(true)}
+          data-testid="cod-edit-open"
+        >
+          {t("edit")}
+        </button>
+        {manual && (
+          <button
+            type="button"
+            disabled={pending}
+            className="text-xs text-muted underline"
+            data-testid="cod-restore"
+            onClick={() =>
+              start(async () => {
+                const r = await clearOrderCodAction(orderId);
+                if (r?.error) setError(r.error);
+                else router.refresh();
+              })
+            }
+          >
+            {t("restore")}
+          </button>
+        )}
+        {error && <span className="text-xs text-block">{errText(error)}</span>}
+      </span>
+    );
+  return (
+    <form
+      className="mt-2 flex flex-wrap items-center gap-2"
+      data-testid="cod-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        start(async () => {
+          const r = await setOrderCodAction({
+            orderId,
+            amount: amount.replace(",", "."),
+            note: note || null,
+          });
+          if (r?.error) setError(r.error);
+          else {
+            setOpen(false);
+            router.refresh();
+          }
+        });
+      }}
+    >
+      <label className="inline-flex items-center gap-1 text-sm">
+        {t("amount", { currency })}
+        <input
+          autoFocus
+          inputMode="decimal"
+          className={`${inputCls} w-28 font-mono`}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          aria-label={t("amount", { currency })}
+        />
+      </label>
+      <input
+        className={`${inputCls} min-w-40 flex-1`}
+        placeholder={t("note")}
+        aria-label={t("note")}
+        maxLength={300}
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <button type="submit" disabled={pending} className={`${buttonCls} px-3 py-1 text-sm`}>
+        {t("save")}
+      </button>
+      <button type="button" className={ghostButtonCls} onClick={() => setOpen(false)}>
+        {t("cancel")}
+      </button>
+      <span className="w-full text-xs text-muted">{t("hint")}</span>
+      {error && <span className="w-full text-sm text-block">{errText(error)}</span>}
+    </form>
   );
 }

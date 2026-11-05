@@ -50,7 +50,8 @@ export async function reclassifyStorePayments(accountId: string, storeId: string
   const store = await db.store.findUnique({ where: { id: storeId }, select: { codGateways: true } });
   if (!store) return [];
   const orders = await db.order.findMany({
-    where: { storeId, source: "SHOPIFY", status: { in: RECLASSIFIABLE } },
+    // A person's manual COD (OrderCodOverride) is never re-classified.
+    where: { storeId, source: "SHOPIFY", status: { in: RECLASSIFIABLE }, codOverride: { is: null } },
     select: { id: true, raw: true, paymentMethod: true, codAmount: true },
   });
   const changed: string[] = [];
@@ -64,9 +65,16 @@ export async function reclassifyStorePayments(accountId: string, storeId: string
         await lockForUpdate("Order", o.id);
         const fresh = await tx.order.findUnique({
           where: { id: o.id },
-          select: { status: true, paymentMethod: true },
+          select: { status: true, paymentMethod: true, codOverride: { select: { id: true } } },
         });
-        if (!fresh || !RECLASSIFIABLE.includes(fresh.status) || fresh.paymentMethod === method) return false;
+        // A manual COD saved meanwhile wins (checked again under the order lock).
+        if (
+          !fresh ||
+          fresh.codOverride ||
+          !RECLASSIFIABLE.includes(fresh.status) ||
+          fresh.paymentMethod === method
+        )
+          return false;
         await tx.order.update({
           where: { id: o.id },
           data: {
