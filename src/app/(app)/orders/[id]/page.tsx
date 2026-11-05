@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
-import { ghostButtonCls, tdCls, thCls } from "@/components/ui/form";
+import { ghostButtonCls } from "@/components/ui/form";
 import { DomainError } from "@/server/accounts";
 import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
@@ -37,7 +37,11 @@ import {
 } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
-import { CodEditor, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
+import { CodEditor, CodRestoreButton, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
+import { CopyValue } from "@/components/ui/CopyValue";
+import { EditableCard } from "@/components/ui/EditableCard";
+import { Field, fieldGridCls, Fold } from "@/components/ui/Fold";
+import { ChevronDownIcon } from "@/components/ui/icons";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
 import { WeightForm } from "@/components/rules-weights/WeightForm";
@@ -154,6 +158,21 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
     decisions: c.decisions.filter((k): k is "approve" | "hold" | "block" => k !== "warehouse"),
   }));
 
+  /** Items grid: product · qty · price · one column per warehouse · actions (sm and wider). */
+  const itemCols = `minmax(0,1fr) 64px 104px repeat(${data.connections.length}, minmax(112px,140px)) 80px`;
+  const whTone = (type: string) =>
+    type === "EUSHIPMENTS"
+      ? {
+          head: "border-eu bg-eu-chip/60 text-eu-text",
+          cell: "border-eu bg-eu-chip/40",
+          text: "text-eu-text",
+        }
+      : {
+          head: "border-fhb bg-fhb-chip/60 text-fhb-text",
+          cell: "border-fhb bg-fhb-chip/40",
+          text: "text-fhb-text",
+        };
+
   const timelineText = (e: TimelineEntry) => {
     if (e.kind === "status" && o.has(`timeline.${e.cause}`)) return o(`timeline.${e.cause}`);
     if (e.kind === "status")
@@ -208,167 +227,233 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           </p>
         ))}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <div className="flex min-w-0 flex-col gap-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <Card>
-              <h2 className="mt-0 text-base font-semibold">{t("customer")}</h2>
-              <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-                <dt className="text-muted">{t("name")}</dt>
-                <dd className="m-0">{order.customerName ?? "—"}</dd>
-                <dt className="text-muted">{t("email")}</dt>
-                <dd className="m-0 font-mono text-[13px]">{order.email ?? "—"}</dd>
-                <dt className="text-muted">{t("payment")}</dt>
-                <dd className="m-0">
-                  {order.paymentMethod === "COD" ? `${t("cod")} · ${money(order.codAmount)}` : t("prepaid")}
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+        <div className="flex min-w-0 flex-col gap-5">
+          <div className="grid gap-5 md:grid-cols-2">
+            <EditableCard
+              title={t("customer")}
+              editLabel={r("cod.edit")}
+              editTestId="cod-edit-open"
+              canEdit={data.editable && data.canReview}
+              editor={
+                <CodEditor
+                  orderId={order.id}
+                  current={
+                    order.paymentMethod === "COD" && order.codAmount ? order.codAmount.toString() : null
+                  }
+                  total={order.total.toString()}
+                  currency={order.currency}
+                />
+              }
+            >
+              <div className={fieldGridCls}>
+                <Field label={t("name")}>
+                  {order.customerName ? <CopyValue value={order.customerName} /> : "—"}
+                </Field>
+                <Field label={t("email")}>{order.email ? <CopyValue value={order.email} mono /> : "—"}</Field>
+                <Field label={t("payment")} wide>
+                  <CopyValue
+                    value={
+                      order.paymentMethod === "COD" ? Number(order.codAmount ?? 0).toFixed(2) : t("prepaid")
+                    }
+                  >
+                    {order.paymentMethod === "COD" ? (
+                      <>
+                        {t("cod")} · <strong>{money(order.codAmount)}</strong>
+                      </>
+                    ) : (
+                      t("prepaid")
+                    )}
+                  </CopyValue>
                   {payment && payment.gateways.length > 0 && (
-                    <span className="text-muted" data-testid="payment-gateways">
-                      {" "}
-                      · {payment.gateways.join(", ")}
+                    <div className="mt-0.5 text-xs text-muted" data-testid="payment-gateways">
+                      Shopify: {payment.gateways.join(", ")}
                       {(payment.outstanding ?? 0) > 0 &&
                         ` · ${r("payment.outstanding", { amount: money(payment.outstanding) })}`}
-                    </span>
+                    </div>
                   )}
                   {order.codOverride && (
-                    <div className="text-xs text-muted" data-testid="cod-manual">
-                      {r("cod.manualBadge")}
-                      {order.codOverride.note ? ` · ${order.codOverride.note}` : ""}
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                      <span data-testid="cod-manual">
+                        {r("cod.manualBadge")}
+                        {order.codOverride.note ? ` · ${order.codOverride.note}` : ""}
+                      </span>
+                      {data.editable && data.canReview && <CodRestoreButton orderId={order.id} />}
                     </div>
                   )}
-                  {data.editable && data.canReview && (
-                    <div className="mt-1">
-                      <CodEditor
-                        orderId={order.id}
-                        current={
-                          order.paymentMethod === "COD" && order.codAmount ? order.codAmount.toString() : null
-                        }
-                        total={order.total.toString()}
-                        currency={order.currency}
-                        manual={!!order.codOverride}
-                      />
-                    </div>
-                  )}
-                </dd>
-              </dl>
-              {order.note && <p className="mb-0 rounded-lg bg-hover px-3 py-2">{order.note}</p>}
-              {risk?.recommendation && (
-                <p className="mb-0 text-sm text-muted">
-                  {t("risk")}: {risk.recommendation}{" "}
-                  {risk.levels?.length ? `· ${risk.levels.join(", ")}` : ""}
-                </p>
-              )}
-            </Card>
-            <Card>
-              <h2 className="mt-0 text-base font-semibold">{r("address.title")}</h2>
-              <AddressEditor
-                orderId={order.id}
-                version={data.version}
-                values={data.editor}
-                original={original}
-                editable={data.editable}
-                canReview={data.canReview}
-                statusLabel={statusLabel}
-              />
-            </Card>
+                </Field>
+                {risk?.recommendation && risk.recommendation.toUpperCase() !== "NONE" && (
+                  <Field label={t("risk")} wide>
+                    <span className="rounded-full bg-block-bg px-2 py-0.5 text-xs font-medium text-block">
+                      {risk.recommendation}
+                      {risk.levels?.length ? ` · ${risk.levels.join(", ")}` : ""}
+                    </span>
+                  </Field>
+                )}
+              </div>
+              {order.note && <p className="mt-3 mb-0 rounded-lg bg-hover px-3 py-2 text-sm">{order.note}</p>}
+            </EditableCard>
+            <AddressEditor
+              title={r("address.title")}
+              orderId={order.id}
+              version={data.version}
+              values={data.editor}
+              original={original}
+              editable={data.editable}
+              canReview={data.canReview}
+              statusLabel={statusLabel}
+            />
           </div>
 
           <Card>
-            <h2 className="mt-0 text-base font-semibold">{t("items")}</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse" aria-label={t("items")}>
-                <thead>
-                  <tr>
-                    <th className={thCls}>{t("product")}</th>
-                    <th className={thCls}>{t("sku")}</th>
-                    <th className={thCls}>{t("master")}</th>
-                    <th className={`${thCls} text-right`}>{t("qty")}</th>
-                    <th className={`${thCls} text-right`}>{t("unitPrice")}</th>
-                    {data.connections.map((c) => (
-                      <th key={c.id} className={`${thCls} text-right`}>
-                        <WarehouseChip type={c.type} name={c.name} />
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {order.lines.map((l) => (
-                    <tr key={l.id}>
-                      <td className={tdCls}>{l.title}</td>
-                      <td className={`${tdCls} font-mono text-[13px]`}>{l.sku ?? "—"}</td>
-                      <td className={tdCls}>
-                        {l.product ? (
-                          <span className="font-mono text-[13px]" title={l.product.name}>
+            <h2 className="mt-0 mb-3 text-base font-semibold">{t("items")}</h2>
+            <div
+              role="table"
+              aria-label={t("items")}
+              className="flex flex-col gap-3 sm:gap-0"
+              style={{ "--cols": itemCols } as React.CSSProperties}
+            >
+              <div
+                role="row"
+                className="hidden border-b border-line sm:grid sm:[grid-template-columns:var(--cols)]"
+              >
+                <div role="columnheader" className="px-3 py-2.5 text-[13px] font-bold text-black">
+                  {t("product")}
+                </div>
+                <div role="columnheader" className="px-3 py-2.5 text-right text-[13px] font-bold text-black">
+                  {t("qty")}
+                </div>
+                <div role="columnheader" className="px-3 py-2.5 text-right text-[13px] font-bold text-black">
+                  {t("unitPrice")}
+                </div>
+                {data.connections.map((c) => (
+                  <div
+                    key={c.id}
+                    role="columnheader"
+                    className={`rounded-t-lg border-t-[3px] px-3 py-2.5 text-center text-[13px] font-bold uppercase ${whTone(c.type).head}`}
+                  >
+                    {c.name}
+                  </div>
+                ))}
+                <div role="columnheader" aria-label={r("lineProduct.choose")} />
+              </div>
+              {order.lines.map((l) => (
+                <div
+                  key={l.id}
+                  role="row"
+                  className="relative flex flex-col gap-2 rounded-lg border border-line-soft p-3 sm:grid sm:gap-0 sm:rounded-none sm:border-0 sm:border-b sm:p-0 sm:[grid-template-columns:var(--cols)]"
+                >
+                  <div role="cell" className="min-w-0 pr-16 sm:px-3 sm:py-3.5 sm:pr-3">
+                    <div className="font-medium">
+                      <CopyValue value={l.title} />
+                    </div>
+                    {l.sku && (
+                      <div className="text-xs text-muted">
+                        <CopyValue value={l.sku} mono className="!text-xs" />
+                      </div>
+                    )}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-label">
+                      {l.product ? (
+                        <>
+                          <span aria-hidden>→</span>
+                          <span className="font-mono" title={l.product.name}>
                             {l.product.sku}
                           </span>
-                        ) : (
-                          <Link href="/products" className="text-warn hover:underline">
-                            {t("unmatched")}
-                          </Link>
-                        )}
-                        {l.productChoice && (
-                          <div
-                            className="text-[11px] text-muted"
-                            title={l.productChoice.note ?? undefined}
-                            data-testid={`line-product-chosen-${l.id}`}
-                          >
-                            {r("lineProduct.chosenBadge")}
-                            {l.productChoice.note ? ` · ${l.productChoice.note}` : ""}
-                          </div>
-                        )}
-                        {data.editable && data.canReview && (
-                          <div className="mt-1">
-                            <LineProductPicker
-                              orderId={order.id}
-                              lineId={l.id}
-                              title={l.title}
-                              chosen={!!l.productChoice}
-                              qty={l.quantity}
-                            />
-                          </div>
-                        )}
-                      </td>
-                      <td className={`${tdCls} text-right font-mono`}>{l.quantity}</td>
-                      <td className={`${tdCls} text-right font-mono`}>{money(l.unitPrice)}</td>
-                      {data.connections.map((c) => {
-                        const linked = l.productId ? data.stock.get(l.productId) : undefined;
-                        const cell = linked?.get(c.id);
-                        if (!linked?.has(c.id))
-                          return (
-                            <td key={c.id} className={`${tdCls} text-right text-sm text-muted`}>
-                              {r("stock.noLink")}
-                            </td>
-                          );
-                        if (!cell)
-                          return (
-                            <td key={c.id} className={`${tdCls} text-right text-sm text-muted`}>
-                              {r("stock.noSnapshot")}
-                            </td>
-                          );
-                        const short = cell.sellable < l.quantity;
-                        return (
-                          <td
-                            key={c.id}
-                            className={`${tdCls} text-right`}
-                            title={r("stock.detail", {
-                              free: cell.free,
-                              physical: cell.physical,
-                              reserved: cell.reserved,
-                              source: cell.source,
-                              age: format.relativeTime(cell.snapshotAt),
-                            })}
-                          >
-                            <span className={`font-mono ${short ? "text-block" : "text-ok"}`}>
-                              {r("stock.cell", { sellable: cell.sellable })}
+                        </>
+                      ) : (
+                        <Link href="/products" className="text-warn hover:underline">
+                          {t("unmatched")}
+                        </Link>
+                      )}
+                      {l.productChoice && (
+                        <span
+                          className="rounded-full bg-hover px-1.5"
+                          title={l.productChoice.note ?? undefined}
+                          data-testid={`line-product-chosen-${l.id}`}
+                        >
+                          {r("lineProduct.chosenBadge")}
+                          {l.productChoice.note ? ` · ${l.productChoice.note}` : ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-4 text-sm sm:contents">
+                    <div role="cell" className="font-mono sm:px-3 sm:py-3.5 sm:text-right sm:self-center">
+                      <span className="mr-1 font-sans text-muted sm:hidden">{t("qty")}</span>
+                      {l.quantity}
+                    </div>
+                    <div role="cell" className="font-mono sm:px-3 sm:py-3.5 sm:text-right sm:self-center">
+                      <span className="mr-1 font-sans text-muted sm:hidden">{t("unitPrice")}</span>
+                      {money(l.unitPrice)}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:contents">
+                    {data.connections.map((c) => {
+                      const tone = whTone(c.type);
+                      const linked = l.productId ? data.stock.get(l.productId) : undefined;
+                      const cell = linked?.get(c.id);
+                      const short = !!cell && cell.sellable < l.quantity;
+                      return (
+                        <div
+                          key={c.id}
+                          role="cell"
+                          className={`flex flex-col justify-center rounded-lg border-t-[3px] px-3 py-2 text-left sm:rounded-none sm:border-t-0 sm:py-3.5 sm:text-center ${tone.cell}`}
+                          title={
+                            cell
+                              ? r("stock.detail", {
+                                  free: cell.free,
+                                  physical: cell.physical,
+                                  reserved: cell.reserved,
+                                  source: cell.source,
+                                  age: format.relativeTime(cell.snapshotAt),
+                                })
+                              : undefined
+                          }
+                        >
+                          <span className={`text-[11px] font-bold uppercase sm:hidden ${tone.text}`}>
+                            {c.name}
+                          </span>
+                          {!linked?.has(c.id) || !cell ? (
+                            <span className="text-sm text-muted">
+                              <span className="font-mono">—</span>{" "}
+                              <span className="block text-xs">
+                                {!linked?.has(c.id) ? r("stock.noLink") : r("stock.noSnapshot")}
+                              </span>
                             </span>
-                            {short && <div className="text-xs text-block">{r("stock.short")}</div>}
-                            <div className="text-xs text-muted">{format.relativeTime(cell.snapshotAt)}</div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                          ) : (
+                            <span>
+                              <span
+                                className={`font-mono text-lg leading-tight font-semibold ${short ? "text-warn" : tone.text}`}
+                              >
+                                {cell.sellable}
+                              </span>{" "}
+                              <span className={`block text-xs ${short ? "text-warn" : "text-muted"}`}>
+                                {short
+                                  ? r("stock.shortNeeds", { need: l.quantity })
+                                  : r("stock.sellableLabel")}
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div
+                    role="cell"
+                    className="absolute top-2 right-2 sm:static sm:flex sm:items-center sm:justify-end sm:px-2"
+                  >
+                    {data.editable && data.canReview && (
+                      <LineProductPicker
+                        orderId={order.id}
+                        lineId={l.id}
+                        title={l.title}
+                        chosen={!!l.productChoice}
+                        qty={l.quantity}
+                      />
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
             <dl className="mt-4 mb-0 ml-auto grid w-fit grid-cols-[max-content_max-content] gap-x-6 gap-y-1 text-right">
               <dt className="text-muted">{t("subtotal")}</dt>
@@ -379,48 +464,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
           </Card>
 
           <Card>
-            <h2 className="mt-0 text-base font-semibold">{r("timeline.title")}</h2>
-            {data.timeline.length === 0 ? (
-              <p className="m-0 text-muted">{r("timeline.empty")}</p>
-            ) : (
-              <ol className="m-0 flex list-none flex-col gap-2 p-0" data-testid="timeline">
-                {data.timeline.map((e, i) => (
-                  <li
-                    key={i}
-                    className="flex flex-wrap items-baseline gap-x-3 border-b border-line-soft pb-2"
-                  >
-                    <time className="font-mono text-xs text-muted" dateTime={e.at.toISOString()}>
-                      {when(e.at)}
-                    </time>
-                    <span className="font-medium">{timelineText(e)}</span>
-                    {e.kind === "status" && (
-                      <span className="text-xs text-muted">
-                        {e.cause}
-                        {" · "}
-                        {e.who ?? (e.actorType === "ai" ? r("timeline.ai") : r("timeline.system"))}
-                        {e.reason ? ` · ${e.reason}` : ""}
-                      </span>
-                    )}
-                    {e.kind === "vendor" && e.status && <StatusChip status={e.status} />}
-                    {e.kind === "review" && (
-                      <span className="text-xs text-muted">
-                        {e.who ?? "—"}
-                        {e.reasonCode ? ` · ${e.reasonCode}` : ""}
-                        {e.reasonText ? ` · ${e.reasonText}` : ""}
-                        {e.changes ? ` · ${r("timeline.changes", { n: e.changes })}` : ""}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </Card>
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-4">
-          <AiCard actor={actorFrom(ctx)} orderId={order.id} />
-          <Card>
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="m-0 text-base font-semibold">{r("findings.title")}</h2>
               {data.canReview && <RecheckButton orderId={order.id} />}
             </div>
@@ -526,41 +570,9 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
               </>
             )}
           </Card>
+        </div>
 
-          <Card>
-            <h2 className="mt-0 text-base font-semibold">{r("routing.title")}</h2>
-            {!check ? (
-              <p className="m-0 text-muted">{r("routing.none")}</p>
-            ) : (
-              <>
-                <p className="m-0" data-testid="review-routing">
-                  {locale === "en" ? check.routing.explanation.en : check.routing.explanation.bg}
-                </p>
-                {check.routing.connectionName && check.routing.connectionType && (
-                  <p className="m-0 mt-2 flex items-center gap-2">
-                    <WarehouseChip type={check.routing.connectionType} name={check.routing.connectionName} />
-                    {check.routing.crossCompany && (
-                      <span className="text-xs text-warn">{r("routing.crossCompany")}</span>
-                    )}
-                  </p>
-                )}
-                {check.routing.steps.length > 0 && (
-                  <details className="mt-2 text-sm">
-                    <summary className="cursor-pointer text-muted">{r("routing.steps")}</summary>
-                    <ol className="mt-1 mb-0 pl-5">
-                      {check.routing.steps.map((s) => (
-                        <li key={s.ruleId}>
-                          {r("routing.step", { number: s.number, name: s.name })}:{" "}
-                          {r(`routing.outcome.${s.outcome}`, { failed: s.failed ?? "" })}
-                        </li>
-                      ))}
-                    </ol>
-                  </details>
-                )}
-              </>
-            )}
-          </Card>
-
+        <div className="flex min-w-0 flex-col gap-5">
           <Card>
             <h2 className="mt-0 text-base font-semibold">{o("title")}</h2>
             <p className="mt-0 mb-2 text-sm text-muted">{o("subtitle")}</p>
@@ -576,10 +588,59 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
             {data.canReview && !CHOICE_STATUSES.includes(order.status) && (
               <p className="mb-0 text-xs text-muted">{o("notNow", { status: statusLabel })}</p>
             )}
+            <details className="group mt-3 border-t border-line-soft pt-3">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm text-muted [&::-webkit-details-marker]:hidden">
+                <span className="transition-transform group-open:rotate-180">
+                  <ChevronDownIcon />
+                </span>
+                {r("routing.title")} — {r("routing.why")}
+              </summary>
+              <div className="mt-2 text-sm">
+                {!check ? (
+                  <p className="m-0 text-muted">{r("routing.none")}</p>
+                ) : (
+                  <>
+                    <p className="m-0" data-testid="review-routing">
+                      {locale === "en" ? check.routing.explanation.en : check.routing.explanation.bg}
+                    </p>
+                    {check.routing.connectionName && check.routing.connectionType && (
+                      <p className="m-0 mt-2 flex items-center gap-2">
+                        <WarehouseChip
+                          type={check.routing.connectionType}
+                          name={check.routing.connectionName}
+                        />
+                        {check.routing.crossCompany && (
+                          <span className="text-xs text-warn">{r("routing.crossCompany")}</span>
+                        )}
+                      </p>
+                    )}
+                    {check.routing.steps.length > 0 && (
+                      <details className="mt-2 text-sm">
+                        <summary className="cursor-pointer text-muted">{r("routing.steps")}</summary>
+                        <ol className="mt-1 mb-0 pl-5">
+                          {check.routing.steps.map((s) => (
+                            <li key={s.ruleId}>
+                              {r("routing.step", { number: s.number, name: s.name })}:{" "}
+                              {r(`routing.outcome.${s.outcome}`, { failed: s.failed ?? "" })}
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    )}
+                  </>
+                )}
+              </div>
+            </details>
           </Card>
 
-          <Card>
-            <h2 className="mt-0 text-base font-semibold">{o("shipments.title")}</h2>
+          <AiCard actor={actorFrom(ctx)} orderId={order.id} />
+
+          <Fold
+            title={o("shipments.title")}
+            hint={data.fulfillments.length}
+            testId="fold-shipments"
+            open={!!rv.open}
+          >
             {data.fulfillments.length === 0 ? (
               <p className="m-0 text-muted">{o("shipments.none")}</p>
             ) : (
@@ -703,10 +764,9 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 </ul>
               </details>
             )}
-          </Card>
+          </Fold>
 
-          <Card>
-            <h2 className="mt-0 text-base font-semibold">{r("payload.title")}</h2>
+          <Fold title={r("payload.title")} hint={data.payload?.connection} testId="fold-payload">
             {!data.payload ? (
               <p className="m-0 text-muted">
                 {PAYLOAD_PREVIEW_STATUSES.includes(order.status) ? r("payload.noRoute") : r("payload.sent")}
@@ -729,64 +789,104 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 </pre>
               </>
             )}
-          </Card>
+          </Fold>
+
+          {writeBacks.length > 0 && (
+            <Fold title={tw("title")} hint={writeBacks.length} testId="fold-writeback">
+              <ul className="m-0 flex list-none flex-col gap-2 p-0">
+                {writeBacks.map((w) => (
+                  <li key={w.id} data-testid="writeback" data-kind={w.kind} className="flex flex-col gap-1">
+                    <span className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm font-medium">{tw(`kind.${w.kind}`)}</span>
+                      <span className="font-mono text-[13px]">
+                        {w.kind === "EVENT"
+                          ? tw(`event.${w.value}`)
+                          : w.kind === "TRACKING"
+                            ? w.value
+                            : (w.trackingNumber ?? tw("noTracking"))}
+                      </span>
+                      <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
+                        {tw(`status.${w.status}`)}
+                      </span>
+                      {w.lastError && <span className="text-sm text-warn">{w.lastError}</span>}
+                    </span>
+                    {w.request && can(ctx.role, "outbox.payloads") && (
+                      <details>
+                        <summary className="text-sm text-muted">
+                          {tw("request", { mutation: WRITE_BACK_MUTATION[w.kind] })}
+                        </summary>
+                        <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
+                          {JSON.stringify(
+                            (w.request as { variables?: unknown }).variables ?? w.request,
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </details>
+                    )}
+                    {w.lastResponse && can(ctx.role, "outbox.payloads") && (
+                      <details>
+                        <summary className="text-sm text-muted">{tw("response")}</summary>
+                        <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
+                          {JSON.stringify(w.lastResponse, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </Fold>
+          )}
 
           {data.canRaw && (
-            <Card>
-              <h2 className="mt-0 text-base font-semibold">{r("raw.title")}</h2>
+            <Fold title={r("raw.title")} testId="fold-raw">
               <div className="flex flex-col gap-2 text-sm">
                 {(["shopify", "original", "routing", "outbox"] as const).map((k) => (
                   <RawDetails key={k} orderId={order.id} section={k} summary={r(`raw.${k}`)} />
                 ))}
               </div>
-            </Card>
+            </Fold>
           )}
         </div>
       </div>
 
-      {writeBacks.length > 0 && (
-        <Card>
-          <h2 className="mt-0 text-base font-semibold">{tw("title")}</h2>
-          <ul className="m-0 flex list-none flex-col gap-2 p-0">
-            {writeBacks.map((w) => (
-              <li key={w.id} data-testid="writeback" data-kind={w.kind} className="flex flex-col gap-1">
-                <span className="flex flex-wrap items-center gap-3">
-                  <span className="text-sm font-medium">{tw(`kind.${w.kind}`)}</span>
-                  <span className="font-mono text-[13px]">
-                    {w.kind === "EVENT"
-                      ? tw(`event.${w.value}`)
-                      : w.kind === "TRACKING"
-                        ? w.value
-                        : (w.trackingNumber ?? tw("noTracking"))}
+      <Fold
+        title={r("timeline.title")}
+        hint={r("timeline.count", { n: data.timeline.length })}
+        testId="fold-timeline"
+      >
+        {data.timeline.length === 0 ? (
+          <p className="m-0 text-muted">{r("timeline.empty")}</p>
+        ) : (
+          <ol className="m-0 flex list-none flex-col gap-2 p-0" data-testid="timeline">
+            {data.timeline.map((e, i) => (
+              <li key={i} className="flex flex-wrap items-baseline gap-x-3 border-b border-line-soft pb-2">
+                <time className="font-mono text-xs text-muted" dateTime={e.at.toISOString()}>
+                  {when(e.at)}
+                </time>
+                <span className="font-medium">{timelineText(e)}</span>
+                {e.kind === "status" && (
+                  <span className="text-xs text-muted">
+                    {e.cause}
+                    {" · "}
+                    {e.who ?? (e.actorType === "ai" ? r("timeline.ai") : r("timeline.system"))}
+                    {e.reason ? ` · ${e.reason}` : ""}
                   </span>
-                  <span className="rounded-full bg-hover px-2 py-0.5 text-xs">
-                    {tw(`status.${w.status}`)}
-                  </span>
-                  {w.lastError && <span className="text-sm text-warn">{w.lastError}</span>}
-                </span>
-                {w.request && can(ctx.role, "outbox.payloads") && (
-                  <details>
-                    <summary className="text-sm text-muted">
-                      {tw("request", { mutation: WRITE_BACK_MUTATION[w.kind] })}
-                    </summary>
-                    <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
-                      {JSON.stringify((w.request as { variables?: unknown }).variables ?? w.request, null, 2)}
-                    </pre>
-                  </details>
                 )}
-                {w.lastResponse && can(ctx.role, "outbox.payloads") && (
-                  <details>
-                    <summary className="text-sm text-muted">{tw("response")}</summary>
-                    <pre className="m-0 overflow-auto rounded-lg bg-hover p-3 font-mono text-xs">
-                      {JSON.stringify(w.lastResponse, null, 2)}
-                    </pre>
-                  </details>
+                {e.kind === "vendor" && e.status && <StatusChip status={e.status} />}
+                {e.kind === "review" && (
+                  <span className="text-xs text-muted">
+                    {e.who ?? "—"}
+                    {e.reasonCode ? ` · ${e.reasonCode}` : ""}
+                    {e.reasonText ? ` · ${e.reasonText}` : ""}
+                    {e.changes ? ` · ${r("timeline.changes", { n: e.changes })}` : ""}
+                  </span>
                 )}
               </li>
             ))}
-          </ul>
-        </Card>
-      )}
+          </ol>
+        )}
+      </Fold>
 
       {data.canReview && (
         <DecisionBar

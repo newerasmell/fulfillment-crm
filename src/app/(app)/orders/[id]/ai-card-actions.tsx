@@ -34,7 +34,7 @@ export function AiCardActions({
           type="button"
           disabled={pending}
           onClick={() => run(() => applyAiFixesAction(orderId, suggestionId), t("card.applied"))}
-          className="min-h-10 rounded-[10px] bg-white px-3 font-semibold text-ink disabled:opacity-60"
+          className="min-h-10 rounded-[10px] border border-current bg-white px-3 font-semibold text-ink disabled:opacity-60"
         >
           {t("card.apply")}
         </button>
@@ -44,16 +44,13 @@ export function AiCardActions({
           type="button"
           disabled={pending}
           onClick={() => run(() => requestAiReviewAction(orderId), t("card.requested"))}
-          className="min-h-10 rounded-[10px] border border-white/40 px-3 text-white disabled:opacity-60"
+          className="min-h-10 rounded-[10px] border border-current px-3 disabled:opacity-60"
         >
           {t("card.request")}
         </button>
       )}
       {message && (
-        <span
-          role={message.ok ? "status" : "alert"}
-          className={`text-sm ${message.ok ? "text-white" : "text-warn-bg"}`}
-        >
+        <span role={message.ok ? "status" : "alert"} className={`text-sm ${message.ok ? "" : "text-block"}`}>
           {message.text}
         </span>
       )}
