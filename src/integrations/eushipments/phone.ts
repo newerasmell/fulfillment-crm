@@ -37,15 +37,19 @@ export function customPhoneRule(json: unknown): PhoneRule | null {
   return r.success ? { ...r.data, lengths: [...new Set(r.data.lengths)].sort((a, b) => a - b) } : null;
 }
 
-/** The rule normalisePhone uses for a country: built-in (vendor guideline) first, then the group's own. */
+/**
+ * The rule normalisePhone uses for a country: the group's own rule when it set one (owner decision 2026-11-06: ACS
+ * Greece confirmed through euShipments that numbers with +30 are accepted and passed on unchanged, so a group may
+ * replace the guideline's format), else the built-in one from the vendor guideline.
+ */
 export function effectivePhoneRule(
   country: string | null | undefined,
   custom?: PhoneRule | null,
 ): { rule: PhoneRule; source: "builtin" | "custom" } | null {
   const cc = (country ?? "").toUpperCase();
+  if (custom) return { rule: custom, source: "custom" };
   const builtin = PHONE_RULES[cc];
-  if (builtin) return { rule: builtin, source: "builtin" };
-  return custom ? { rule: custom, source: "custom" } : null;
+  return builtin ? { rule: builtin, source: "builtin" } : null;
 }
 
 export const hasBuiltinPhoneRule = (country: string | null | undefined) =>

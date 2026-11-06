@@ -3432,7 +3432,10 @@
     "saveCurrency": "Save",
     "savedCurrency": "Saved",
     "currencyDefault": "the country's default — can be changed",
-    "currencyMissing": "Unknown currency — enter it"
+    "currencyMissing": "Unknown currency — enter it",
+    "overridesBuiltin": "replaces the euShipments guideline:",
+    "override": "Replace with our rule (e.g. with the country code)",
+    "warningOverride": "The euShipments guideline describes another format for {cc}. Your rule replaces it for every order to {cc} — use it only once the warehouse/courier confirmed it (e.g. ACS Greece accepts +30)."
   },
   "weights": {
     "title": "Weight",

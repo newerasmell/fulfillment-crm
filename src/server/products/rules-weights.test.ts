@@ -137,7 +137,7 @@ const variantRead = (grams: number | null) => ({
   },
 });
 
-describe("phone rules (pure): built-in euShipments rules always win", () => {
+describe("phone rules (pure): the group's own rule replaces the built-in euShipments rule", () => {
   it("a custom rule fills a country without a built-in rule only", () => {
     expect(normalisePhone("+357 99 123456", "CY")).toMatchObject({ ok: false, reason: "no_rule" });
     expect(normalisePhone("+357 99 123456", "CY", CY_RULE)).toMatchObject({
@@ -146,10 +146,18 @@ describe("phone rules (pure): built-in euShipments rules always win", () => {
     });
     expect(normalisePhone("99 123456", "CY", CY_RULE)).toMatchObject({ ok: true, value: "+35799123456" });
     expect(normalisePhone("99 1234", "CY", CY_RULE)).toMatchObject({ ok: false, reason: "wrong_length" });
-    // BG keeps the guideline's national format even when a (wrong) custom rule is passed.
-    const bogus = { style: "international" as const, cc: "359", trunk: "", lengths: [5] };
-    expect(normalisePhone("0888 123 456", "BG", bogus)).toMatchObject({ ok: true, value: "0888123456" });
-    expect(effectivePhoneRule("BG", bogus)).toEqual({ rule: PHONE_RULES.BG, source: "builtin" });
+    // Without an own rule, BG and GR keep the guideline's national format.
+    expect(normalisePhone("0888 123 456", "BG")).toMatchObject({ ok: true, value: "0888123456" });
+    expect(effectivePhoneRule("BG", null)).toEqual({ rule: PHONE_RULES.BG, source: "builtin" });
+    expect(normalisePhone("+30 698 092 8108", "GR")).toMatchObject({ ok: true, value: "6980928108" });
+    // An own rule replaces it (owner decision 2026-11-06: ACS Greece accepts +30): GR goes out with +30.
+    const GR_INTL = { style: "international" as const, cc: "30", trunk: "", lengths: [10] };
+    expect(effectivePhoneRule("GR", GR_INTL)).toEqual({ rule: GR_INTL, source: "custom" });
+    expect(normalisePhone("6980928108", "GR", GR_INTL)).toMatchObject({ ok: true, value: "+306980928108" });
+    expect(normalisePhone("+30 698 092 8108", "GR", GR_INTL)).toMatchObject({
+      ok: true,
+      value: "+306980928108",
+    });
     expect(effectivePhoneRule("CY", CY_RULE)).toEqual({ rule: CY_RULE, source: "custom" });
   });
 
@@ -185,13 +193,14 @@ describe("country phone rule: save, RBAC, audit, re-check of open orders", () =>
     other = await cyGroup("cy-rule-other");
   });
 
-  it("only OWNER/ADMIN; built-in countries refused; a new country needs its currency", async () => {
+  it("only OWNER/ADMIN; a built-in country can be replaced by an own rule; a new country needs its currency", async () => {
     await expect(
       saveCountrySetting(as(g, "OPERATOR"), { country: "CY", currency: "EUR", rule: CY_RULE }),
     ).rejects.toBeInstanceOf(ForbiddenError);
+    // The calling code is still the country's own (ITU), also when replacing a built-in rule.
     await expect(
       saveCountrySetting(g.owner, { country: "BG", currency: "EUR", rule: CY_RULE }),
-    ).rejects.toMatchObject({ code: "builtin_phone_rule" });
+    ).rejects.toMatchObject({ code: "calling_code_mismatch" });
     // A country without a known default currency needs one (CY now defaults to EUR).
     await expect(
       saveCountrySetting(g.owner, { country: "MK", rule: { ...CY_RULE, cc: "389" } }),
