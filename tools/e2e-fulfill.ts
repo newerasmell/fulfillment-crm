@@ -176,6 +176,59 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       },
     },
   });
+  // A shipped shipment whose courier Shopify does not know: its write-back is held for a person to pick one.
+  const held = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      shopifyOrderGid: "gid://shopify/Order/93005",
+      number: "#93005",
+      status: "SHIPPED",
+      customerName: "Тест Получател",
+      currency: "EUR",
+      subtotal: "20.00",
+      total: "20.00",
+      paymentMethod: "PREPAID",
+      countryCode: "GR",
+      placedAt: new Date(),
+    },
+  });
+  const hf = await db.fulfillment.create({
+    data: {
+      accountId,
+      orderId: held.id,
+      connectionId: connection.id,
+      externalId: "DM-93005",
+      status: "SHIPPED",
+      carrier: "E2E Local Courier",
+      trackingNumbers: ["E2E-TRK-93005"],
+      shippedAt: new Date(),
+    },
+  });
+  await db.shopifyWriteBack.create({
+    data: {
+      accountId,
+      storeId: store.id,
+      orderId: held.id,
+      fulfillmentId: hf.id,
+      trackingNumber: "E2E-TRK-93005",
+      status: "AWAITING_CONFIRMATION",
+      evaluatedMode: "LIVE",
+      lastError: "carrier_unknown",
+    },
+  });
+  await db.alert.create({
+    data: {
+      accountId,
+      kind: "shopify_carrier_unknown",
+      isTask: true,
+      title: "Изберете куриер за Shopify",
+      entityType: "Order",
+      entityId: held.id,
+    },
+  });
   // An open task of the kind the Shopify import raises after approval (alerts screen, P4-08).
   await db.alert.create({
     data: {

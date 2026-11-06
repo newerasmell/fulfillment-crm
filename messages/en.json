@@ -338,7 +338,17 @@
       "has_inventory_pushes": "it has inventory pushes to Shopify",
       "in_routing_rules": "it is used in routing rules",
       "shared_shop": "The shop is connected in another group too — webhooks stay.",
-      "not_connected": "No connection — webhooks could not be removed (Shopify stops them itself)."
+      "not_connected": "No connection — webhooks could not be removed (Shopify stops them itself).",
+      "field": {
+        "companyId": "Choose a company.",
+        "name": "Enter the store name.",
+        "domain": "The domain must be the *.myshopify.com address (e.g. my-store.myshopify.com), not the site's own domain.",
+        "code": "The code is 2–5 Latin letters or digits (e.g. GR1).",
+        "currency": "The currency is 3 letters (e.g. EUR).",
+        "countries": "Countries are 2-letter codes separated by commas (e.g. GR, CY).",
+        "clientId": "Enter the app's Client ID (at least 8 characters) or choose an app already added.",
+        "clientSecret": "Enter the app's Client secret (at least 8 characters) or choose an app already added."
+      }
     },
     "writeModes": {
       "READ_ONLY": "Read only",
@@ -1497,6 +1507,21 @@
         "FAILURE": "failed / returned"
       },
       "noTracking": "no tracking"
+    },
+    "carrierPick": {
+      "title": "Choose the carrier for Shopify",
+      "body": "Shopify does not know this shipment's carrier, so the tracking was not sent yet (Shopify would guess the carrier from the number, e.g. DHL instead of ACS). Choose the right carrier — the CRM sends the tracking right after.",
+      "carrier": "Warehouse carrier",
+      "none": "none",
+      "choose": "Choose a carrier…",
+      "save": "Save and send",
+      "remember": "Remembered for “{carrier}” — later shipments with this carrier go through on their own.",
+      "error": {
+        "carrier_not_shopify": "Choose a carrier from Shopify's list.",
+        "not_found": "Shipment not found.",
+        "forbidden": "You may not change shipments.",
+        "not_held": "This shipment is no longer waiting for a carrier."
+      }
     }
   },
   "alerts": {

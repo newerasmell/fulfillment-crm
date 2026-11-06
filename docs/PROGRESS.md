@@ -321,6 +321,21 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the per-location hint now counts exactly the button's items (tracked, one per inventory item). The 2026-10
   reference excerpt (args, payload, required @idempotent, deprecated stockAtLegacyLocation) is in INTEGRATION_NOTES §6.
 
+- 2026-11-06 Shopify carrier (owner report: an ACS Greece number shown in Shopify as "DHL Express"). euShipments
+  shipments now carry the courier name; it maps to Shopify's documented spelling (exact name, or a carrier word in
+  it: ACS / Speedy / GLS / DPD / Packeta / Inpost / Cyprus Post / DHL). When the name is none of them (or missing),
+  a LIVE FULFIL-with-tracking / TRACKING write-back is held AWAITING_CONFIRMATION `carrier_unknown` and a task
+  "Изберете куриер за Shopify" opens; the order page (both designs) shows a banner with Shopify's companies. The pick
+  (setShipmentCarrier, orders.fulfill, only for a shipment with a held row, never for a name Shopify knows) is
+  remembered per group and courier name (ShopifyCarrierAlias, new table + RLS, migration 20261106120000) and
+  releases the person's held rows of that name; a shipment with no carrier gets the company as its carrier. The
+  sweep re-checks held rows: gone shipment / superseded number → REFUSED, carrier known now or store not LIVE →
+  PENDING, else the task stays open. A held TRACKING row keeps later ones waiting; a number the shipment no longer
+  has is never sent. DRY_RUN records as before. No screen yet to list / correct remembered aliases (audit log
+  `shipment.shopify_carrier_set` has every pick).
+- 2026-11-06 Добави магазин: the form keeps what was typed on an error and names the wrong field (was: every field
+  cleared + "Проверете полетата"; usually the domain was the site's own instead of *.myshopify.com).
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

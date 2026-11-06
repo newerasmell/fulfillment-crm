@@ -31,6 +31,7 @@ import { scrubText } from "@/lib/scrub";
 import { recordAudit } from "@/server/audit";
 import { accountDb, systemDb, withSystemTransaction } from "@/server/db/client";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
+import { shopifyCompanyFor } from "@/server/shopify/carrier-company";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
 
 /**
@@ -74,7 +75,100 @@ const ACCEPTED_STATES = ["ACCEPTED", "PROCESSING", ...SHIPPED_STATES] as const;
 const FOLLOW_STATES = [...ACCEPTED_STATES, "RETURNING", "RETURN_RECEIVED", "EXCEPTION"] as const;
 const IN_FLIGHT: OutboundStatus[] = ["PENDING", "PAUSED", "SENDING"];
 /** A FULFIL row in one of these keeps its TRACKING / EVENT rows waiting (UNCERTAIN: an operator decides). */
-const PARENT_WAIT: OutboundStatus[] = [...IN_FLIGHT, "UNCERTAIN"];
+const PARENT_WAIT: OutboundStatus[] = [...IN_FLIGHT, "UNCERTAIN", "AWAITING_CONFIRMATION"];
+/** lastError of a row held because Shopify does not know the shipment's carrier (a person picks it). */
+export const CARRIER_UNKNOWN = "carrier_unknown";
+export const CARRIER_TASK = "shopify_carrier_unknown";
+const TRACKING_SUPERSEDED = "tracking_superseded";
+const HELD_PAGE = 500;
+
+const openCarrierTask = (accountId: string, orderId: string, carrier: string | null) =>
+  openTask(
+    accountId,
+    orderId,
+    CARRIER_TASK,
+    "Изберете куриер за Shopify",
+    `Shopify не познава куриера „${carrier ?? "—"}“ на пратката. Проследяването не е изпратено към Shopify: ` +
+      "изберете правилния куриер на поръчката и CRM ще го изпрати (изборът се запомня за този куриер).",
+  );
+
+/** Resolves the carrier task of each order that has no row held for its carrier any more. */
+export async function resolveCarrierTasks(accountId: string, orderIds: string[]) {
+  const db = systemDb();
+  for (const orderId of new Set(orderIds)) {
+    const held = await db.shopifyWriteBack.count({
+      where: { accountId, orderId, status: "AWAITING_CONFIRMATION", lastError: CARRIER_UNKNOWN },
+    });
+    if (held > 0) continue;
+    await db.alert.updateMany({
+      where: {
+        accountId,
+        kind: CARRIER_TASK,
+        entityType: "Order",
+        entityId: orderId,
+        status: { not: "RESOLVED" },
+      },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+  }
+}
+
+/**
+ * Rows held for an unknown carrier, looked at again by the sweep: a shipment gone (cancelled / re-routed / order
+ * cancelled) or a superseded tracking number → REFUSED; a carrier Shopify knows now (alias picked, warehouse name
+ * changed) or a store no longer LIVE → PENDING (the claim decides again). Their tasks are resolved when nothing is
+ * held any more; a row still held keeps (or re-opens) its task.
+ */
+async function reviewHeldRows() {
+  const db = systemDb();
+  const held = await db.shopifyWriteBack.findMany({
+    where: { status: "AWAITING_CONFIRMATION", lastError: CARRIER_UNKNOWN },
+    select: {
+      id: true,
+      accountId: true,
+      orderId: true,
+      kind: true,
+      value: true,
+      store: { select: { writeBackMode: true } },
+      order: { select: { status: true } },
+      fulfillment: {
+        select: {
+          status: true,
+          carrier: true,
+          trackingNumbers: true,
+          reroutesFrom: { where: { status: { in: ["CANCEL_QUEUED", "DONE"] } }, select: { id: true } },
+        },
+      },
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: HELD_PAGE,
+  });
+  const touched = new Map<string, string[]>();
+  for (const h of held) {
+    const f = h.fulfillment;
+    const gone =
+      f.status === "CANCELLED" ||
+      f.reroutesFrom.length > 0 ||
+      h.order.status === "CANCELLED" ||
+      h.order.status === "FULFILLED_EXTERNALLY";
+    const superseded = h.kind === "TRACKING" && !f.trackingNumbers.includes(h.value);
+    let data: Prisma.ShopifyWriteBackUpdateManyMutationInput | null = null;
+    if (gone || superseded)
+      data = { status: "REFUSED", lastError: gone ? "shipment_cancelled" : TRACKING_SUPERSEDED };
+    else if (h.store.writeBackMode !== "LIVE" || (await shopifyCompanyFor(db, h.accountId, f.carrier)))
+      data = { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null };
+    if (!data) {
+      await openCarrierTask(h.accountId, h.orderId, f.carrier);
+      continue;
+    }
+    const moved = await db.shopifyWriteBack.updateMany({
+      where: { id: h.id, status: "AWAITING_CONFIRMATION" },
+      data,
+    });
+    if (moved.count === 1) touched.set(h.accountId, [...(touched.get(h.accountId) ?? []), h.orderId]);
+  }
+  for (const [accountId, orders] of touched) await resolveCarrierTasks(accountId, orders);
+}
 const NOT_IN_SHOPIFY = "fulfillment_not_in_shopify";
 const ORPHANED = "shipment_cancelled_after_fulfil";
 /** A shipment that will never be sent again (cancelled at the warehouse or re-routed away). */
@@ -319,6 +413,8 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
     );
   }
 
+  await reviewHeldRows();
+
   // DRY_RUN records of stores that are LIVE now run again from scratch (a fresh read-back key, not the one of the
   // dry run: fulfillments created in Shopify since then are not ours).
   const rearmed = await db.shopifyWriteBack.updateMany({
@@ -397,7 +493,14 @@ type ClaimRow = RowRef & {
 
 type Claim =
   | { kind: "skip" }
-  | { kind: "done"; status: OutboundStatus; row?: RowRef; reason?: string }
+  | {
+      kind: "done";
+      status: OutboundStatus;
+      row?: RowRef;
+      reason?: string;
+      /** Held for an unknown carrier: the task to open. */
+      held?: { accountId: string; orderId: string; carrier: string | null };
+    }
   | {
       kind: "go";
       mode: "DRY_RUN" | "LIVE";
@@ -426,6 +529,8 @@ export async function processWriteBack(
         fulfillment: {
           select: {
             status: true,
+            carrier: true,
+            trackingNumbers: true,
             reroutesFrom: { where: { status: { in: ["CANCEL_QUEUED", "DONE"] } }, select: { id: true } },
           },
         },
@@ -457,6 +562,27 @@ export async function processWriteBack(
     )
       return refuse("shipment_cancelled");
 
+    // A tracking number goes to Shopify only with a carrier Shopify knows (owner request 2026-11-06: an ACS number
+    // shown as "DHL Express"): with an unknown or missing carrier Shopify guesses from the number, so the row waits
+    // for a person to pick the company (order page / task). DRY_RUN records what it would send, unchanged.
+    // A tracking number the shipment no longer has (re-labelled): never sent over the newer one.
+    if (row.kind === "TRACKING" && !row.fulfillment.trackingNumbers.includes(row.value))
+      return refuse(TRACKING_SUPERSEDED);
+    if (mode === "LIVE" && (row.kind === "TRACKING" || (row.kind === "FULFIL" && row.trackingNumber))) {
+      const company = await shopifyCompanyFor(tx, row.accountId, row.fulfillment.carrier);
+      if (!company) {
+        await tx.shopifyWriteBack.update({
+          where: { id },
+          data: { status: "AWAITING_CONFIRMATION", evaluatedMode: mode, lastError: CARRIER_UNKNOWN },
+        });
+        return {
+          kind: "done",
+          status: "AWAITING_CONFIRMATION",
+          held: { accountId: row.accountId, orderId: row.orderId, carrier: row.fulfillment.carrier },
+        };
+      }
+    }
+
     let target: string | null = null;
     if (row.kind !== "FULFIL") {
       const [parent, earlier] = await Promise.all([
@@ -470,7 +596,8 @@ export async function processWriteBack(
             fulfillmentId: row.fulfillmentId,
             kind: row.kind,
             id: { not: row.id },
-            status: { in: IN_FLIGHT },
+            // A row held for its carrier keeps later rows of its kind waiting too (never an old number after a new one).
+            status: { in: [...IN_FLIGHT, "AWAITING_CONFIRMATION"] },
             OR: [{ createdAt: { lt: row.createdAt } }, { createdAt: row.createdAt, id: { lt: row.id } }],
           },
         }),
@@ -503,6 +630,7 @@ export async function processWriteBack(
   });
   if (claim.kind === "skip") return "skipped";
   if (claim.kind === "done") {
+    if (claim.held) await openCarrierTask(claim.held.accountId, claim.held.orderId, claim.held.carrier);
     if (claim.status === "REFUSED" && claim.row)
       await event(claim.row, "refused", { lastError: claim.reason ?? null });
     return claim.status;
@@ -833,7 +961,13 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
   const plan = planFulfillment(
     before,
     lines,
-    tn ? { number: tn, company: shipment.carrier, url: url ?? null } : null,
+    tn
+      ? {
+          number: tn,
+          company: (await shopifyCompanyFor(db, row.accountId, shipment.carrier)) ?? shipment.carrier,
+          url: url ?? null,
+        }
+      : null,
     // No shipping e-mail without a tracking number; the TRACKING update notifies later.
     tn ? ctx.notifyCustomer : false,
   );
@@ -980,7 +1114,7 @@ async function prepareTracking(ctx: KindContext): Promise<Prepared> {
   const i = shipment.trackingNumbers.indexOf(row.value);
   const tracking = trackingInput({
     number: row.value,
-    company: shipment.carrier,
+    company: (await shopifyCompanyFor(systemDb(), row.accountId, shipment.carrier)) ?? shipment.carrier,
     url: (i >= 0 ? shipment.trackingUrls[i] : undefined) ?? null,
   });
   const has = (f: NonNullable<WriteBackState["fulfillment"]>) =>
@@ -1131,6 +1265,8 @@ export function orderWriteBacks(accountId: string, orderId: string) {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       id: true,
+      fulfillmentId: true,
+      fulfillment: { select: { carrier: true } },
       kind: true,
       value: true,
       status: true,

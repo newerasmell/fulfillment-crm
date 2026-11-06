@@ -72,6 +72,27 @@ test("Shopify write-back: a DRY_RUN record shows the exact fulfillmentCreate dat
   await expect(ev.locator("pre")).toContainText('"status": "IN_TRANSIT"');
 });
 
+test("unknown courier: the order asks for Shopify's carrier; the pick releases the write-back", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=93005");
+  await page.getByRole("link", { name: "#93005" }).click();
+  const pick = page.getByTestId("carrier-pick");
+  await expect(pick).toContainText("Изберете куриер за Shopify");
+  await expect(pick).toContainText("E2E Local Courier");
+  await expect(pick).toContainText("E2E-TRK-93005");
+  await pick.locator("select").selectOption("ACS Courier");
+  await page.screenshot({ path: "test-results/carrier-pick.png", fullPage: false });
+  await pick.getByRole("button", { name: "Запази и изпрати" }).click();
+  await expect(pick).toHaveCount(0, { timeout: 30_000 });
+  await page.getByTestId("fold-writeback").locator(":scope > summary").click();
+  const wb = page.locator('[data-testid="writeback"][data-kind="FULFIL"]');
+  await expect(wb).toContainText("чака");
+  await expect(wb).not.toContainText("чака потвърждение");
+});
+
 test("alerts and tasks: count on Начало, one list, take it, resolve with a note", async ({ page }) => {
   test.setTimeout(240_000);
   await login(page);

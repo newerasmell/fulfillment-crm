@@ -29,6 +29,17 @@ const list = (v: FormDataEntryValue | null) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+const NEW_STORE_FIELDS = [
+  "companyId",
+  "name",
+  "domain",
+  "code",
+  "currency",
+  "countries",
+  "clientId",
+  "clientSecret",
+];
+
 export async function createStoreAction(_prev: Result, form: FormData): Promise<Result> {
   const ctx = await requireAccountContext();
   let id: string;
@@ -51,6 +62,11 @@ export async function createStoreAction(_prev: Result, form: FormData): Promise<
       callbackUrl: webhookCallbackUrl(),
     });
   } catch (err) {
+    // Which field is wrong (owner report 2026-11-06: only "Проверете полетата" was shown).
+    if (err instanceof z.ZodError) {
+      const field = String(err.issues[0]?.path[0] ?? "");
+      return { error: NEW_STORE_FIELDS.includes(field) ? `field.${field}` : "invalid" };
+    }
     return toError(err);
   }
   revalidatePath("/stores");
