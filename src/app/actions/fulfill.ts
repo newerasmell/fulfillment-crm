@@ -13,6 +13,7 @@ import {
   getFulfillBatch,
   retryFulfillItem,
   runFulfillBatch,
+  setShipmentCarrier,
   type BatchView,
   type CanaryView,
 } from "@/server/fulfill";
@@ -117,4 +118,25 @@ export async function confirmCanaryAction(
     );
   }
   return { ok: true };
+}
+
+/** "Изберете куриер за Shopify": the Shopify tracking company of a shipment held for an unknown carrier. */
+export async function setShipmentCarrierAction(input: {
+  orderId: string;
+  fulfillmentId: string;
+  company: string;
+}): Promise<{ ok: true; released: number } | Fail> {
+  const ctx = await requireAccountContext();
+  try {
+    const orderId = Id.parse(input.orderId);
+    const r = await setShipmentCarrier(actorFrom(ctx), {
+      orderId,
+      fulfillmentId: input.fulfillmentId,
+      company: input.company,
+    });
+    revalidatePath(`/orders/${orderId}`);
+    return { ok: true, released: r.released };
+  } catch (err) {
+    return toError(err);
+  }
 }

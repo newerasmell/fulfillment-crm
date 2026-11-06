@@ -1,4 +1,5 @@
 import { DesignToggle } from "../design-toggle";
+import { CarrierPick } from "./carrier-pick";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
@@ -18,7 +19,8 @@ import {
   type TimelineEntry,
 } from "@/server/review";
 import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
-import { orderWriteBacks } from "@/server/fulfill";
+import { CARRIER_TASK, CARRIER_UNKNOWN, orderWriteBacks } from "@/server/fulfill";
+import { SHOPIFY_TRACKING_COMPANIES } from "@/integrations/shopify/fulfillments";
 import { FulfillButton } from "../selection";
 import { StatusChip } from "../status";
 import {
@@ -129,6 +131,21 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
       }
     : null;
   const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
+  // Shipments whose Shopify tracking waits for a person to pick the carrier (one entry per shipment).
+  const heldCarriers = [
+    ...new Map(
+      writeBacks
+        .filter((w) => w.status === "AWAITING_CONFIRMATION" && w.lastError === CARRIER_UNKNOWN)
+        .map((w) => [
+          w.fulfillmentId,
+          {
+            fulfillmentId: w.fulfillmentId,
+            carrier: w.fulfillment.carrier,
+            tracking: w.kind === "TRACKING" ? w.value : w.trackingNumber,
+          },
+        ]),
+    ).values(),
+  ];
   // Fixes at the source (a country's phone rule, a product's weight) for the findings that allow them.
   const fixes = await orderSourceFixes(actorFrom(ctx), order, check?.findings ?? []);
   const cf = await getTranslations("countries");
@@ -221,8 +238,16 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
           </span>
         ))}
       </div>
+      {heldCarriers.length > 0 && (
+        <CarrierPick
+          orderId={order.id}
+          shipments={heldCarriers}
+          companies={SHOPIFY_TRACKING_COMPANIES}
+          canSet={can(ctx.role, "orders.fulfill")}
+        />
+      )}
       {order.alerts
-        .filter((a) => a.status !== "RESOLVED")
+        .filter((a) => a.status !== "RESOLVED" && !(a.kind === CARRIER_TASK && heldCarriers.length > 0))
         .map((a) => (
           <p key={a.id} role="status" className="m-0 rounded-lg bg-warn-bg px-3 py-2 text-warn">
             {a.title}

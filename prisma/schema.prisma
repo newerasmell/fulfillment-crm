@@ -236,6 +236,7 @@ model Account {
   reviewEmbeddings          ReviewEmbedding[]
   shipmentBoardSettings     ShipmentBoardSettings?
   fhbTickets                FhbTicket[]
+  shopifyCarrierAliases     ShopifyCarrierAlias[]
 }
 
 model User {
@@ -2708,4 +2709,26 @@ model OrderCodOverride {
 
   @@unique([accountId, id])
   @@unique([accountId, orderId])
+}
+
+/// The Shopify tracking company for a warehouse courier name Shopify does not know (owner request 2026-11-06: an
+/// unknown carrier holds the Shopify tracking write-back until a person picks the right company; the choice is
+/// remembered for that courier name).
+model ShopifyCarrierAlias {
+  id          String   @id @default(cuid())
+  accountId   String
+  /// The warehouse courier name, trimmed, lower case, single spaces.
+  carrierKey  String
+  /// The name as the warehouse reported it (for display).
+  carrierName String
+  /// One of the Shopify-supported tracking companies.
+  company     String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, carrierKey])
 }

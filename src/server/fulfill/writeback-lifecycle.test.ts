@@ -4,6 +4,7 @@ import {
   FULFILLMENT_EVENT_CREATE_MUTATION,
   FULFILLMENT_TRACKING_UPDATE_MUTATION,
   sameLines,
+  knownShopifyCompany,
   shopifyTrackingCompany,
   WRITE_BACK_STATE_QUERY,
   type WriteBackRead,
@@ -13,7 +14,10 @@ import { TokenProvider } from "@/integrations/shopify/token";
 import type { CrmOrderStatus } from "@/generated/prisma/client";
 import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
+import { ForbiddenError } from "@/server/auth/rbac";
+import { setShipmentCarrier } from "./carrier";
 import {
+  CARRIER_TASK,
   dependentRowsDue,
   orderWriteBacks,
   processWriteBack,
@@ -166,7 +170,21 @@ describe("lifecycle rules (pure)", () => {
     expect(shopifyTrackingCompany("speedy")).toBe("Speedy");
     expect(shopifyTrackingCompany(" gls ")).toBe("GLS");
     expect(shopifyTrackingCompany("Local Courier")).toBe("Local Courier");
+    // Warehouse courier names carry a country / variant: the carrier word maps to Shopify's spelling.
+    expect(shopifyTrackingCompany("Greece ACS")).toBe("ACS Courier");
+    expect(shopifyTrackingCompany("ACS Courier GR")).toBe("ACS Courier");
+    expect(shopifyTrackingCompany("Hungary GLS New")).toBe("GLS");
+    expect(shopifyTrackingCompany("Romania DPD")).toBe("DPD");
+    expect(shopifyTrackingCompany("Czech Zásilkovna")).toBe("Packeta");
+    expect(shopifyTrackingCompany("Greece Courier Center")).toBe("Greece Courier Center");
     expect(shopifyTrackingCompany(null)).toBeNull();
+  });
+  it("known company: only a documented Shopify company (else null: the write-back waits for a person)", () => {
+    expect(knownShopifyCompany("Greece ACS")).toBe("ACS Courier");
+    expect(knownShopifyCompany("speedy")).toBe("Speedy");
+    expect(knownShopifyCompany("Greece Courier Center")).toBeNull();
+    expect(knownShopifyCompany("")).toBeNull();
+    expect(knownShopifyCompany(null)).toBeNull();
   });
   it("the fulfillment read-back query stays well under Shopify's cost limit", () => {
     expect(estimateQueryCost(WRITE_BACK_STATE_QUERY)).toBeLessThan(1000);
@@ -178,7 +196,11 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
   let n = 8000;
   const db = () => systemDb();
 
-  async function shipment(status: CrmOrderStatus, tracking: string[] = []) {
+  async function shipment(
+    status: CrmOrderStatus,
+    tracking: string[] = [],
+    carrier: string | null = "speedy",
+  ) {
     const { order } = await euTestOrder(g, { number: `#${++n}` });
     await db().order.update({
       where: { id: order.id },
@@ -193,7 +215,7 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
         connectionId: g.connection.id,
         externalId: `LC-${n}`,
         status,
-        carrier: "speedy",
+        carrier,
         trackingNumbers: tracking,
         trackingUrls: tracking.map((t) => `https://track.example/${t}`),
         shippedAt: status === "SHIPPED" ? new Date() : null,
@@ -320,6 +342,204 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
     // No TRACKING row for the number the fulfilment already carried.
     await sweepWriteBacks();
     expect((await rows(f.id)).filter((r) => r.kind === "TRACKING")).toEqual([]);
+  });
+
+  it("unknown carrier: held (nothing sent, a task), a person picks the company → sent; remembered for that name", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f, order } = await shipment("SHIPPED", ["TRK-U1"], "Courier Center Test");
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created(),
+    });
+    const fulfil = await row(f.id, "FULFIL");
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("AWAITING_CONFIRMATION");
+    expect(shop.ops).toEqual([]);
+    expect(await row(f.id, "FULFIL")).toMatchObject({
+      status: "AWAITING_CONFIRMATION",
+      lastError: "carrier_unknown",
+    });
+    const task = () =>
+      db().alert.findFirst({ where: { accountId: g.accountId, kind: CARRIER_TASK, entityId: order.id } });
+    expect(await task()).toMatchObject({ status: "OPEN", isTask: true });
+    // Held rows are not due; the sweep leaves them alone.
+    expect((await sweepWriteBacks()).ready).not.toContain(fulfil.id);
+    // Its events wait for it.
+    const ev = await row(f.id, "EVENT", "IN_TRANSIT");
+    expect(await processWriteBack(ev.id, shop.clients)).toBe("PENDING");
+
+    // Only a Shopify company; a viewer may not; another company's member does not see it.
+    await expect(
+      setShipmentCarrier(g.owner, { orderId: f.orderId, fulfillmentId: f.id, company: "Made Up Express" }),
+    ).rejects.toMatchObject({ code: "carrier_not_shopify" });
+    await expect(
+      setShipmentCarrier(
+        { ...g.owner, role: "VIEWER" },
+        { orderId: f.orderId, fulfillmentId: f.id, company: "ACS Courier" },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      setShipmentCarrier(
+        { ...g.owner, role: "OPERATOR", companyScope: ["other-company"] },
+        { orderId: f.orderId, fulfillmentId: f.id, company: "ACS Courier" },
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+
+    expect(
+      await setShipmentCarrier(g.owner, { orderId: f.orderId, fulfillmentId: f.id, company: "acs courier" }),
+    ).toEqual({
+      company: "ACS Courier",
+      released: 1,
+    });
+    expect((await task())?.status).toBe("RESOLVED");
+    expect(await row(f.id, "FULFIL")).toMatchObject({ status: "PENDING", lastError: null });
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
+    expect(shop.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: { trackingInfo: { number: "TRK-U1", company: "ACS Courier" } },
+    });
+    // The warehouse name is kept; the choice is remembered for it: the next shipment goes straight through.
+    expect((await db().fulfillment.findUniqueOrThrow({ where: { id: f.id } })).carrier).toBe(
+      "Courier Center Test",
+    );
+    const next = await shipment("SHIPPED", ["TRK-U2"], "  courier center   TEST ");
+    await sweepWriteBacks();
+    const shop2 = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9549999"),
+    });
+    expect(await processWriteBack((await row(next.f.id, "FULFIL")).id, shop2.clients)).toBe("SENT");
+    expect(shop2.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: { trackingInfo: { company: "ACS Courier" } },
+    });
+    expect(
+      await db().auditLog.count({ where: { action: "shipment.shopify_carrier_set", entityId: f.id } }),
+    ).toBe(1);
+  });
+
+  it("no carrier at all: held too; the company picked becomes the shipment's carrier", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-N1"], null);
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9548888"),
+    });
+    const fulfil = await row(f.id, "FULFIL");
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("AWAITING_CONFIRMATION");
+    await setShipmentCarrier(g.owner, { orderId: f.orderId, fulfillmentId: f.id, company: "Speedy" });
+    expect((await db().fulfillment.findUniqueOrThrow({ where: { id: f.id } })).carrier).toBe("Speedy");
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
+  });
+
+  it("DRY_RUN records an unknown carrier as it is (nothing held)", async () => {
+    await setStore({ writeBackMode: "DRY_RUN", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-D1"], "Some Local Courier");
+    await sweepWriteBacks();
+    const shop = fakeShopify({ FulfillmentWriteBackRead: () => orderRead() });
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, shop.clients)).toBe("DRY_RUN_RECORDED");
+  });
+
+  it("held TRACKING: a re-labelled parcel's newer number waits behind it; the old number is never sent", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f, order } = await shipment("ACCEPTED", [], "Local Hold Courier");
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9547777"),
+      FulfillmentWriteBackState: () => state({ id: "gid://shopify/Fulfillment/9547777" }),
+      FulfillmentTrackingWriteBack: trackingOk,
+    });
+    // Without tracking the carrier does not matter: the fulfilment goes.
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, shop.clients)).toBe("SENT");
+    await move(f.id, "SHIPPED", ["TRK-OLD"]);
+    await sweepWriteBacks();
+    const old = await row(f.id, "TRACKING", "TRK-OLD");
+    expect(await processWriteBack(old.id, shop.clients)).toBe("AWAITING_CONFIRMATION");
+    // Re-labelled: a known carrier and a new number. The new row waits behind the held one.
+    await db().fulfillment.update({
+      where: { id: f.id },
+      data: { carrier: "Speedy", trackingNumbers: ["TRK-NEW"], trackingUrls: [] },
+    });
+    await sweepWriteBacks(); // the held row's number is gone: refused
+    expect(await row(f.id, "TRACKING", "TRK-OLD")).toMatchObject({
+      status: "REFUSED",
+      lastError: "tracking_superseded",
+    });
+    expect(await processWriteBack((await row(f.id, "TRACKING", "TRK-NEW")).id, shop.clients)).toBe("SENT");
+    expect(shop.varsOf("FulfillmentTrackingWriteBack").map((v) => v.trackingInfoInput)).toEqual([
+      { number: "TRK-NEW", company: "Speedy" },
+    ]);
+    expect(
+      (
+        await db().alert.findFirst({
+          where: { accountId: g.accountId, kind: CARRIER_TASK, entityId: order.id },
+        })
+      )?.status,
+    ).toBe("RESOLVED");
+  });
+
+  it("held, then the shipment is cancelled: refused and the task resolved; nothing to pick", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f, order } = await shipment("SHIPPED", ["TRK-C1"], "Cancel Hold Courier");
+    await sweepWriteBacks();
+    const shop = fakeShopify({});
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, shop.clients)).toBe(
+      "AWAITING_CONFIRMATION",
+    );
+    await move(f.id, "CANCELLED");
+    await sweepWriteBacks();
+    expect(await row(f.id, "FULFIL")).toMatchObject({ status: "REFUSED", lastError: "shipment_cancelled" });
+    expect(
+      (
+        await db().alert.findFirst({
+          where: { accountId: g.accountId, kind: CARRIER_TASK, entityId: order.id },
+        })
+      )?.status,
+    ).toBe("RESOLVED");
+    await expect(
+      setShipmentCarrier(g.owner, { orderId: f.orderId, fulfillmentId: f.id, company: "Speedy" }),
+    ).rejects.toMatchObject({ code: "not_held" });
+    expect(shop.ops).toEqual([]);
+  });
+
+  it("the sweep releases held rows whose carrier became known (warehouse name, or a pick on another order)", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-R1"], "Rearm Courier");
+    await sweepWriteBacks();
+    const fulfil = await row(f.id, "FULFIL");
+    expect(await processWriteBack(fulfil.id, fakeShopify({}).clients)).toBe("AWAITING_CONFIRMATION");
+    await sweepWriteBacks(); // still unknown: stays held
+    expect((await row(f.id, "FULFIL")).status).toBe("AWAITING_CONFIRMATION");
+    await db().fulfillment.update({ where: { id: f.id }, data: { carrier: "Cyprus GLS" } });
+    expect((await sweepWriteBacks()).ready).toContain(fulfil.id);
+    // Rows of another company are not released by a scoped person, and a known name is never re-mapped.
+    const known = await shipment("SHIPPED", ["TRK-R2"], "Speedy");
+    await expect(
+      setShipmentCarrier(g.owner, { orderId: known.f.orderId, fulfillmentId: known.f.id, company: "DPD" }),
+    ).rejects.toMatchObject({ code: "not_held" });
+  });
+
+  it("an alias is per group: another group's pick does not release or map ours, nor reach our shipment", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-I1"], "Isolated Courier");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, fakeShopify({}).clients)).toBe(
+      "AWAITING_CONFIRMATION",
+    );
+    const other = await euTestGroup("wb-carrier-other");
+    await db().shopifyCarrierAlias.create({
+      data: {
+        accountId: other.accountId,
+        carrierKey: "isolated courier",
+        carrierName: "Isolated Courier",
+        company: "DPD",
+      },
+    });
+    await sweepWriteBacks();
+    expect((await row(f.id, "FULFIL")).status).toBe("AWAITING_CONFIRMATION");
+    await expect(
+      setShipmentCarrier(other.owner, { orderId: f.orderId, fulfillmentId: f.id, company: "DPD" }),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("fulfil without tracking, lost answer: the read-back finds ours by its lines (SENT), never a second create", async () => {

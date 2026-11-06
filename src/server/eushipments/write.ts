@@ -701,12 +701,23 @@ export async function queueEuOrder(
         connectionId: connection.id,
         rearmQueued: existing?.status === "QUEUED",
       });
+      // The courier this shipment is created with (Shopify gets its name with the tracking number).
+      const sentCourierId = (built.body as { courierId?: number }).courierId;
+      const carrier = sentCourierId
+        ? ((
+            await tx.eushipmentsCourier.findFirst({
+              where: { connectionId: connection.id, courierId: sentCourierId },
+              select: { name: true },
+            })
+          )?.name ?? null)
+        : null;
       let fulfillment: Fulfillment;
       if (existing) {
         fulfillment = await tx.fulfillment.update({
           where: { id: existing.id },
           data: {
             status: "QUEUED",
+            carrier,
             deliveryPoint: input.officeId ? { officeId: input.officeId } : Prisma.DbNull,
           },
         });
@@ -728,6 +739,7 @@ export async function queueEuOrder(
             connectionId: connection.id,
             externalId: reference,
             status: "QUEUED",
+            carrier,
             deliveryPoint: input.officeId ? { officeId: input.officeId } : undefined,
           },
         });

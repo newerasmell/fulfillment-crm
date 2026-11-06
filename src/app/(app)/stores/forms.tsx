@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { startTransition, useActionState } from "react";
 import { useTranslations } from "next-intl";
 import {
   backfillOrdersAction,
@@ -37,7 +37,17 @@ export function NewStoreForm({
   const t = useTranslations("stores");
   const [state, action, pending] = useActionState(createStoreAction, undefined);
   return (
-    <form action={action} className="grid gap-3 sm:grid-cols-2" aria-label={t("add")}>
+    <form
+      // Submitted by hand: a plain form action resets every field, so a wrong value cost the whole form (owner
+      // report 2026-11-06). The fields keep what was typed; the error names the field.
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget);
+        startTransition(() => action(data));
+      }}
+      className="grid gap-3 sm:grid-cols-2"
+      aria-label={t("add")}
+    >
       <label className={labelCls}>
         {t("company")}
         <select name="companyId" required className={inputCls}>

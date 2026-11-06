@@ -210,8 +210,10 @@ export interface FulfillmentInput {
  * tracking companies", incl. the Bulgaria entry "Speedy"). Our carrier (as the warehouse reports it) maps to the
  * exact Shopify spelling only when it is one of these; any other name is sent as we have it.
  */
-const SHOPIFY_TRACKING_COMPANIES = [
+export const SHOPIFY_TRACKING_COMPANIES = [
   "Speedy",
+  "ACS Courier",
+  "Inpost",
   "GLS",
   "DPD",
   "DPD Local",
@@ -244,11 +246,56 @@ const COMPANY_BY_KEY = new Map(
   SHOPIFY_TRACKING_COMPANIES.map((c) => [c.toLowerCase().replace(/\s+/g, " "), c]),
 );
 
-/** The Shopify-supported spelling of our carrier name when it is a documented one; else the name as we have it. */
+/**
+ * Warehouse courier names carry a country and a variant ("Greece ACS", "Hungary GLS New"): a known carrier word in
+ * the name maps to Shopify's spelling (owner report 2026-11-06: an ACS Greece number shown as "DHL Express", because
+ * no company was sent and Shopify guessed from the number's shape).
+ */
+const CARRIER_WORDS: [RegExp, string][] = [
+  [/\bacs\b/, "ACS Courier"],
+  [/\bspeedy\b/, "Speedy"],
+  [/\bgls\b/, "GLS"],
+  [/\bdpd\b/, "DPD"],
+  [/\b(packeta|z[aá]silkovna)\b/, "Packeta"],
+  [/\binpost\b/, "Inpost"],
+  [/\bcyprus post\b/, "Cyprus Post"],
+  [/\bdhl\b/, "DHL Express"],
+];
+
+/** Normalised key of a courier name (trimmed, lower case, single spaces). */
+export const carrierKey = (carrier: string) => carrier.trim().toLowerCase().replace(/\s+/g, " ");
+
+/** The documented Shopify tracking company exactly as Shopify spells it, or null when `name` is not one. */
+export function shopifyCompanyNamed(name: string | null | undefined): string | null {
+  return name ? (COMPANY_BY_KEY.get(carrierKey(name)) ?? null) : null;
+}
+
+/**
+ * The Shopify tracking company our carrier name is or names (exact, or a known carrier word in it); null when it is
+ * none of them — then Shopify would guess the carrier from the number, so the write-back waits for a person.
+ */
+export function knownShopifyCompany(carrier: string | null | undefined): string | null {
+  const c = carrier?.trim();
+  if (!c) return null;
+  const key = carrierKey(c);
+  const exact = COMPANY_BY_KEY.get(key);
+  if (exact) return exact;
+  for (const [re, name] of CARRIER_WORDS) if (re.test(key)) return name;
+  return null;
+}
+
+/**
+ * The Shopify-supported spelling of our carrier name when it is (or names) a documented one; else the name as we have
+ * it, so Shopify never has to guess the carrier from the number.
+ */
 export function shopifyTrackingCompany(carrier: string | null | undefined): string | null {
   const c = carrier?.trim();
   if (!c) return null;
-  return COMPANY_BY_KEY.get(c.toLowerCase().replace(/\s+/g, " ")) ?? c;
+  const key = c.toLowerCase().replace(/\s+/g, " ");
+  const exact = COMPANY_BY_KEY.get(key);
+  if (exact) return exact;
+  for (const [re, name] of CARRIER_WORDS) if (re.test(key)) return name;
+  return c;
 }
 
 /** FulfillmentTrackingInput for one tracking number (company mapped, empty fields left out). */

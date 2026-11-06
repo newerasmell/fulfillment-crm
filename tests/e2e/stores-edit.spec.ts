@@ -24,6 +24,18 @@ test("stores: edit details, warehouse prefix, locked domain, archive + restore, 
   await expect(guide.getByTestId("copy-value-Scopes")).toContainText("read_orders,read_customers");
   await expect(guide.getByTestId("copy-value-Webhooks API version")).toHaveText("2026-10");
   await page.screenshot({ path: "test-results/shopify-setup-guide.png", fullPage: true });
+  // A wrong field keeps what was typed and says which field (the site's own domain instead of *.myshopify.com).
+  const add = page.getByRole("form", { name: "Добави магазин" });
+  await add.locator('input[name="name"]').fill("Нов магазин");
+  await add.locator('input[name="domain"]').fill("my-shop.example.gr");
+  await add.locator('input[name="code"]').fill("NM1");
+  await add.locator('input[name="currency"]').fill("EUR");
+  await add.locator('input[name="clientId"]').fill("client-id-e2e-0001");
+  await add.locator('input[name="clientSecret"]').fill("client-secret-e2e-0001");
+  await add.getByRole("button", { name: "Добави магазин" }).click();
+  await expect(add.getByRole("status")).toContainText("*.myshopify.com");
+  await expect(add.locator('input[name="name"]')).toHaveValue("Нов магазин");
+  await expect(add.locator('input[name="clientSecret"]')).toHaveValue("client-secret-e2e-0001");
   await page.getByRole("link", { name: "Магазин с поръчки" }).click();
   await page.waitForLoadState("networkidle");
   const details = page.getByRole("form", { name: "Данни на магазина" });

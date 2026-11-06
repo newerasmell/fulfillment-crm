@@ -85,7 +85,7 @@ describe("planFulfillment (pure)", () => {
     const p = planFulfillment(
       readWith([]) as WriteBackRead,
       [{ shopifyLineGid: LINE_GID, quantity: 5 }],
-      { number: "TRK1", company: "Courier", url: "https://track.example/TRK1" },
+      { number: "TRK1", company: "GLS", url: "https://track.example/TRK1" },
       false,
     );
     expect(p).toEqual({
@@ -96,7 +96,7 @@ describe("planFulfillment (pure)", () => {
           { fulfillmentOrderId: FO_GID, fulfillmentOrderLineItems: [{ id: FOLI_GID, quantity: 2 }] },
         ],
         notifyCustomer: false,
-        trackingInfo: { number: "TRK1", company: "Courier", url: "https://track.example/TRK1" },
+        trackingInfo: { number: "TRK1", company: "GLS", url: "https://track.example/TRK1" },
       },
     });
     expect(planFulfillment({ order: null }, [], { number: "x", company: null, url: null }, true)).toEqual({
@@ -130,7 +130,7 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
         connectionId: g.connection.id,
         externalId: `TST-${n}`,
         status: "SHIPPED",
-        carrier: "Courier",
+        carrier: "GLS",
         trackingNumbers: [tracking],
         trackingUrls: [`https://track.example/${tracking}`],
         shippedAt: new Date(),
@@ -173,7 +173,7 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
             { fulfillmentOrderId: FO_GID, fulfillmentOrderLineItems: [{ id: FOLI_GID, quantity: 2 }] },
           ],
           notifyCustomer: true,
-          trackingInfo: { number: tracking, company: "Courier", url: `https://track.example/${tracking}` },
+          trackingInfo: { number: tracking, company: "GLS", url: `https://track.example/${tracking}` },
         },
       },
     });
