@@ -12,6 +12,8 @@ import {
   searchLineProductsAction,
 } from "@/app/actions/review";
 import { buttonCls, ghostButtonCls, inputCls } from "@/components/ui/form";
+import { useEditableCard } from "@/components/ui/EditableCard";
+import { iconButtonCls, PencilIcon, UndoIcon } from "@/components/ui/icons";
 
 /** "Избери продукт за реда" (owner request 2026-11-05): pick the real product of one order line, this order only. */
 
@@ -92,114 +94,126 @@ export function LineProductPicker({
       else router.refresh();
     });
 
-  if (!open)
-    return (
-      <span className="inline-flex flex-wrap items-center gap-2">
+  const triggers = (
+    <span className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        className={iconButtonCls}
+        onClick={() => setOpen((v) => !v)}
+        aria-label={chosen ? t("change") : t("choose")}
+        title={chosen ? t("change") : t("choose")}
+        data-testid={`line-product-open-${lineId}`}
+      >
+        <PencilIcon />
+      </button>
+      {chosen && (
         <button
           type="button"
-          className={`${ghostButtonCls} px-2 py-0.5 text-xs`}
-          onClick={() => setOpen(true)}
-          data-testid={`line-product-open-${lineId}`}
+          disabled={saving}
+          className={iconButtonCls}
+          onClick={clear}
+          aria-label={t("clear")}
+          title={t("clear")}
+          data-testid={`line-product-clear-${lineId}`}
         >
-          {chosen ? t("change") : t("choose")}
+          <UndoIcon />
         </button>
-        {chosen && (
-          <button
-            type="button"
-            disabled={saving}
-            className="text-xs text-muted underline"
-            onClick={clear}
-            data-testid={`line-product-clear-${lineId}`}
-          >
-            {t("clear")}
-          </button>
-        )}
+      )}
+    </span>
+  );
+  if (!open)
+    return (
+      <span className="inline-flex flex-col items-end gap-1">
+        {triggers}
         {error && <span className="text-xs text-block">{errText(error)}</span>}
       </span>
     );
 
   return (
-    <div
-      className="mt-2 w-[min(42rem,80vw)] rounded-md border border-line bg-surface p-3 text-left"
-      data-testid={`line-product-picker-${lineId}`}
-    >
-      <div className="mb-2 text-sm font-semibold">{t("title", { title })}</div>
-      <p className="mt-0 mb-2 text-xs text-muted">{t("hint")}</p>
-      <div className="flex flex-wrap gap-2">
-        <input
-          autoFocus
-          className={`${inputCls} min-w-56 flex-1`}
-          placeholder={t("search")}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          aria-label={t("search")}
-        />
-        <input
-          className={`${inputCls} min-w-40 flex-1`}
-          placeholder={t("note")}
-          value={note}
-          maxLength={300}
-          onChange={(e) => setNote(e.target.value)}
-          aria-label={t("note")}
-        />
-        <button type="button" className={ghostButtonCls} onClick={() => setOpen(false)}>
-          {t("cancel")}
-        </button>
-      </div>
-      {error && <p className="mb-0 text-sm text-block">{errText(error)}</p>}
-      {searching && <p className="mb-0 text-xs text-muted">{t("searching")}</p>}
-      {res && res.products.length === 0 && <p className="mb-0 text-sm text-muted">{t("none")}</p>}
-      {res && res.products.length > 0 && (
-        <div className="mt-2 max-h-80 overflow-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="text-left text-xs text-label">
-                <th className="py-1 pr-2">SKU</th>
-                <th className="py-1 pr-2">{t("name")}</th>
-                {res.connections.map((c) => (
-                  <th key={c.id} className="py-1 pr-2 text-right">
-                    {c.name}
-                  </th>
-                ))}
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {res.products.map((p) => (
-                <tr key={p.id} className="border-t border-line">
-                  <td className="py-1 pr-2 font-mono text-[13px]">{p.sku}</td>
-                  <td className="py-1 pr-2">{p.name}</td>
-                  {res.connections.map((c) => {
-                    const s = p.stock[c.id];
-                    return (
-                      <td
-                        key={c.id}
-                        className={`py-1 pr-2 text-right font-mono ${
-                          s === undefined || s === null ? "text-muted" : s >= qty ? "text-ok" : "text-warn"
-                        }`}
-                      >
-                        {s === undefined ? "—" : (s ?? "?")}
-                      </td>
-                    );
-                  })}
-                  <td className="py-1 text-right">
-                    <button
-                      type="button"
-                      disabled={saving}
-                      className={`${buttonCls} px-2 py-0.5 text-xs`}
-                      onClick={() => choose(p.id)}
-                      data-testid={`line-product-pick-${p.sku}`}
-                    >
-                      {t("pick")}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <span className="relative inline-flex flex-col items-end">
+      {triggers}
+      <div
+        className="absolute top-full right-0 z-30 mt-2 w-[min(42rem,calc(100vw-2rem))] rounded-md border border-line bg-surface p-3 text-left shadow-lg"
+        data-testid={`line-product-picker-${lineId}`}
+      >
+        <div className="mb-2 text-sm font-semibold">{t("title", { title })}</div>
+        <p className="mt-0 mb-2 text-xs text-muted">{t("hint")}</p>
+        <div className="flex flex-wrap gap-2">
+          <input
+            autoFocus
+            className={`${inputCls} min-w-56 flex-1`}
+            placeholder={t("search")}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            aria-label={t("search")}
+          />
+          <input
+            className={`${inputCls} min-w-40 flex-1`}
+            placeholder={t("note")}
+            value={note}
+            maxLength={300}
+            onChange={(e) => setNote(e.target.value)}
+            aria-label={t("note")}
+          />
+          <button type="button" className={ghostButtonCls} onClick={() => setOpen(false)}>
+            {t("cancel")}
+          </button>
         </div>
-      )}
-    </div>
+        {error && <p className="mb-0 text-sm text-block">{errText(error)}</p>}
+        {searching && <p className="mb-0 text-xs text-muted">{t("searching")}</p>}
+        {res && res.products.length === 0 && <p className="mb-0 text-sm text-muted">{t("none")}</p>}
+        {res && res.products.length > 0 && (
+          <div className="mt-2 max-h-80 overflow-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="text-left text-xs text-label">
+                  <th className="py-1 pr-2">SKU</th>
+                  <th className="py-1 pr-2">{t("name")}</th>
+                  {res.connections.map((c) => (
+                    <th key={c.id} className="py-1 pr-2 text-right">
+                      {c.name}
+                    </th>
+                  ))}
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {res.products.map((p) => (
+                  <tr key={p.id} className="border-t border-line">
+                    <td className="py-1 pr-2 font-mono text-[13px]">{p.sku}</td>
+                    <td className="py-1 pr-2">{p.name}</td>
+                    {res.connections.map((c) => {
+                      const s = p.stock[c.id];
+                      return (
+                        <td
+                          key={c.id}
+                          className={`py-1 pr-2 text-right font-mono ${
+                            s === undefined || s === null ? "text-muted" : s >= qty ? "text-ok" : "text-warn"
+                          }`}
+                        >
+                          {s === undefined ? "—" : (s ?? "?")}
+                        </td>
+                      );
+                    })}
+                    <td className="py-1 text-right">
+                      <button
+                        type="button"
+                        disabled={saving}
+                        className={`${buttonCls} px-2 py-0.5 text-xs`}
+                        onClick={() => choose(p.id)}
+                        data-testid={`line-product-pick-${p.sku}`}
+                      >
+                        {t("pick")}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </span>
   );
 }
 
@@ -240,63 +254,64 @@ export function MarkGatewaysCodButton({ orderId, gateways }: { orderId: string; 
   );
 }
 
-/** "Промени наложения платеж": the amount to collect for this order (0 = prepaid), e.g. after a product swap. */
+/** "Върни плащането от Shopify": removes a manual COD (shown under the payment while one exists). */
+export function CodRestoreButton({ orderId }: { orderId: string }) {
+  const t = useTranslations("review.cod");
+  const te = useTranslations("review");
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        disabled={pending}
+        className="text-xs text-muted underline"
+        data-testid="cod-restore"
+        onClick={() =>
+          start(async () => {
+            const r = await clearOrderCodAction(orderId);
+            if (r?.error) setError(r.error);
+            else router.refresh();
+          })
+        }
+      >
+        {t("restore")}
+      </button>
+      {error && (
+        <span className="text-xs text-block">{te.has(`error.${error}`) ? te(`error.${error}`) : error}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * "Промени наложения платеж": the amount to collect for this order (0 = prepaid), e.g. after a product swap. Opened
+ * by the Customer card's pencil (EditableCard); Save / Cancel close it.
+ */
 export function CodEditor({
   orderId,
   current,
   total,
   currency,
-  manual,
 }: {
   orderId: string;
   /** Current COD amount, null when prepaid. */
   current: string | null;
   total: string;
   currency: string;
-  /** The COD was set by a person (shows "Върни от Shopify"). */
-  manual: boolean;
 }) {
   const t = useTranslations("review.cod");
   const te = useTranslations("review");
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const card = useEditableCard();
+  const close = () => card?.close();
   const [amount, setAmount] = useState(current ?? total);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const errText = (code: string) =>
     t.has(`error.${code}`) ? t(`error.${code}`) : te.has(`error.${code}`) ? te(`error.${code}`) : code;
-  if (!open)
-    return (
-      <span className="inline-flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className={`${ghostButtonCls} px-2 py-0.5 text-xs`}
-          onClick={() => setOpen(true)}
-          data-testid="cod-edit-open"
-        >
-          {t("edit")}
-        </button>
-        {manual && (
-          <button
-            type="button"
-            disabled={pending}
-            className="text-xs text-muted underline"
-            data-testid="cod-restore"
-            onClick={() =>
-              start(async () => {
-                const r = await clearOrderCodAction(orderId);
-                if (r?.error) setError(r.error);
-                else router.refresh();
-              })
-            }
-          >
-            {t("restore")}
-          </button>
-        )}
-        {error && <span className="text-xs text-block">{errText(error)}</span>}
-      </span>
-    );
   return (
     <form
       className="mt-2 flex flex-wrap items-center gap-2"
@@ -311,7 +326,7 @@ export function CodEditor({
           });
           if (r?.error) setError(r.error);
           else {
-            setOpen(false);
+            close();
             router.refresh();
           }
         });
@@ -339,7 +354,7 @@ export function CodEditor({
       <button type="submit" disabled={pending} className={`${buttonCls} px-3 py-1 text-sm`}>
         {t("save")}
       </button>
-      <button type="button" className={ghostButtonCls} onClick={() => setOpen(false)}>
+      <button type="button" className={ghostButtonCls} onClick={close}>
         {t("cancel")}
       </button>
       <span className="w-full text-xs text-muted">{t("hint")}</span>

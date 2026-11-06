@@ -58,7 +58,13 @@ function Option({
   const t = useTranslations("override");
   return (
     <label
-      className={`flex cursor-pointer flex-col gap-1 rounded-[10px] border px-3 py-2 ${checked ? "border-accent bg-accent-soft" : "border-line"}`}
+      className={`flex cursor-pointer flex-col gap-1 rounded-[10px] border px-3 py-2.5 ${
+        checked
+          ? o.type === "EUSHIPMENTS"
+            ? "border-eu bg-eu-chip/40 ring-1 ring-eu"
+            : "border-fhb bg-fhb-chip/40 ring-1 ring-fhb"
+          : "border-line hover:bg-hover"
+      }`}
       data-testid={`warehouse-option-${o.name}`}
     >
       <span className="flex flex-wrap items-center gap-2">

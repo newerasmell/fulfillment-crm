@@ -38,24 +38,33 @@ export async function AiCard({ actor, orderId }: { actor: ScopedActor; orderId: 
       : t.has(`guardrail.${g}`)
         ? t(`guardrail.${g}`)
         : g;
+  // Colour by confidence (owner request 2026-11-05): ≥ 80 % green, 50–79 % amber, below 50 % red; none = neutral.
+  const tone = !s ? "none" : s.confidence >= 0.8 ? "high" : s.confidence >= 0.5 ? "mid" : "low";
+  const TONE = {
+    high: { card: "border-[#b9e0c7] bg-[#e9f6ee] text-[#103d24]", pill: "bg-ok text-white" },
+    mid: { card: "border-[#f0d9ad] bg-[#fdf6e9] text-[#4a2a05]", pill: "bg-[#b45309] text-white" },
+    low: { card: "border-[#f3c3be] bg-block-bg text-[#5a120c]", pill: "bg-block text-white" },
+    none: { card: "border-line bg-surface text-ink", pill: "bg-hover text-ink" },
+  }[tone];
   return (
     <section
       aria-label={t("card.title")}
       data-testid="ai-card"
-      className="rounded-[var(--radius-card)] bg-dark p-5 text-white"
+      data-tone={tone}
+      className={`rounded-[var(--radius-card)] border p-5 ${TONE.card}`}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="m-0 text-base font-semibold">✦ {t("card.title")}</h2>
         {s && (
-          <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-sm font-semibold">
+          <span className={`rounded-full px-2.5 py-0.5 text-sm font-semibold ${TONE.pill}`}>
             {t(`decision.${s.decision}`)} ·{" "}
             {t("card.confidence", { value: format.number(s.confidence, { style: "percent" }) })}
           </span>
         )}
       </div>
-      {note && <p className="mt-2 mb-0 text-sm text-white/80">{note}</p>}
+      {note && <p className="mt-2 mb-0 text-sm opacity-80">{note}</p>}
       {!s ? (
-        <p className="mt-2 mb-0 text-sm text-white/80">{t("card.none")}</p>
+        <p className="mt-2 mb-0 text-sm opacity-80">{t("card.none")}</p>
       ) : (
         <div className={`mt-2 flex flex-col gap-2 ${s.stale ? "opacity-70" : ""}`}>
           {s.stale && (
@@ -66,16 +75,16 @@ export async function AiCard({ actor, orderId }: { actor: ScopedActor; orderId: 
           <p className="m-0">{s.explanationBg}</p>
           {s.fixes.length > 0 && (
             <div>
-              <h3 className="m-0 text-xs font-semibold tracking-wide text-white/70 uppercase">
+              <h3 className="m-0 text-xs font-semibold tracking-wide opacity-75 uppercase">
                 {t("card.fixes")}
               </h3>
               <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0 text-sm">
                 {s.fixes.map((f) => (
                   <li key={f.field}>
-                    <span className="text-white/70">{fieldLabel(f.field)}: </span>
+                    <span className="opacity-75">{fieldLabel(f.field)}: </span>
                     <span className="line-through opacity-70">{f.from ?? "∅"}</span> →{" "}
                     <strong className="font-mono">{f.to}</strong>
-                    {f.reason && <span className="text-white/70"> — {f.reason}</span>}
+                    {f.reason && <span className="opacity-75"> — {f.reason}</span>}
                   </li>
                 ))}
               </ul>
@@ -83,13 +92,13 @@ export async function AiCard({ actor, orderId }: { actor: ScopedActor; orderId: 
           )}
           {s.flags.length > 0 && (
             <p className="m-0 text-sm">
-              <span className="text-white/70">{t("card.flags")}: </span>
+              <span className="opacity-75">{t("card.flags")}: </span>
               {s.flags.map((f) => (t.has(`flag.${f}`) ? t(`flag.${f}`) : f)).join(", ")}
             </p>
           )}
           {s.guardrails.length > 0 && (
             <p className="m-0 text-sm">
-              <span className="text-white/70">{t("card.guardrails")}: </span>
+              <span className="opacity-75">{t("card.guardrails")}: </span>
               {s.guardrails.map(guardrail).join(", ")}
             </p>
           )}
@@ -110,7 +119,7 @@ export async function AiCard({ actor, orderId }: { actor: ScopedActor; orderId: 
               })}
             </p>
           )}
-          <p className="m-0 text-xs text-white/60">
+          <p className="m-0 text-xs opacity-60">
             {t("card.model", {
               model: s.model,
               at: format.dateTime(s.createdAt, { dateStyle: "short", timeStyle: "short" }),

@@ -483,7 +483,14 @@
     "qty": "Qty",
     "unitPrice": "Unit price",
     "subtotal": "Subtotal",
-    "risk": "Risk (Shopify)"
+    "risk": "Risk (Shopify)",
+    "design": {
+      "label": "Design",
+      "classic": "Classic",
+      "new": "New",
+      "newBadge": "NEW",
+      "saved": "Saved for you · on every order"
+    }
   },
   "orderStatus": {
     "IMPORTED": "Imported",
@@ -1158,7 +1165,7 @@
       }
     },
     "findings": {
-      "title": "Pre-flight checks",
+      "title": "Error checks",
       "none": "All checks pass.",
       "noCheck": "The order has not been checked yet.",
       "checkedAt": "Checked {at}",
@@ -1169,7 +1176,8 @@
       "apply": "Apply \"{value}\"",
       "suggestion": "Suggestion: {value}",
       "shopifyOnly": "The COD amount is corrected in Shopify.",
-      "stale": "The data changed after the check — check again."
+      "stale": "The data changed after the check — check again.",
+      "titleClassic": "Pre-flight checks"
     },
     "routing": {
       "title": "Warehouse and routing",
@@ -1184,7 +1192,8 @@
         "disabled": "disabled",
         "invalid": "invalid",
         "connection_disabled": "warehouse disabled"
-      }
+      },
+      "why": "why this warehouse"
     },
     "stock": {
       "title": "Stock per warehouse",
@@ -1193,7 +1202,9 @@
       "noSnapshot": "no data",
       "cell": "{sellable} sellable",
       "detail": "free {free} · physical {physical} · reserved {reserved} · {source}, {age}",
-      "short": "short"
+      "short": "short",
+      "sellableLabel": "sellable",
+      "shortNeeds": "not enough (needs {need})"
     },
     "timeline": {
       "title": "Timeline",
@@ -1204,7 +1215,8 @@
       "ai": "AI",
       "vendor": "{connection}: {raw}",
       "review": "Decision: {decision}",
-      "changes": "{n} corrections"
+      "changes": "{n} corrections",
+      "count": "{n} events"
     },
     "raw": {
       "title": "Raw payloads (admins only)",
@@ -3508,5 +3520,9 @@
       "link_changed": "The link or its names changed meanwhile — reload the page.",
       "other": "The action failed."
     }
+  },
+  "common": {
+    "clickToCopy": "Click to copy",
+    "copied": "Copied"
   }
 }

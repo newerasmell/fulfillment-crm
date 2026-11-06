@@ -34,9 +34,12 @@ test("review: fix the address with live validation, approve, hold, block; review
   await expect(page.getByRole("table", { name: "Артикули" })).toContainText("6 за продажба");
   await expect(page.getByText("Сурови данни (само за администратори)")).toBeVisible();
   // What will be sent (DESIGN principle 4): with a hard finding the body cannot be built yet.
-  await expect(page.getByRole("heading", { name: "Какво ще се изпрати" })).toBeVisible();
+  // Folded sections (owner redesign 2026-11-05): "What will be sent" and the raw payloads open on click.
+  await page.getByTestId("fold-payload").locator(":scope > summary").click();
+  await expect(page.getByTestId("fold-payload")).toContainText("Какво ще се изпрати");
   await expect(page.getByTestId("payload-preview-blocked")).toContainText("FHB Преглед");
   // Raw payloads load only when a section is opened.
+  await page.getByTestId("fold-raw").locator(":scope > summary").click();
   await page.getByText("Оригинален адрес", { exact: true }).click();
   await expect(page.locator("pre").filter({ hasText: '"countryCode"' }).first()).toBeVisible({
     timeout: 30_000,
@@ -163,4 +166,27 @@ test("a mystery line gets its product picked by hand for this order only, and th
   // Undo puts the line back to unmatched.
   await row.getByRole("button", { name: "Махни избора" }).click();
   await expect(row).toContainText("Несвързан", { timeout: 60_000 });
+});
+
+test("the order page design toggle switches between Нов and Класически and is remembered", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await login(page, REVIEWER);
+  await openOrder(page, "#R-7003");
+  const toggle = page.getByTestId("design-toggle");
+  await expect(toggle.getByRole("radio", { name: /Нов/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("heading", { name: "Проверки за грешки" })).toBeVisible();
+  await toggle.getByRole("radio", { name: "Класически" }).click();
+  await expect(page.getByRole("heading", { name: "Проверки преди изпращане" })).toBeVisible({
+    timeout: 60_000,
+  });
+  // Remembered for this person: another order opens in the classic design too.
+  await openOrder(page, "#R-7002");
+  await expect(page.getByTestId("design-toggle").getByRole("radio", { name: "Класически" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.getByTestId("design-toggle").getByRole("radio", { name: /Нов/ }).click();
+  await expect(page.getByRole("heading", { name: "Проверки за грешки" })).toBeVisible({ timeout: 60_000 });
 });

@@ -13,6 +13,9 @@ import {
   saveAddressAction,
 } from "@/app/actions/review";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
+import { CopyValue } from "@/components/ui/CopyValue";
+import { Field as FieldBox, fieldGridCls } from "@/components/ui/Fold";
+import { iconButtonCls, PencilIcon, RefreshIcon } from "@/components/ui/icons";
 import type { Finding } from "@/server/checks/findings";
 
 /** Client parts of the order detail (P4-04): address editor with live validation, suggested fixes, decision bar. */
@@ -39,7 +42,26 @@ function useErrorText() {
   return (code: string) => (t.has(errKey(code)) ? t(errKey(code)) : `${t("error.generic")} (${code})`);
 }
 
+/** Read-only order of the address fields in the card (the editor keeps FIELDS). */
+const VIEW_ORDER: { f: Field; wide?: boolean; mono?: boolean }[] = [
+  { f: "name" },
+  { f: "phone", mono: true },
+  { f: "company", wide: true },
+  { f: "address1", wide: true },
+  { f: "address2", wide: true },
+  { f: "city" },
+  { f: "zip", mono: true },
+  { f: "province" },
+  { f: "countryCode" },
+];
+
+/**
+ * The Shipping address card: its title with a pencil (when the order can still be edited), the fields as label +
+ * click-to-copy value, the Shopify original crossed out next to a corrected value; the pencil opens the editor with
+ * live validation.
+ */
 export function AddressEditor({
+  title,
   orderId,
   version,
   values,
@@ -48,6 +70,7 @@ export function AddressEditor({
   canReview,
   statusLabel,
 }: {
+  title: string;
   orderId: string;
   version: string;
   values: Values;
@@ -110,125 +133,161 @@ export function AddressEditor({
     );
   const msg = (x: Finding) => (locale === "en" ? x.message_en : x.message_bg);
 
-  if (!editing) {
-    return (
-      <div className="flex flex-col gap-2">
-        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1" data-testid="address-view">
-          {FIELDS.map((f) => {
-            const now = values[f];
-            const was = original?.[f] ?? null;
-            const corrected = original && was !== now;
-            if (!now && !corrected) return null;
-            return (
-              <div key={f} className="contents">
-                <dt className="text-muted">{t(`address.field.${f}`)}</dt>
-                <dd
-                  className={`m-0 ${f === "phone" || f === "zip" || f === "countryCode" ? "font-mono text-[13px]" : ""}`}
-                >
-                  {corrected && (
-                    <del className="mr-2 text-muted" aria-label={t("address.original")}>
-                      {was ?? "—"}
-                    </del>
-                  )}
-                  <span>{now ?? "—"}</span>
-                  {corrected && (
-                    <span className="ml-2 rounded-full bg-warn-bg px-2 py-0.5 text-xs text-warn">
-                      {t("address.corrected")}
-                    </span>
-                  )}
-                </dd>
-              </div>
-            );
-          })}
-        </dl>
-        {message && (
-          <p role="status" className={`m-0 text-sm ${message.tone === "ok" ? "text-ok" : "text-block"}`}>
-            {message.text}
-          </p>
-        )}
-        {canReview &&
-          (editable ? (
-            <button type="button" onClick={open} className={`${ghostButtonCls} self-start`}>
-              {t("address.edit")}
-            </button>
-          ) : (
-            <p className="m-0 text-sm text-muted">{t("address.notEditable", { status: statusLabel })}</p>
-          ))}
-      </div>
-    );
-  }
+  const countryName = (code: string) => {
+    try {
+      return new Intl.DisplayNames([locale], { type: "region" }).of(code.toUpperCase()) ?? code;
+    } catch {
+      return code;
+    }
+  };
 
-  return (
-    <form
-      aria-label={t("address.form")}
-      className="grid gap-3 sm:grid-cols-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        save();
-      }}
-    >
-      {FIELDS.map((f) => {
-        const errs = fieldErrors(f);
-        const id = `addr-${f}`;
-        return (
-          <label key={f} className={`${labelCls} ${f === "address1" || f === "name" ? "sm:col-span-2" : ""}`}>
-            {t(`address.field.${f}`)}
-            <input
-              id={id}
-              name={f}
-              value={draft[f] ?? ""}
-              onChange={(e) => change(f, e.target.value)}
-              aria-invalid={errs.length ? true : undefined}
-              aria-describedby={errs.length ? `${id}-err` : undefined}
-              maxLength={f === "countryCode" ? 2 : 200}
-              className={`${inputCls} ${errs.length ? "border-block" : ""}`}
-            />
-            {original && original[f] !== (draft[f] || null) && (
-              <span className="text-xs font-normal text-muted">
-                {t("address.original")}: <del>{original[f] ?? "—"}</del>
-              </span>
-            )}
-            {errs.map((x) => (
-              <span
-                key={x.code}
-                id={`${id}-err`}
-                className={`text-xs font-normal ${x.severity === "hard" ? "text-block" : "text-warn"}`}
-              >
-                {msg(x)}
-              </span>
-            ))}
-            {f === "phone" && live?.phone && live.phone !== (draft.phone ?? "") && (
-              <span className="text-xs font-normal text-muted">
-                {t("address.phoneAs", { phone: live.phone })}
-              </span>
-            )}
-          </label>
-        );
-      })}
-      <p role="status" aria-live="polite" className="m-0 text-sm sm:col-span-2" data-testid="address-live">
-        {checking ? (
-          <span className="text-muted">{t("address.checking")}</span>
-        ) : live && live.findings.length === 0 ? (
-          <span className="text-ok">✓ {t("address.liveOk")}</span>
-        ) : live ? (
-          <span className="text-block">{live.findings.map((x) => msg(x)).join(" · ")}</span>
-        ) : null}
-      </p>
-      {message?.tone === "error" && (
-        <p role="alert" className="m-0 text-sm text-block sm:col-span-2">
+  const view = (
+    <div className="flex flex-col gap-3">
+      <div className={fieldGridCls} data-testid="address-view">
+        {VIEW_ORDER.map(({ f, wide, mono }) => {
+          const now = values[f];
+          const was = original?.[f] ?? null;
+          const corrected = original && was !== now;
+          if (!now && !corrected) return null;
+          return (
+            <FieldBox key={f} label={t(`address.field.${f}`)} wide={wide}>
+              {corrected && (
+                <del className="mr-1 text-muted" aria-label={t("address.original")}>
+                  {was ?? "—"}
+                </del>
+              )}
+              {now ? (
+                <CopyValue value={now} mono={mono}>
+                  {f === "countryCode" ? (
+                    <>
+                      {countryName(now)} <span className="font-mono text-[13px] text-muted">{now}</span>
+                    </>
+                  ) : (
+                    now
+                  )}
+                </CopyValue>
+              ) : (
+                <span>—</span>
+              )}
+              {corrected && (
+                <span className="ml-1 rounded-full bg-warn-bg px-2 py-0.5 text-xs text-warn">
+                  {t("address.corrected")}
+                </span>
+              )}
+            </FieldBox>
+          );
+        })}
+      </div>
+      {message && (
+        <p role="status" className={`m-0 text-sm ${message.tone === "ok" ? "text-ok" : "text-block"}`}>
           {message.text}
         </p>
       )}
-      <div className="flex gap-3 sm:col-span-2">
-        <button type="submit" disabled={pending} className={buttonCls}>
-          {pending ? t("address.saving") : t("address.save")}
-        </button>
-        <button type="button" onClick={() => setEditing(false)} className={ghostButtonCls}>
-          {t("address.cancel")}
-        </button>
-      </div>
-    </form>
+      {canReview && !editable && (
+        <p className="m-0 text-xs text-muted">{t("address.notEditable", { status: statusLabel })}</p>
+      )}
+    </div>
   );
+
+  return (
+    <section
+      className="flex min-w-0 flex-col rounded-[var(--radius-card)] border border-line bg-surface p-5"
+      aria-label={title}
+    >
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="m-0 text-base font-semibold">{title}</h2>
+        {canReview && editable && !editing && (
+          <button
+            type="button"
+            onClick={open}
+            className={iconButtonCls}
+            aria-label={t("address.edit")}
+            title={t("address.edit")}
+          >
+            <PencilIcon />
+          </button>
+        )}
+      </div>
+      {editing ? editorForm() : view}
+    </section>
+  );
+
+  function editorForm() {
+    return (
+      <form
+        aria-label={t("address.form")}
+        className="grid gap-3 sm:grid-cols-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save();
+        }}
+      >
+        {FIELDS.map((f) => {
+          const errs = fieldErrors(f);
+          const id = `addr-${f}`;
+          return (
+            <label
+              key={f}
+              className={`${labelCls} ${f === "address1" || f === "name" ? "sm:col-span-2" : ""}`}
+            >
+              {t(`address.field.${f}`)}
+              <input
+                id={id}
+                name={f}
+                value={draft[f] ?? ""}
+                onChange={(e) => change(f, e.target.value)}
+                aria-invalid={errs.length ? true : undefined}
+                aria-describedby={errs.length ? `${id}-err` : undefined}
+                maxLength={f === "countryCode" ? 2 : 200}
+                className={`${inputCls} ${errs.length ? "border-block" : ""}`}
+              />
+              {original && original[f] !== (draft[f] || null) && (
+                <span className="text-xs font-normal text-muted">
+                  {t("address.original")}: <del>{original[f] ?? "—"}</del>
+                </span>
+              )}
+              {errs.map((x) => (
+                <span
+                  key={x.code}
+                  id={`${id}-err`}
+                  className={`text-xs font-normal ${x.severity === "hard" ? "text-block" : "text-warn"}`}
+                >
+                  {msg(x)}
+                </span>
+              ))}
+              {f === "phone" && live?.phone && live.phone !== (draft.phone ?? "") && (
+                <span className="text-xs font-normal text-muted">
+                  {t("address.phoneAs", { phone: live.phone })}
+                </span>
+              )}
+            </label>
+          );
+        })}
+        <p role="status" aria-live="polite" className="m-0 text-sm sm:col-span-2" data-testid="address-live">
+          {checking ? (
+            <span className="text-muted">{t("address.checking")}</span>
+          ) : live && live.findings.length === 0 ? (
+            <span className="text-ok">✓ {t("address.liveOk")}</span>
+          ) : live ? (
+            <span className="text-block">{live.findings.map((x) => msg(x)).join(" · ")}</span>
+          ) : null}
+        </p>
+        {message?.tone === "error" && (
+          <p role="alert" className="m-0 text-sm text-block sm:col-span-2">
+            {message.text}
+          </p>
+        )}
+        <div className="flex gap-3 sm:col-span-2">
+          <button type="submit" disabled={pending} className={buttonCls}>
+            {pending ? t("address.saving") : t("address.save")}
+          </button>
+          <button type="button" onClick={() => setEditing(false)} className={ghostButtonCls}>
+            {t("address.cancel")}
+          </button>
+        </div>
+      </form>
+    );
+  }
 }
 
 /** One-click suggested fix for an address/phone finding (recorded in the diff as suggested_fix:<code>). */
@@ -286,10 +345,13 @@ export function RecheckButton({ orderId }: { orderId: string }) {
   const [error, setError] = useState<string | null>(null);
   return (
     <span className="inline-flex items-center gap-2">
+      {error && <span className="text-sm text-block">{error}</span>}
       <button
         type="button"
         disabled={pending}
-        className={`${ghostButtonCls} text-sm`}
+        className={`${iconButtonCls} ${pending ? "animate-spin" : ""}`}
+        aria-label={pending ? t("address.checking") : t("findings.recheck")}
+        title={t("findings.recheck")}
         onClick={() =>
           start(async () => {
             const r = await recheckAction(orderId);
@@ -297,9 +359,8 @@ export function RecheckButton({ orderId }: { orderId: string }) {
           })
         }
       >
-        {pending ? t("address.checking") : t("findings.recheck")}
+        <RefreshIcon />
       </button>
-      {error && <span className="text-sm text-block">{error}</span>}
     </span>
   );
 }

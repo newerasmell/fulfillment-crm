@@ -79,6 +79,7 @@ test("Пренасочи: cancel at the old warehouse first; only after the conf
   await login(page, OWNER);
   await openOrder(page, "#P-9002");
 
+  await page.getByTestId("fold-shipments").locator(":scope > summary").click();
   await expect(page.getByTestId("shipments")).toContainText("Information received");
   await page.getByRole("button", { name: "Пренасочи към друг склад" }).click();
   const form = page.getByRole("form", { name: "Пренасочване" });
