@@ -257,6 +257,18 @@ model User {
   updatedAt      DateTime  @updatedAt
 
   memberships Membership[]
+  preference  UserPreference?
+}
+
+/// Personal settings of one person, the same in every account and on every device (owner request 2026-11-06:
+/// the order page design, "Класически" / "Нов"). Not account data: read and written for the signed-in user only.
+model UserPreference {
+  userId      String   @id
+  /// "new" | "classic"
+  orderDesign String   @default("new")
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 /// A legal entity (фирма) inside the group. Owns stores, warehouse connections and orders. Never hard-deleted:

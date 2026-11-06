@@ -483,7 +483,14 @@
     "qty": "Qty",
     "unitPrice": "Unit price",
     "subtotal": "Subtotal",
-    "risk": "Risk (Shopify)"
+    "risk": "Risk (Shopify)",
+    "design": {
+      "label": "Design",
+      "classic": "Classic",
+      "new": "New",
+      "newBadge": "NEW",
+      "saved": "Saved for you · on every order"
+    }
   },
   "orderStatus": {
     "IMPORTED": "Imported",
@@ -1169,7 +1176,8 @@
       "apply": "Apply \"{value}\"",
       "suggestion": "Suggestion: {value}",
       "shopifyOnly": "The COD amount is corrected in Shopify.",
-      "stale": "The data changed after the check — check again."
+      "stale": "The data changed after the check — check again.",
+      "titleClassic": "Pre-flight checks"
     },
     "routing": {
       "title": "Warehouse and routing",

@@ -10,7 +10,7 @@ import {
   withAccountTransaction,
 } from "./client";
 
-const GLOBAL = new Set(["User", "LoginAttempt", "ApiSpecVersion", "ApiWatchSource"]);
+const GLOBAL = new Set(["User", "UserPreference", "LoginAttempt", "ApiSpecVersion", "ApiWatchSource"]);
 const SCOPED_MODELS = Object.values(Prisma.ModelName).filter((m) => !GLOBAL.has(m));
 const delegateKey = (m: string) => m.charAt(0).toLowerCase() + m.slice(1);
 

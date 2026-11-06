@@ -167,3 +167,26 @@ test("a mystery line gets its product picked by hand for this order only, and th
   await row.getByRole("button", { name: "Махни избора" }).click();
   await expect(row).toContainText("Несвързан", { timeout: 60_000 });
 });
+
+test("the order page design toggle switches between Нов and Класически and is remembered", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await login(page, REVIEWER);
+  await openOrder(page, "#R-7003");
+  const toggle = page.getByTestId("design-toggle");
+  await expect(toggle.getByRole("radio", { name: /Нов/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("heading", { name: "Проверки за грешки" })).toBeVisible();
+  await toggle.getByRole("radio", { name: "Класически" }).click();
+  await expect(page.getByRole("heading", { name: "Проверки преди изпращане" })).toBeVisible({
+    timeout: 60_000,
+  });
+  // Remembered for this person: another order opens in the classic design too.
+  await openOrder(page, "#R-7002");
+  await expect(page.getByTestId("design-toggle").getByRole("radio", { name: "Класически" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.getByTestId("design-toggle").getByRole("radio", { name: /Нов/ }).click();
+  await expect(page.getByRole("heading", { name: "Проверки за грешки" })).toBeVisible({ timeout: 60_000 });
+});
