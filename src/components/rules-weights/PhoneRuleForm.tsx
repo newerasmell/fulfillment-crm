@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { saveCountryRuleAction } from "@/app/actions/rules-weights";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
-import { normalisePhone, PhoneRuleSchema, type PhoneRule } from "@/integrations/eushipments/phone";
+import {
+  hasBuiltinPhoneRule,
+  normalisePhone,
+  PhoneRuleSchema,
+  type PhoneRule,
+} from "@/integrations/eushipments/phone";
 import { callingCodeOf, normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 
 /**
@@ -60,7 +65,7 @@ export function PhoneRuleForm({
     <form action={action} className="flex flex-col gap-3" aria-label={t("addRuleTitle", { cc: country })}>
       <input type="hidden" name="country" value={country} />
       <p role="note" className="m-0 rounded-lg bg-warn-bg px-3 py-2 text-sm text-warn">
-        {t("warning", { cc: country })}
+        {hasBuiltinPhoneRule(country) ? t("warningOverride", { cc: country }) : t("warning", { cc: country })}
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className={labelCls}>

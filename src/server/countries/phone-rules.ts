@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   customPhoneRule,
-  hasBuiltinPhoneRule,
   normalisePhone,
   PHONE_RULES,
   PhoneRuleSchema,
@@ -24,9 +23,10 @@ import type { ScopedActor } from "@/server/stores";
 
 /**
  * Per-country settings of the group (Настройки → Държави): local currency and the group's OWN phone rule.
- * The euShipments guideline documents phone formats for eight countries (INTEGRATION_NOTES §4.4) — those
- * built-in rules always win and are shown read-only. A custom rule only fills a country the guideline does not
- * document (e.g. CY); it must be confirmed with the warehouse, because nothing in the vendor docs backs it.
+ * The euShipments guideline documents phone formats for eight countries (INTEGRATION_NOTES §4.4); those built-in
+ * rules apply until the group sets its own rule for the country, which then replaces them (owner decision
+ * 2026-11-06, after ACS Greece confirmed +30 numbers are accepted). A custom rule must be confirmed with the
+ * warehouse, because nothing in the vendor docs backs it.
  * Saving a rule re-runs the checks of every open order of the group to that country.
  */
 
@@ -57,8 +57,8 @@ export interface CountryRow {
   currencyDefault: boolean;
   builtin: PhoneRule | null;
   custom: PhoneRule | null;
-  /** True when a custom rule is stored but a built-in rule exists (it is ignored). */
-  customIgnored: boolean;
+  /** True when the group's own rule replaces a built-in (vendor guideline) rule. */
+  overridesBuiltin: boolean;
 }
 
 /** Every country with a setting or a built-in rule, sorted. */
@@ -77,7 +77,7 @@ export async function listCountries(actor: ScopedActor): Promise<CountryRow[]> {
       currencyDefault: !s?.currency,
       builtin,
       custom,
-      customIgnored: !!builtin && !!custom,
+      overridesBuiltin: !!builtin && !!custom,
     };
   });
 }
@@ -130,7 +130,6 @@ export async function saveCountrySetting(
 ): Promise<SaveCountryResult> {
   assertCan(actor.role, "countries.manage");
   const input = CountrySettingInput.parse(raw);
-  if (input.rule && hasBuiltinPhoneRule(input.country)) throw new DomainError("builtin_phone_rule");
   // The calling code is a fact of the country (public ITU table), not a choice: a wrong one would give
   // euShipments a different number than FHB / Joy (which always use the ITU code) for the same order.
   const itu = callingCodeOf(input.country);

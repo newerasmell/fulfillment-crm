@@ -59,47 +59,52 @@ export default async function CountriesPage({ searchParams }: { searchParams: Pr
                     {!r.currency && <div className="text-xs text-warn">{t("currencyMissing")}</div>}
                   </td>
                   <td className={tdCls}>
-                    {r.builtin ? (
-                      <div className="flex flex-col gap-1">
-                        <RuleText rule={r.builtin} t={tt} />
-                        <span className="text-xs text-muted">{t("builtin")}</span>
-                        {r.customIgnored && <span className="text-xs text-warn">{t("customIgnored")}</span>}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-1">
-                        {r.custom ? (
-                          <>
-                            <RuleText rule={r.custom} t={tt} />
-                            <span className="text-xs text-muted">{t("custom")}</span>
-                          </>
-                        ) : (
-                          <span className="text-sm text-warn">{t("none")}</span>
-                        )}
-                        {manage && (
-                          <details className="mt-1">
-                            <summary className="cursor-pointer text-sm text-accent">{t("edit")}</summary>
-                            <div className="mt-2">
-                              <PhoneRuleForm
-                                country={r.country}
-                                initial={
-                                  r.custom ??
-                                  suggestPhoneRule(null, r.country) ?? {
-                                    style: "international",
-                                    cc: "",
-                                    trunk: "",
-                                    lengths: [8],
-                                  }
+                    <div className="flex flex-col gap-1">
+                      {r.custom ? (
+                        <>
+                          <RuleText rule={r.custom} t={tt} />
+                          <span className="text-xs text-muted">{t("custom")}</span>
+                          {r.overridesBuiltin && r.builtin && (
+                            <span className="text-xs text-warn">
+                              {t("overridesBuiltin")} <RuleText rule={r.builtin} t={tt} />
+                            </span>
+                          )}
+                        </>
+                      ) : r.builtin ? (
+                        <>
+                          <RuleText rule={r.builtin} t={tt} />
+                          <span className="text-xs text-muted">{t("builtin")}</span>
+                        </>
+                      ) : (
+                        <span className="text-sm text-warn">{t("none")}</span>
+                      )}
+                      {manage && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-sm text-accent">
+                            {r.builtin && !r.custom ? t("override") : t("edit")}
+                          </summary>
+                          <div className="mt-2">
+                            <PhoneRuleForm
+                              country={r.country}
+                              initial={
+                                r.custom ??
+                                r.builtin ??
+                                suggestPhoneRule(null, r.country) ?? {
+                                  style: "international",
+                                  cc: "",
+                                  trunk: "",
+                                  lengths: [8],
                                 }
-                                samplePhone={null}
-                                needsCurrency={!r.currency}
-                                defaultCurrency={r.currency}
-                                canRemove={!!r.custom}
-                              />
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    )}
+                              }
+                              samplePhone={null}
+                              needsCurrency={!r.currency}
+                              defaultCurrency={r.currency}
+                              canRemove={!!r.custom}
+                            />
+                          </div>
+                        </details>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
