@@ -166,6 +166,13 @@ describe("lifecycle rules (pure)", () => {
     expect(shopifyTrackingCompany("speedy")).toBe("Speedy");
     expect(shopifyTrackingCompany(" gls ")).toBe("GLS");
     expect(shopifyTrackingCompany("Local Courier")).toBe("Local Courier");
+    // Warehouse courier names carry a country / variant: the carrier word maps to Shopify's spelling.
+    expect(shopifyTrackingCompany("Greece ACS")).toBe("ACS Courier");
+    expect(shopifyTrackingCompany("ACS Courier GR")).toBe("ACS Courier");
+    expect(shopifyTrackingCompany("Hungary GLS New")).toBe("GLS");
+    expect(shopifyTrackingCompany("Romania DPD")).toBe("DPD");
+    expect(shopifyTrackingCompany("Czech Zásilkovna")).toBe("Packeta");
+    expect(shopifyTrackingCompany("Greece Courier Center")).toBe("Greece Courier Center");
     expect(shopifyTrackingCompany(null)).toBeNull();
   });
   it("the fulfillment read-back query stays well under Shopify's cost limit", () => {

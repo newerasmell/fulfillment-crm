@@ -239,8 +239,27 @@ export async function applyOrderHistory(
         trackingNumbers: true,
         shippedAt: true,
         deliveredAt: true,
+        carrier: true,
       },
     });
+    // Shipments created before the courier was recorded: take it from the create-order the CRM sent (courierId).
+    let carrier = f.carrier;
+    if (!carrier) {
+      const req = await tx.outboundRequest.findFirst({
+        where: { fulfillmentId, operation: "eushipments.createOrder" },
+        orderBy: { createdAt: "desc" },
+        select: { payload: true },
+      });
+      const courierId = Number((req?.payload as { body?: { courierId?: unknown } } | null)?.body?.courierId);
+      if (Number.isInteger(courierId) && courierId > 0)
+        carrier =
+          (
+            await tx.eushipmentsCourier.findFirst({
+              where: { connectionId: f.connectionId, courierId },
+              select: { name: true },
+            })
+          )?.name ?? null;
+    }
     const dated = ordered(item.statusesHistory ?? []);
     const known = new Set(
       (
@@ -311,6 +330,7 @@ export async function applyOrderHistory(
         status: crm,
         rawStatus: latest.record.STATUS.slice(0, 200),
         trackingNumbers: tracking,
+        ...(carrier && carrier !== f.carrier ? { carrier } : {}),
         ...(item.newReturnNumber ? { returnInfo: { returnAwb: item.newReturnNumber } } : {}),
         ...(rule.category === "IN_TRANSIT" && !f.shippedAt ? { shippedAt: latest.at ?? now } : {}),
         ...(rule.category === "DELIVERED" && !f.deliveredAt ? { deliveredAt: latest.at ?? now } : {}),
