@@ -392,9 +392,20 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
     let created = 0;
     let matched = 0;
     const seen = new Set<string>();
+    // What euShipments returned vs what is kept (owner report 2026-11-09: 318 of 3000+ products shown). A row
+    // without a refNumber cannot be stored; rows sharing a refNumber are one product here (the first one).
+    let emptyRef = 0;
+    const dupCount = new Map<string, number>();
     for (const r of rows) {
       const vendorId = r.REFERENCE_NUMBER.trim();
-      if (!vendorId || seen.has(vendorId)) continue;
+      if (!vendorId) {
+        emptyRef++;
+        continue;
+      }
+      if (seen.has(vendorId)) {
+        dupCount.set(vendorId, (dupCount.get(vendorId) ?? 1) + 1);
+        continue;
+      }
       seen.add(vendorId);
       const raw = json({
         name: r.NAME ?? null,
@@ -441,7 +452,23 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
       where: { connectionId, archived: false, productId: null },
     });
     await refreshSuspiciousLinksSafe(accountId, { vendors: { connectionId } }, "eushipments_products");
-    return { rows: seen.size, created, matched, unmatched, archived: archived.count };
+    if (emptyRef || dupCount.size)
+      logger.warn(
+        { connectionId, returned: rows.length, emptyRef, duplicateRefs: dupCount.size },
+        "euShipments products: rows without or with a repeated refNumber",
+      );
+    return {
+      rows: seen.size,
+      returned: rows.length,
+      emptyRef,
+      duplicateRefs: dupCount.size,
+      duplicateRows: [...dupCount.values()].reduce((a, n) => a + n - 1, 0),
+      duplicateSamples: [...dupCount.keys()].slice(0, 5).map((k) => k.slice(0, 60)),
+      created,
+      matched,
+      unmatched,
+      archived: archived.count,
+    };
   });
 }
 

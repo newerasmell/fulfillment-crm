@@ -251,6 +251,18 @@ describe("euShipments read side (DB)", () => {
     await g.db.vendorProduct.update({ where: { id: vps[1]!.id }, data: { productId: master.id } });
   });
 
+  it("products: reports rows euShipments returned without a refNumber or with a repeated one", async () => {
+    const [a, b] = products;
+    const odd = {
+      ...routes,
+      "/fulfilment/get-products": () =>
+        json([a, { ...a, ID: 9001 }, { ...a, ID: 9002 }, b, { ...b, ID: 9003, REFERENCE_NUMBER: "  " }]),
+    };
+    const info = await syncEuProducts(g.accountId, g.connection.id, vendor(odd).deps);
+    expect(info).toMatchObject({ returned: 5, rows: 2, emptyRef: 1, duplicateRefs: 1, duplicateRows: 2 });
+    expect(info.duplicateSamples).toEqual([a!.REFERENCE_NUMBER.trim()]);
+  });
+
   it("products: one a person unlinked (suspicious link) is never re-matched by SKU", async () => {
     const vp = await g.db.vendorProduct.findUniqueOrThrow({
       where: { connectionId_vendorId: { connectionId: g.connection.id, vendorId: "ref-test-54202" } },

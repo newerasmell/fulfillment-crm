@@ -1031,7 +1031,9 @@
       "serviceAuto": "service: automatic",
       "officeOnly": "office only",
       "save": "Save"
-    }
+    },
+    "productsInfo": "euShipments returned {returned} rows → {kept} products · no refNumber: {emptyRef} · repeated refNumber: {duplicates}.",
+    "productsDupSamples": "E.g.: {refs}"
   },
   "apiWatch": {
     "title": "API changes",
