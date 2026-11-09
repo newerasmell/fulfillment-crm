@@ -22,6 +22,7 @@ import {
 import { crmReservations, daysLeft, isStale, sellableOf } from "./levels";
 import {
   createInventoryPush,
+  storePushes,
   planInventoryPush,
   processInventoryPush,
   sweepInventoryPushes,
@@ -754,6 +755,17 @@ describe("Shopify inventory read + push", () => {
     expect((await createInventoryPush(g.store.id, { kind: "user", actor: g.owner })).reason).toBe(
       "nothing_to_push",
     );
+  });
+
+  it("the store page history: line counts by status, a few lines, the request only for the newest push", async () => {
+    const list = await storePushes(g.accountId, g.store.id);
+    expect(list.length).toBeGreaterThan(1);
+    for (const p of list) {
+      expect(p.total).toBe(Object.values(p.byStatus).reduce((a, n) => a + n, 0));
+      expect(p.sample.length).toBeLessThanOrEqual(Math.min(10, p.total));
+    }
+    expect(list[0]!.request).not.toBeNull();
+    expect(list.slice(1).every((p) => p.request === null)).toBe(true);
   });
 
   it("an unknown outcome is read back; a retry re-sends the stored variables under the same key", async () => {

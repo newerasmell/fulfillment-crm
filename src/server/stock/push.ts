@@ -778,9 +778,17 @@ export async function sweepInventoryPushes(now: Date = new Date(), limit = 100) 
   return { stale: stale.count, created, ready };
 }
 
-/** Push history of one store for the store page. */
-export function storePushes(accountId: string, storeId: string, take = 10) {
-  return accountDb(accountId).inventoryPush.findMany({
+/** Lines shown per history entry; the rest is counted (a store can have thousands per push). */
+const HISTORY_SAMPLE = 10;
+
+/**
+ * Push history of one store for the store page: per push the line counts by status and the first lines; the
+ * stored request only for the newest push (owner report 2026-11-09: a 3800-variant store loaded every line and
+ * request of ten pushes and the page failed).
+ */
+export async function storePushes(accountId: string, storeId: string, take = 10) {
+  const db = accountDb(accountId);
+  const pushes = await db.inventoryPush.findMany({
     where: { storeId },
     orderBy: { createdAt: "desc" },
     take,
@@ -794,19 +802,46 @@ export function storePushes(accountId: string, storeId: string, take = 10) {
       attempts: true,
       createdAt: true,
       sentAt: true,
-      request: true,
-      lines: {
-        select: {
-          id: true,
-          variantLinkId: true,
-          locationGid: true,
-          sellable: true,
-          target: true,
-          shopifyBefore: true,
-          status: true,
-          error: true,
-        },
-      },
     },
+  });
+  if (!pushes.length) return [];
+  const ids = pushes.map((p) => p.id);
+  const [counts, newest, samples] = await Promise.all([
+    db.inventoryPushLine.groupBy({
+      by: ["pushId", "status"],
+      where: { pushId: { in: ids } },
+      _count: { _all: true },
+    }),
+    db.inventoryPush.findUnique({ where: { id: ids[0] }, select: { request: true } }),
+    Promise.all(
+      ids.map((pushId) =>
+        db.inventoryPushLine.findMany({
+          where: { pushId },
+          orderBy: { id: "asc" },
+          take: HISTORY_SAMPLE,
+          select: {
+            id: true,
+            variantLinkId: true,
+            locationGid: true,
+            sellable: true,
+            target: true,
+            shopifyBefore: true,
+            status: true,
+            error: true,
+          },
+        }),
+      ),
+    ),
+  ]);
+  return pushes.map((p, i) => {
+    const byStatus: Record<string, number> = {};
+    for (const c of counts) if (c.pushId === p.id) byStatus[c.status] = c._count._all;
+    return {
+      ...p,
+      request: i === 0 ? (newest?.request ?? null) : null,
+      total: Object.values(byStatus).reduce((a, n) => a + n, 0),
+      byStatus,
+      sample: samples[i]!,
+    };
   });
 }
