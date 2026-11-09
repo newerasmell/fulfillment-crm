@@ -189,4 +189,18 @@ test("the order page design toggle switches between Нов and Класичес�
   );
   await page.getByTestId("design-toggle").getByRole("radio", { name: /Нов/ }).click();
   await expect(page.getByRole("heading", { name: "Проверки за грешки" })).toBeVisible({ timeout: 60_000 });
+
+  // J / K and the arrows move between orders (as in Shopify); typing in a field does not.
+  const nav = page.getByTestId("order-nav");
+  await expect(nav).toBeVisible();
+  const here = page.url();
+  const hasOlder = (await page.getByTestId("order-older").count()) > 0;
+  await page.keyboard.press(hasOlder ? "k" : "j");
+  await expect(page).not.toHaveURL(here, { timeout: 30_000 });
+  await page.keyboard.press(hasOlder ? "j" : "k");
+  await expect(page).toHaveURL(here, { timeout: 30_000 });
+  await page.screenshot({
+    path: "test-results/order-nav.png",
+    clip: { x: 600, y: 0, width: 840, height: 200 },
+  });
 });

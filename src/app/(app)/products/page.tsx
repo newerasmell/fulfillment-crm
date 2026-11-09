@@ -8,6 +8,8 @@ import { accountDb } from "@/server/db/client";
 import { listUnmatchedVariants, stripSkuPrefix } from "@/server/shopify/products";
 import { MatchVariant } from "./forms";
 import { FillWeightsButton } from "@/components/rules-weights/WeightForm";
+import { actorFrom } from "@/server/auth/session";
+import { weightFillWarehouses } from "@/server/products/weights";
 import { EuShipmentsProductsLink } from "../warehouses/eushipments/entry-links";
 import { LineChip } from "@/components/ui/LineChip";
 import { lineCoverage } from "@/server/lines/coverage";
@@ -57,7 +59,9 @@ export default async function ProductsPage() {
         subtitle={t("intro")}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {can(ctx.role, "products.weight") && <FillWeightsButton />}
+            {can(ctx.role, "products.weight") && (
+              <FillWeightsButton warehouses={await weightFillWarehouses(actorFrom(ctx))} />
+            )}
             {ctx.lines.length > 0 && (
               <Link
                 href="/products/lines"

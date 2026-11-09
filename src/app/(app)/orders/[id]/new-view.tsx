@@ -1,3 +1,5 @@
+import { orderNeighbours } from "@/server/orders";
+import { OrderNav } from "../order-nav";
 import { DesignToggle } from "../design-toggle";
 import { CarrierPick } from "./carrier-pick";
 import Link from "next/link";
@@ -131,6 +133,7 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
       }
     : null;
   const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
+  const nav = await orderNeighbours(ctx, order.id);
   // Shipments whose Shopify tracking waits for a person to pick the carrier (one entry per shipment).
   const heldCarriers = [
     ...new Map(
@@ -211,6 +214,7 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
         subtitle={`${order.store?.name ?? "—"} · ${order.company?.name ?? "—"} · ${when(order.placedAt)}`}
         actions={
           <div className="flex flex-wrap items-start gap-2">
+            <OrderNav {...nav} />
             <DesignToggle current="new" />
             {can(ctx.role, "orders.fulfill") &&
               ["APPROVED", "SUBMIT_FAILED", "QUEUED"].includes(order.status) && (

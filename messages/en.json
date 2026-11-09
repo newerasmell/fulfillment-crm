@@ -509,6 +509,13 @@
       "new": "New",
       "newBadge": "NEW",
       "saved": "Saved for you · on every order"
+    },
+    "nav": {
+      "older": "Older order",
+      "newer": "Newer order",
+      "olderHint": "Older order (K)",
+      "newerHint": "Newer order (J)",
+      "none": "No more"
     }
   },
   "orderStatus": {
@@ -3523,7 +3530,12 @@
       "not_found": "Not found."
     },
     "productLink": "Weight and details",
-    "column": "Weight"
+    "column": "Weight",
+    "preferWarehouse": "Main warehouse",
+    "preferWarehouseHint": "When warehouses report different weights for a product, this warehouse's weight is used.",
+    "preferNone": "No main warehouse",
+    "preferOption": "Main: {name}",
+    "bulkPreferred": "From the main warehouse: {n}."
   },
   "suspicious": {
     "title": "Suspicious links ({count})",

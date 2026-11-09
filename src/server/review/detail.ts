@@ -1,5 +1,6 @@
 import type { CrmOrderStatus } from "@/generated/prisma/client";
 import type { Role } from "@/generated/prisma/client";
+import { lineConnectionsWhere } from "@/server/lines/lines";
 import { assertCan, can } from "@/server/auth/rbac";
 import { DomainError } from "@/server/accounts";
 import { previewVendorPayload, type Finding } from "@/server/checks";
@@ -64,6 +65,13 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
   const db = accountDb(actor.accountId);
   const productIds = [...new Set(order.lines.map((l) => l.productId).filter((p): p is string => !!p))];
   const canRaw = can(actor.role, "orders.rawPayloads");
+  // Warehouse columns of the order's product line only (+ any warehouse the order already uses).
+  const [orderLine, used] = await Promise.all([
+    order.companyId
+      ? db.company.findUnique({ where: { id: order.companyId }, select: { lineId: true } })
+      : Promise.resolve(null),
+    db.fulfillment.findMany({ where: { orderId }, select: { connectionId: true } }),
+  ]);
 
   const [check, events, fulfillments, reviews, session, connections, vendorProducts, reasonCodes] =
     await Promise.all([
@@ -100,7 +108,13 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
         }),
       ),
       db.fulfillmentConnection.findMany({
-        where: { type: { in: [...STOCK_CONNECTION_TYPES] } },
+        where: {
+          type: { in: [...STOCK_CONNECTION_TYPES] },
+          ...lineConnectionsWhere(
+            orderLine?.lineId,
+            used.map((f) => f.connectionId),
+          ),
+        },
         select: { id: true, name: true, type: true, enabled: true },
         orderBy: { name: "asc" },
       }),

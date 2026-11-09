@@ -252,3 +252,16 @@ export async function lockLine(helpers: AccountTxHelpers, lineId: string) {
 export function lineProductWhere(lineId: string | null | undefined): Prisma.ProductWhereInput {
   return lineId ? { OR: [{ lineId }, { lineId: null }] } : {};
 }
+
+/**
+ * Warehouse connections of one product line (their company's line). The order page shows only these columns for
+ * an order of that line (owner request 2026-11-09: textile stores showed the cosmetics warehouses too). No line →
+ * no filter. `alsoIds`: connections the order already uses (its shipments / routing) stay visible.
+ */
+export function lineConnectionsWhere(
+  lineId: string | null | undefined,
+  alsoIds: string[] = [],
+): Prisma.FulfillmentConnectionWhereInput {
+  if (!lineId) return {};
+  return { OR: [{ company: { lineId } }, ...(alsoIds.length ? [{ id: { in: alsoIds } }] : [])] };
+}

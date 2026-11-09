@@ -8,6 +8,7 @@ export const WEBHOOK_TOPICS = [
   "ORDERS_CANCELLED",
   "ORDERS_EDITED",
   "REFUNDS_CREATE",
+  "PRODUCTS_CREATE",
   "PRODUCTS_UPDATE",
   "APP_UNINSTALLED",
 ] as const;
@@ -55,6 +56,8 @@ export function webhookTarget(topic: string, payload: unknown): WebhookTarget {
       const id = numericId.safeParse(p.order_id);
       return id.success ? { kind: "order", gid: `gid://shopify/Order/${id.data}` } : { kind: "ignore" };
     }
+    // A new product (owner question 2026-11-09: new products must reach the CRM on their own) or a changed one.
+    case "products/create":
     case "products/update": {
       const g = gid.safeParse(p.admin_graphql_api_id);
       if (g.success) return { kind: "product", gid: g.data };

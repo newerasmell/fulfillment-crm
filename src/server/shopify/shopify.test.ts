@@ -4,7 +4,7 @@ import { ShopifyClient } from "@/integrations/shopify/client";
 import type { ShopifyOrder } from "@/integrations/shopify/orders";
 import type { ShopifyVariant } from "@/integrations/shopify/products";
 import { TokenProvider } from "@/integrations/shopify/token";
-import { verifyWebhookHmac, webhookTarget } from "@/integrations/shopify/webhooks";
+import { WEBHOOK_TOPICS, verifyWebhookHmac, webhookTarget } from "@/integrations/shopify/webhooks";
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createStore, type ScopedActor } from "@/server/stores";
@@ -151,6 +151,11 @@ describe("pure helpers", () => {
     expect(webhookTarget("products/update", { id: 9 })).toEqual({
       kind: "product",
       gid: "gid://shopify/Product/9",
+    });
+    // A new product is read like a changed one.
+    expect(webhookTarget("products/create", { admin_graphql_api_id: "gid://shopify/Product/10" })).toEqual({
+      kind: "product",
+      gid: "gid://shopify/Product/10",
     });
     expect(webhookTarget("app/uninstalled", {})).toEqual({ kind: "uninstalled" });
     expect(webhookTarget("orders/create", { admin_graphql_api_id: "https://evil" })).toEqual({
@@ -777,8 +782,8 @@ describe("Shopify import (DB)", () => {
     });
     const status = await registerStoreWebhooks(accountId, storeId, uri, fake.opts);
     expect(created).not.toContain("ORDERS_CREATE");
-    expect(created).toHaveLength(6);
+    expect(created).toHaveLength(WEBHOOK_TOPICS.length - 1);
     expect(status).toMatchObject({ ok: true });
-    expect(status.topics).toHaveLength(7);
+    expect(status.topics).toHaveLength(WEBHOOK_TOPICS.length);
   });
 });

@@ -5,7 +5,7 @@ import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { checkOrder } from "@/server/checks";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { lineProductWhere } from "@/server/lines/lines";
+import { lineConnectionsWhere, lineProductWhere } from "@/server/lines/lines";
 import { STOCK_CONNECTION_TYPES } from "@/server/routing/engine";
 import type { ScopedActor } from "@/server/stores";
 import { EDITABLE_STATUSES } from "./service";
@@ -166,7 +166,7 @@ export async function searchLineProducts(actor: ScopedActor, orderId: string, ra
   const contains = { contains: q, mode: "insensitive" as const };
   const [connections, products] = await Promise.all([
     db.fulfillmentConnection.findMany({
-      where: { type: { in: [...STOCK_CONNECTION_TYPES] } },
+      where: { type: { in: [...STOCK_CONNECTION_TYPES] }, ...lineConnectionsWhere(order.company?.lineId) },
       select: { id: true, name: true, type: true },
       orderBy: { name: "asc" },
     }),

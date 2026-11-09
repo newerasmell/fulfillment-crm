@@ -365,6 +365,28 @@ describe("product weight: save once, all orders re-checked; suggestions; bulk fi
     expect(await read(empty.id)).toMatchObject({ weightGrams: 450, weightSource: "eushipments" });
     expect((await read(typed.id)).weightGrams).toBe(999);
     expect((await read(conflict.id)).weightGrams).toBeNull();
+
+    // A chosen main warehouse settles the disagreement with its own value (audited with the choice).
+    const r2 = await fillWeightsFromWarehouse(g.owner, { preferConnectionId: eu2.id });
+    expect(r2.fromPreferred).toBeGreaterThanOrEqual(1);
+    expect(await read(conflict.id)).toMatchObject({ weightGrams: 700, weightSource: "eushipments" });
+    // A main warehouse without a value for the product leaves the disagreement for a person.
+    const { product: other } = await cyOrder(g, { weightGrams: null });
+    await g.db.vendorProduct.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: eu2.id,
+        productId: other.id,
+        vendorId: `eu2b-${other.id}`,
+        raw: { weight: 0.9 },
+      },
+    });
+    const elsewhere = await g.db.fulfillmentConnection.create({
+      data: { accountId: g.accountId, type: "EUSHIPMENTS", name: "euShipments 3", liveMode: "READ_ONLY" },
+    });
+    const r3 = await fillWeightsFromWarehouse(g.owner, { preferConnectionId: elsewhere.id });
+    expect(r3.conflicts).toBeGreaterThanOrEqual(1);
+    expect((await read(other.id)).weightGrams).toBeNull();
   });
 });
 

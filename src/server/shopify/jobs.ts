@@ -1,3 +1,4 @@
+import { WEBHOOK_TOPICS } from "@/integrations/shopify/webhooks";
 import type { PgBoss } from "pg-boss";
 import type { ShopifyClientOptions } from "@/integrations/shopify/client";
 import { parseAppCredentials } from "@/integrations/shopify/credentials";
@@ -298,13 +299,18 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
   await boss.work(QUEUES.shopifyReconcile.name, opts, async () => {
     const stores = await systemDb().store.findMany({
       where: { credentialId: { not: null }, archivedAt: null },
-      select: { id: true, accountId: true, connectionStatus: true },
+      select: { id: true, accountId: true, connectionStatus: true, webhookStatus: true },
     });
     let queued = 0;
     for (const s of stores) {
       if ((s.connectionStatus as { ok?: boolean }).ok !== true) continue;
       await enqueueShopify.syncOrders(boss, { accountId: s.accountId, storeId: s.id, mode: "reconcile" });
       queued++;
+      // A topic added in a later version (e.g. products/create) is subscribed without anyone pressing a button;
+      // registration is idempotent (only missing topics are created).
+      const topics = (s.webhookStatus as { topics?: unknown } | null)?.topics;
+      if (Array.isArray(topics) && topics.length && WEBHOOK_TOPICS.some((t) => !topics.includes(t)))
+        await enqueueShopify.registerWebhooks(boss, { accountId: s.accountId, storeId: s.id });
     }
     for (const e of await staleWebhookEvents()) {
       if (e.accountId) await enqueueShopify.webhook(boss, { accountId: e.accountId, eventId: e.id });

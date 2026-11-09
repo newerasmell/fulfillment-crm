@@ -29,7 +29,13 @@ export type RecheckState =
       error?: string;
       recheck?: RecheckResult;
       shopify?: ShopifyWeightQueued | null;
-      bulk?: { filled: number; candidates: number; noSuggestion: number; conflicts: number };
+      bulk?: {
+        filled: number;
+        candidates: number;
+        noSuggestion: number;
+        conflicts: number;
+        fromPreferred: number;
+      };
     }
   | undefined;
 
@@ -125,11 +131,13 @@ export async function saveProductWeightAction(
   }
 }
 
-export async function fillWeightsAction(_prev: RecheckState, _form: FormData): Promise<RecheckState> {
+export async function fillWeightsAction(_prev: RecheckState, form: FormData): Promise<RecheckState> {
   const ctx = await requireAccountContext();
   try {
+    const prefer = String(form.get("preferConnectionId") ?? "").trim();
     const r = await fillWeightsFromWarehouse(actorFrom(ctx), {
       lineId: ctx.activeLineId ?? null,
+      preferConnectionId: prefer ? z.string().max(64).parse(prefer) : null,
       enqueue: enqueuerFor(ctx.accountId),
     });
     revalidatePath("/products", "layout");
