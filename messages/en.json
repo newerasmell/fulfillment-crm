@@ -509,6 +509,13 @@
       "new": "New",
       "newBadge": "NEW",
       "saved": "Saved for you · on every order"
+    },
+    "nav": {
+      "older": "Older order",
+      "newer": "Newer order",
+      "olderHint": "Older order (K)",
+      "newerHint": "Newer order (J)",
+      "none": "No more"
     }
   },
   "orderStatus": {

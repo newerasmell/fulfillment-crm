@@ -242,3 +242,42 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
   ]);
   return { attention: { review: counts.review, blocked: counts.blocked, errors }, today, yesterday, recent };
 }
+
+/**
+ * The next newer and older order around one order, in the member's current scope (sidebar company / line), by when
+ * it was placed (owner request 2026-11-09: J / K and arrows on the order page, as in Shopify). Orders waiting for
+ * their store's tag are only navigated among themselves.
+ */
+export async function orderNeighbours(
+  ctx: Ctx & { lineCompanyIds?: string[] | null },
+  orderId: string,
+): Promise<{ newer: string | null; older: string | null }> {
+  const db = accountDb(ctx.accountId);
+  const cur = await db.order.findFirst({
+    where: { id: orderId, ...companyFilter(ctx) },
+    select: { id: true, placedAt: true, status: true },
+  });
+  if (!cur) return { newer: null, older: null };
+  const group: Prisma.OrderWhereInput =
+    cur.status === "AWAITING_TAG" ? { status: "AWAITING_TAG" } : { status: { not: "AWAITING_TAG" } };
+  const base = { ...companyFilter(ctx), ...group };
+  const [newer, older] = await Promise.all([
+    db.order.findFirst({
+      where: {
+        ...base,
+        OR: [{ placedAt: { gt: cur.placedAt } }, { placedAt: cur.placedAt, id: { gt: cur.id } }],
+      },
+      orderBy: [{ placedAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+    }),
+    db.order.findFirst({
+      where: {
+        ...base,
+        OR: [{ placedAt: { lt: cur.placedAt } }, { placedAt: cur.placedAt, id: { lt: cur.id } }],
+      },
+      orderBy: [{ placedAt: "desc" }, { id: "desc" }],
+      select: { id: true },
+    }),
+  ]);
+  return { newer: newer?.id ?? null, older: older?.id ?? null };
+}

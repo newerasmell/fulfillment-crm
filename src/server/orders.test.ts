@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createCompany } from "@/server/companies";
-import { dashboardSummary, getOrder, listOrders, orderTabCounts } from "./orders";
+import { dashboardSummary, getOrder, listOrders, orderNeighbours, orderTabCounts } from "./orders";
 
 describe("orders read model", () => {
   let accountId: string;
@@ -93,5 +93,23 @@ describe("orders read model", () => {
     expect(s.today.countries).toBe(2);
     expect(s.attention).toMatchObject({ review: 1, blocked: 0 });
     expect(s.today.cod).toEqual([{ currency: "EUR", amount: 20 }]);
+  });
+
+  it("J / K neighbours: newer and older by when placed, in the member's scope, same-time orders by id", async () => {
+    const t0 = Date.UTC(2026, 0, 1);
+    const o1 = await mk(accountId, a, "N-1", "IMPORTED", { placedAt: new Date(t0) });
+    const o2 = await mk(accountId, a, "N-2", "READY", { placedAt: new Date(t0 + 60_000) });
+    const o3 = await mk(accountId, b, "N-3", "READY", { placedAt: new Date(t0 + 120_000) });
+    const all = { accountId, companyScope: null, activeCompanyId: null };
+    // Only these three in a tiny window: older than o1 / newer than o3 are the other test orders (placed now).
+    expect(await orderNeighbours(all, o2.id)).toEqual({ newer: o3.id, older: o1.id });
+    // Company A only: o3 (company B) is skipped.
+    const onlyA = { ...all, activeCompanyId: a };
+    expect((await orderNeighbours(onlyA, o2.id)).newer).not.toBe(o3.id);
+    // Out of scope: nothing.
+    expect(await orderNeighbours({ ...all, activeCompanyId: b }, o2.id)).toEqual({
+      newer: null,
+      older: null,
+    });
   });
 });
