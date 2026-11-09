@@ -31,6 +31,7 @@ export const RECLASSIFIABLE: CrmOrderStatus[] = [
   "ON_HOLD",
   "APPROVED",
   "SUBMIT_FAILED",
+  "AWAITING_TAG",
 ];
 
 /** COD or PREPAID for a stored Shopify payload under the store's COD list (same rule as the import). */

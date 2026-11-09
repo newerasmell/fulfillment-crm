@@ -6,6 +6,7 @@ import { z } from "zod";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { ForbiddenError, assertCan } from "@/server/auth/rbac";
+import { setStoreOrderTag } from "@/server/shopify/order-tag";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
@@ -298,4 +299,22 @@ export async function backfillOrdersAction(storeId: string, _prev: Result, form:
     return toError(err);
   }
   return { ok: true };
+}
+
+/** "Само поръчки с таг": saves the store's required Shopify tag (empty = all orders) and re-sorts its open orders. */
+export async function saveStoreOrderTagAction(
+  storeId: string,
+  _prev: (Result & { setAside?: number; released?: number }) | undefined,
+  form: FormData,
+): Promise<NonNullable<Result> & { setAside?: number; released?: number }> {
+  const ctx = await requireAccountContext();
+  let r: { changed: boolean; setAside: number; released: number };
+  try {
+    r = await setStoreOrderTag(actorFrom(ctx), storeId, { tag: String(form.get("tag") ?? "") });
+  } catch (err) {
+    return toError(err) ?? {};
+  }
+  revalidatePath(`/stores/${storeId}`);
+  revalidatePath("/orders");
+  return { ok: true, setAside: r.setAside, released: r.released };
 }

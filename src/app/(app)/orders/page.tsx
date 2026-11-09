@@ -47,21 +47,24 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     <>
       <PageHeader title={t("title")} />
       <nav aria-label={t("tabs")} className="flex flex-wrap gap-1 border-b border-line">
-        {(Object.keys(ORDER_TABS) as OrderTab[]).map((k) => (
-          <Link
-            key={k}
-            href={href({ tab: k })}
-            aria-current={k === tab ? "page" : undefined}
-            className={`-mb-px flex min-h-11 items-center gap-2 border-b-2 px-3 no-underline ${
-              k === tab
-                ? "border-accent font-semibold text-ink"
-                : "border-transparent text-muted hover:text-ink"
-            }`}
-          >
-            {t(`tab.${k}`)}
-            <span className="rounded-full bg-hover px-2 py-0.5 font-mono text-xs">{counts[k]}</span>
-          </Link>
-        ))}
+        {/* "Чака таг" only while something waits there (stores with "Само поръчки с таг"). */}
+        {(Object.keys(ORDER_TABS) as OrderTab[])
+          .filter((k) => k !== "awaitingTag" || counts.awaitingTag > 0 || tab === "awaitingTag")
+          .map((k) => (
+            <Link
+              key={k}
+              href={href({ tab: k })}
+              aria-current={k === tab ? "page" : undefined}
+              className={`-mb-px flex min-h-11 items-center gap-2 border-b-2 px-3 no-underline ${
+                k === tab
+                  ? "border-accent font-semibold text-ink"
+                  : "border-transparent text-muted hover:text-ink"
+              }`}
+            >
+              {t(`tab.${k}`)}
+              <span className="rounded-full bg-hover px-2 py-0.5 font-mono text-xs">{counts[k]}</span>
+            </Link>
+          ))}
       </nav>
       <SelectionProvider ids={result.rows.map((o) => o.id)}>
         <Card>

@@ -336,6 +336,18 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-06 Добави магазин: the form keeps what was typed on an error and names the wrong field (was: every field
   cleared + "Проверете полетата"; usually the domain was the site's own instead of *.myshopify.com).
 
+- 2026-11-09 Само поръчки с таг (owner request after the staff presentation): per store (Магазини → store → "Само поръчки
+  с таг", StoreOrderTag, new table + RLS, cascade with the store; migration 20261109100000 also adds the enum value
+  AWAITING_TAG — additive). Shopify orders without the tag (case-insensitive) are AWAITING_TAG: not checked (checkOrder
+  refuses, recheck skips), not reviewed, never sent, out of every orders tab incl. "Всички", Начало and reports; shown
+  in the "Чака таг" tab (only while non-empty). The tag appearing (Shopify re-import) → tag_added → IMPORTED. Tag
+  removed before anything was queued (IMPORTED…READY, APPROVED, SUBMIT_FAILED) → tag_missing → AWAITING_TAG (an
+  approved one takes Shopify's new data); already queued/sent → untouched + task shopify_tag_removed_after_send.
+  Saving the setting (stores.manage) re-sorts the store's not-yet-sent orders, each decided in its own transaction
+  under the import locks; saving again repairs an interrupted re-sort. Backstop guard store_tag_missing on approve,
+  queue, release and restart (AI autopilot, bulk fulfil, a released hold, a restart). ON_HOLD orders are left to
+  the operator (released only with the tag). Waiting orders keep their stock reserved (Shopify counts them sold).
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

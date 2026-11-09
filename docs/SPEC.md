@@ -191,7 +191,7 @@ IMPORTED → CHECKING → NEEDS_REVIEW ─┐
                                                        ▼                               ├→ DELIVERED → (COD_PAID)
                                                   SUBMIT_FAILED (readable reason,       ├→ RETURNING → RETURN_RECEIVED
                                                   field highlighted, retry/edit)        └→ EXCEPTION
- side states: ON_HOLD, BLOCKED (vendor-side: stock/data), CANCELLED, UNKNOWN
+ side states: ON_HOLD, BLOCKED (vendor-side: stock/data), CANCELLED, UNKNOWN, AWAITING_TAG (store requires a Shopify tag the order does not have yet; before IMPORTED)
 ```
 
 - CHECKING runs: routing (which connection), product mapping, stock check, validators

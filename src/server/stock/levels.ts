@@ -30,6 +30,8 @@ export const ORDER_NOT_AT_WAREHOUSE = [
   "SUBMIT_FAILED",
   "ON_HOLD",
   "BLOCKED",
+  // Awaiting the store's tag: Shopify already counts it sold; kept reserved until it is confirmed or cancelled.
+  "AWAITING_TAG",
 ] as const;
 const AT_VENDOR = ["ACCEPTED", "PROCESSING"] as const;
 const INACTIVE_SHIPMENT = new Set(["SUBMIT_FAILED", "CANCELLED"]);

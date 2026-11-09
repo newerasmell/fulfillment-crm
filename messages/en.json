@@ -420,6 +420,14 @@
       "step4": "Settings → copy the Client ID and Client secret into the CRM fields (here when adding a store, or \"Replace credentials\" on the store page). The CRM checks the connection and the rights itself.",
       "missingTitle": "The app lacks {n} rights",
       "missingHow": "Dev Dashboard → the app → Create version → paste the whole list into \"Scopes\" → Release → approve the new rights in the store. Then click \"Test connection\"."
+    },
+    "orderTag": {
+      "title": "Only orders with a tag",
+      "label": "Shopify tag",
+      "help": "Only orders with this Shopify tag (e.g. Confirmed) enter the work — checks, review, sending. The others wait in the “Awaiting tag” tab and enter on their own once the tag is added. Upper / lower case does not matter. Empty = all orders.",
+      "save": "Save",
+      "saved": "Saved. Set aside (no tag): {setAside} · back in work: {released}.",
+      "note": "Orders already sent to a warehouse are not touched."
     }
   },
   "products": {
@@ -458,7 +466,8 @@
       "ready": "Ready",
       "blocked": "Blocked",
       "transit": "In transit",
-      "all": "All"
+      "all": "All",
+      "awaitingTag": "Awaiting tag"
     },
     "search": "Number, customer, email, phone, SKU",
     "store": "Store",
@@ -523,7 +532,8 @@
     "BLOCKED": "Blocked",
     "CANCELLED": "Cancelled",
     "UNKNOWN": "Unknown",
-    "FULFILLED_EXTERNALLY": "Fulfilled outside the CRM"
+    "FULFILLED_EXTERNALLY": "Fulfilled outside the CRM",
+    "AWAITING_TAG": "Awaiting tag"
   },
   "fhb": {
     "errors": {

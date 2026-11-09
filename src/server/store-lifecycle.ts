@@ -31,6 +31,7 @@ export const NOT_SENT_STATUSES: CrmOrderStatus[] = [
   "QUEUED",
   "SUBMIT_FAILED",
   "ON_HOLD",
+  "AWAITING_TAG",
 ];
 
 export interface StoreUsage {

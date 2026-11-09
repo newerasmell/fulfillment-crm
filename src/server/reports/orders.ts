@@ -82,6 +82,7 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
           FROM "Order" o
          WHERE o."accountId" = ${ctx.accountId}
            AND o."placedAt" >= ${range.start} AND o."placedAt" < ${range.end}
+           AND o.status <> 'AWAITING_TAG'
            ${company}
          GROUP BY 1, 2, 3, 4`,
     ),
@@ -90,7 +91,8 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
       where: {
         ...scopeWhere(ctx),
         placedAt: { gte: range.start, lt: range.end },
-        status: { not: "CANCELLED" },
+        // Orders still waiting for their store's tag are not counted (not confirmed yet).
+        status: { notIn: ["CANCELLED", "AWAITING_TAG"] },
       },
       _count: { _all: true },
       _sum: { total: true },
@@ -105,7 +107,7 @@ export async function ordersReport(ctx: ReportCtx, range: ReportRange) {
           FROM "Order" o
          WHERE o."accountId" = ${ctx.accountId}
            AND o."placedAt" >= ${range.start} AND o."placedAt" < ${range.end}
-           AND o.status <> 'CANCELLED' AND o."paymentMethod" = 'COD'
+           AND o.status NOT IN ('CANCELLED', 'AWAITING_TAG') AND o."paymentMethod" = 'COD'
            AND coalesce(o."codLocalAmount", o."codAmount") IS NOT NULL
            ${company}
          GROUP BY 1`,

@@ -1,6 +1,7 @@
 import type { AiLevel, CrmOrderStatus, Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { withAccountTransaction } from "@/server/db/client";
+import { hasStoreTag, shopifyTagsOf } from "@/server/shopify/order-tag-match";
 import { currentOrderFingerprint, storedFingerprint } from "./fingerprint";
 import { isAllowed, type ActorKind, type TransitionCause } from "./rules";
 
@@ -101,6 +102,23 @@ export const SHOPIFY_TEST_TAG = "shopify-test";
 /** AiPolicy.decisionType whose L2 level allows the AI to approve orders (SPEC §7.4). */
 export const AI_APPROVAL_DECISION = "order_approval";
 
+/**
+ * "Само поръчки с таг": an order of a store that requires a tag may be approved, queued, released or restarted only
+ * with that tag (the backstop for every path — AI autopilot, bulk fulfil, a hold released, a crash mid re-sort).
+ */
+const storeTagGuard: Guard = async (tx, { order }) => {
+  const o = await tx.order.findUnique({
+    where: { id: order.id },
+    select: { storeId: true, source: true, raw: true, tags: true },
+  });
+  if (!o?.storeId || o.source !== "SHOPIFY") return null;
+  const gate = await tx.storeOrderTag.findFirst({
+    where: { accountId: order.accountId, storeId: o.storeId },
+    select: { tag: true },
+  });
+  return gate && !hasStoreTag(shopifyTagsOf(o.raw, o.tags), gate.tag) ? "store_tag_missing" : null;
+};
+
 const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
   approve: [
     // AI approval only when an enabled AiPolicy at L2 for order approval exists in this account — loaded
@@ -132,6 +150,7 @@ const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
       if (connectionId && connectionId !== check.connectionId) return "check_connection_mismatch";
       return null;
     },
+    storeTagGuard,
   ],
   // A check that ran while a shipment became active (should be impossible: the queue gate refuses CHECKING)
   // must not pull the order back to READY / NEEDS_REVIEW, where it would no longer follow its shipment.
@@ -172,7 +191,30 @@ const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
       return active > 0 ? "active_shipment" : null;
     },
   ],
-  release: [async (_tx, { order }) => (order.tags.includes(SHOPIFY_TEST_TAG) ? "shopify_test_order" : null)],
+  // Set aside for a missing store tag only while nothing is (or may be) live at a warehouse.
+  tag_missing: [
+    async (tx, { order }) => {
+      const active = await tx.fulfillment.count({
+        where: { orderId: order.id, status: { notIn: INACTIVE_SHIPMENT } },
+      });
+      return active > 0 ? "active_shipment" : null;
+    },
+    async (tx, { order }) => {
+      const open = await tx.outboundRequest.count({
+        where: {
+          fulfillment: { orderId: order.id },
+          status: { in: ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING", "UNCERTAIN"] },
+        },
+      });
+      return open > 0 ? "vendor_request_open" : null;
+    },
+  ],
+  release: [
+    async (_tx, { order }) => (order.tags.includes(SHOPIFY_TEST_TAG) ? "shopify_test_order" : null),
+    storeTagGuard,
+  ],
+  restart: [storeTagGuard],
+  queue: [storeTagGuard],
 };
 
 /**

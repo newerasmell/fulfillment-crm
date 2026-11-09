@@ -5,6 +5,8 @@ import { accountDb } from "@/server/db/client";
 
 /** Order list tabs (DESIGN.md screen 2). "transit" fills up from phase 2 on. */
 export const ORDER_TABS = {
+  /** "Чака таг": a store that takes only tagged orders (StoreOrderTag) keeps the others here, out of every other tab. */
+  awaitingTag: ["AWAITING_TAG"],
   review: ["IMPORTED", "CHECKING", "NEEDS_REVIEW"],
   ready: ["READY", "APPROVED", "QUEUED"],
   blocked: ["BLOCKED", "ON_HOLD", "SUBMIT_FAILED", "EXCEPTION", "UNKNOWN"],
@@ -49,9 +51,10 @@ function baseWhere(ctx: Ctx, f: Omit<OrderFilters, "tab" | "page">): Prisma.Orde
   };
 }
 
+/** "Всички" leaves out orders still waiting for their store's tag (owner request 2026-11-09: they are not work yet). */
 const tabWhere = (tab: OrderTab): Prisma.OrderWhereInput => {
   const statuses = ORDER_TABS[tab];
-  return statuses ? { status: { in: [...statuses] } } : {};
+  return statuses ? { status: { in: [...statuses] } } : { status: { not: "AWAITING_TAG" } };
 };
 
 export async function listOrders(ctx: Ctx, f: OrderFilters) {
@@ -135,7 +138,7 @@ export async function orderTabCounts(ctx: Ctx, f: Omit<OrderFilters, "tab" | "pa
   const sum = (s: readonly CrmOrderStatus[] | null) =>
     s
       ? s.reduce((n, st) => n + (byStatus.get(st) ?? 0), 0)
-      : [...byStatus.values()].reduce((a, b) => a + b, 0);
+      : [...byStatus.entries()].reduce((a, [st, n]) => (st === "AWAITING_TAG" ? a : a + n), 0);
   return Object.fromEntries(Object.entries(ORDER_TABS).map(([k, v]) => [k, sum(v)])) as Record<
     OrderTab,
     number
@@ -179,7 +182,12 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
   const startYesterday = new Date(startToday.getTime() - 86_400_000);
 
   const dayStats = async (from: Date, to: Date) => {
-    const where = { ...scope, placedAt: { gte: from, lt: to }, status: { not: "CANCELLED" as const } };
+    // Orders still waiting for their store's tag are not counted (not work yet; they may never be confirmed).
+    const where = {
+      ...scope,
+      placedAt: { gte: from, lt: to },
+      status: { notIn: ["CANCELLED" as const, "AWAITING_TAG" as const] },
+    };
     const [orders, items, countries, cod] = await Promise.all([
       db.order.count({ where }),
       db.orderLine.aggregate({ where: { order: where }, _sum: { quantity: true } }),
@@ -208,14 +216,18 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
   });
   const errors = openTasks.length
     ? await db.order.count({
-        where: { ...scope, id: { in: openTasks.map((a) => a.entityId!).filter(Boolean) } },
+        where: {
+          ...scope,
+          status: { not: "AWAITING_TAG" },
+          id: { in: openTasks.map((a) => a.entityId!).filter(Boolean) },
+        },
       })
     : 0;
   const [today, yesterday, recent] = await Promise.all([
     dayStats(startToday, new Date(startToday.getTime() + 86_400_000)),
     dayStats(startYesterday, startToday),
     db.order.findMany({
-      where: scope,
+      where: { ...scope, status: { not: "AWAITING_TAG" } },
       select: {
         id: true,
         number: true,

@@ -22,6 +22,7 @@ import {
   transition,
 } from "@/server/pipeline";
 import { matchBySku } from "./products";
+import { hasStoreTag } from "./order-tag-match";
 import { PRE_APPROVAL } from "./statuses";
 
 /**
@@ -129,6 +130,12 @@ export async function importShopifyOrder(
       if (existing?.shopifyUpdatedAt && existing.shopifyUpdatedAt >= updatedAt) {
         return { orderId: existing.id, outcome: "stale" as const };
       }
+      // "Само поръчки с таг": without the store's tag an order is set aside (AWAITING_TAG) until it gets it.
+      const gate = await tx.storeOrderTag.findUnique({
+        where: { accountId_storeId: { accountId, storeId: store.id } },
+        select: { tag: true },
+      });
+      const tagged = !gate || hasStoreTag(o.tags, gate.tag);
 
       const shopifyState = {
         cancelledAt: o.cancelledAt ? new Date(o.cancelledAt) : null,
@@ -138,14 +145,49 @@ export async function importShopifyOrder(
         raw: json(o),
       };
 
+      // Approved (or refused by the warehouse) and the store's tag is gone: set aside again, and its data follows
+      // Shopify like any order before approval (it is checked from the start once it has the tag again).
+      let setAside = false;
+      if (
+        existing &&
+        !tagged &&
+        !o.cancelledAt &&
+        !PRE_APPROVAL.has(existing.status) &&
+        existing.status !== "FULFILLED_EXTERNALLY" &&
+        existing.status !== "CANCELLED"
+      ) {
+        const moved = await transition(tx, {
+          orderId: existing.id,
+          to: "AWAITING_TAG",
+          cause: "tag_missing",
+          actor: { kind: "system" },
+          source: "shopify.import",
+          reason: gate!.tag,
+        });
+        setAside = moved.changed;
+      }
+
       // After approval the CRM is the source of truth: amounts, COD and recipient were already decided (and
       // possibly sent to the warehouse). Only Shopify's own status fields follow; real changes become a task.
-      if (existing && !PRE_APPROVAL.has(existing.status)) {
+      if (existing && !PRE_APPROVAL.has(existing.status) && !setAside) {
         await tx.order.update({ where: { id: existing.id }, data: shopifyState });
         // Shipped outside the CRM / already closed here: Shopify's later changes (refunds…) need no task.
         if (existing.status === "FULFILLED_EXTERNALLY" || existing.status === "CANCELLED") {
           return { orderId: existing.id, outcome: "updated" as const };
         }
+        // Already with a warehouse and the store's tag was removed in Shopify: nothing is stopped, a person checks.
+        if (
+          !tagged &&
+          !o.cancelledAt &&
+          hasStoreTag((existing.raw as { tags?: string[] } | null)?.tags, gate!.tag)
+        )
+          await openTask(
+            tx,
+            accountId,
+            existing.id,
+            "shopify_tag_removed_after_send",
+            `Order ${o.name} lost the tag "${gate!.tag}" in Shopify after it was sent to the warehouse — check it`,
+          );
         const before = existing.raw ? meaningful(existing.raw as unknown as ShopifyOrder) : null;
         if (o.cancelledAt && !before?.cancelled) {
           await openTask(
@@ -241,7 +283,9 @@ export async function importShopifyOrder(
             ? "FULFILLED_EXTERNALLY"
             : o.test
               ? "ON_HOLD"
-              : "IMPORTED";
+              : tagged
+                ? "IMPORTED"
+                : "AWAITING_TAG";
         const created = await tx.order.create({
           data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
         });
@@ -270,7 +314,8 @@ export async function importShopifyOrder(
         orderId = existing.id;
         outcome = "updated";
       }
-      if (codGateway && !cod && !o.cancelledAt) {
+      // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it.)
+      if (codGateway && !cod && !o.cancelledAt && tagged) {
         await openTask(
           tx,
           accountId,
@@ -295,6 +340,17 @@ export async function importShopifyOrder(
             mode: "follow",
           });
         }
+        // The tag appeared → into review from the start; it is gone (or newly required) → set aside again.
+        await transition(tx, {
+          orderId,
+          ...(tagged
+            ? { to: "IMPORTED" as const, cause: "tag_added" as const }
+            : { to: "AWAITING_TAG" as const, cause: "tag_missing" as const }),
+          actor: { kind: "system" },
+          source: "shopify.import",
+          ...(gate ? { reason: gate.tag } : {}),
+          mode: "follow",
+        });
       }
       return { orderId, outcome };
     },

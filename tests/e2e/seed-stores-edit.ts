@@ -24,7 +24,7 @@ export async function seedStoresEdit() {
     sys.store.create({
       data: { accountId, companyId: coA.id, domain, code, name, currency: "EUR", countries: ["BG"] },
     });
-  const order = (storeId: string, number: string, status: "DELIVERED" | "READY") =>
+  const order = (storeId: string, number: string, status: "DELIVERED" | "READY", tags: string[] = []) =>
     sys.order.create({
       data: {
         accountId,
@@ -38,11 +38,16 @@ export async function seedStoresEdit() {
         paymentMethod: "COD",
         placedAt: new Date(),
         status,
+        tags,
+        raw: { tags },
         customerName: "Тест Купувач",
       },
     });
   const withOrders = await store("e2e-se-orders.myshopify.com", "MP", "Магазин с поръчки");
   await order(withOrders.id, "#MP-1", "DELIVERED");
+  // "Само поръчки с таг": one open order without the tag, one with it (another case).
+  await order(withOrders.id, "#MP-2", "READY");
+  await order(withOrders.id, "#MP-3", "READY", ["CONFIRMED"]);
   const toArchive = await store("e2e-se-archive.myshopify.com", "MA", "Магазин за архив");
   await order(toArchive.id, "#MA-1", "READY");
   await store("e2e-se-empty.myshopify.com", "PM", "Празен магазин");

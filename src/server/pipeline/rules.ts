@@ -64,7 +64,14 @@ export type TransitionCause =
    * order returns to APPROVED bound to the new warehouse (src/server/override/reroute.ts). Guarded: no active
    * shipment may be left.
    */
-  | "reroute";
+  | "reroute"
+  /**
+   * The store takes only orders with its tag (StoreOrderTag) and this one has none (yet, or any more): set aside
+   * until it gets the tag — only while nothing was queued for a warehouse.
+   */
+  | "tag_missing"
+  /** The order got its store's tag (or the store stopped requiring one): it enters review from the start. */
+  | "tag_added";
 
 /** Every cause, for exhaustive tests and docs. */
 export const CAUSES: readonly TransitionCause[] = [
@@ -84,6 +91,8 @@ export const CAUSES: readonly TransitionCause[] = [
   "vendor",
   "data_changed",
   "reroute",
+  "tag_missing",
+  "tag_added",
 ];
 
 export interface TransitionRule {
@@ -94,7 +103,24 @@ export interface TransitionRule {
 }
 
 /** CRM-side states before approval; Shopify changes still apply directly (see shopify/statuses.ts). */
-const PRE_APPROVAL: CrmOrderStatus[] = ["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY", "ON_HOLD"];
+const PRE_APPROVAL: CrmOrderStatus[] = [
+  "IMPORTED",
+  "CHECKING",
+  "NEEDS_REVIEW",
+  "READY",
+  "ON_HOLD",
+  "AWAITING_TAG",
+];
+
+/** Orders a missing store tag may still set aside: nothing was queued for a warehouse. */
+export const TAG_GATED_FROM: CrmOrderStatus[] = [
+  "IMPORTED",
+  "CHECKING",
+  "NEEDS_REVIEW",
+  "READY",
+  "APPROVED",
+  "SUBMIT_FAILED",
+];
 
 /** Our side has not handed anything to a vendor that is (or may be) live there. */
 const PRE_VENDOR: CrmOrderStatus[] = ["APPROVED", "QUEUED", "SUBMITTING", "SUBMIT_FAILED", "UNKNOWN"];
@@ -158,6 +184,7 @@ export const RULES: readonly TransitionRule[] = [
       "APPROVED",
       "SUBMIT_FAILED",
       "ON_HOLD",
+      "AWAITING_TAG",
       "BLOCKED",
       "EXCEPTION",
       "UNKNOWN",
@@ -190,6 +217,8 @@ export const RULES: readonly TransitionRule[] = [
     to: ["APPROVED"],
     actors: ["system"],
   },
+  { cause: "tag_missing", from: TAG_GATED_FROM, to: ["AWAITING_TAG"], actors: ["system", "user"] },
+  { cause: "tag_added", from: ["AWAITING_TAG"], to: ["IMPORTED"], actors: ["system", "user"] },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,
