@@ -451,7 +451,10 @@ export async function explainMismatches(
   ]);
   for (const store of stores) {
     const entry = byStore.get(store.id)!;
-    const plan = await planInventoryPush(accountId, store.id, now, { productIds: [...entry.productIds] });
+    const plan = await planInventoryPush(accountId, store.id, now, {
+      productIds: [...entry.productIds],
+      suspicious: "stored",
+    });
     const buffer = opts.buffers.get(store.id) ?? 0;
     const expected = (sellable: number) => Math.max(0, sellable - buffer);
     const blocks: StoreBlock[] = [];

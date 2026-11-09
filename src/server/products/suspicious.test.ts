@@ -308,6 +308,10 @@ describe("suspicious links (database)", () => {
     const plan = await planInventoryPush(g.accountId, g.store.id);
     expect(plan.lines.map((l) => l.variantLinkId)).toEqual([good.variant.id]);
     expect(plan.skipped.suspicious_link).toBe(1);
+    // The store inventory page reads the stored flags (same answer, one query).
+    const stored = await planInventoryPush(g.accountId, g.store.id, undefined, { suspicious: "stored" });
+    expect(stored.lines.map((l) => l.variantLinkId)).toEqual([good.variant.id]);
+    expect(stored.skipped.suspicious_link).toBe(1);
   });
 
   it("order check: a line on the flagged variant gets the soft finding (not hard)", async () => {

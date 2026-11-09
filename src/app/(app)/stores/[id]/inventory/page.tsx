@@ -51,7 +51,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
       select: { id: true, name: true, type: true },
       orderBy: { name: "asc" },
     }),
-    planInventoryPush(ctx.accountId, id),
+    planInventoryPush(ctx.accountId, id, undefined, { suspicious: "stored" }),
     storePushes(ctx.accountId, id),
     activationCandidates(ctx.accountId, id),
     storeActivations(ctx.accountId, id),
