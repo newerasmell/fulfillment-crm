@@ -1,3 +1,4 @@
+import { WEBHOOK_TOPICS } from "@/integrations/shopify/webhooks";
 import { createHmac } from "node:crypto";
 import type { PgBoss } from "pg-boss";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -296,7 +297,7 @@ describe("store edit, archive and delete", () => {
       where: { id },
       data: {
         connectionStatus: connected,
-        webhookStatus: { ok: true, topics: ["ORDERS_CREATE"] },
+        webhookStatus: { ok: true, topics: [...WEBHOOK_TOPICS] },
         inventoryPushMode: "DRY_RUN",
       },
     });

@@ -10,6 +10,7 @@ import { SpreadsheetError, readCsv, readTable, readXlsx, writeCsv, writeXlsx, zi
 import { autoLinkLine, mastersBatch, processCatalogueRun, startMasterCatalogue } from "./catalogue";
 import { lineCoverage } from "./coverage";
 import {
+  lineConnectionsWhere,
   companiesForLine,
   createLine,
   pickActiveLine,
@@ -702,6 +703,23 @@ describe("product lines (database)", () => {
 
   it("autoLinkLine is safe to run again", async () => {
     expect(await autoLinkLine(owner.accountId, cosmetics)).toBe(0);
+  });
+
+  it("order page warehouse columns: only the line's warehouses, plus one the order already uses", async () => {
+    const db = accountDb(owner.accountId);
+    const names = async (lineId: string | null, also: string[] = []) =>
+      (
+        await db.fulfillmentConnection.findMany({
+          where: lineConnectionsWhere(lineId, also),
+          select: { id: true },
+        })
+      ).map((c) => c.id);
+    const cos = await names(cosmetics);
+    expect(cos).toEqual(expect.arrayContaining([fhbA, euB]));
+    expect(cos).not.toContain(fhbT);
+    expect(await names(textiles)).toEqual([fhbT]);
+    expect(await names(textiles, [euB])).toEqual(expect.arrayContaining([fhbT, euB]));
+    expect((await names(null)).length).toBeGreaterThanOrEqual(3);
   });
 
   it("lines of one group are invisible to another group (RLS + scoping)", async () => {
