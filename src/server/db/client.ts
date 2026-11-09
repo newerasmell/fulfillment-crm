@@ -50,7 +50,13 @@ const globalForPrisma = globalThis as unknown as { __crmPrisma?: PrismaClient };
 
 function createBaseClient(url = process.env.DATABASE_URL) {
   if (!url) throw new Error("DATABASE_URL is not set");
-  return new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
+  return new PrismaClient({
+    adapter: new PrismaPg({ connectionString: url }),
+    // Every scoped query runs in its own short transaction (RLS). Prisma's defaults (2 s to get a connection, 5 s
+    // to finish) failed whole pages under load (owner report 2026-11-09: a store with 3800+ products — "Unable
+    // to start a transaction in the given time" / "expired transaction"). Callers can still pass their own.
+    transactionOptions: { maxWait: 10_000, timeout: 30_000 },
+  });
 }
 
 /** Raw client — only for this module, migrations helpers and tests. Never import elsewhere. */

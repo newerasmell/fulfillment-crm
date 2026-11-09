@@ -115,6 +115,10 @@ const stripPrefix = (sku: string | null, prefix: string | null) => {
 };
 
 /** One page (by id) of linked store variants, evaluated. */
+/** Lets other requests run between chunks of name comparisons (CPU work that would block the server otherwise). */
+const yieldToOthers = () => new Promise<void>((r) => setImmediate(r));
+const EVAL_CHUNK = 100;
+
 async function variantPage(
   accountId: string,
   where: Prisma.StoreVariantLinkWhereInput,
@@ -135,20 +139,22 @@ async function variantPage(
     orderBy: { id: "asc" },
     take: PAGE,
   });
-  return {
-    last: rows.at(-1)?.id,
-    items: rows
-      .filter((r) => r.product && r.productId)
-      .map((r) =>
-        evaluate(
-          "variant",
-          { id: r.id, sourceId: r.storeId, name: r.title, code: r.sku, productId: r.productId! },
-          r.product!,
-          [r.sku, stripPrefix(r.sku, r.store.skuPrefix) ?? null, r.product!.sku],
-          weight,
-        ),
+  const items: Evaluated[] = [];
+  let n = 0;
+  for (const r of rows) {
+    if (!r.product || !r.productId) continue;
+    if (++n % EVAL_CHUNK === 0) await yieldToOthers();
+    items.push(
+      evaluate(
+        "variant",
+        { id: r.id, sourceId: r.storeId, name: r.title, code: r.sku, productId: r.productId },
+        r.product,
+        [r.sku, stripPrefix(r.sku, r.store.skuPrefix) ?? null, r.product.sku],
+        weight,
       ),
-  };
+    );
+  }
+  return { last: rows.at(-1)?.id, items };
 }
 
 /** One page (by id) of linked, non-archived warehouse products that carry a name, evaluated. */
@@ -175,7 +181,9 @@ async function vendorPage(
     take: PAGE,
   });
   const items: Evaluated[] = [];
+  let n = 0;
   for (const r of rows) {
+    if (++n % EVAL_CHUNK === 0) await yieldToOthers();
     const name = vendorName(r.raw);
     // No warehouse name (some feeds carry none): nothing to compare.
     if (!name || !r.product || !r.productId) continue;
@@ -244,6 +252,26 @@ export async function suspiciousItemIds(accountId: string, scope: LinkScope): Pr
     for (const e of flagged) if (!isConfirmed(e, confirmed)) out.add(e.itemId);
   }
   return out;
+}
+
+/**
+ * Flagged, unconfirmed items of these stores / warehouses as last computed (SuspiciousLink rows, refreshed after
+ * every sync, link and catalogue run). For screens that only preview (the store inventory page): reading them is a
+ * single indexed query, where the live check compares every name. Anything that sends uses the live check.
+ */
+export async function storedSuspiciousItemIds(
+  accountId: string,
+  scope: { storeId?: string; connectionIds?: string[] },
+): Promise<Set<string>> {
+  const or: Prisma.SuspiciousLinkWhereInput[] = [];
+  if (scope.storeId) or.push({ kind: "variant", sourceId: scope.storeId });
+  if (scope.connectionIds?.length) or.push({ kind: "vendor", sourceId: { in: scope.connectionIds } });
+  if (!or.length) return new Set();
+  const rows = await accountDb(accountId).suspiciousLink.findMany({
+    where: { flagged: true, OR: or },
+    select: { itemId: true },
+  });
+  return new Set(rows.map((r) => r.itemId));
 }
 
 export interface RefreshResult {

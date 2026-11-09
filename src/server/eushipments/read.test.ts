@@ -188,6 +188,28 @@ describe("euShipments read side (DB)", () => {
     ).toBe(0);
   });
 
+  it("an id that does not fit the database (e.g. a huge city group) is stored as unknown, not a failed sync", async () => {
+    const base = RD.officesPage1.offices[0]!;
+    const odd = {
+      ...routes,
+      "/offices-by-courier/15": () =>
+        json({
+          offices: [{ ...base, ID: 555_001, GROUP_CITY_ID: 9_999_999_999, CITY_ID: 9_999_999_999 }],
+          pagination: { current_page: 1, per_page: 1, total: 1, last_page: 1 },
+        }),
+    };
+    const t3 = new Date(Date.now() + 180_000);
+    await syncEuReference(g.accountId, g.connection.id, { ...vendor(odd).deps, now: t3 });
+    const o = await g.db.eushipmentsOffice.findFirstOrThrow({
+      where: { connectionId: g.connection.id, officeId: 555_001 },
+    });
+    expect(o.cityId).toBeNull();
+    const sync = await g.db.eushipmentsSync.findUniqueOrThrow({
+      where: { connectionId_kind: { connectionId: g.connection.id, kind: "reference" } },
+    });
+    expect(sync.lastError).toBeNull();
+  });
+
   it("cities per country (paged); Great Britain is refused before any call", async () => {
     const v = vendor(routes);
     expect(await syncEuCities(g.accountId, g.connection.id, 2, v.deps)).toEqual({ countryId: 2, cities: 2 });
@@ -227,6 +249,18 @@ describe("euShipments read side (DB)", () => {
       other.id,
     );
     await g.db.vendorProduct.update({ where: { id: vps[1]!.id }, data: { productId: master.id } });
+  });
+
+  it("products: reports rows euShipments returned without a refNumber or with a repeated one", async () => {
+    const [a, b] = products;
+    const odd = {
+      ...routes,
+      "/fulfilment/get-products": () =>
+        json([a, { ...a, ID: 9001 }, { ...a, ID: 9002 }, b, { ...b, ID: 9003, REFERENCE_NUMBER: "  " }]),
+    };
+    const info = await syncEuProducts(g.accountId, g.connection.id, vendor(odd).deps);
+    expect(info).toMatchObject({ returned: 5, rows: 2, emptyRef: 1, duplicateRefs: 1, duplicateRows: 2 });
+    expect(info.duplicateSamples).toEqual([a!.REFERENCE_NUMBER.trim()]);
   });
 
   it("products: one a person unlinked (suspicious link) is never re-matched by SKU", async () => {

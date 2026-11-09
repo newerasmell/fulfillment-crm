@@ -1031,7 +1031,9 @@
       "serviceAuto": "услуга: автоматично",
       "officeOnly": "само до офис",
       "save": "Запази"
-    }
+    },
+    "productsInfo": "euShipments върна {returned} реда → {kept} продукта · без refNumber: {emptyRef} · с повторен refNumber: {duplicates}.",
+    "productsDupSamples": "Напр.: {refs}"
   },
   "apiWatch": {
     "title": "API промени",

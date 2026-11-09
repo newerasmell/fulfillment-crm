@@ -33,10 +33,15 @@ export interface ReadDeps {
 
 type Tx = Prisma.TransactionClient;
 const json = (v: unknown) => JSON.parse(JSON.stringify(v ?? null)) as Prisma.InputJsonValue;
+/** A whole number that fits the database's 32-bit columns; anything else (text, out of range) is null. */
 const int = (v: unknown) => {
   const n = typeof v === "number" ? v : Number(String(v ?? "").trim());
-  return Number.isFinite(n) ? Math.trunc(n) : null;
+  if (!Number.isFinite(n)) return null;
+  const t = Math.trunc(n);
+  return t >= -2147483648 && t <= 2147483647 ? t : null;
 };
+/** Mirror writes of many rows: Prisma's 5 s default is too short for a slow database moment. */
+const MIRROR_TX = { timeout: 60_000, maxWait: 15_000 };
 const text = (v: unknown, max = 300) =>
   v === null || v === undefined || v === "" ? null : String(v).slice(0, max);
 
@@ -74,11 +79,16 @@ async function tracked<T extends Record<string, unknown>>(
     const dbError = /^PrismaClient/.test((err as Error)?.constructor?.name ?? "");
     if (dbError)
       logger.error({ connectionId, kind, err: (err as Error).message }, "euShipments sync: database error");
+    // The Prisma error code and table (e.g. "db_error:P2028:EushipmentsCountry") say what failed without internals.
+    const pe = err as { code?: unknown; meta?: { modelName?: unknown } };
+    const dbCode = [pe.code, pe.meta?.modelName]
+      .filter((x): x is string => typeof x === "string" && /^[A-Za-z0-9_]{1,40}$/.test(x))
+      .join(":");
     const message =
       err instanceof DomainError
         ? err.code
         : dbError
-          ? "db_error"
+          ? `db_error${dbCode ? `:${dbCode}` : ""}`
           : scrubText(String((err as Error)?.message ?? err), 500);
     await db.eushipmentsSync.update({ where: key, data: { lastError: message } });
     throw err;
@@ -134,68 +144,84 @@ export async function syncEuReference(accountId: string, connectionId: string, d
     const warehouses = await client.getWarehouses(companyId);
     const countries = await client.getCountries();
 
-    await withAccountTransaction(accountId, async (tx) => {
-      const courierIds = couriers.map((c) => int(c.ID)).filter((n): n is number => !!n);
-      await tx.eushipmentsCourier.deleteMany({ where: { connectionId, courierId: { notIn: courierIds } } });
-      for (const c of couriers) {
-        const courierId = int(c.ID);
-        if (!courierId) continue;
-        const data = {
-          name: c.NAME.slice(0, 200),
-          toOffice: c.TO_OFFICE,
-          toAddress: c.TO_ADDRESS,
-          country: text(c.COUNTRY, 100),
-          currency: text(c.CURRENCY, 10),
-          syncedAt: now,
-        };
-        await tx.eushipmentsCourier.upsert({
-          where: { connectionId_courierId: { connectionId, courierId } },
-          create: { accountId, connectionId, courierId, ...data },
-          update: data,
+    await withAccountTransaction(
+      accountId,
+      async (tx) => {
+        const courierIds = couriers.map((c) => int(c.ID)).filter((n): n is number => !!n);
+        await tx.eushipmentsCourier.deleteMany({ where: { connectionId, courierId: { notIn: courierIds } } });
+        for (const c of couriers) {
+          const courierId = int(c.ID);
+          if (!courierId) continue;
+          const data = {
+            name: c.NAME.slice(0, 200),
+            toOffice: c.TO_OFFICE,
+            toAddress: c.TO_ADDRESS,
+            country: text(c.COUNTRY, 100),
+            currency: text(c.CURRENCY, 10),
+            syncedAt: now,
+          };
+          await tx.eushipmentsCourier.upsert({
+            where: { connectionId_courierId: { connectionId, courierId } },
+            create: { accountId, connectionId, courierId, ...data },
+            update: data,
+          });
+        }
+      },
+      MIRROR_TX,
+    );
+    await withAccountTransaction(
+      accountId,
+      async (tx) => {
+        const warehouseIds = warehouses.map((w) => int(w.id)).filter((n): n is number => !!n);
+        await tx.eushipmentsWarehouse.deleteMany({
+          where: { connectionId, warehouseId: { notIn: warehouseIds } },
         });
-      }
-      const warehouseIds = warehouses.map((w) => int(w.id)).filter((n): n is number => !!n);
-      await tx.eushipmentsWarehouse.deleteMany({
-        where: { connectionId, warehouseId: { notIn: warehouseIds } },
-      });
-      for (const w of warehouses) {
-        const warehouseId = int(w.id);
-        if (!warehouseId) continue;
-        const data = {
-          name: w.name.slice(0, 200),
-          countryId: int(w.country?.id),
-          countryIso: text(w.country?.iso, 2),
-          countryName: text(w.country?.name, 100),
-          syncedAt: now,
-        };
-        await tx.eushipmentsWarehouse.upsert({
-          where: { connectionId_warehouseId: { connectionId, warehouseId } },
-          create: { accountId, connectionId, warehouseId, ...data },
-          update: data,
+        for (const w of warehouses) {
+          const warehouseId = int(w.id);
+          if (!warehouseId) continue;
+          const data = {
+            name: w.name.slice(0, 200),
+            countryId: int(w.country?.id),
+            countryIso: text(w.country?.iso, 2),
+            countryName: text(w.country?.name, 100),
+            syncedAt: now,
+          };
+          await tx.eushipmentsWarehouse.upsert({
+            where: { connectionId_warehouseId: { connectionId, warehouseId } },
+            create: { accountId, connectionId, warehouseId, ...data },
+            update: data,
+          });
+        }
+        await tx.fulfillmentConnection.update({
+          where: { id: connectionId },
+          data: { warehouseIds: warehouseIds.map(String) },
         });
-      }
-      await tx.fulfillmentConnection.update({
-        where: { id: connectionId },
-        data: { warehouseIds: warehouseIds.map(String) },
-      });
-      const countryIds = countries.map((c) => int(c.ID)).filter((n): n is number => !!n);
-      await tx.eushipmentsCountry.deleteMany({ where: { connectionId, countryId: { notIn: countryIds } } });
-      for (const c of countries) {
-        const countryId = int(c.ID);
-        if (!countryId) continue;
-        const data = {
-          name: c.NAME.slice(0, 100),
-          cyrillicName: text(c.CYRILLIC_NAME, 100),
-          isoCode: text(c.ISO_CODE, 2)?.toUpperCase() ?? null,
-          syncedAt: now,
-        };
-        await tx.eushipmentsCountry.upsert({
-          where: { connectionId_countryId: { connectionId, countryId } },
-          create: { accountId, connectionId, countryId, ...data },
-          update: data,
-        });
-      }
-    });
+      },
+      MIRROR_TX,
+    );
+    await withAccountTransaction(
+      accountId,
+      async (tx) => {
+        const countryIds = countries.map((c) => int(c.ID)).filter((n): n is number => !!n);
+        await tx.eushipmentsCountry.deleteMany({ where: { connectionId, countryId: { notIn: countryIds } } });
+        for (const c of countries) {
+          const countryId = int(c.ID);
+          if (!countryId) continue;
+          const data = {
+            name: c.NAME.slice(0, 100),
+            cyrillicName: text(c.CYRILLIC_NAME, 100),
+            isoCode: text(c.ISO_CODE, 2)?.toUpperCase() ?? null,
+            syncedAt: now,
+          };
+          await tx.eushipmentsCountry.upsert({
+            where: { connectionId_countryId: { connectionId, countryId } },
+            create: { accountId, connectionId, countryId, ...data },
+            update: data,
+          });
+        }
+      },
+      MIRROR_TX,
+    );
 
     // Offices / parcel lockers only for couriers that deliver to an office (recipient.officeId comes from here).
     let offices = 0;
@@ -252,12 +278,16 @@ async function syncOfficesOfCourier(
     }
     for (let i = 0; i < rows.length; i += SYNC_BATCH) {
       const batch = rows.slice(i, i + SYNC_BATCH);
-      await withAccountTransaction(accountId, async (tx) => {
-        await tx.eushipmentsOffice.deleteMany({
-          where: { connectionId, officeId: { in: batch.map((r) => r.officeId) } },
-        });
-        await tx.eushipmentsOffice.createMany({ data: batch, skipDuplicates: true });
-      });
+      await withAccountTransaction(
+        accountId,
+        async (tx) => {
+          await tx.eushipmentsOffice.deleteMany({
+            where: { connectionId, officeId: { in: batch.map((r) => r.officeId) } },
+          });
+          await tx.eushipmentsOffice.createMany({ data: batch, skipDuplicates: true });
+        },
+        MIRROR_TX,
+      );
     }
     count += rows.length;
     if (page >= res.pagination.last_page || res.offices.length === 0) break;
@@ -308,12 +338,16 @@ export async function syncEuCities(
     // Same batching as the offices (a country can have tens of thousands of cities).
     for (let i = 0; i < rows.length; i += SYNC_BATCH) {
       const batch = rows.slice(i, i + SYNC_BATCH);
-      await withAccountTransaction(accountId, async (tx) => {
-        await tx.eushipmentsCity.deleteMany({
-          where: { connectionId, cityId: { in: batch.map((r) => r.cityId) } },
-        });
-        await tx.eushipmentsCity.createMany({ data: batch, skipDuplicates: true });
-      });
+      await withAccountTransaction(
+        accountId,
+        async (tx) => {
+          await tx.eushipmentsCity.deleteMany({
+            where: { connectionId, cityId: { in: batch.map((r) => r.cityId) } },
+          });
+          await tx.eushipmentsCity.createMany({ data: batch, skipDuplicates: true });
+        },
+        MIRROR_TX,
+      );
     }
     await accountDb(accountId).eushipmentsCity.deleteMany({
       where: { connectionId, countryId, syncedAt: { lt: now } },
@@ -358,9 +392,20 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
     let created = 0;
     let matched = 0;
     const seen = new Set<string>();
+    // What euShipments returned vs what is kept (owner report 2026-11-09: 318 of 3000+ products shown). A row
+    // without a refNumber cannot be stored; rows sharing a refNumber are one product here (the first one).
+    let emptyRef = 0;
+    const dupCount = new Map<string, number>();
     for (const r of rows) {
       const vendorId = r.REFERENCE_NUMBER.trim();
-      if (!vendorId || seen.has(vendorId)) continue;
+      if (!vendorId) {
+        emptyRef++;
+        continue;
+      }
+      if (seen.has(vendorId)) {
+        dupCount.set(vendorId, (dupCount.get(vendorId) ?? 1) + 1);
+        continue;
+      }
       seen.add(vendorId);
       const raw = json({
         name: r.NAME ?? null,
@@ -407,7 +452,23 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
       where: { connectionId, archived: false, productId: null },
     });
     await refreshSuspiciousLinksSafe(accountId, { vendors: { connectionId } }, "eushipments_products");
-    return { rows: seen.size, created, matched, unmatched, archived: archived.count };
+    if (emptyRef || dupCount.size)
+      logger.warn(
+        { connectionId, returned: rows.length, emptyRef, duplicateRefs: dupCount.size },
+        "euShipments products: rows without or with a repeated refNumber",
+      );
+    return {
+      rows: seen.size,
+      returned: rows.length,
+      emptyRef,
+      duplicateRefs: dupCount.size,
+      duplicateRows: [...dupCount.values()].reduce((a, n) => a + n - 1, 0),
+      duplicateSamples: [...dupCount.keys()].slice(0, 5).map((k) => k.slice(0, 60)),
+      created,
+      matched,
+      unmatched,
+      archived: archived.count,
+    };
   });
 }
 

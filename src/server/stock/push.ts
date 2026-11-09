@@ -26,7 +26,7 @@ import { shopifyClientForStore } from "@/server/shopify/store-client";
 import type { ScopedActor } from "@/server/stores";
 import { crmReservations, isStale, reservationKey, sellableOf } from "./levels";
 import { getStockSettings, staleHoursFor } from "./settings";
-import { suspiciousItemIds } from "@/server/products/suspicious";
+import { storedSuspiciousItemIds, suspiciousItemIds } from "@/server/products/suspicious";
 import { selectActivationCandidates } from "./activate";
 
 /**
@@ -108,7 +108,15 @@ export async function planInventoryPush(
   storeId: string,
   now: Date = new Date(),
   /** Only these masters' variants (the stock board explaining one page); default the whole store. */
-  opts: { productIds?: string[] } = {},
+  opts: {
+    productIds?: string[];
+    /**
+     * "stored": suspicious links from the last computed flags (screens that only preview — a store with thousands
+     * of variants made the live name check time out page loads, owner report 2026-11-09). Default "live": the
+     * push itself always checks the current names.
+     */
+    suspicious?: "live" | "stored";
+  } = {},
 ) {
   const db = accountDb(accountId);
   const store = await db.store.findUnique({
@@ -174,10 +182,20 @@ export async function planInventoryPush(
     suspicious_link: 0,
   };
   // Live from the current names (never a stale flag): a link whose names disagree is not pushed until confirmed.
-  const suspicious = await suspiciousItemIds(accountId, {
-    variants: { storeId, ...(opts.productIds ? { productId: { in: opts.productIds } } : {}) },
-    vendors: { id: { in: vps.map((v) => v.id) } },
-  });
+  const suspicious =
+    opts.suspicious === "stored"
+      ? await storedSuspiciousItemIds(accountId, {
+          storeId,
+          connectionIds: [...new Set(vps.map((v) => v.connectionId))],
+        })
+      : await suspiciousItemIds(accountId, {
+          variants: { storeId, ...(opts.productIds ? { productId: { in: opts.productIds } } : {}) },
+          // The same set as the vps read above, by its filter (a list of thousands of ids is slow to plan).
+          vendors: {
+            productId: { in: productIds },
+            connectionId: { in: locations.map((l) => l.connection!.id) },
+          },
+        });
   /**
    * Per Shopify location gid, the inventory items "Активирай продуктите в тази локация" would activate there (the
    * hint next to the button): the same predicate and count as the button (tracked, one per inventory item), not the

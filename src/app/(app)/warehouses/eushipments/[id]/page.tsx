@@ -94,19 +94,47 @@ export default async function EuShipmentsConnectionPage({
             </thead>
             <tbody>
               {MANUAL_SYNCS.map((k) => {
+                // Products: how many rows euShipments returned and why some are not separate products here.
+                const productsInfo = (info: unknown) => {
+                  const i = (info ?? {}) as {
+                    rows?: number;
+                    returned?: number;
+                    emptyRef?: number;
+                    duplicateRows?: number;
+                    duplicateSamples?: string[];
+                  };
+                  if (typeof i.returned !== "number") return null;
+                  return (
+                    <span className="block text-xs text-muted" data-testid="eu-products-info">
+                      {t("eushipments.productsInfo", {
+                        returned: i.returned,
+                        kept: i.rows ?? 0,
+                        emptyRef: i.emptyRef ?? 0,
+                        duplicates: i.duplicateRows ?? 0,
+                      })}
+                      {i.duplicateSamples?.length
+                        ? ` ${t("eushipments.productsDupSamples", { refs: i.duplicateSamples.join(", ") })}`
+                        : ""}
+                    </span>
+                  );
+                };
+                // "db_error:P2028:EushipmentsCountry" → the translated message + the database code (for support).
+                const errorText = (e: string) => {
+                  const [key, ...detail] = e.split(":");
+                  if (!key || !t.has(`eushipments.errors.${key}`)) return e;
+                  const msg = t(`eushipments.errors.${key}`);
+                  return detail.length ? `${msg} (${detail.join(" · ")})` : msg;
+                };
                 const s = sync(k === "test" ? "connection" : k);
                 return (
                   <tr key={k}>
                     <td className={tdCls}>{t(`eushipments.syncs.${k}`)}</td>
                     <td className={tdCls}>
                       <Freshness at={s?.lastOkAt ?? null} />
+                      {k === "products" && productsInfo(s?.info)}
                     </td>
                     <td className={`${tdCls} text-sm text-block`}>
-                      {s?.lastError
-                        ? t.has(`eushipments.errors.${s.lastError}`)
-                          ? t(`eushipments.errors.${s.lastError}`)
-                          : s.lastError
-                        : ""}
+                      {s?.lastError ? errorText(s.lastError) : ""}
                     </td>
                     {canSync && (
                       <td className={tdCls}>
