@@ -6,6 +6,7 @@ import { DomainError } from "@/server/accounts";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { createProductFromVariant, linkVariant } from "@/server/shopify/products";
+import { queueProductsToWarehouse, type QueueToWarehouseResult } from "@/server/products/to-warehouse";
 
 type Result = { ok?: boolean; error?: string } | undefined;
 
@@ -40,4 +41,19 @@ export async function createProductFromVariantAction(
   }
   revalidatePath("/products");
   return { ok: true };
+}
+
+/** "Създаване в склада": queue the create of the chosen masters at one warehouse (outbox + live mode). */
+export async function queueToWarehouseAction(input: {
+  connectionId: string;
+  productIds: string[];
+}): Promise<(QueueToWarehouseResult & { ok: true }) | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await queueProductsToWarehouse(actorFrom(ctx), input);
+    revalidatePath("/products/to-warehouse");
+    return { ok: true, ...r };
+  } catch (err) {
+    return (toError(err) as { error: string }) ?? { error: "unexpected" };
+  }
 }

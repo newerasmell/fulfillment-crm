@@ -81,6 +81,16 @@ test("euShipments: connection, mode, mirror tabs and the DRY_RUN preview", async
   await expect(stepper.locator('[aria-current="step"]')).toHaveText("Проба");
   await stepper.getByRole("button", { name: "Само четене" }).click();
   await expect(stepper.locator('[aria-current="step"]')).toHaveText("Само четене");
+
+  // "Създаване в склада": from the menu, the warehouse's missing masters with what each still lacks; READ_ONLY says so.
+  await page.getByRole("link", { name: "Създаване в склада" }).click();
+  await expect(page.getByRole("heading", { name: "Създаване в склада" })).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Складове" })
+    .getByRole("link", { name: /euShipments Демо/ })
+    .click();
+  await expect(page.getByTestId("to-warehouse-mode")).toContainText("Само четене");
+  await page.screenshot({ path: "test-results/to-warehouse.png", fullPage: true });
 });
 
 test("euShipments: create a connection — token to the vault, READ_ONLY, never shown again", async ({
