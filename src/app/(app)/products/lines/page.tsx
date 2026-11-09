@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { FillWeightsButton } from "@/components/rules-weights/WeightForm";
+import { weightFillWarehouses } from "@/server/products/weights";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { LineChip } from "@/components/ui/LineChip";
 import { ghostButtonCls, tdCls, thCls } from "@/components/ui/form";
@@ -80,7 +81,9 @@ export default async function ProductLinesPage({ searchParams }: { searchParams:
         subtitle={t("toolIntro")}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {can(ctx.role, "products.weight") && <FillWeightsButton />}
+            {can(ctx.role, "products.weight") && (
+              <FillWeightsButton warehouses={await weightFillWarehouses(actorFrom(ctx))} />
+            )}
             <Link href="/products" className={`${ghostButtonCls} inline-flex items-center`}>
               {t("backToProducts")}
             </Link>

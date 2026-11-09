@@ -129,7 +129,7 @@ export function WeightForm({
   );
 }
 
-export function FillWeightsButton() {
+export function FillWeightsButton({ warehouses = [] }: { warehouses?: { id: string; name: string }[] }) {
   const t = useTranslations("weights");
   const router = useRouter();
   const [state, action, pending] = useActionState(fillWeightsAction, undefined);
@@ -138,12 +138,31 @@ export function FillWeightsButton() {
   }, [state, router]);
   return (
     <form action={action} className="flex flex-wrap items-center gap-2">
+      {/* "Основен склад": when euShipments warehouses disagree on a weight, this one's value is used. */}
+      {warehouses.length > 1 && (
+        <select
+          name="preferConnectionId"
+          defaultValue=""
+          aria-label={t("preferWarehouse")}
+          title={t("preferWarehouseHint")}
+          className={`${inputCls} w-auto`}
+          data-testid="weights-prefer-warehouse"
+        >
+          <option value="">{t("preferNone")}</option>
+          {warehouses.map((w) => (
+            <option key={w.id} value={w.id}>
+              {t("preferOption", { name: w.name })}
+            </option>
+          ))}
+        </select>
+      )}
       <button type="submit" disabled={pending} className={ghostButtonCls} title={t("bulkHint")}>
         {t("bulk")}
       </button>
       {state?.bulk && (
         <span role="status" className="text-sm text-ok">
           {t("bulkDone", state.bulk)}
+          {state.bulk.fromPreferred > 0 && ` ${t("bulkPreferred", { n: state.bulk.fromPreferred })}`}
         </span>
       )}
       {state?.error && (

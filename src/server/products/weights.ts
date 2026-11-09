@@ -48,6 +48,8 @@ export interface WeightSuggestion {
   raw: string;
   /** FHB: unit not documented. */
   unitAssumed?: boolean;
+  /** The warehouse connection (warehouse values only). */
+  connectionId?: string;
 }
 
 const kgToGrams = (v: unknown): number | null => {
@@ -68,7 +70,12 @@ export async function weightSuggestions(
   const [vps, links] = await Promise.all([
     db.vendorProduct.findMany({
       where: { productId: { in: productIds }, archived: false },
-      select: { productId: true, raw: true, connection: { select: { type: true, name: true } } },
+      select: {
+        productId: true,
+        raw: true,
+        connectionId: true,
+        connection: { select: { type: true, name: true } },
+      },
     }),
     db.storeVariantLink.findMany({
       where: { productId: { in: productIds }, shopifyWeightGrams: { not: null } },
@@ -85,7 +92,13 @@ export async function weightSuggestions(
     const grams = kgToGrams(raw.weight);
     if (!vp.productId || grams === null) continue;
     if (vp.connection.type === "EUSHIPMENTS")
-      push(vp.productId, { source: "eushipments", grams, from: vp.connection.name, raw: String(raw.weight) });
+      push(vp.productId, {
+        source: "eushipments",
+        grams,
+        from: vp.connection.name,
+        raw: String(raw.weight),
+        connectionId: vp.connectionId,
+      });
     else if (vp.connection.type === "FHB_V3")
       push(vp.productId, {
         source: "fhb",
@@ -93,6 +106,7 @@ export async function weightSuggestions(
         from: vp.connection.name,
         raw: String(raw.weight),
         unitAssumed: true,
+        connectionId: vp.connectionId,
       });
   }
   for (const l of links)
@@ -277,6 +291,8 @@ export interface BulkFillResult {
   noSuggestion: number;
   /** Two euShipments connections disagree — left for a person. */
   conflicts: number;
+  /** Disagreements settled by the chosen main warehouse. */
+  fromPreferred: number;
   /** Got a weight from someone else meanwhile (never overwritten). */
   skipped: number;
   recheck: RecheckResult;
@@ -291,7 +307,15 @@ const BULK_BATCH = 200;
  */
 export async function fillWeightsFromWarehouse(
   actor: ScopedActor,
-  opts: { lineId?: string | null; enqueue?: EnqueueCheck } = {},
+  opts: {
+    lineId?: string | null;
+    enqueue?: EnqueueCheck;
+    /**
+     * "Основен склад" (owner decision 2026-11-09): when euShipments warehouses disagree on a product's weight, this
+     * warehouse's value wins; without one (or when it has no value) a disagreement is left for a person.
+     */
+    preferConnectionId?: string | null;
+  } = {},
 ): Promise<BulkFillResult> {
   assertCan(actor.role, "products.weight");
   const db = accountDb(actor.accountId);
@@ -300,6 +324,7 @@ export async function fillWeightsFromWarehouse(
     filled: 0,
     noSuggestion: 0,
     conflicts: 0,
+    fromPreferred: 0,
     skipped: 0,
     recheck: { total: 0, checked: 0, queued: 0, cleared: 0, failed: 0 },
   };
@@ -327,21 +352,28 @@ export async function fillWeightsFromWarehouse(
       batch.map((p) => p.id),
     );
     for (const p of batch) {
-      const eu = [
-        ...new Set((sugg.get(p.id) ?? []).filter((s) => s.source === "eushipments").map((s) => s.grams)),
-      ];
+      const euSugg = (sugg.get(p.id) ?? []).filter((s) => s.source === "eushipments");
+      const eu = [...new Set(euSugg.map((s) => s.grams))];
       if (!eu.length) {
         result.noSuggestion++;
         continue;
       }
+      let grams = eu[0]!;
       if (eu.length > 1) {
-        result.conflicts++;
-        continue;
+        const preferred = opts.preferConnectionId
+          ? [...new Set(euSugg.filter((s) => s.connectionId === opts.preferConnectionId).map((s) => s.grams))]
+          : [];
+        if (preferred.length !== 1) {
+          result.conflicts++;
+          continue;
+        }
+        grams = preferred[0]!;
+        result.fromPreferred++;
       }
       const res = await db.product.updateMany({
         where: { id: p.id, weightGrams: null },
         data: {
-          weightGrams: eu[0]!,
+          weightGrams: grams,
           weightSource: "eushipments",
           weightSetAt: new Date(),
           weightSetById: actor.userId,
@@ -359,7 +391,12 @@ export async function fillWeightsFromWarehouse(
     userId: actor.userId,
     action: "product.weight_bulk_fill",
     entityType: "Product",
-    after: { ...result, recheck: undefined, productIds: filledIds.slice(0, 500) },
+    after: {
+      ...result,
+      recheck: undefined,
+      preferConnectionId: opts.preferConnectionId ?? null,
+      productIds: filledIds.slice(0, 500),
+    },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });
@@ -435,4 +472,16 @@ export async function productWeightView(actor: ScopedActor, productId: string) {
     /** Default of "Обнови теглото и в Shopify": on only if some linked store allows it. */
     shopifyAllowed: variants.some((v) => v.store.weightWriteMode !== "DISABLED"),
   };
+}
+
+/** euShipments warehouses the member may pick as "Основен склад" for the bulk weight fill. */
+export function weightFillWarehouses(actor: ScopedActor) {
+  return accountDb(actor.accountId).fulfillmentConnection.findMany({
+    where: {
+      type: "EUSHIPMENTS",
+      ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
+    },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
 }

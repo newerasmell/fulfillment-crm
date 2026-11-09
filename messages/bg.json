@@ -3523,7 +3523,12 @@
       "not_found": "Не е намерено."
     },
     "productLink": "Тегло и детайли",
-    "column": "Тегло"
+    "column": "Тегло",
+    "preferWarehouse": "Основен склад",
+    "preferWarehouseHint": "Когато складовете дават различно тегло за един продукт, се взима теглото от този склад.",
+    "preferNone": "Без основен склад",
+    "preferOption": "Основен: {name}",
+    "bulkPreferred": "От основния склад: {n}."
   },
   "suspicious": {
     "title": "Съмнителни връзки ({count})",
