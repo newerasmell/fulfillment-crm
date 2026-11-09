@@ -94,6 +94,13 @@ export default async function EuShipmentsConnectionPage({
             </thead>
             <tbody>
               {MANUAL_SYNCS.map((k) => {
+                // "db_error:P2028:EushipmentsCountry" → the translated message + the database code (for support).
+                const errorText = (e: string) => {
+                  const [key, ...detail] = e.split(":");
+                  if (!key || !t.has(`eushipments.errors.${key}`)) return e;
+                  const msg = t(`eushipments.errors.${key}`);
+                  return detail.length ? `${msg} (${detail.join(" · ")})` : msg;
+                };
                 const s = sync(k === "test" ? "connection" : k);
                 return (
                   <tr key={k}>
@@ -102,11 +109,7 @@ export default async function EuShipmentsConnectionPage({
                       <Freshness at={s?.lastOkAt ?? null} />
                     </td>
                     <td className={`${tdCls} text-sm text-block`}>
-                      {s?.lastError
-                        ? t.has(`eushipments.errors.${s.lastError}`)
-                          ? t(`eushipments.errors.${s.lastError}`)
-                          : s.lastError
-                        : ""}
+                      {s?.lastError ? errorText(s.lastError) : ""}
                     </td>
                     {canSync && (
                       <td className={tdCls}>

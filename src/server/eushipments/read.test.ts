@@ -188,6 +188,28 @@ describe("euShipments read side (DB)", () => {
     ).toBe(0);
   });
 
+  it("an id that does not fit the database (e.g. a huge city group) is stored as unknown, not a failed sync", async () => {
+    const base = RD.officesPage1.offices[0]!;
+    const odd = {
+      ...routes,
+      "/offices-by-courier/15": () =>
+        json({
+          offices: [{ ...base, ID: 555_001, GROUP_CITY_ID: 9_999_999_999, CITY_ID: 9_999_999_999 }],
+          pagination: { current_page: 1, per_page: 1, total: 1, last_page: 1 },
+        }),
+    };
+    const t3 = new Date(Date.now() + 180_000);
+    await syncEuReference(g.accountId, g.connection.id, { ...vendor(odd).deps, now: t3 });
+    const o = await g.db.eushipmentsOffice.findFirstOrThrow({
+      where: { connectionId: g.connection.id, officeId: 555_001 },
+    });
+    expect(o.cityId).toBeNull();
+    const sync = await g.db.eushipmentsSync.findUniqueOrThrow({
+      where: { connectionId_kind: { connectionId: g.connection.id, kind: "reference" } },
+    });
+    expect(sync.lastError).toBeNull();
+  });
+
   it("cities per country (paged); Great Britain is refused before any call", async () => {
     const v = vendor(routes);
     expect(await syncEuCities(g.accountId, g.connection.id, 2, v.deps)).toEqual({ countryId: 2, cities: 2 });
