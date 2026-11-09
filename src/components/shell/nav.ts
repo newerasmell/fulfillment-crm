@@ -31,6 +31,12 @@ export const NAV_GROUPS: NavGroup[] = [
     key: "warehouse",
     items: [
       { href: "/products", key: "products", icon: "box" },
+      {
+        href: "/products/to-warehouse",
+        key: "toWarehouse",
+        icon: "inbound",
+        permission: "vendorProducts.write",
+      },
       { href: "/inbound", key: "inbound", icon: "inbound" },
       { href: "/manual-shipments", key: "manualShipments", icon: "tag" },
     ],
@@ -61,6 +67,12 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+const ALL_HREFS = NAV_GROUPS.flatMap((g) => g.items.map((i) => i.href));
+
+/** The most specific menu entry wins: /products/to-warehouse lights only "Създаване в склада", not "Продукти". */
 export function isActive(pathname: string, href: string) {
-  return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  if (href === "/") return pathname === "/";
+  const under = (h: string) => pathname === h || pathname.startsWith(`${h}/`);
+  if (!under(href)) return false;
+  return !ALL_HREFS.some((h) => h !== href && h.length > href.length && h.startsWith(`${href}/`) && under(h));
 }

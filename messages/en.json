@@ -37,7 +37,8 @@
     "allCompanies": "All companies",
     "alerts": "Alerts and tasks",
     "lines": "Lines and companies",
-    "countries": "Countries"
+    "countries": "Countries",
+    "toWarehouse": "Create in warehouse"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -3577,5 +3578,58 @@
   "common": {
     "clickToCopy": "Click to copy",
     "copied": "Copied"
+  },
+  "toWarehouse": {
+    "title": "Create in warehouse",
+    "intro": "Master products the chosen warehouse does not have yet. Pick them and create them there — they go through the outbox and the connection's mode (Read only / Dry run / Canary / Live).",
+    "warehouses": "Warehouses",
+    "noWarehouses": "No FHB or euShipments warehouse in the selected line/company.",
+    "search": "SKU or name",
+    "onlyReady": "Only ready to send",
+    "filter": "Filter",
+    "count": "Missing at the warehouse: {n}",
+    "none": "No products missing at this warehouse.",
+    "prev": "Back",
+    "next": "Next",
+    "pageOf": "Page {page} of {pages}",
+    "table": "Products to create",
+    "pickAll": "Pick every ready product on the page",
+    "name": "Name",
+    "state": "State",
+    "ready": "Ready",
+    "missing": "Missing: {fields}",
+    "send": "Create the picked in the warehouse ({n})",
+    "result": "Queued: {queued} · already queued: {already} · refused: {failed}.",
+    "field": {
+      "barcode": "barcode (EAN)",
+      "weight": "weight",
+      "size": "size (L×W×H)",
+      "name": "name"
+    },
+    "status": {
+      "PENDING": "queued",
+      "PAUSED": "paused",
+      "HELD": "held",
+      "AWAITING_CONFIRMATION": "awaiting confirmation (canary)",
+      "SENDING": "sending",
+      "SENT": "created at the warehouse",
+      "DRY_RUN_RECORDED": "dry run — recorded, not sent",
+      "REFUSED": "refused (mode)",
+      "FAILED": "failed",
+      "UNCERTAIN": "unknown outcome — check"
+    },
+    "mode": {
+      "READ_ONLY": "Read only: nothing will be sent (requests are refused). Change the mode in Warehouses.",
+      "DRY_RUN": "Dry run: records exactly what would be sent, sends nothing.",
+      "CANARY": "Canary: every request waits for a person to confirm.",
+      "LIVE": "Live: products are created at the warehouse."
+    },
+    "noteEu": "euShipments needs a barcode (EAN), weight and size; refNumber = SKU with the connection prefix. A barcode clash opens a task.",
+    "noteFhb": "FHB: id = connection prefix + SKU, the first EAN, name and photo. A wrong id at FHB is permanent — so do a Dry run first.",
+    "error": {
+      "forbidden": "You may not do this.",
+      "not_found": "Warehouse not found.",
+      "invalid": "Invalid data."
+    }
   }
 }
