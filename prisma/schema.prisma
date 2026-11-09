@@ -109,6 +109,9 @@ enum CrmOrderStatus {
   UNKNOWN
   /// Shopify already reported it fulfilled when we first saw it: shipped outside the CRM, nothing to do.
   FULFILLED_EXTERNALLY
+  /// The store takes only orders with its tag (StoreOrderTag) and this one has none yet: kept aside, not checked,
+  /// never sent; enters review (IMPORTED) as soon as the tag appears in Shopify.
+  AWAITING_TAG
 }
 
 enum OrderSource {
@@ -237,6 +240,7 @@ model Account {
   shipmentBoardSettings     ShipmentBoardSettings?
   fhbTickets                FhbTicket[]
   shopifyCarrierAliases     ShopifyCarrierAlias[]
+  storeOrderTags            StoreOrderTag[]
 }
 
 model User {
@@ -448,6 +452,7 @@ model Store {
   inventoryPushes      InventoryPush[]
   inventoryActivations InventoryActivation[]
   weightWrites         ShopifyWeightWrite[]
+  orderTag             StoreOrderTag?
 
   @@unique([accountId, id])
   @@unique([accountId, code])
@@ -2731,4 +2736,23 @@ model ShopifyCarrierAlias {
 
   @@unique([accountId, id])
   @@unique([accountId, carrierKey])
+}
+
+/// "Само поръчки с таг" (owner request 2026-11-09): the store's orders enter the CRM's work only once they carry this
+/// Shopify tag (compared case-insensitively, e.g. "Confirmed"); until then they wait as AWAITING_TAG. No row = all
+/// orders, as before.
+model StoreOrderTag {
+  id          String   @id @default(cuid())
+  accountId   String
+  storeId     String
+  tag         String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store   Store   @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, storeId])
 }

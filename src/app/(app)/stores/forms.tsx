@@ -6,6 +6,7 @@ import {
   backfillOrdersAction,
   createStoreAction,
   replaceStoreCredentialsAction,
+  saveStoreOrderTagAction,
   saveStoreSettingsAction,
 } from "@/app/actions/stores";
 import { buttonCls, inputCls, labelCls } from "@/components/ui/form";
@@ -300,6 +301,45 @@ export function BackfillForm({ storeId }: { storeId: string }) {
       ) : (
         <Feedback state={state} />
       )}
+    </form>
+  );
+}
+
+/** "Само поръчки с таг": only Shopify orders with this tag enter the CRM's work (empty = all orders). */
+export function StoreOrderTagForm({ storeId, tag }: { storeId: string; tag: string | null }) {
+  const t = useTranslations("stores.orderTag");
+  const [state, action, pending] = useActionState(saveStoreOrderTagAction.bind(null, storeId), undefined);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget);
+        startTransition(() => action(data));
+      }}
+      className="flex flex-col gap-2"
+      aria-label={t("title")}
+    >
+      <p className="m-0 text-sm text-muted">{t("help")}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          name="tag"
+          defaultValue={tag ?? ""}
+          maxLength={100}
+          placeholder="Confirmed"
+          aria-label={t("label")}
+          className={`${inputCls} w-56`}
+        />
+        <button type="submit" disabled={pending} className={buttonCls}>
+          {t("save")}
+        </button>
+        {state?.error && <Feedback state={state} />}
+        {state?.ok && (
+          <span role="status" className="text-sm text-ok">
+            {t("saved", { setAside: state.setAside ?? 0, released: state.released ?? 0 })}
+          </span>
+        )}
+      </div>
+      <p className="m-0 text-xs text-muted">{t("note")}</p>
     </form>
   );
 }

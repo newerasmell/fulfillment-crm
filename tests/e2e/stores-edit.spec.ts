@@ -62,6 +62,20 @@ test("stores: edit details, warehouse prefix, locked domain, archive + restore, 
   await expect(page.getByRole("note")).toContainText("Архивирайте го вместо това");
   await page.screenshot({ path: "docs/screens/stores-edit.png", fullPage: true });
 
+  // "Само поръчки с таг": the open order without the tag moves to "Чака таг"; the tagged and the delivered stay.
+  const tagForm = page.getByRole("form", { name: "Само поръчки с таг" });
+  await tagForm.locator('input[name="tag"]').fill("Confirmed");
+  await tagForm.getByRole("button", { name: "Запази" }).click();
+  await expect(tagForm.getByRole("status")).toContainText("Отделени (без таг): 1");
+  await page.goto("/orders?tab=all&q=MP-");
+  await expect(page.getByRole("link", { name: "Чака таг" })).toContainText("1");
+  await expect(page.getByRole("link", { name: "#MP-1" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "#MP-3" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "#MP-2" })).toHaveCount(0);
+  await page.getByRole("link", { name: "Чака таг" }).click();
+  await expect(page.getByRole("link", { name: "#MP-2" })).toBeVisible();
+  await page.screenshot({ path: "test-results/orders-awaiting-tag.png", fullPage: false });
+
   // 2. Archive a store with an order not yet sent: the count is shown first, then it moves to "Архивирани".
   await page.goto("/stores");
   await page.getByRole("link", { name: "Магазин за архив" }).click();

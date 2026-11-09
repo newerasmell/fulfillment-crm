@@ -27,7 +27,8 @@ export interface RecheckResult {
   failed: number;
 }
 
-export const OPEN_FOR_RECHECK = [...PRE_APPROVAL];
+/** Orders still waiting for their store's tag are not checked (owner request 2026-11-09: not work yet). */
+export const OPEN_FOR_RECHECK = [...PRE_APPROVAL].filter((s) => s !== "AWAITING_TAG");
 
 export async function recheckOpenOrders(
   accountId: string,

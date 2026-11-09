@@ -16,7 +16,8 @@ import {
   type WebhookStatusView,
 } from "@/server/store-lifecycle";
 import { ArchiveStoreForm, DeleteStoreForm, RestoreStoreForm, StoreDetailsForm } from "./lifecycle-forms";
-import { BackfillForm, ReplaceCredentialsForm, StoreSettingsForm } from "../forms";
+import { BackfillForm, ReplaceCredentialsForm, StoreOrderTagForm, StoreSettingsForm } from "../forms";
+import { storeOrderTag } from "@/server/shopify/order-tag";
 import { MissingScopes, ShopifySetupGuide } from "../setup-guide";
 import { ConnectionBadge } from "../status";
 import { JobButton } from "../JobButton";
@@ -183,6 +184,12 @@ export default async function StorePage({ params }: { params: Promise<{ id: stri
               sampleNumber: latestOrder?.number ?? null,
             }}
           />
+        </Card>
+      )}
+      {manage && (
+        <Card>
+          <h2 className="mt-0 text-base font-semibold">{t("orderTag.title")}</h2>
+          <StoreOrderTagForm storeId={id} tag={await storeOrderTag(ctx.accountId, id)} />
         </Card>
       )}
       {manage && (

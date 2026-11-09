@@ -69,7 +69,7 @@ export async function timingReport(ctx: ReportCtx, range: ReportRange) {
           FROM "Order" o
          WHERE o."accountId" = ${ctx.accountId}
            AND o."placedAt" >= ${range.start} AND o."placedAt" < ${range.end}
-           AND o.status <> 'CANCELLED'
+           AND o.status NOT IN ('CANCELLED', 'AWAITING_TAG')
            ${company}
       ), ev AS (
         SELECT e."orderId",

@@ -11,4 +11,5 @@ export const PRE_APPROVAL = new Set<CrmOrderStatus>([
   "NEEDS_REVIEW",
   "READY",
   "ON_HOLD",
+  "AWAITING_TAG",
 ]);
