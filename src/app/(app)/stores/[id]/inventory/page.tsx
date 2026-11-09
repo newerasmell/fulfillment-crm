@@ -16,6 +16,13 @@ import { storeConnectionCompanies, storeLocations } from "@/server/stock/shopify
 import { getStore } from "@/server/stores";
 import { ActivateLocationButton, MapLocationForm, PushNowButton, ReadInventoryButton } from "./forms";
 
+/** Stored requests of a large store run to megabytes: the page shows the start (the full one is in the database). */
+const CLIP = 20_000;
+const clip = (text: string) =>
+  text.length > CLIP ? `${text.slice(0, CLIP)}\n… (${text.length - CLIP} more)` : text;
+/** Preview rows rendered; changes first. A 3800-variant store has thousands of rows. */
+const PREVIEW_ROWS = 300;
+
 const locationNumber = (gid: string) => /\/(\d+)$/.exec(gid)?.[1] ?? gid;
 
 /**
@@ -57,6 +64,11 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
     storeActivations(ctx.accountId, id),
   ]);
   const connName = new Map(connections.map((c) => [c.id, c]));
+  const changed = plan.lines.filter((l) => l.target !== l.shopifyNow);
+  const previewRows = [...changed, ...plan.lines.filter((l) => l.target === l.shopifyNow)].slice(
+    0,
+    PREVIEW_ROWS,
+  );
   const locName = new Map(locations.map((l) => [l.shopifyLocationGid, l.name]));
   const lastRead = locations.reduce<Date | null>((m, l) => (!m || l.fetchedAt > m ? l.fetchedAt : m), null);
   return (
@@ -174,7 +186,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                 </tr>
               </thead>
               <tbody>
-                {plan.lines.map((l) => {
+                {previewRows.map((l) => {
                   const delta = l.target - l.shopifyNow;
                   const c = connName.get(l.connectionId);
                   return (
@@ -198,6 +210,15 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                 })}
               </tbody>
             </table>
+            {plan.lines.length > previewRows.length && (
+              <p className="m-0 mt-1 text-xs text-muted" data-testid="preview-truncated">
+                {t("previewTruncated", {
+                  shown: previewRows.length,
+                  total: plan.lines.length,
+                  changes: changed.length,
+                })}
+              </p>
+            )}
           </div>
         )}
         <ul
@@ -227,7 +248,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
           <h2 className="mt-0 text-base font-semibold">{t("activations")}</h2>
           <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label={t("activations")}>
             {activations.map((a) => {
-              const by = (s: string) => a.lines.filter((l) => l.status === s).length;
+              const by = (s: string) => a.byStatus[s] ?? 0;
               return (
                 <li
                   key={a.id}
@@ -246,7 +267,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                   </div>
                   <div className="text-xs text-muted">
                     {t("activationCounts", {
-                      total: a.lines.length,
+                      total: a.total,
                       activated: by("activated"),
                       already: by("already"),
                       dry: by("dry_run"),
@@ -255,16 +276,13 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                     })}
                   </div>
                   {a.lastError && <div className="text-xs text-block">{a.lastError.slice(0, 300)}</div>}
-                  {a.lines.some((l) => l.status === "failed") && (
+                  {a.failed.length > 0 && (
                     <ul className="m-0 mt-1 list-none p-0 text-xs text-block">
-                      {a.lines
-                        .filter((l) => l.status === "failed")
-                        .slice(0, 10)
-                        .map((l) => (
-                          <li key={l.id} className="font-mono">
-                            {l.inventoryItemGid}: {l.error}
-                          </li>
-                        ))}
+                      {a.failed.map((l) => (
+                        <li key={l.id} className="font-mono">
+                          {l.inventoryItemGid}: {l.error}
+                        </li>
+                      ))}
                     </ul>
                   )}
                   {a.request && can(ctx.role, "outbox.payloads") && (
@@ -279,7 +297,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                         className="mt-1 max-h-64 overflow-auto rounded bg-hover p-2 text-[11px]"
                         data-testid="activation-request"
                       >
-                        {JSON.stringify(a.request, null, 2)}
+                        {clip(JSON.stringify(a.request, null, 2))}
                       </pre>
                     </details>
                   )}
@@ -296,7 +314,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
         ) : (
           <ul className="m-0 flex list-none flex-col gap-2 p-0" aria-label={t("history")}>
             {pushes.map((p) => {
-              const by = (s: string) => p.lines.filter((l) => l.status === s).length;
+              const by = (s: string) => p.byStatus[s] ?? 0;
               return (
                 <li
                   key={p.id}
@@ -316,7 +334,7 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                   </div>
                   <div className="text-xs text-muted">
                     {t("lineCounts", {
-                      total: p.lines.length,
+                      total: p.total,
                       applied: by("applied"),
                       dry: by("dry_run"),
                       unchanged: by("unchanged"),
@@ -329,12 +347,12 @@ export default async function StoreInventoryPage({ params }: { params: Promise<{
                     <details className="mt-1">
                       <summary className="cursor-pointer text-xs text-accent">{t("showRequest")}</summary>
                       <pre className="mt-1 max-h-64 overflow-auto rounded bg-hover p-2 text-[11px]">
-                        {JSON.stringify(p.request, null, 2)}
+                        {clip(JSON.stringify(p.request, null, 2))}
                       </pre>
                     </details>
                   )}
                   <ul className="m-0 mt-1 list-none p-0 text-xs">
-                    {p.lines.slice(0, 10).map((l) => (
+                    {p.sample.map((l) => (
                       <li key={l.id} className="font-mono">
                         {locName.get(l.locationGid) ?? l.locationGid}: {l.shopifyBefore ?? "?"} → {l.target} (
                         {l.status})

@@ -603,9 +603,13 @@ export async function sweepInventoryActivations(now: Date = new Date(), limit = 
   return { stale: stale.count, ready };
 }
 
-/** Activation jobs of one store for the inventory page (newest first). */
-export function storeActivations(accountId: string, storeId: string, take = 10) {
-  return accountDb(accountId).inventoryActivation.findMany({
+/**
+ * Activation jobs of one store for the inventory page (newest first): line counts by status, the first failed
+ * lines, and the stored requests only for the newest job (thousands of lines per job on a large store).
+ */
+export async function storeActivations(accountId: string, storeId: string, take = 10) {
+  const db = accountDb(accountId);
+  const jobs = await db.inventoryActivation.findMany({
     where: { storeId },
     orderBy: { createdAt: "desc" },
     take,
@@ -618,11 +622,37 @@ export function storeActivations(accountId: string, storeId: string, take = 10) 
       attempts: true,
       createdAt: true,
       sentAt: true,
-      request: true,
-      lines: {
-        select: { id: true, variantLinkId: true, inventoryItemGid: true, status: true, error: true },
-        orderBy: { inventoryItemGid: "asc" },
-      },
     },
+  });
+  if (!jobs.length) return [];
+  const ids = jobs.map((j) => j.id);
+  const [counts, newest, failed] = await Promise.all([
+    db.inventoryActivationLine.groupBy({
+      by: ["activationId", "status"],
+      where: { activationId: { in: ids } },
+      _count: { _all: true },
+    }),
+    db.inventoryActivation.findUnique({ where: { id: ids[0] }, select: { request: true } }),
+    Promise.all(
+      ids.map((activationId) =>
+        db.inventoryActivationLine.findMany({
+          where: { activationId, status: "failed" },
+          orderBy: { inventoryItemGid: "asc" },
+          take: 10,
+          select: { id: true, inventoryItemGid: true, error: true },
+        }),
+      ),
+    ),
+  ]);
+  return jobs.map((j, i) => {
+    const byStatus: Record<string, number> = {};
+    for (const c of counts) if (c.activationId === j.id) byStatus[c.status] = c._count._all;
+    return {
+      ...j,
+      request: i === 0 ? (newest?.request ?? null) : null,
+      total: Object.values(byStatus).reduce((a, n) => a + n, 0),
+      byStatus,
+      failed: failed[i]!,
+    };
   });
 }

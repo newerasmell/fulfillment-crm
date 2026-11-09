@@ -2209,7 +2209,8 @@
         "activated": "activated",
         "already": "already active",
         "failed": "failed"
-      }
+      },
+      "previewTruncated": "Showing {shown} of {total} rows ({changes} with a change first). The push covers all of them."
     },
     "shopifyListings": "{n} Shopify listings: {each} (sum)",
     "shopifyOtherLocations": "+{n} at other locations (not pushed)",

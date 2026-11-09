@@ -2209,7 +2209,8 @@
         "activated": "активиран",
         "already": "вече активен",
         "failed": "грешка"
-      }
+      },
+      "previewTruncated": "Показани {shown} от {total} реда (първо {changes} с промяна). Изпращането обхваща всички."
     },
     "shopifyListings": "{n} обяви в Shopify: {each} (сбор)",
     "shopifyOtherLocations": "+{n} в други локации (не се пращат)",
