@@ -1,4 +1,4 @@
-import { orderNeighbours } from "@/server/orders";
+import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../order-nav";
 import { DesignToggle } from "../design-toggle";
 import { CarrierPick } from "./carrier-pick";
@@ -71,8 +71,17 @@ const WRITE_BACK_MUTATION = {
   EVENT: "fulfillmentEventCreate",
 } as const;
 
-export async function NewOrderView({ params }: { params: Promise<{ id: string }> }) {
+export async function NewOrderView({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
+  // The orders list this page was opened from (tab + filters): J / K and "back" stay in it.
+  const listCtx = parseOrderListContext((await searchParams) ?? {});
+  const listQuery = orderListQuery(listCtx);
   const ctx = await requireAccountContext();
   const t = await getTranslations("orders");
   const r = await getTranslations("review");
@@ -133,7 +142,7 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
       }
     : null;
   const writeBacks = await orderWriteBacks(ctx.accountId, order.id);
-  const nav = await orderNeighbours(ctx, order.id);
+  const nav = await orderNeighbours(ctx, order.id, listCtx);
   // Shipments whose Shopify tracking waits for a person to pick the carrier (one entry per shipment).
   const heldCarriers = [
     ...new Map(
@@ -214,7 +223,7 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
         subtitle={`${order.store?.name ?? "—"} · ${order.company?.name ?? "—"} · ${when(order.placedAt)}`}
         actions={
           <div className="flex flex-wrap items-start gap-2">
-            <OrderNav {...nav} />
+            <OrderNav {...nav} query={listQuery} />
             <DesignToggle current="new" />
             {can(ctx.role, "orders.fulfill") &&
               ["APPROVED", "SUBMIT_FAILED", "QUEUED"].includes(order.status) && (
@@ -225,7 +234,10 @@ export async function NewOrderView({ params }: { params: Promise<{ id: string }>
                 {r("reviewsLink")}
               </Link>
             )}
-            <Link href="/orders" className={ghostButtonCls + " inline-flex items-center"}>
+            <Link
+              href={listQuery ? `/orders?${listQuery}` : "/orders"}
+              className={ghostButtonCls + " inline-flex items-center"}
+            >
               {t("back")}
             </Link>
           </div>

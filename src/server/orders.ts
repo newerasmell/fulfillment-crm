@@ -88,7 +88,8 @@ export async function listOrders(ctx: Ctx, f: OrderFilters) {
         },
         check: { select: { connectionId: true } },
       },
-      orderBy: { placedAt: "desc" },
+      // Ties by id: the order page's J / K follow exactly this order.
+      orderBy: [{ placedAt: "desc" }, { id: "desc" }],
       skip: (page - 1) * ORDERS_PAGE_SIZE,
       take: ORDERS_PAGE_SIZE,
     }),
@@ -243,37 +244,74 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
   return { attention: { review: counts.review, blocked: counts.blocked, errors }, today, yesterday, recent };
 }
 
+/** The orders list the order page was opened from (tab + filters), carried in the order page URL. */
+export type OrderListContext = Omit<OrderFilters, "page">;
+
+/** Reads the list context from the order page's query (the same keys the orders list uses). */
+export function parseOrderListContext(
+  sp: Record<string, string | string[] | undefined>,
+): OrderListContext | null {
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)?.trim() || undefined;
+  const tab = one(sp.tab);
+  if (!tab || !isOrderTab(tab)) return null;
+  const payment = one(sp.payment);
+  return {
+    tab,
+    q: one(sp.q)?.slice(0, 100),
+    storeId: one(sp.store)?.slice(0, 64),
+    country: one(sp.country)?.slice(0, 2),
+    payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
+  };
+}
+
+/** The same list context as a query string (for links between orders and back to the list). */
+export function orderListQuery(c: OrderListContext | null) {
+  if (!c) return "";
+  const p = new URLSearchParams({ tab: c.tab });
+  if (c.q) p.set("q", c.q);
+  if (c.storeId) p.set("store", c.storeId);
+  if (c.country) p.set("country", c.country);
+  if (c.payment) p.set("payment", c.payment);
+  return p.toString();
+}
+
 /**
- * The next newer and older order around one order, in the member's current scope (sidebar company / line), by when
- * it was placed (owner request 2026-11-09: J / K and arrows on the order page, as in Shopify). Orders waiting for
- * their store's tag are only navigated among themselves.
+ * The orders just above (newer) and below (older) one order in the list it was opened from — the same tab,
+ * filters and order as that list (owner request 2026-11-09: J / K must walk the list, e.g. one country's review
+ * orders, not jump across countries or into cancelled ones). Opened from elsewhere: every order of the member's
+ * scope that is still in work (no cancelled / shipped-outside / waiting-for-tag ones).
  */
 export async function orderNeighbours(
   ctx: Ctx & { lineCompanyIds?: string[] | null },
   orderId: string,
+  list: OrderListContext | null = null,
 ): Promise<{ newer: string | null; older: string | null }> {
   const db = accountDb(ctx.accountId);
   const cur = await db.order.findFirst({
     where: { id: orderId, ...companyFilter(ctx) },
-    select: { id: true, placedAt: true, status: true },
+    select: { id: true, placedAt: true },
   });
   if (!cur) return { newer: null, older: null };
-  const group: Prisma.OrderWhereInput =
-    cur.status === "AWAITING_TAG" ? { status: "AWAITING_TAG" } : { status: { not: "AWAITING_TAG" } };
-  const base = { ...companyFilter(ctx), ...group };
+  const base: Prisma.OrderWhereInput = list
+    ? { ...baseWhere(ctx, list), ...tabWhere(list.tab) }
+    : { ...companyFilter(ctx), status: { notIn: ["CANCELLED", "FULFILLED_EXTERNALLY", "AWAITING_TAG"] } };
   const [newer, older] = await Promise.all([
     db.order.findFirst({
       where: {
-        ...base,
-        OR: [{ placedAt: { gt: cur.placedAt } }, { placedAt: cur.placedAt, id: { gt: cur.id } }],
+        AND: [
+          base,
+          { OR: [{ placedAt: { gt: cur.placedAt } }, { placedAt: cur.placedAt, id: { gt: cur.id } }] },
+        ],
       },
       orderBy: [{ placedAt: "asc" }, { id: "asc" }],
       select: { id: true },
     }),
     db.order.findFirst({
       where: {
-        ...base,
-        OR: [{ placedAt: { lt: cur.placedAt } }, { placedAt: cur.placedAt, id: { lt: cur.id } }],
+        AND: [
+          base,
+          { OR: [{ placedAt: { lt: cur.placedAt } }, { placedAt: cur.placedAt, id: { lt: cur.id } }] },
+        ],
       },
       orderBy: [{ placedAt: "desc" }, { id: "desc" }],
       select: { id: true },

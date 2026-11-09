@@ -38,7 +38,8 @@
     "alerts": "Alerts and tasks",
     "lines": "Lines and companies",
     "countries": "Countries",
-    "toWarehouse": "Create in warehouse"
+    "toWarehouse": "Create in warehouse",
+    "trackingLinks": "Tracking links"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -3629,6 +3630,30 @@
     "error": {
       "forbidden": "You may not do this.",
       "not_found": "Warehouse not found.",
+      "invalid": "Invalid data."
+    }
+  },
+  "trackingLinks": {
+    "title": "Tracking links",
+    "intro": "The link Shopify shows the customer for each courier. '{tracking}' is replaced with the parcel number. Without a link the warehouse's link is sent, as before.",
+    "none": "No shipments with a courier yet.",
+    "carrier": "Courier",
+    "link": "Link (template)",
+    "shipments": "{n} shipments",
+    "noCompany": "Shopify: unknown",
+    "template": "Link for {carrier}",
+    "test": "Try with {number}",
+    "needPlaceholder": "The link must contain '{tracking}' where the number goes.",
+    "nowWarehouse": "Now: the warehouse's link ({url})",
+    "nowNone": "Now: no link",
+    "save": "Save",
+    "saved": "Saved — applies to new numbers.",
+    "cleared": "Removed — the warehouse's link is sent.",
+    "note": "Applies to every new tracking sent to Shopify (fulfilment or a new number). Links already in Shopify are not changed.",
+    "error": {
+      "missing_placeholder": "The link must contain '{tracking}'.",
+      "invalid_url": "The link must be a full https:// address.",
+      "forbidden": "You may not do this.",
       "invalid": "Invalid data."
     }
   }

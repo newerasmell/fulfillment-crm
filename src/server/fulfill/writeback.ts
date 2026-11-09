@@ -32,6 +32,7 @@ import { recordAudit } from "@/server/audit";
 import { accountDb, systemDb, withSystemTransaction } from "@/server/db/client";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
 import { shopifyCompanyFor } from "@/server/shopify/carrier-company";
+import { trackingUrlFor } from "@/server/shopify/tracking-links";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
 
 /**
@@ -955,8 +956,11 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
     return final(status);
   }
 
+  // The courier's own link when one is set for this courier ("Линкове за проследяване"), else the warehouse's.
   const url = tn
-    ? (shipment.trackingUrls[shipment.trackingNumbers.indexOf(tn)] ?? shipment.trackingUrls[0])
+    ? ((await trackingUrlFor(db, row.accountId, shipment.carrier, tn)) ??
+      shipment.trackingUrls[shipment.trackingNumbers.indexOf(tn)] ??
+      shipment.trackingUrls[0])
     : null;
   const plan = planFulfillment(
     before,
@@ -1115,7 +1119,10 @@ async function prepareTracking(ctx: KindContext): Promise<Prepared> {
   const tracking = trackingInput({
     number: row.value,
     company: (await shopifyCompanyFor(systemDb(), row.accountId, shipment.carrier)) ?? shipment.carrier,
-    url: (i >= 0 ? shipment.trackingUrls[i] : undefined) ?? null,
+    url:
+      (await trackingUrlFor(systemDb(), row.accountId, shipment.carrier, row.value)) ??
+      (i >= 0 ? shipment.trackingUrls[i] : undefined) ??
+      null,
   });
   const has = (f: NonNullable<WriteBackState["fulfillment"]>) =>
     f.trackingInfo.some((t) => t.number === row.value);

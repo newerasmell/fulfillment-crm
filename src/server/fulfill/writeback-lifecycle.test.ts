@@ -431,6 +431,31 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
     expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
   });
 
+  it("a courier's tracking link template replaces the warehouse's link in Shopify", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    await db().carrierTrackingLink.create({
+      data: {
+        accountId: g.accountId,
+        carrierKey: "speedy",
+        carrierName: "Speedy",
+        urlTemplate: "https://courier.example/track?n={tracking}",
+      },
+    });
+    const { f } = await shipment("SHIPPED", ["TRK-L1"]);
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9546666"),
+    });
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, shop.clients)).toBe("SENT");
+    expect(shop.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: {
+        trackingInfo: { number: "TRK-L1", company: "Speedy", url: "https://courier.example/track?n=TRK-L1" },
+      },
+    });
+    await db().carrierTrackingLink.deleteMany({ where: { accountId: g.accountId } });
+  });
+
   it("DRY_RUN records an unknown carrier as it is (nothing held)", async () => {
     await setStore({ writeBackMode: "DRY_RUN", fulfilTrigger: "ON_TRACKING" });
     const { f } = await shipment("SHIPPED", ["TRK-D1"], "Some Local Courier");

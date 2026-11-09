@@ -7,6 +7,7 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { ForbiddenError, assertCan } from "@/server/auth/rbac";
 import { setStoreOrderTag } from "@/server/shopify/order-tag";
+import { saveCarrierTrackingLink } from "@/server/shopify/tracking-links";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
@@ -317,4 +318,23 @@ export async function saveStoreOrderTagAction(
   revalidatePath(`/stores/${storeId}`);
   revalidatePath("/orders");
   return { ok: true, setAside: r.setAside, released: r.released };
+}
+
+/** "Линкове за проследяване": save or clear one courier's tracking link template. */
+export async function saveTrackingLinkAction(input: {
+  carrierName: string;
+  urlTemplate: string;
+}): Promise<{ ok: true; urlTemplate: string | null } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await saveCarrierTrackingLink(actorFrom(ctx), {
+      carrierName: input.carrierName,
+      urlTemplate: input.urlTemplate || null,
+    });
+    revalidatePath("/settings/tracking-links");
+    return { ok: true, urlTemplate: r.urlTemplate };
+  } catch (err) {
+    if (err instanceof z.ZodError) return { error: String(err.issues[0]?.message ?? "invalid") };
+    return (toError(err) as { error: string }) ?? { error: "unexpected" };
+  }
 }

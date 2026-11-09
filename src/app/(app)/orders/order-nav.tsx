@@ -24,21 +24,31 @@ function ignored(e: KeyboardEvent) {
  * "← по-стара · по-нова →" in the order page header, with Shopify's keys: J = newer order, K = older order
  * (owner request 2026-11-09). The neighbours are worked out on the server in the member's current scope.
  */
-export function OrderNav({ newer, older }: { newer: string | null; older: string | null }) {
+export function OrderNav({
+  newer,
+  older,
+  query = "",
+}: {
+  newer: string | null;
+  older: string | null;
+  /** The list context (tab + filters), kept on every step. */
+  query?: string;
+}) {
+  const go = (id: string) => `/orders/${id}${query ? `?${query}` : ""}`;
   const t = useTranslations("orders.nav");
   const router = useRouter();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (ignored(e)) return;
       const k = e.key.toLowerCase();
-      const to = k === "j" ? newer : k === "k" ? older : null;
-      if (!to) return;
+      const target = k === "j" ? newer : k === "k" ? older : null;
+      if (!target) return;
       e.preventDefault();
-      router.push(`/orders/${to}`);
+      router.push(`/orders/${target}${query ? `?${query}` : ""}`);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [newer, older, router]);
+  }, [newer, older, router, query]);
   const btn =
     "inline-flex h-10 w-10 items-center justify-center rounded-[10px] border border-line bg-surface text-lg hover:bg-hover";
   const off = `${btn} pointer-events-none opacity-40`;
@@ -46,7 +56,7 @@ export function OrderNav({ newer, older }: { newer: string | null; older: string
     <div className="flex items-center gap-1" data-testid="order-nav">
       {older ? (
         <Link
-          href={`/orders/${older}`}
+          href={go(older)}
           className={btn}
           aria-label={t("older")}
           title={t("olderHint")}
@@ -61,7 +71,7 @@ export function OrderNav({ newer, older }: { newer: string | null; older: string
       )}
       {newer ? (
         <Link
-          href={`/orders/${newer}`}
+          href={go(newer)}
           className={btn}
           aria-label={t("newer")}
           title={t("newerHint")}

@@ -241,6 +241,7 @@ model Account {
   fhbTickets                FhbTicket[]
   shopifyCarrierAliases     ShopifyCarrierAlias[]
   storeOrderTags            StoreOrderTag[]
+  carrierTrackingLinks      CarrierTrackingLink[]
 }
 
 model User {
@@ -2755,4 +2756,24 @@ model StoreOrderTag {
 
   @@unique([accountId, id])
   @@unique([accountId, storeId])
+}
+
+/// "Линкове за проследяване" (owner request 2026-11-09): the tracking link sent to Shopify for a courier, as a
+/// template with {tracking} for the number (e.g. https://tracking.dpd.ee/?parcel={tracking}). Without one the
+/// warehouse's own tracking link is sent, as before. Keyed by the courier name as the warehouse reports it.
+model CarrierTrackingLink {
+  id          String   @id @default(cuid())
+  accountId   String
+  /// The warehouse courier name, trimmed, lower case, single spaces.
+  carrierKey  String
+  carrierName String
+  urlTemplate String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, carrierKey])
 }
