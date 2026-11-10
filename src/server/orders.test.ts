@@ -2,7 +2,15 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { bootstrapOwner } from "@/server/auth/users";
 import { accountDb, systemDb } from "@/server/db/client";
 import { createCompany } from "@/server/companies";
-import { dashboardSummary, getOrder, listOrders, orderNeighbours, orderTabCounts } from "./orders";
+import {
+  dashboardSummary,
+  getOrder,
+  listOrders,
+  orderListQuery,
+  orderNeighbours,
+  orderTabCounts,
+  parseOrderListContext,
+} from "./orders";
 
 describe("orders read model", () => {
   let accountId: string;
@@ -111,5 +119,33 @@ describe("orders read model", () => {
       newer: null,
       older: null,
     });
+  });
+
+  it("J / K follow the list the order was opened from: its tab, filters and order; no cancelled ones otherwise", async () => {
+    const t0 = Date.UTC(2025, 5, 1);
+    const g1 = await mk(accountId, a, "L-1", "IMPORTED", { placedAt: new Date(t0), countryCode: "GR" });
+    const ro = await mk(accountId, a, "L-2", "IMPORTED", {
+      placedAt: new Date(t0 + 60_000),
+      countryCode: "RO",
+    });
+    const g3 = await mk(accountId, a, "L-3", "IMPORTED", {
+      placedAt: new Date(t0 + 120_000),
+      countryCode: "GR",
+    });
+    const cancelled = await mk(accountId, a, "L-4", "IMPORTED", {
+      placedAt: new Date(t0 + 180_000),
+      countryCode: "GR",
+    });
+    await accountDb(accountId).order.update({ where: { id: cancelled.id }, data: { status: "CANCELLED" } });
+    const all = { accountId, companyScope: null, activeCompanyId: null };
+    const gr = parseOrderListContext({ tab: "review", country: "gr" })!;
+    expect(orderListQuery(gr)).toBe("tab=review&country=gr");
+    // The Greek review list: L-2 (Romania) is skipped both ways.
+    expect((await orderNeighbours(all, g1.id, gr)).newer).toBe(g3.id);
+    expect((await orderNeighbours(all, g3.id, gr)).older).toBe(g1.id);
+    // Opened from elsewhere: a cancelled order is never a step.
+    expect((await orderNeighbours(all, g3.id)).newer).not.toBe(cancelled.id);
+    expect((await orderNeighbours(all, ro.id)).older).toBe(g1.id);
+    expect(parseOrderListContext({ tab: "nope" })).toBeNull();
   });
 });

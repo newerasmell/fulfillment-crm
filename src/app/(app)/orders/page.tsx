@@ -4,7 +4,14 @@ import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { ghostButtonCls, inputCls, tdCls, thCls } from "@/components/ui/form";
 import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
-import { isOrderTab, listOrders, ORDER_TABS, orderTabCounts, type OrderTab } from "@/server/orders";
+import {
+  isOrderTab,
+  listOrders,
+  ORDER_TABS,
+  orderTabCounts,
+  type OrderTab,
+  orderListQuery,
+} from "@/server/orders";
 import { listStores } from "@/server/stores";
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
@@ -36,6 +43,8 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     listStores(ctx, { includeArchived: true }),
   ]);
   const ts = await getTranslations("stores");
+  // Carried to the order page: its J / K and "back" stay in this list.
+  const listQuery = orderListQuery({ tab, ...filters });
   const href = (patch: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
     const merged = { tab, ...filters, store: filters.storeId, storeId: undefined, page: undefined, ...patch };
@@ -144,7 +153,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                       </td>
                       <td className={tdCls}>
                         <Link
-                          href={`/orders/${o.id}`}
+                          href={`/orders/${o.id}?${listQuery}`}
                           className="font-mono font-medium text-accent hover:underline"
                         >
                           {o.number}

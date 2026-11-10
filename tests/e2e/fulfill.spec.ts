@@ -93,6 +93,28 @@ test("unknown courier: the order asks for Shopify's carrier; the pick releases t
   await expect(wb).not.toContainText("чака потвърждение");
 });
 
+test("tracking links: a courier's link template with a live test link; saved for new tracking", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.getByRole("link", { name: "Линкове за проследяване" }).click();
+  await expect(page.getByRole("heading", { name: "Линкове за проследяване" })).toBeVisible();
+  const row = page.getByTestId("tracking-link-E2E Local Courier");
+  await expect(row).toBeVisible();
+  const input = row.getByRole("textbox");
+  await input.fill("https://courier.example/no-number");
+  await expect(row).toContainText("трябва да съдържа {tracking}");
+  await input.fill("https://courier.example/track?parcel={tracking}");
+  await expect(row.getByRole("link")).toHaveAttribute(
+    "href",
+    "https://courier.example/track?parcel=E2E-TRK-93005",
+  );
+  await row.getByRole("button", { name: "Запази" }).click();
+  await expect(row).toContainText("Запазено");
+  await page.screenshot({ path: "test-results/tracking-links.png", fullPage: true });
+});
+
 test("alerts and tasks: count on Начало, one list, take it, resolve with a note", async ({ page }) => {
   test.setTimeout(240_000);
   await login(page);
