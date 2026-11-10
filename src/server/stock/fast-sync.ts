@@ -59,6 +59,18 @@ async function fastSyncAccount(accountId: string, now: Date, enqueue?: Enqueue) 
   if (changed.length > FAST_SYNC_PRODUCTS)
     logger.warn({ accountId, since }, "fast stock sync: more changed products than one run takes");
   const productIds = changed.slice(0, FAST_SYNC_PRODUCTS).map((c) => c.productId!);
+  // Stores where an order changed: Shopify moved its own numbers there (sold, or given back by a cancel with
+  // "Restock"), so every line of those products is sent and the sender's read decides what differs.
+  const orderStores = new Set(
+    (
+      await db.order.findMany({
+        // Since the previous run only (no overlap): an order is a reason to re-read its store once, not every run.
+        where: { updatedAt: { gte: cursor?.lastRunAt ?? since }, storeId: { not: null } },
+        select: { storeId: true },
+        distinct: ["storeId"],
+      })
+    ).map((o) => o.storeId!),
+  );
   const queued: { accountId: string; pushId: string }[] = [];
   let blocked = false;
   if (productIds.length) {
@@ -81,6 +93,7 @@ async function fastSyncAccount(accountId: string, now: Date, enqueue?: Enqueue) 
         const r = await createInventoryPush(storeId, { kind: "system" }, now, {
           productIds: [...ids],
           reservations,
+          allLines: orderStores.has(storeId),
         });
         if (r.created && r.pushId) {
           const p = { accountId, pushId: r.pushId };
