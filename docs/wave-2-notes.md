@@ -156,7 +156,7 @@ DECISIONS
   - Before every send and every retry, the order's fulfillments are read back by tracking number; a match means done.
   - The mutation is sent with maxRetries: 0, because the existing ShopifyClient retries 5xx on every call.
   - Shopify graphql_error, auth_failed or userErrors → FAILED plus a task. Any other failure → read back; if that also fails → UNCERTAIN plus a CRITICAL task.
-  - One fulfillmentCreate only covers fulfillment orders at a single location; a shipment spanning several locations becomes an operator task (multiple_locations).
+  - One fulfillmentCreate only covers fulfillment orders at a single location. A shipment Shopify split over several locations (the parcel left one warehouse) is first moved with fulfillmentOrderMove to the location mapped to that warehouse, then fulfilled once (2026-11-10); no mapped location, no MOVE action or a refused move → operator task (multiple_locations: …).
   - Customer notification follows Store.notifyCustomer.
   - Each outcome is written as a FulfillmentEvent (source shopify.writeback) and to the audit log.
 - P4-08 Alerts and tasks (src/server/alerts, /alerts)

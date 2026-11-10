@@ -25,6 +25,11 @@ import { z } from "zod";
  *    read-back of those two (events newest first: carrier events can be many); scope read_orders (or a
  *    read_*_fulfillment_orders scope). A page with hasNextPage is an incomplete read-back (thrown, never "not
  *    there").
+ *  - fulfillmentOrderMove(id: ID!, newLocationId: ID!, fulfillmentOrderLineItems: [FulfillmentOrderLineItemInput!])
+ *    → FulfillmentOrderMovePayload {movedFulfillmentOrder{id status}, userErrors{field message}}; supported action
+ *    MOVE; scope write_merchant_managed_fulfillment_orders (owner report 2026-11-10: Shopify split an order over two
+ *    locations, the parcel left one warehouse). Moving to the location an item is already at is never asked: every
+ *    attempt reads first and moves only what is still elsewhere.
  * Neither mutation has an idempotency key: the fulfillment is read back (tracking number / event status present?)
  * before every send and retry.
  */
@@ -52,6 +57,7 @@ query FulfillmentWriteBackRead($id: ID!) {
           nodes { id remainingQuantity lineItem { id } }
         }
       }
+      pageInfo { hasNextPage }
     }
   }
 }`;
@@ -115,6 +121,8 @@ export const WriteBackReadSchema = z.object({
         z.object({ id: z.string(), status: z.string(), trackingInfo: z.array(TrackingInfo) }),
       ),
       fulfillmentOrders: z.object({
+        // Every partial move adds a fulfillment order: an incomplete page is never planned from (see readComplete).
+        pageInfo: z.object({ hasNextPage: z.boolean() }).optional(),
         nodes: z.array(
           z.object({
             id: z.string(),
@@ -142,6 +150,28 @@ export const FulfillmentCreateSchema = z.object({
   fulfillmentCreate: z
     .object({
       fulfillment: z.object({ id: z.string(), status: z.string() }).nullable(),
+      userErrors: z.array(z.object({ field: z.array(z.string()).nullable(), message: z.string() })),
+    })
+    .nullable(),
+});
+
+/**
+ * Moves fulfillment order lines to another location (Shopify: only merchant-managed locations, only open lines;
+ * fails if the location does not stock the item). Used before fulfilling a shipment Shopify split over several
+ * locations: the parcel left ONE warehouse, so its lines belong at that warehouse's location.
+ */
+export const FULFILLMENT_ORDER_MOVE_MUTATION = `#graphql
+mutation FulfillmentOrderMoveWriteBack($id: ID!, $newLocationId: ID!, $items: [FulfillmentOrderLineItemInput!]) {
+  fulfillmentOrderMove(id: $id, newLocationId: $newLocationId, fulfillmentOrderLineItems: $items) {
+    movedFulfillmentOrder { id status }
+    userErrors { field message }
+  }
+}`;
+
+export const FulfillmentOrderMoveSchema = z.object({
+  fulfillmentOrderMove: z
+    .object({
+      movedFulfillmentOrder: z.object({ id: z.string(), status: z.string() }).nullable(),
       userErrors: z.array(z.object({ field: z.array(z.string()).nullable(), message: z.string() })),
     })
     .nullable(),
@@ -397,6 +427,20 @@ export type PlanResult =
   | { ok: true; input: FulfillmentInput; lines: { lineItemId: string; quantity: number }[] }
   | { ok: false; reason: "order_not_found" | "nothing_to_fulfil" | "multiple_locations" | "lines_unmatched" };
 
+type FulfillmentOrderNode = NonNullable<WriteBackRead["order"]>["fulfillmentOrders"]["nodes"][number];
+
+/** Fulfillment orders at `location` first (stable otherwise): quantities are taken where the parcel left from. */
+const targetFirst = (fos: FulfillmentOrderNode[], location: string | null) =>
+  location
+    ? [
+        ...fos.filter((fo) => fo.assignedLocation.location?.id === location),
+        ...fos.filter((fo) => fo.assignedLocation.location?.id !== location),
+      ]
+    : fos;
+
+/** The read holds every fulfillment order of the order (one page): otherwise nothing may be planned from it. */
+export const readComplete = (read: WriteBackRead) => !read.order?.fulfillmentOrders.pageInfo?.hasNextPage;
+
 /** Fulfillment orders Shopify lets us fulfil now. */
 const fulfillable = (fo: NonNullable<WriteBackRead["order"]>["fulfillmentOrders"]["nodes"][number]) =>
   (fo.status === "OPEN" || fo.status === "IN_PROGRESS") &&
@@ -413,6 +457,8 @@ export function planFulfillment(
   lines: { shopifyLineGid: string; quantity: number }[],
   tracking: { number: string; company: string | null; url: string | null } | null,
   notifyCustomer: boolean,
+  /** The location of the warehouse the parcel left: its fulfillment orders are taken first. */
+  preferLocation: string | null = null,
 ): PlanResult {
   if (!read.order) return { ok: false, reason: "order_not_found" };
   const need = new Map<string, number>();
@@ -420,7 +466,7 @@ export function planFulfillment(
   if (need.size === 0) return { ok: false, reason: "lines_unmatched" };
   const byFo = new Map<string, { location: string | null; items: { id: string; quantity: number }[] }>();
   const planned = new Map<string, number>();
-  for (const fo of read.order.fulfillmentOrders.nodes.filter(fulfillable)) {
+  for (const fo of targetFirst(read.order.fulfillmentOrders.nodes.filter(fulfillable), preferLocation)) {
     for (const li of fo.lineItems.nodes) {
       const want = need.get(li.lineItem.id) ?? 0;
       const take = Math.min(want, li.remainingQuantity);
@@ -447,6 +493,44 @@ export function planFulfillment(
     },
     lines: [...planned].map(([lineItemId, quantity]) => ({ lineItemId, quantity })),
   };
+}
+
+export interface LocationMove {
+  fulfillmentOrderId: string;
+  items: { id: string; quantity: number }[];
+}
+
+/**
+ * The moves that put a shipment's open lines at `targetLocation` (pure): per fulfillment order assigned elsewhere
+ * that Shopify lets us move, the shipment's lines on it (never more than remains). Same matching as
+ * planFulfillment, so after the moves one fulfillmentCreate covers the shipment.
+ */
+export function planLocationMoves(
+  read: WriteBackRead,
+  lines: { shopifyLineGid: string; quantity: number }[],
+  targetLocation: string,
+): { ok: true; moves: LocationMove[] } | { ok: false; reason: "not_movable" } {
+  const need = new Map<string, number>();
+  for (const l of lines) need.set(l.shopifyLineGid, (need.get(l.shopifyLineGid) ?? 0) + l.quantity);
+  const moves: LocationMove[] = [];
+  // Target first: what already sits at the warehouse's location is taken there and never moved.
+  for (const fo of targetFirst(
+    read.order?.fulfillmentOrders.nodes.filter(fulfillable) ?? [],
+    targetLocation,
+  )) {
+    const items: { id: string; quantity: number }[] = [];
+    for (const li of fo.lineItems.nodes) {
+      const want = need.get(li.lineItem.id) ?? 0;
+      const take = Math.min(want, li.remainingQuantity);
+      if (take <= 0) continue;
+      need.set(li.lineItem.id, want - take);
+      items.push({ id: li.id, quantity: take });
+    }
+    if (!items.length || fo.assignedLocation.location?.id === targetLocation) continue;
+    if (!fo.supportedActions.some((a) => a.action === "MOVE")) return { ok: false, reason: "not_movable" };
+    moves.push({ fulfillmentOrderId: fo.id, items });
+  }
+  return { ok: true, moves };
 }
 
 /**
