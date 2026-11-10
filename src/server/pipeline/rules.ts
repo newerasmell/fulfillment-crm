@@ -74,7 +74,7 @@ export type TransitionCause =
   | "tag_added"
   /**
    * Противосаботаж: a person approves an order held for its quantity (QTY_HOLD) — it enters review from the start
-   * (or waits for its store's tag) and from then on reserves stock.
+   * (or waits for its store's tag) and from then on reserves stock; also by the import when the order gets paid in full.
    */
   | "qty_release";
 
@@ -227,7 +227,7 @@ export const RULES: readonly TransitionRule[] = [
   },
   { cause: "tag_missing", from: TAG_GATED_FROM, to: ["AWAITING_TAG"], actors: ["system", "user"] },
   { cause: "tag_added", from: ["AWAITING_TAG"], to: ["IMPORTED"], actors: ["system", "user"] },
-  { cause: "qty_release", from: ["QTY_HOLD"], to: ["IMPORTED", "AWAITING_TAG"], actors: ["user"] },
+  { cause: "qty_release", from: ["QTY_HOLD"], to: ["IMPORTED", "AWAITING_TAG"], actors: ["user", "system"] },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,

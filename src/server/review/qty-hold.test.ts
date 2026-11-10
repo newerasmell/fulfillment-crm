@@ -21,6 +21,9 @@ describe("Противосаботаж: quantity hold (database)", () => {
       ...base,
       id: `gid://shopify/Order/88${i}`,
       name: `#Q-${i}`,
+      // Cash on delivery (nothing paid yet): the guard applies.
+      paymentGatewayNames: ["Cash on Delivery (COD)"],
+      totalOutstandingSet: base.totalPriceSet,
       lineItems: {
         ...base.lineItems,
         nodes: base.lineItems.nodes.map((l) => ({ ...l, quantity: qty, currentQuantity: qty })),
@@ -89,6 +92,40 @@ describe("Противосаботаж: quantity hold (database)", () => {
       updatedAt: new Date(Date.parse(o.updatedAt) + 60_000).toISOString(),
     });
     expect(await status(id)).toBe("CANCELLED");
+    expect(await g.db.alert.count({ where: { kind: "order_qty_hold", entityId: id, status: "OPEN" } })).toBe(
+      0,
+    );
+  });
+
+  it("paid in full (card): never held, however many units; a held order that gets paid is released", async () => {
+    const paid = (o: ShopifyOrder): ShopifyOrder => ({
+      ...o,
+      paymentGatewayNames: ["shopify_payments"],
+      totalOutstandingSet: {
+        ...o.totalOutstandingSet,
+        shopMoney: { ...o.totalOutstandingSet.shopMoney, amount: "0.00" },
+      },
+    });
+    expect(await status(await imp(paid(order(100))))).toBe("IMPORTED");
+    // A free order proves nothing: still held.
+    const free = paid(order(20));
+    expect(
+      await status(
+        await imp({
+          ...free,
+          totalPriceSet: {
+            ...free.totalPriceSet,
+            shopMoney: { ...free.totalPriceSet.shopMoney, amount: "0.00" },
+          },
+        }),
+      ),
+    ).toBe("QTY_HOLD");
+    // Held (pending payment), then paid: released by the import, its task resolved.
+    const o = { ...order(30), paymentGatewayNames: ["shopify_payments"] };
+    const id = await imp(o);
+    expect(await status(id)).toBe("QTY_HOLD");
+    await imp({ ...paid(o), updatedAt: new Date(Date.parse(o.updatedAt) + 60_000).toISOString() });
+    expect(["IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY"]).toContain(await status(id));
     expect(await g.db.alert.count({ where: { kind: "order_qty_hold", entityId: id, status: "OPEN" } })).toBe(
       0,
     );
