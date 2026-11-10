@@ -158,3 +158,24 @@ test("alerts and tasks: count on Начало, one list, take it, resolve with a
   await page.goto("/settings/audit");
   await expect(page.getByRole("cell", { name: "alert.resolve" }).first()).toBeVisible();
 });
+
+test("missing items: tabs, expected item, confirm a ready order (tags go to Shopify via the outbox)", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.getByRole("link", { name: "Липсващи артикули" }).click();
+  await expect(page.getByRole("heading", { name: "Липсващи артикули", level: 1 })).toBeVisible();
+  const out = page.getByTestId("missing-stock-row").filter({ hasText: "#93101" });
+  await expect(out).toContainText("липсва");
+  await expect(out).toContainText("очакват се 5 бр.");
+  await expect(out.getByTestId("missing-stock-action")).toHaveText("Чака зареждане");
+  await page.screenshot({ path: "test-results/missing-stock-out.png", fullPage: true });
+  await page.getByRole("link", { name: /За потвърждение/ }).click();
+  const ready = page.getByTestId("missing-stock-row").filter({ hasText: "#93102" });
+  await expect(ready).toContainText("зареден отново");
+  await ready.getByTestId("missing-stock-action").click();
+  await expect(page.getByRole("status")).toContainText("Изпратено към Shopify: 1");
+  await expect(ready.getByTestId("missing-stock-write")).toContainText("Сменя се на Confirmed");
+  await page.screenshot({ path: "test-results/missing-stock-ready.png", fullPage: true });
+});

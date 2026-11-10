@@ -1,4 +1,5 @@
 import { runFastStockSync } from "./fast-sync";
+import { runStockWaitEvaluation } from "./waiting";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { ShopifyError } from "@/integrations/shopify/errors";
@@ -114,6 +115,11 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
   await boss.work(QUEUES.stockFastPush.name, opts, async () => {
     const queued = await runFastStockSync(new Date(), (p) => enqueueStock.push(boss, p));
     if (queued.length) logger.info({ pushes: queued.length }, "fast stock sync");
+  });
+
+  await boss.work(QUEUES.stockWaitEvaluate.name, opts, async () => {
+    const r = await runStockWaitEvaluation(new Date());
+    if (r.notified) logger.info(r, "missing-stock orders: notified");
   });
 
   await boss.work(QUEUES.stockInventoryPushSweep.name, opts, async () => {

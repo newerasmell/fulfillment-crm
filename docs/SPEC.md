@@ -131,7 +131,8 @@ Every business table carries `accountId` and every query is scoped by it (enforc
   organisation; tokens are short-lived, refresh every ~24h). Stores in another organisation need the
   authorization-code flow instead. Verify the current flow in Shopify docs at build time.
 - Scopes (confirm against current docs): `read_orders`, `read_products`, `read_inventory`,
-  `write_inventory`, `read_locations`, `read_merchant_managed_fulfillment_orders`,
+  `write_inventory`, `read_locations`, `read_merchant_managed_fulfillment_orders`, `write_orders` (order tags,
+  "Липсващи артикули", 2026-11-10),
   `write_merchant_managed_fulfillment_orders`, `read_fulfillments`, `write_fulfillments`, `read_customers`.
   Request **protected customer data** access (name, address, phone, email) in the app configuration,
   otherwise addresses come back empty.

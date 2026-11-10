@@ -5,6 +5,8 @@
  */
 export const REQUIRED_SCOPES = [
   "read_orders",
+  // Order tags (out_of_stock → waiting_for_stock → Confirmed, "Липсващи артикули"); write_ includes read_.
+  "write_orders",
   "read_customers",
   "read_products",
   "write_products",

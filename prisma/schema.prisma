@@ -220,6 +220,8 @@ model Account {
   eushipmentsStatusMappings EushipmentsStatusMapping[]
   fulfillBatches            FulfillBatch[]
   shopifyWriteBacks         ShopifyWriteBack[]
+  orderStockWaits           OrderStockWait[]
+  shopifyTagWrites          ShopifyTagWrite[]
   alertNotes                AlertNote[]
   alertNotifications        AlertNotification[]
   reviewReasonCodes         ReviewReasonCode[]
@@ -453,6 +455,7 @@ model Store {
   variantLinks         StoreVariantLink[]
   orders               Order[]
   writeBacks           ShopifyWriteBack[]
+  tagWrites            ShopifyTagWrite[]
   locations            StoreLocation[]
   inventoryLevels      ShopifyInventoryLevel[]
   inventoryPushes      InventoryPush[]
@@ -810,6 +813,8 @@ model Order {
   check             OrderCheck?
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
+  stockWait         OrderStockWait?
+  tagWrites         ShopifyTagWrite[]
   warehouseChoice   OrderWarehouseChoice?
   codOverride       OrderCodOverride?
   reroutes          OrderReroute[]
@@ -2818,4 +2823,68 @@ model StockSyncCursor {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, id])
+}
+
+/// "Липсващи артикули" (owner request 2026-11-10): an order tagged out_of_stock / waiting_for_stock in Shopify,
+/// followed until its missing lines are back in stock. The row exists while the order carries one of the two tags
+/// and is not sent to a warehouse; the state is recomputed by a cron (stock, open inbound requests).
+model OrderStockWait {
+  id                String    @id @default(cuid())
+  accountId         String
+  orderId           String
+  /// The Shopify tag the order carries: "out_of_stock" or "waiting_for_stock" (matched case-insensitively).
+  stage             String
+  /// OUT_OF_STOCK · WAITING (nothing back yet) · PARTIAL (some missing lines back) · READY (all in one warehouse).
+  state             String    @default("OUT_OF_STOCK")
+  /// The lines missing when the order entered the flow (or turned waiting_for_stock): "Частично налични" counts these.
+  missingLineIds    String[]
+  /// Every missing line is in an open inbound request (out_of_stock: the "Чака зареждане" button is offered).
+  expected          Boolean   @default(false)
+  /// The warehouse that can ship the whole order now (READY).
+  readyConnectionId String?
+  /// Per line, for the page: available where, or which inbound requests bring it.
+  detail            Json?
+  /// The state a task was last opened for (each state is notified once until it changes).
+  notifiedState     String?
+  evaluatedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderId])
+  @@index([accountId, state])
+}
+
+/// Tag change of one Shopify order (tagsRemove + tagsAdd), sent by the worker; gated by Store.writeBackMode at send
+/// time like every Shopify write (READ_ONLY: REFUSED, DRY_RUN: recorded, LIVE: sent). Both mutations are idempotent.
+model ShopifyTagWrite {
+  id            String          @id @default(cuid())
+  accountId     String
+  storeId       String
+  orderId       String
+  add           String[]
+  remove        String[]
+  status        OutboundStatus  @default(PENDING)
+  evaluatedMode StoreWriteMode?
+  /// {mutation, variables}: what DRY_RUN would send / what LIVE sent.
+  request       Json?
+  attempts      Int             @default(0)
+  lastError     String?
+  lockedAt      DateTime?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+  createdById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  store   Store   @relation(fields: [accountId, storeId], references: [accountId, id], onDelete: NoAction)
+  order   Order   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId])
+  @@index([status, nextAttemptAt])
 }

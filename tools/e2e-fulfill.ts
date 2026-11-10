@@ -249,6 +249,80 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       lines: { create: [{ title: "Синтетична тениска", quantity: 20, unitPrice: "10.00" }] },
     },
   });
+  // "Липсващи артикули": a store that records Shopify writes as a test (DRY_RUN), one order still out of stock
+  // (its item expected in an open inbound request) and one whose items are back (to confirm).
+  const msStore = await db.store.create({
+    data: {
+      accountId,
+      companyId,
+      domain: "e2e-missing-stock.myshopify.com",
+      code: "MS",
+      name: "Липси Магазин",
+      currency: "EUR",
+      writeBackMode: "DRY_RUN",
+      connectionStatus: { ok: true, scopes: ["read_orders", "write_orders"] },
+    },
+  });
+  const waitLine = (lineId: string, available: boolean, wasMissing: boolean | null) => ({
+    lineId,
+    title: "Синтетична тениска черна M",
+    sku: "E2E-TEE-M",
+    quantity: 1,
+    unlinked: false,
+    available,
+    wasMissing,
+    expected: available
+      ? []
+      : [{ connectionId: connection.id, remaining: 5, expectedAt: null, inboundId: "e2e-inbound" }],
+  });
+  for (const [n, state, tag] of [
+    ["#93101", "OUT_OF_STOCK", "out_of_stock"],
+    ["#93102", "READY", "waiting_for_stock"],
+  ] as const) {
+    const o = await db.order.create({
+      data: {
+        accountId,
+        companyId,
+        source: "SHOPIFY",
+        storeId: msStore.id,
+        shopifyOrderGid: `gid://shopify/Order/${n.slice(1)}`,
+        number: n,
+        status: "AWAITING_TAG",
+        customerName: "Тест Получател",
+        currency: "EUR",
+        subtotal: "20.00",
+        total: "20.00",
+        paymentMethod: "COD",
+        countryCode: "BG",
+        placedAt: new Date(),
+        tags: [tag],
+        raw: { tags: [tag] },
+        lines: {
+          create: [
+            { productId: product.id, title: "Синтетична тениска черна M", quantity: 1, unitPrice: "20.00" },
+          ],
+        },
+      },
+      include: { lines: true },
+    });
+    const ready = state === "READY";
+    await db.orderStockWait.create({
+      data: {
+        accountId,
+        orderId: o.id,
+        stage: tag,
+        state,
+        expected: !ready,
+        readyConnectionId: ready ? connection.id : null,
+        missingLineIds: ready ? [o.lines[0]!.id] : [],
+        detail: {
+          connectionId: connection.id,
+          lines: [waitLine(o.lines[0]!.id, ready, ready ? true : null)],
+        },
+        evaluatedAt: new Date(),
+      },
+    });
+  }
   // An open task of the kind the Shopify import raises after approval (alerts screen, P4-08).
   await db.alert.create({
     data: {

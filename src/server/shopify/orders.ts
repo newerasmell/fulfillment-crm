@@ -23,6 +23,7 @@ import {
 } from "@/server/pipeline";
 import { matchBySku } from "./products";
 import { checkStockGuard } from "@/server/stock/guard-check";
+import { syncStockWait } from "@/server/stock/waiting";
 import { hasStoreTag } from "./order-tag-match";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -411,6 +412,8 @@ export async function importShopifyOrder(
           mode: "follow",
         });
       }
+      // "Липсващи артикули": an out_of_stock / waiting_for_stock tag starts (or a removed one ends) following it.
+      await syncStockWait(tx, accountId, orderId);
       return { orderId, outcome };
     },
     IMPORT_TX,
