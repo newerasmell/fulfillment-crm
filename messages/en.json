@@ -3765,6 +3765,7 @@
     "error": {
       "stock_wait_nothing_to_do": "Nothing to change (already changed, another change is on its way, or the order is not in this tab).",
       "forbidden": "You are not allowed to do this."
-    }
+    },
+    "withoutTags": "without {tags}"
   }
 }

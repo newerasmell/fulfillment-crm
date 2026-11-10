@@ -21,7 +21,7 @@ export interface StockWaitRow {
   readyConnectionId: string | null;
   lines: WaitLineDetail[];
   evaluated: boolean;
-  lastWrite: { status: string; add: string[]; lastError: string | null } | null;
+  lastWrite: { status: string; add: string[]; remove: string[]; lastError: string | null } | null;
 }
 
 const OPEN_WRITE = new Set(["PENDING", "SENDING", "PAUSED"]);
@@ -195,7 +195,11 @@ export function StockWaitList({
                     {r.storeMode === "READ_ONLY" && <div className="text-warn">{t("readOnly")}</div>}
                     {r.lastWrite && (
                       <div data-testid="missing-stock-write">
-                        {t(`write.${r.lastWrite.status}`, { tags: r.lastWrite.add.join(", ") })}
+                        {t(`write.${r.lastWrite.status}`, {
+                          tags: r.lastWrite.add.length
+                            ? r.lastWrite.add.join(", ")
+                            : t("withoutTags", { tags: r.lastWrite.remove.join(", ") }),
+                        })}
                         {r.lastWrite.status === "FAILED" && r.lastWrite.lastError && (
                           <div className="text-xs text-block">{r.lastWrite.lastError}</div>
                         )}

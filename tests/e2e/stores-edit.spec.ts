@@ -21,7 +21,9 @@ test("stores: edit details, warehouse prefix, locked domain, archive + restore, 
   // Adding a store: the Dev Dashboard "Create version" screen field by field, with the values to copy.
   const guide = page.getByTestId("shopify-setup-guide").first();
   await expect(guide).toContainText("API access → Scopes");
-  await expect(guide.getByTestId("copy-value-Scopes")).toContainText("read_orders,read_customers");
+  await expect(guide.getByTestId("copy-value-Scopes")).toContainText(
+    "read_orders,write_orders,read_customers",
+  );
   await expect(guide.getByTestId("copy-value-Webhooks API version")).toHaveText("2026-10");
   await page.screenshot({ path: "test-results/shopify-setup-guide.png", fullPage: true });
   // A wrong field keeps what was typed and says which field (the site's own domain instead of *.myshopify.com).

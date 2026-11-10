@@ -58,7 +58,12 @@ export default async function MissingStockPage({
               lines: r.detail.lines,
               evaluated: !!r.evaluatedAt,
               lastWrite: r.lastWrite
-                ? { status: r.lastWrite.status, add: r.lastWrite.add, lastError: r.lastWrite.lastError }
+                ? {
+                    status: r.lastWrite.status,
+                    add: r.lastWrite.add,
+                    remove: r.lastWrite.remove,
+                    lastError: r.lastWrite.lastError,
+                  }
                 : null,
             }))}
           />

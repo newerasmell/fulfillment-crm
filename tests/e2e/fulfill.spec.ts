@@ -115,7 +115,7 @@ test("tracking links: a courier's link template with a live test link; saved for
   await page.screenshot({ path: "test-results/tracking-links.png", fullPage: true });
 });
 
-test("anti-sabotage: a held order under Подозрителни is approved; the stock sync page lists the groups", async ({
+test("anti-sabotage: a held order under Подозрителни is cancelled; the stock sync page lists the groups", async ({
   page,
 }) => {
   test.setTimeout(240_000);
@@ -126,7 +126,9 @@ test("anti-sabotage: a held order under Подозрителни is approved; th
   await expect(hold).toContainText("20 бр. общо");
   await page.screenshot({ path: "test-results/qty-hold.png", fullPage: false });
   page.once("dialog", (d) => d.accept());
-  await hold.getByRole("button", { name: "Одобри (блокирай бройките)" }).click();
+  // Cancelled (approving is covered by the unit tests): an approved order would change the review counts the
+  // Shopify spec checks later in the same run.
+  await hold.getByRole("button", { name: "Откажи поръчката" }).click();
   await expect(hold).toHaveCount(0, { timeout: 30_000 });
   await page.getByRole("link", { name: "Синхронизация на наличности" }).click();
   await expect(page.getByRole("heading", { name: "Синхронизация на наличности" })).toBeVisible();

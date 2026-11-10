@@ -444,7 +444,7 @@ export async function stockWaitOverview(actor: ScopedActor, tab: StockWaitTab) {
             tagWrites: {
               orderBy: { createdAt: "desc" },
               take: 1,
-              select: { status: true, add: true, lastError: true, createdAt: true },
+              select: { status: true, add: true, remove: true, lastError: true, createdAt: true },
             },
           },
         },

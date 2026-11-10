@@ -263,6 +263,7 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       connectionStatus: { ok: true, scopes: ["read_orders", "write_orders"] },
     },
   });
+  await db.storeOrderTag.create({ data: { accountId, storeId: msStore.id, tag: "Confirmed" } });
   const waitLine = (lineId: string, available: boolean, wasMissing: boolean | null) => ({
     lineId,
     title: "Синтетична тениска черна M",
