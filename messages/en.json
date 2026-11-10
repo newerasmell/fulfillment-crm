@@ -3683,7 +3683,7 @@
       "perOrder": "Max units in an order",
       "save": "Save",
       "saved": "Saved — applies to new orders.",
-      "hint": "An order above either limit is held in Suspicious and blocks no units until you approve it. Empty = no such limit.",
+      "hint": "An order above either limit is held in Suspicious and blocks no units until you approve it. Orders paid in full (card etc.) are never held, and a held order that gets paid is released automatically. Empty = no such limit.",
       "error": {
         "guard_needs_limit": "Set at least one limit to turn it on.",
         "forbidden": "You may not do this.",

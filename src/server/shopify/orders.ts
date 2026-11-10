@@ -54,6 +54,11 @@ export function normaliseAddress(a: Address | null | undefined) {
   };
 }
 
+/** Paid in full: nothing outstanding on an order that costs something (a free order proves nothing). Pure. */
+export function paidInFull(outstanding: number, total: number) {
+  return Number.isFinite(outstanding) && Number.isFinite(total) && total > 0 && outstanding <= 0;
+}
+
 export function isCod(gateways: string[], codGateways: string[]) {
   const cod = new Set(codGateways.map((g) => g.trim().toLowerCase()));
   return gateways.some((g) => cod.has(g.trim().toLowerCase()));
@@ -217,6 +222,9 @@ export async function importShopifyOrder(
       const codGateway = isCod(o.paymentGatewayNames, store.codGateways);
       const outstanding = Number(money(o.totalOutstandingSet));
       const cod = codGateway && outstanding > 0;
+      // Fully paid (card, PayPal…: nothing outstanding on a non-free order): never held by the anti-sabotage guard
+      // (owner request 2026-11-10) — a fake order does not pay.
+      const paidUp = paidInFull(outstanding, Number(money(o.totalPriceSet)));
       const shipping = normaliseAddress(o.shippingAddress);
       const customerName =
         shipping?.name ?? ([o.customer?.firstName, o.customer?.lastName].filter(Boolean).join(" ") || null);
@@ -280,12 +288,13 @@ export async function importShopifyOrder(
         // Already fulfilled in Shopify when we first see it (history, or shipped by hand): nothing to review.
         // Противосаботаж: more units than the store's product line allows → held, reserves nothing (other stores
         // keep selling) until a person approves or cancels it.
-        const guard = store.companyId
-          ? await tx.lineStockGuard.findFirst({
-              where: { accountId, line: { companies: { some: { id: store.companyId } } } },
-              select: { enabled: true, maxPerProduct: true, maxPerOrder: true },
-            })
-          : null;
+        const guard =
+          store.companyId && !paidUp
+            ? await tx.lineStockGuard.findFirst({
+                where: { accountId, line: { companies: { some: { id: store.companyId } } } },
+                select: { enabled: true, maxPerProduct: true, maxPerOrder: true },
+              })
+            : null;
         // Counted per master product (two variants of one product count together), else per Shopify variant.
         const variantIds = o.lineItems.nodes.map((l) => l.variant?.id).filter((v): v is string => !!v);
         const masters = guard?.enabled
@@ -347,6 +356,18 @@ export async function importShopifyOrder(
               : { to: "FULFILLED_EXTERNALLY" as const, cause: "shopify_fulfilled" as const }),
             actor: { kind: "system" },
             source: "shopify.import",
+          });
+        }
+        // Held for its quantity and now paid in full: released like a person's approval (it starts over).
+        if (existing.status === "QTY_HOLD" && paidUp && !o.cancelledAt && !shopifyFulfilled(o)) {
+          await transition(tx, {
+            orderId: existing.id,
+            to: tagged ? "IMPORTED" : "AWAITING_TAG",
+            cause: "qty_release",
+            actor: { kind: "system" },
+            source: "shopify.import",
+            reason: "paid in full",
+            mode: "follow",
           });
         }
         orderId = existing.id;

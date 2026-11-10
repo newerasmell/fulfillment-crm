@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import { Prisma, type OutboundStatus, type ShopifyWriteBackKind } from "@/generated/prisma/client";
 import { ShopifyClient, type ShopifyClientOptions } from "@/integrations/shopify/client";
 import { ShopifyError } from "@/integrations/shopify/errors";
@@ -16,6 +17,10 @@ import {
   isDefiniteGraphqlRejection,
   newFulfillments,
   planFulfillment,
+  planLocationMoves,
+  readComplete,
+  FULFILLMENT_ORDER_MOVE_MUTATION,
+  FulfillmentOrderMoveSchema,
   sameLines,
   trackingInput,
   WRITE_BACK_READ_QUERY,
@@ -171,6 +176,8 @@ async function reviewHeldRows() {
   for (const [accountId, orders] of touched) await resolveCarrierTasks(accountId, orders);
 }
 const NOT_IN_SHOPIFY = "fulfillment_not_in_shopify";
+/** lastError of a FULFIL row failed on a split order before the location moves (re-armed once by the sweep). */
+const MULTIPLE_LOCATIONS_LEGACY = "multiple_locations";
 const ORPHANED = "shipment_cancelled_after_fulfil";
 /** A shipment that will never be sent again (cancelled at the warehouse or re-routed away). */
 const goneShipment = {
@@ -284,7 +291,7 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
         s.orderId,
         "shopify_writeback_uncertain",
         `${WHAT[s.kind]}: unknown result — check the order in Shopify before doing anything`,
-        `The worker stopped during ${MUTATION_NAME[s.kind]}.`,
+        `The worker stopped during ${s.kind === "FULFIL" ? "fulfillmentOrderMove or fulfillmentCreate" : MUTATION_NAME[s.kind]}.`,
         "CRITICAL",
       );
       await event(s, "uncertain", {
@@ -437,6 +444,44 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
     },
     data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null },
   });
+  // FULFIL rows failed because Shopify split the order over several locations, from before such shipments were moved
+  // to their warehouse's location: due once more (every failure since then carries a longer reason, so never again).
+  const splitRows = await db.shopifyWriteBack.findMany({
+    where: {
+      status: "FAILED",
+      kind: "FULFIL",
+      lastError: MULTIPLE_LOCATIONS_LEGACY,
+      createdAt: { gte: since },
+      store: { writeBackMode: "LIVE" },
+    },
+    select: { id: true, accountId: true, orderId: true },
+    take: limit,
+  });
+  let rearmedSplit = 0;
+  for (const r of splitRows) {
+    const moved = await db.shopifyWriteBack.updateMany({
+      where: { id: r.id, status: "FAILED", lastError: MULTIPLE_LOCATIONS_LEGACY },
+      data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null },
+    });
+    if (moved.count !== 1) continue;
+    rearmedSplit++;
+    // Its "needs an operator" task (one per order): the row is being handled again (a new failure opens a new
+    // one) — unless another row of the order is still failed and needs it.
+    const otherFailed = await db.shopifyWriteBack.count({
+      where: { accountId: r.accountId, orderId: r.orderId, status: "FAILED", id: { not: r.id } },
+    });
+    if (otherFailed) continue;
+    await db.alert.updateMany({
+      where: {
+        accountId: r.accountId,
+        kind: "shopify_writeback_failed",
+        entityType: "Order",
+        entityId: r.orderId,
+        status: { not: "RESOLVED" },
+      },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+  }
   const ready = await db.shopifyWriteBack.findMany({
     where: {
       OR: [
@@ -450,7 +495,7 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
   });
   return {
     created,
-    rearmed: rearmed.count + rearmedDependents.count,
+    rearmed: rearmed.count + rearmedDependents.count + rearmedSplit,
     stale: stale.length,
     ready: ready.map((r) => r.id),
   };
@@ -765,7 +810,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
           ? await prepareTracking(ctx)
           : await prepareEvent(ctx);
   } catch (err) {
-    // Only reads happened: nothing was sent, try again later.
+    // Only reads (and location moves, which every attempt re-reads before repeating) happened: try again later.
     return retryLater(`read failed: ${scrubText((err as Error).message)}`);
   }
   if (prepared.kind === "final") return prepared.status;
@@ -871,6 +916,109 @@ interface ReadBackKey {
   lines: { lineItemId: string; quantity: number }[];
 }
 
+/**
+ * Moves the shipment's open lines to the Shopify location mapped to the warehouse it left from, then reads the order
+ * again. Moves never create anything a customer sees and are safe to repeat: every attempt reads first and moves
+ * only lines still assigned elsewhere (the warehouse's location is always taken from first). Each move is recorded
+ * on the row before it is sent and as an event after, so a later failure shows what Shopify already changed.
+ * DRY_RUN records the moves and the fulfillment that would follow. A move Shopify refuses (e.g. the location does
+ * not stock an item) leaves the row to an operator, as before.
+ */
+async function moveToShipmentLocation(
+  ctx: KindContext,
+  read: WriteBackRead,
+  lines: { shopifyLineGid: string; quantity: number }[],
+  targetLocation: string | null,
+  planAfter: (r: WriteBackRead) => ReturnType<typeof planFulfillment>,
+  /** The read-back key of an earlier send without tracking: kept on the row through every move record. */
+  readBack: ReadBackKey | null,
+): Promise<Prepared | { kind: "moved"; read: WriteBackRead }> {
+  if (!targetLocation) return final(await ctx.failVisibly("multiple_locations: no_location_for_warehouse"));
+  const planned = planLocationMoves(read, lines, targetLocation);
+  if (!planned.ok) return final(await ctx.failVisibly(`multiple_locations: ${planned.reason}`));
+  if (!planned.moves.length) return final(await ctx.failVisibly("multiple_locations: nothing_to_move"));
+  const record = (done: number) => ({
+    mutation: FULFILLMENT_ORDER_MOVE_MUTATION,
+    newLocationId: targetLocation,
+    moves: planned.moves,
+    done,
+    ...(readBack ? { readBack } : {}),
+  });
+  if (ctx.mode === "DRY_RUN") {
+    // The fulfillment that would follow, as if Shopify had moved the lines (shown for review, never sent).
+    const after = structuredClone(read);
+    const moved = new Set(planned.moves.map((m) => m.fulfillmentOrderId));
+    for (const fo of after.order?.fulfillmentOrders.nodes ?? [])
+      if (moved.has(fo.id)) fo.assignedLocation = { location: { id: targetLocation } };
+    const then = planAfter(after);
+    const payload = {
+      ...record(0),
+      then: then.ok
+        ? { mutation: FULFILLMENT_CREATE_MUTATION, variables: { fulfillment: then.input } }
+        : then,
+    };
+    const status = await ctx.finalize({ request: json(payload) }, "DRY_RUN_RECORDED");
+    if (status === "DRY_RUN_RECORDED") await event(ctx.row, "dry_run", payload);
+    return final(status);
+  }
+  const db = systemDb();
+  let done = 0;
+  for (const m of planned.moves) {
+    await db.shopifyWriteBack.updateMany({
+      where: { id: ctx.row.id, status: "SENDING" },
+      data: { request: json(record(done)) },
+    });
+    let answer: z.infer<typeof FulfillmentOrderMoveSchema>;
+    try {
+      answer = await ctx.writer.query(
+        FULFILLMENT_ORDER_MOVE_MUTATION,
+        { id: m.fulfillmentOrderId, newLocationId: targetLocation, items: m.items },
+        FulfillmentOrderMoveSchema,
+      );
+    } catch (err) {
+      // Rejected before it ran (no access, a bad document): an operator decides. Anything else may have moved:
+      // the caller retries later, and that attempt reads first and moves only what is still elsewhere.
+      if (
+        err instanceof ShopifyError &&
+        (err.code === "auth_failed" ||
+          (err.code === "graphql_error" && isDefiniteGraphqlRejection(err.graphqlCodes)))
+      )
+        return final(
+          await ctx.failVisibly(
+            `multiple_locations: move rejected (${done} of ${planned.moves.length} moved): ${scrubText((err as Error).message)}`,
+          ),
+        );
+      throw err;
+    }
+    const errs = answer.fulfillmentOrderMove?.userErrors ?? [];
+    if (!answer.fulfillmentOrderMove || errs.length)
+      return final(
+        await ctx.failVisibly(
+          `multiple_locations: move refused (${done} of ${planned.moves.length} moved): ${scrubText(userErrorText(errs) ?? "no answer")}`,
+          answer,
+        ),
+      );
+    done++;
+    await event(ctx.row, "moved", {
+      fulfillmentOrderId: m.fulfillmentOrderId,
+      newLocationId: targetLocation,
+      items: m.items,
+      movedFulfillmentOrder: answer.fulfillmentOrderMove.movedFulfillmentOrder,
+    });
+  }
+  await db.shopifyWriteBack.updateMany({
+    where: { id: ctx.row.id, status: "SENDING" },
+    data: { request: json(record(done)) },
+  });
+  logger.info(
+    { writeBackId: ctx.row.id, moves: done },
+    "shopify fulfillment orders moved to the shipment's location",
+  );
+  const again = await readOrder(ctx.reader, read.order!.id);
+  if (!readComplete(again)) throw new Error("the order has more fulfillment orders than one read page");
+  return { kind: "moved", read: again };
+}
+
 /** FULFIL: fulfillmentCreate for this shipment's lines (with tracking when the row has it). */
 async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
   const db = systemDb();
@@ -881,6 +1029,7 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
       where: { id: row.fulfillmentId },
       select: {
         carrier: true,
+        connectionId: true,
         trackingNumbers: true,
         trackingUrls: true,
         lines: { select: { quantity: true, orderLine: { select: { shopifyLineGid: true } } } },
@@ -889,6 +1038,8 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
   ]);
   const read = () => readOrder(ctx.reader, order.shopifyOrderGid);
   const before = await read();
+  // Lines on a fulfillment order beyond the page would be missed (a partial fulfillment marked SENT, or no move).
+  if (!readComplete(before)) throw new Error("the order has more fulfillment orders than one read page");
   const tn = row.trackingNumber;
   const lines = shipment.lines
     .filter((l) => l.orderLine.shopifyLineGid)
@@ -962,24 +1113,47 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
       shipment.trackingUrls[shipment.trackingNumbers.indexOf(tn)] ??
       shipment.trackingUrls[0])
     : null;
-  const plan = planFulfillment(
-    before,
-    lines,
-    tn
-      ? {
-          number: tn,
-          company: (await shopifyCompanyFor(db, row.accountId, shipment.carrier)) ?? shipment.carrier,
-          url: url ?? null,
-        }
-      : null,
-    // No shipping e-mail without a tracking number; the TRACKING update notifies later.
-    tn ? ctx.notifyCustomer : false,
-  );
+  const tracking = tn
+    ? {
+        number: tn,
+        company: (await shopifyCompanyFor(db, row.accountId, shipment.carrier)) ?? shipment.carrier,
+        url: url ?? null,
+      }
+    : null;
+  // No shipping e-mail without a tracking number; the TRACKING update notifies later.
+  // The Shopify location of the warehouse the parcel left (at most one per store and warehouse).
+  const targetLocation =
+    (
+      await db.storeLocation.findFirst({
+        where: {
+          accountId: row.accountId,
+          storeId: row.storeId,
+          connectionId: shipment.connectionId,
+          isActive: true,
+        },
+        select: { shopifyLocationGid: true },
+      })
+    )?.shopifyLocationGid ?? null;
+  const planNow = (r: WriteBackRead) =>
+    planFulfillment(r, lines, tracking, tn ? ctx.notifyCustomer : false, targetLocation);
+  let current = before;
+  let plan = planNow(current);
+  // Shopify split the order over several locations, but the parcel left ONE warehouse: its lines are moved to that
+  // warehouse's location first (owner report 2026-11-10), then one fulfillmentCreate covers the shipment.
+  if (!plan.ok && plan.reason === "multiple_locations") {
+    const moved = await moveToShipmentLocation(ctx, current, lines, targetLocation, planNow, prior);
+    if (moved.kind !== "moved") return moved;
+    current = moved.read;
+    plan = planNow(current);
+    // Shopify's read may lag the move: the next attempt plans again from a fresh read (never the bare reason, which
+    // the sweep re-arms; after the last attempt an operator task).
+    if (!plan.ok) return final(await ctx.retryLater(`${plan.reason}: after_move`));
+  }
   if (!plan.ok) return final(await ctx.failVisibly(plan.reason));
   const key: ReadBackKey | null = tn
     ? null
     : (prior ?? {
-        knownFulfillmentIds: (before.order?.fulfillments ?? []).map((f) => f.id),
+        knownFulfillmentIds: (current.order?.fulfillments ?? []).map((f) => f.id),
         lines: plan.lines,
       });
   const request = json({
@@ -1238,7 +1412,7 @@ async function prepareEvent(ctx: KindContext): Promise<Prepared> {
 /** Timeline + audit entry for every write-back outcome that matters (INTEGRATION_NOTES §6). */
 async function event(
   row: RowRef,
-  what: "sent" | "dry_run" | "already_sent" | "failed" | "uncertain" | "refused",
+  what: "sent" | "dry_run" | "already_sent" | "failed" | "uncertain" | "refused" | "moved",
   payload: unknown,
 ) {
   await systemDb().fulfillmentEvent.create({

@@ -1225,6 +1225,75 @@ describe("fast stock sync and the anti-sabotage hold", () => {
     expect(await targetOf(g, gid)).toBe(3);
   });
 
+  it("cancel with Restock in the order's own store: Shopify's number moved under our copy, the fast push still corrects it", async () => {
+    const g = await group("fast-restock");
+    await g.db.store.update({ where: { id: g.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const p = await g.product("RST-1");
+    const other = await g.product("RST-2");
+    await g.vp(g.fhb.id, p.id, "R-RST-1", { physical: 9, free: 9 });
+    await g.vp(g.fhb.id, other.id, "R-RST-2", { physical: 9, free: 9 });
+    await mapped(g, p.id, g.fhb.id, 8, 8701);
+    // Another open order (no check yet) keeps one unit reserved: the CRM's number is 8, and our copy says 8.
+    await order(g, other.id, 1, "IMPORTED", null);
+    await g.db.order.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        storeId: g.store.id,
+        source: "MANUAL",
+        number: "M-RST-OPEN",
+        status: "IMPORTED",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "PREPAID",
+        placedAt: new Date(),
+        lines: { create: [{ productId: p.id, title: "x", quantity: 1, unitPrice: 1 }] },
+      },
+    });
+    await runFastStockSync(new Date(Date.now() - 5 * 60_000));
+    await g.db.inventoryPush.updateMany({ where: { storeId: g.store.id }, data: { status: "SENT" } });
+    // A test order of this store is cancelled in Shopify with "Restock": Shopify gives the unit back itself (9),
+    // our copy still says 8, and the CRM's number stays 8 (the other order still holds one).
+    const cancelled = await g.db.order.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        storeId: g.store.id,
+        source: "MANUAL",
+        number: "M-RST-CXL",
+        status: "CANCELLED",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "PREPAID",
+        placedAt: new Date(),
+        lines: { create: [{ productId: p.id, title: "x", quantity: 1, unitPrice: 1 }] },
+      },
+    });
+    expect(cancelled.status).toBe("CANCELLED");
+    let available = 9;
+    const shop = fakeShopify({
+      InventoryReadBack: () => ({
+        nodes: [
+          {
+            id: "x",
+            tracked: true,
+            inventoryLevel: { quantities: [{ name: "available", quantity: available }] },
+          },
+        ],
+      }),
+      InventoryPush: (vars) => {
+        available = (vars.input as { quantities: { quantity: number }[] }).quantities[0]!.quantity;
+        return { inventorySetQuantities: { inventoryAdjustmentGroup: { id: "gid://x/2" }, userErrors: [] } };
+      },
+    });
+    const mine = (await runFastStockSync(new Date())).filter((q) => q.accountId === g.accountId);
+    expect(mine).toHaveLength(1);
+    expect(await processInventoryPush(mine[0]!.pushId, shop.clients)).toBe("SENT");
+    expect(available).toBe(8);
+  });
+
   it("reservations for a few products equal the full read for them", async () => {
     const g = await group("fast-resv");
     const a = await g.product("FR-A");

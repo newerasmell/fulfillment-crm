@@ -367,6 +367,12 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   Migration 20261110100000 (enum value, LineStockGuard, StockSyncCursor, index Order(accountId, updatedAt); additive).
   Not covered by the fast sync (the 10-minute push covers them): a line removed from an order, a relinked product, a
   new warehouse snapshot, more than 3000 changed products in one run.
+- 2026-11-10 follow-ups (live test): paid-in-full orders (nothing outstanding, total > 0) are never quantity-held, and
+  a held order that gets paid is released by the import; the fast sync sends every line of the changed products to
+  stores where an order changed (Shopify moved its own number there: a sale, a cancel with "Restock"), the sender's
+  read deciding what differs. Shopify write-back of a shipment Shopify split over several locations: its lines are
+  moved (fulfillmentOrderMove) to the location mapped to the warehouse the parcel left, then one fulfillmentCreate;
+  FULFIL rows failed earlier with "multiple_locations" are re-armed once by the sweep.
 
 ## Open questions
 See SPEC.md §11.

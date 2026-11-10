@@ -4,6 +4,7 @@ import { estimateQueryCost } from "@/integrations/shopify/query-cost";
 import {
   FULFILLMENT_CREATE_MUTATION,
   planFulfillment,
+  planLocationMoves,
   WRITE_BACK_READ_QUERY,
   type WriteBackRead,
 } from "@/integrations/shopify/fulfillments";
@@ -103,6 +104,39 @@ describe("planFulfillment (pure)", () => {
       ok: false,
       reason: "order_not_found",
     });
+  });
+  it("planLocationMoves: what sits at the warehouse's location is taken there first; partial lines move only the rest", () => {
+    const T = "gid://shopify/Location/T";
+    const fo = (id: string, loc: string, rem: number, move = true) => ({
+      id,
+      status: "OPEN",
+      supportedActions: [{ action: "CREATE_FULFILLMENT" }, ...(move ? [{ action: "MOVE" }] : [])],
+      assignedLocation: { location: { id: loc } },
+      lineItems: { nodes: [{ id: `${id}-li`, remainingQuantity: rem, lineItem: { id: LINE_GID } }] },
+    });
+    const read = (nodes: ReturnType<typeof fo>[]) =>
+      ({ order: { id: ORDER_GID, fulfillments: [], fulfillmentOrders: { nodes } } }) as WriteBackRead;
+    // Shopify lists the other location first; 2 of 3 already sit at the target: only 1 moves, never 2.
+    const r = read([fo("A", "gid://shopify/Location/O", 2), fo("B", T, 2)]);
+    expect(planLocationMoves(r, [{ shopifyLineGid: LINE_GID, quantity: 3 }], T)).toEqual({
+      ok: true,
+      moves: [{ fulfillmentOrderId: "A", items: [{ id: "A-li", quantity: 1 }] }],
+    });
+    // Enough at the target already: nothing moves, and the plan takes it there in one location.
+    expect(planLocationMoves(r, [{ shopifyLineGid: LINE_GID, quantity: 2 }], T)).toEqual({
+      ok: true,
+      moves: [],
+    });
+    const p = planFulfillment(r, [{ shopifyLineGid: LINE_GID, quantity: 2 }], null, false, T);
+    expect(p.ok && p.input.lineItemsByFulfillmentOrder.map((x) => x.fulfillmentOrderId)).toEqual(["B"]);
+    // Shopify does not offer MOVE: left to an operator.
+    expect(
+      planLocationMoves(
+        read([fo("A", "gid://shopify/Location/O", 1, false)]),
+        [{ shopifyLineGid: LINE_GID, quantity: 1 }],
+        T,
+      ),
+    ).toEqual({ ok: false, reason: "not_movable" });
   });
   it("the read query stays well under Shopify's cost limit", () => {
     expect(estimateQueryCost(WRITE_BACK_READ_QUERY)).toBeLessThan(1000);
@@ -440,7 +474,8 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
     ];
     const shopA = fakeShopify({ FulfillmentWriteBackRead: () => two });
     expect(await processWriteBack((await rowFor(a.f.id))!.id, shopA.clients)).toBe("FAILED");
-    expect((await rowFor(a.f.id))!.lastError).toBe("multiple_locations");
+    // No Shopify location stands for the shipment's warehouse: nothing to move to, an operator decides.
+    expect((await rowFor(a.f.id))!.lastError).toBe("multiple_locations: no_location_for_warehouse");
     const none = readWith([]);
     none.order.fulfillmentOrders.nodes[0]!.status = "CLOSED";
     const shopB = fakeShopify({ FulfillmentWriteBackRead: () => none });
@@ -451,6 +486,256 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
         await db().alert.count({ where: { entityId: x.order.id, kind: "shopify_writeback_failed" } }),
       ).toBe(1);
     expect(shopA.count("FulfillmentWriteBack") + shopB.count("FulfillmentWriteBack")).toBe(0);
+  });
+
+  it("split over two locations: moved to the warehouse's location, then one fulfillment; DRY_RUN records the move", async () => {
+    const split = () => {
+      const r = readWith([]);
+      const fo = r.order.fulfillmentOrders.nodes[0]!;
+      r.order.fulfillmentOrders.nodes = [
+        {
+          ...fo,
+          supportedActions: [{ action: "CREATE_FULFILLMENT" }, { action: "MOVE" }],
+          lineItems: { nodes: [{ ...fo.lineItems.nodes[0]!, remainingQuantity: 1 }] },
+        },
+        {
+          ...fo,
+          id: `${FO_GID}2`,
+          supportedActions: [{ action: "CREATE_FULFILLMENT" }, { action: "MOVE" }],
+          assignedLocation: { location: { id: "gid://shopify/Location/2" } },
+          lineItems: { nodes: [{ ...fo.lineItems.nodes[0]!, id: `${FOLI_GID}2`, remainingQuantity: 1 }] },
+        },
+      ];
+      return r;
+    };
+    // After the move both fulfillment orders sit at Location/1 (Shopify may keep them as two).
+    const merged = () => {
+      const r = split();
+      r.order.fulfillmentOrders.nodes[1]!.assignedLocation = { location: { id: "gid://shopify/Location/1" } };
+      return r;
+    };
+    const loc = await db().storeLocation.create({
+      data: {
+        accountId: g.accountId,
+        storeId: g.store.id,
+        shopifyLocationGid: "gid://shopify/Location/1",
+        name: "Warehouse",
+        connectionId: g.connection.id,
+        fetchedAt: new Date(),
+      },
+    });
+    try {
+      await setMode("DRY_RUN");
+      const d = await shipped();
+      await sweepWriteBacks();
+      const dry = fakeShopify({ FulfillmentWriteBackRead: () => split() });
+      expect(await processWriteBack((await rowFor(d.f.id))!.id, dry.clients)).toBe("DRY_RUN_RECORDED");
+      expect(dry.count("FulfillmentOrderMoveWriteBack")).toBe(0);
+      expect((await rowFor(d.f.id))!.request).toMatchObject({
+        newLocationId: "gid://shopify/Location/1",
+        moves: [{ fulfillmentOrderId: `${FO_GID}2`, items: [{ id: `${FOLI_GID}2`, quantity: 1 }] }],
+      });
+
+      await setMode("LIVE");
+      const a = await shipped();
+      await sweepWriteBacks();
+      let created: unknown = null;
+      const shop = fakeShopify({
+        FulfillmentWriteBackRead: [() => split(), () => merged()],
+        FulfillmentOrderMoveWriteBack: () => ({
+          fulfillmentOrderMove: {
+            movedFulfillmentOrder: { id: `${FO_GID}2`, status: "OPEN" },
+            userErrors: [],
+          },
+        }),
+        FulfillmentWriteBack: (vars) => {
+          created = vars.fulfillment;
+          return {
+            fulfillmentCreate: {
+              fulfillment: { id: "gid://shopify/Fulfillment/77", status: "SUCCESS" },
+              userErrors: [],
+            },
+          };
+        },
+      });
+      expect(await processWriteBack((await rowFor(a.f.id))!.id, shop.clients)).toBe("SENT");
+      const move = shop.ops.find((o) => o.op === "FulfillmentOrderMoveWriteBack")!;
+      expect(move.vars).toEqual({
+        id: `${FO_GID}2`,
+        newLocationId: "gid://shopify/Location/1",
+        items: [{ id: `${FOLI_GID}2`, quantity: 1 }],
+      });
+      expect(shop.count("FulfillmentWriteBack")).toBe(1);
+      expect(created).toMatchObject({
+        lineItemsByFulfillmentOrder: [
+          { fulfillmentOrderId: FO_GID, fulfillmentOrderLineItems: [{ id: FOLI_GID, quantity: 1 }] },
+          {
+            fulfillmentOrderId: `${FO_GID}2`,
+            fulfillmentOrderLineItems: [{ id: `${FOLI_GID}2`, quantity: 1 }],
+          },
+        ],
+      });
+
+      // Shopify refuses the move (e.g. the location does not stock the item): an operator task, nothing created.
+      const b = await shipped();
+      await sweepWriteBacks();
+      const refused = fakeShopify({
+        FulfillmentWriteBackRead: () => split(),
+        FulfillmentOrderMoveWriteBack: () => ({
+          fulfillmentOrderMove: {
+            movedFulfillmentOrder: null,
+            userErrors: [{ field: ["newLocationId"], message: "Location does not stock the item" }],
+          },
+        }),
+      });
+      expect(await processWriteBack((await rowFor(b.f.id))!.id, refused.clients)).toBe("FAILED");
+      expect((await rowFor(b.f.id))!.lastError).toMatch(
+        /^multiple_locations: move refused \(0 of 1 moved\): /,
+      );
+      expect(refused.count("FulfillmentWriteBack")).toBe(0);
+
+      // A row failed on a split order by the earlier code is due once more; the newer reasons never are.
+      await db().shopifyWriteBack.update({
+        where: { id: (await rowFor(b.f.id))!.id },
+        data: { lastError: "multiple_locations" },
+      });
+      await sweepWriteBacks();
+      expect((await rowFor(b.f.id))!).toMatchObject({ status: "PENDING", attempts: 0, lastError: null });
+      expect(
+        await db().alert.count({
+          where: { entityId: b.order.id, kind: "shopify_writeback_failed", status: { not: "RESOLVED" } },
+        }),
+      ).toBe(0);
+      expect(await processWriteBack((await rowFor(b.f.id))!.id, refused.clients)).toBe("FAILED");
+      await sweepWriteBacks();
+      expect((await rowFor(b.f.id))!.status).toBe("FAILED");
+
+      // The move's answer is lost: tried again later; that attempt reads the moved order and moves nothing twice.
+      const c = await shipped();
+      await sweepWriteBacks();
+      const lost = fakeShopify({
+        FulfillmentWriteBackRead: () => split(),
+        FulfillmentOrderMoveWriteBack: () => new Response("down", { status: 503 }),
+      });
+      expect(await processWriteBack((await rowFor(c.f.id))!.id, lost.clients)).toBe("PENDING");
+      expect(lost.count("FulfillmentWriteBack")).toBe(0);
+      await db().shopifyWriteBack.update({
+        where: { id: (await rowFor(c.f.id))!.id },
+        data: { nextAttemptAt: null },
+      });
+      const after = fakeShopify({
+        FulfillmentWriteBackRead: () => merged(),
+        FulfillmentWriteBack: () => ({
+          fulfillmentCreate: {
+            fulfillment: { id: "gid://shopify/Fulfillment/78", status: "SUCCESS" },
+            userErrors: [],
+          },
+        }),
+      });
+      expect(await processWriteBack((await rowFor(c.f.id))!.id, after.clients)).toBe("SENT");
+      expect(after.count("FulfillmentOrderMoveWriteBack")).toBe(0);
+
+      // Shopify's read does not show the move yet: tried again later (not failed, not the re-armed reason).
+      // A read-back key stored by an earlier send without tracking stays on the row through the move records.
+      const e = await shipped();
+      await sweepWriteBacks();
+      const key = {
+        knownFulfillmentIds: ["gid://shopify/Fulfillment/1"],
+        lines: [{ lineItemId: LINE_GID, quantity: 2 }],
+      };
+      await db().shopifyWriteBack.update({
+        where: { id: (await rowFor(e.f.id))!.id },
+        data: { trackingNumber: null, request: { readBack: key } },
+      });
+      const lag = fakeShopify({
+        FulfillmentWriteBackRead: () => split(),
+        FulfillmentOrderMoveWriteBack: () => ({
+          fulfillmentOrderMove: {
+            movedFulfillmentOrder: { id: `${FO_GID}2`, status: "OPEN" },
+            userErrors: [],
+          },
+        }),
+      });
+      expect(await processWriteBack((await rowFor(e.f.id))!.id, lag.clients)).toBe("PENDING");
+      expect((await rowFor(e.f.id))!.lastError).toBe("multiple_locations: after_move");
+      expect((await rowFor(e.f.id))!.request).toMatchObject({ readBack: key, done: 1 });
+      expect(lag.count("FulfillmentWriteBack")).toBe(0);
+      // Each move done is on the shipment's timeline.
+      expect(
+        await db().fulfillmentEvent.count({
+          where: { fulfillmentId: e.f.id, source: "shopify.writeback", rawStatus: "moved" },
+        }),
+      ).toBe(1);
+
+      // More fulfillment orders than one read page: nothing is planned from it (tried again later).
+      const h = await shipped();
+      await sweepWriteBacks();
+      const paged = () => {
+        const r = split() as WriteBackRead;
+        r.order!.fulfillmentOrders.pageInfo = { hasNextPage: true };
+        return r;
+      };
+      const big = fakeShopify({ FulfillmentWriteBackRead: () => paged() });
+      expect(await processWriteBack((await rowFor(h.f.id))!.id, big.clients)).toBe("PENDING");
+      expect(big.count("FulfillmentOrderMoveWriteBack") + big.count("FulfillmentWriteBack")).toBe(0);
+
+      // Re-arming a legacy row keeps the order's task while another row of the order is still failed; a DRY_RUN
+      // store's legacy row is not re-armed.
+      const k = await shipped();
+      await sweepWriteBacks();
+      const kRow = (await rowFor(k.f.id))!;
+      await db().shopifyWriteBack.update({
+        where: { id: kRow.id },
+        data: { status: "FAILED", lastError: "multiple_locations" },
+      });
+      // Another row of the same order failed for its own reason.
+      await db().shopifyWriteBack.upsert({
+        where: {
+          accountId_fulfillmentId_kind_value: {
+            accountId: g.accountId,
+            fulfillmentId: k.f.id,
+            kind: "EVENT",
+            value: "DELIVERED",
+          },
+        },
+        create: {
+          accountId: g.accountId,
+          storeId: g.store.id,
+          orderId: k.order.id,
+          fulfillmentId: k.f.id,
+          kind: "EVENT",
+          value: "DELIVERED",
+          status: "FAILED",
+          lastError: "rejected: something else",
+        },
+        update: { status: "FAILED", lastError: "rejected: something else" },
+      });
+      await db().alert.create({
+        data: {
+          accountId: g.accountId,
+          kind: "shopify_writeback_failed",
+          isTask: true,
+          severity: "WARNING",
+          title: "x",
+          body: "x",
+          entityType: "Order",
+          entityId: k.order.id,
+        },
+      });
+      await setMode("DRY_RUN");
+      await sweepWriteBacks();
+      expect((await rowFor(k.f.id))!.status).toBe("FAILED");
+      await setMode("LIVE");
+      await sweepWriteBacks();
+      expect((await rowFor(k.f.id))!.status).toBe("PENDING");
+      expect(
+        await db().alert.count({
+          where: { entityId: k.order.id, kind: "shopify_writeback_failed", status: { not: "RESOLVED" } },
+        }),
+      ).toBe(1);
+    } finally {
+      await db().storeLocation.delete({ where: { id: loc.id } });
+    }
   });
 
   it("a Shopify fulfillment with our tracking number in ERROR / FAILURE is an operator task, never SENT", async () => {

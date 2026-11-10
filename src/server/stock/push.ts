@@ -298,7 +298,16 @@ export async function createInventoryPush(
   by: Creator,
   now: Date = new Date(),
   /** Fast sync: only these masters' variants, with reservations computed once for every store. */
-  opts: { productIds?: string[]; reservations?: Map<string, number> } = {},
+  opts: {
+    productIds?: string[];
+    reservations?: Map<string, number>;
+    /**
+     * Every planned line, not only those that differ from our copy of Shopify's numbers: for a store where an order
+     * just changed, Shopify moved its own number (an order takes a unit; a cancel with "Restock" gives it back), so
+     * our copy is stale until the next read. The sender reads Shopify first and leaves equal lines alone.
+     */
+    allLines?: boolean;
+  } = {},
 ) {
   const accountId = by.kind === "user" ? by.actor.accountId : null;
   if (by.kind === "user") assertCan(by.actor.role, "inventory.push");
@@ -335,6 +344,7 @@ export async function createInventoryPush(
     productIds: opts.productIds,
     reservations: opts.reservations,
   });
+  const toPush = opts.allLines ? plan.lines : plan.changes;
   const result = await withAccountTransaction(acc, async (tx, { lockKey }) => {
     await lockKey(`inventory-push:${storeId}`);
     const open = await tx.inventoryPush.findFirst({
@@ -342,8 +352,7 @@ export async function createInventoryPush(
       select: { id: true },
     });
     if (open) return { pushId: open.id, created: false as const, reason: "push_open" };
-    if (plan.changes.length === 0)
-      return { pushId: null, created: false as const, reason: "nothing_to_push" };
+    if (toPush.length === 0) return { pushId: null, created: false as const, reason: "nothing_to_push" };
     const push = await tx.inventoryPush.create({
       data: {
         accountId: acc,
@@ -352,7 +361,7 @@ export async function createInventoryPush(
         buffer: plan.store.inventoryBuffer,
         createdById: by.kind === "user" ? by.actor.userId : null,
         lines: {
-          create: plan.changes.map((l) => ({
+          create: toPush.map((l) => ({
             variantLinkId: l.variantLinkId,
             productId: l.productId,
             connectionId: l.connectionId,
@@ -374,11 +383,11 @@ export async function createInventoryPush(
       action: "inventory.push_queued",
       entityType: "InventoryPush",
       entityId: result.pushId!,
-      after: { storeId, lines: plan.changes.length, buffer: plan.store.inventoryBuffer },
+      after: { storeId, lines: toPush.length, buffer: plan.store.inventoryBuffer },
       ip: by.actor.ip,
       userAgent: by.actor.userAgent,
     });
-  return { ...result, changes: plan.changes.length };
+  return { ...result, changes: toPush.length };
 }
 
 interface StoredBatch {
