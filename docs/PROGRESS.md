@@ -348,6 +348,26 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   queue, release and restart (AI autopilot, bulk fulfil, a released hold, a restart). ON_HOLD orders are left to
   the operator (released only with the tag). Waiting orders keep their stock reserved (Shopify counts them sold).
 
+- 2026-11-10 Обща наличност + противосаботаж (owner request). Stores of a line that sell from one warehouse (their
+  Shopify location mapped to it) already share one sellable number (warehouse − CRM reservations of orders not yet
+  inside the warehouse numbers). New: (1) fast sync — a 1-minute cron (stock.fastPush) takes the products of every
+  order changed since its previous run (Order.updatedAt, new index; 3-minute overlap so late commits are never
+  missed; cursor StockSyncCursor), plans only those products for every store selling them (reservations read only for
+  them) and queues one InventoryPush per store at once (trigger "fast"). Nothing is written on the order paths; a
+  variant re-linked to another master bumps its open orders' updatedAt so the move is seen. Any push younger than
+  PUSH_PLAN_TTL_MS takes the numbers of the moment it is sent (older ones still expire); after a SENT push our copy
+  of Shopify's numbers follows, so the next run sees nothing to resend. A store whose push is still open keeps the
+  run's window (cursor not moved, up to 15 min) and a push waiting for its retry is sent at once. Pushes run 6 at a
+  time.
+  The 10-minute full push stays as the safety net. (2) Противосаботаж per product line (LineStockGuard: on/off, max
+  units of one product, max units in the order): a new Shopify order above a limit is QTY_HOLD — reserves nothing,
+  tab "Подозрителни", task order_qty_hold; "Одобри" → review (or AWAITING_TAG), from then on reserved; "Откажи" →
+  CANCELLED. Settings → "Синхронизация на наличности" shows the guard per line and the groups (warehouse → stores
+  with their push mode). Returned parcels give units back when the warehouse books them in (its own stock).
+  Migration 20261110100000 (enum value, LineStockGuard, StockSyncCursor, index Order(accountId, updatedAt); additive).
+  Not covered by the fast sync (the 10-minute push covers them): a line removed from an order, a relinked product, a
+  new warehouse snapshot, more than 3000 changed products in one run.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

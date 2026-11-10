@@ -58,7 +58,11 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
       <nav aria-label={t("tabs")} className="flex flex-wrap gap-1 border-b border-line">
         {/* "Чака таг" only while something waits there (stores with "Само поръчки с таг"). */}
         {(Object.keys(ORDER_TABS) as OrderTab[])
-          .filter((k) => k !== "awaitingTag" || counts.awaitingTag > 0 || tab === "awaitingTag")
+          .filter(
+            (k) =>
+              (k !== "awaitingTag" || counts.awaitingTag > 0 || tab === "awaitingTag") &&
+              (k !== "qtyHold" || counts.qtyHold > 0 || tab === "qtyHold"),
+          )
           .map((k) => (
             <Link
               key={k}

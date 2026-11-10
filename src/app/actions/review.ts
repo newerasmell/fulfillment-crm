@@ -19,6 +19,8 @@ import {
   previewAddress,
   releaseOrder,
   restartOrder,
+  approveQtyHold,
+  rejectQtyHold,
   saveReasonCode,
   setReasonCodeActive,
   type DecisionKind,
@@ -251,6 +253,35 @@ export async function clearOrderCodAction(orderId: string): Promise<ReviewAction
     revalidatePath(orderPath(orderId));
     revalidatePath("/orders");
     return { ok: true };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** Противосаботаж: approve (the units are reserved from now on) or cancel an order held for its quantity. */
+export async function decideQtyHoldAction(input: {
+  orderId: string;
+  decision: "approve" | "reject";
+  reason?: string;
+}): Promise<{ ok: true; status: string } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    // Parsed here: an unknown decision must never fall through to "cancel the order".
+    const d = z
+      .object({
+        orderId: z.string().min(1).max(64),
+        decision: z.enum(["approve", "reject"]),
+        reason: z.string().max(300).optional(),
+      })
+      .parse(input);
+    const actor = actorFrom(ctx);
+    const r =
+      d.decision === "approve"
+        ? await approveQtyHold(actor, d.orderId, d.reason)
+        : await rejectQtyHold(actor, d.orderId, d.reason);
+    revalidatePath(orderPath(d.orderId));
+    revalidatePath("/orders");
+    return { ok: true, status: r.status };
   } catch (err) {
     return toError(err);
   }

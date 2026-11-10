@@ -7,6 +7,8 @@ import { accountDb } from "@/server/db/client";
 export const ORDER_TABS = {
   /** "Чака таг": a store that takes only tagged orders (StoreOrderTag) keeps the others here, out of every other tab. */
   awaitingTag: ["AWAITING_TAG"],
+  /** "Подозрителни": held by the anti-sabotage rule (more units than the line allows), waiting for a person. */
+  qtyHold: ["QTY_HOLD"],
   review: ["IMPORTED", "CHECKING", "NEEDS_REVIEW"],
   ready: ["READY", "APPROVED", "QUEUED"],
   blocked: ["BLOCKED", "ON_HOLD", "SUBMIT_FAILED", "EXCEPTION", "UNKNOWN"],
@@ -187,7 +189,7 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
     const where = {
       ...scope,
       placedAt: { gte: from, lt: to },
-      status: { notIn: ["CANCELLED" as const, "AWAITING_TAG" as const] },
+      status: { notIn: ["CANCELLED" as const, "AWAITING_TAG" as const, "QTY_HOLD" as const] },
     };
     const [orders, items, countries, cod] = await Promise.all([
       db.order.count({ where }),

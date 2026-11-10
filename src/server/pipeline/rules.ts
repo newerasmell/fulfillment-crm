@@ -71,7 +71,12 @@ export type TransitionCause =
    */
   | "tag_missing"
   /** The order got its store's tag (or the store stopped requiring one): it enters review from the start. */
-  | "tag_added";
+  | "tag_added"
+  /**
+   * Противосаботаж: a person approves an order held for its quantity (QTY_HOLD) — it enters review from the start
+   * (or waits for its store's tag) and from then on reserves stock.
+   */
+  | "qty_release";
 
 /** Every cause, for exhaustive tests and docs. */
 export const CAUSES: readonly TransitionCause[] = [
@@ -93,6 +98,7 @@ export const CAUSES: readonly TransitionCause[] = [
   "reroute",
   "tag_missing",
   "tag_added",
+  "qty_release",
 ];
 
 export interface TransitionRule {
@@ -110,6 +116,7 @@ const PRE_APPROVAL: CrmOrderStatus[] = [
   "READY",
   "ON_HOLD",
   "AWAITING_TAG",
+  "QTY_HOLD",
 ];
 
 /** Orders a missing store tag may still set aside: nothing was queued for a warehouse. */
@@ -185,6 +192,7 @@ export const RULES: readonly TransitionRule[] = [
       "SUBMIT_FAILED",
       "ON_HOLD",
       "AWAITING_TAG",
+      "QTY_HOLD",
       "BLOCKED",
       "EXCEPTION",
       "UNKNOWN",
@@ -219,6 +227,7 @@ export const RULES: readonly TransitionRule[] = [
   },
   { cause: "tag_missing", from: TAG_GATED_FROM, to: ["AWAITING_TAG"], actors: ["system", "user"] },
   { cause: "tag_added", from: ["AWAITING_TAG"], to: ["IMPORTED"], actors: ["system", "user"] },
+  { cause: "qty_release", from: ["QTY_HOLD"], to: ["IMPORTED", "AWAITING_TAG"], actors: ["user"] },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,

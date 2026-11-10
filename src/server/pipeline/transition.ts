@@ -214,6 +214,8 @@ const GUARDS: Partial<Record<TransitionCause, Guard[]>> = {
     storeTagGuard,
   ],
   restart: [storeTagGuard],
+  // An approved quantity hold enters review only with its store's tag (otherwise it waits for the tag).
+  qty_release: [async (tx, a) => (a.to === "IMPORTED" ? storeTagGuard(tx, a) : null)],
   queue: [storeTagGuard],
 };
 
@@ -280,6 +282,18 @@ export async function transition(tx: Tx, input: TransitionInput): Promise<Transi
       },
       select: { id: true },
     });
+    // Leaving the quantity hold (approved, cancelled here or in Shopify): its task is done.
+    if (from === "QTY_HOLD")
+      await tx.alert.updateMany({
+        where: {
+          accountId: order.accountId,
+          kind: "order_qty_hold",
+          entityType: "Order",
+          entityId: order.id,
+          status: { not: "RESOLVED" },
+        },
+        data: { status: "RESOLVED", resolvedAt: new Date() },
+      });
     if (userId) {
       await tx.auditLog.create({
         data: {

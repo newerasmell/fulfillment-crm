@@ -1,3 +1,4 @@
+import { runFastStockSync } from "./fast-sync";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { ShopifyError } from "@/integrations/shopify/errors";
@@ -80,13 +81,19 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
     }
   });
 
-  await boss.work<StockPushJob>(QUEUES.stockInventoryPush.name, opts, async (jobs) => {
-    for (const job of jobs) {
-      const d = PushJob.parse(job.data);
-      const status = await processInventoryPush(d.pushId);
-      logger.info({ pushId: d.pushId, status }, "inventory push processed");
-    }
-  });
+  // Several stores' pushes at a time (one open push per store already keeps each store's sends in order): with
+  // 30–40 stores and a fast push each minute, one-at-a-time would fall behind.
+  await boss.work<StockPushJob>(
+    QUEUES.stockInventoryPush.name,
+    { ...opts, localConcurrency: 6 },
+    async (jobs) => {
+      for (const job of jobs) {
+        const d = PushJob.parse(job.data);
+        const status = await processInventoryPush(d.pushId);
+        logger.info({ pushId: d.pushId, status }, "inventory push processed");
+      }
+    },
+  );
 
   await boss.work<StockActivateJob>(QUEUES.stockInventoryActivate.name, opts, async (jobs) => {
     for (const job of jobs) {
@@ -102,6 +109,11 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
         await enqueueStock.shopifyInventory(boss, { accountId: d.accountId, storeId: a.storeId });
       }
     }
+  });
+
+  await boss.work(QUEUES.stockFastPush.name, opts, async () => {
+    const queued = await runFastStockSync(new Date(), (p) => enqueueStock.push(boss, p));
+    if (queued.length) logger.info({ pushes: queued.length }, "fast stock sync");
   });
 
   await boss.work(QUEUES.stockInventoryPushSweep.name, opts, async () => {

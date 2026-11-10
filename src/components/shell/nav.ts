@@ -57,6 +57,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/routing", key: "routing", icon: "route" },
       { href: "/settings/countries", key: "countries", icon: "pin" },
       { href: "/settings/tracking-links", key: "trackingLinks", icon: "truck" },
+      { href: "/settings/stock-sync", key: "stockSync", icon: "box", permission: "inventory.push" },
       { href: "/ai", key: "ai", icon: "sparkle", permission: "ai.read" },
       { href: "/directory", key: "directory", icon: "pin" },
       { href: "/settings/members", key: "members", icon: "users" },

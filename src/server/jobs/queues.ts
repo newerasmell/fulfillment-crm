@@ -238,6 +238,12 @@ export const QUEUES = {
    * Every 10 min (owner request 2026-11-03), 3 min after the Shopify read: re-arm crashed pushes, create pushes for
    * DRY_RUN/LIVE stores, queue the due ones. At most one open push per store, so runs never pile up.
    */
+  /** Every minute: products whose reservations changed are pushed to every store that sells them (fast sync). */
+  stockFastPush: {
+    name: "stock.fastPush",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "* * * * *",
+  },
   stockInventoryPushSweep: {
     name: "stock.inventoryPushSweep",
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 540 },

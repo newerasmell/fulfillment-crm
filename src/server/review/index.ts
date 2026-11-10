@@ -13,3 +13,4 @@ export * from "./service";
 export * from "./detail";
 export * from "./line-product";
 export * from "./cod";
+export * from "./qty-hold";

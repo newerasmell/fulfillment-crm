@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { touchOrdersOfVariant } from "@/server/stock/touch";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
@@ -307,6 +308,7 @@ export async function linkItemInTx(
     where: { variantLinkId: itemId, order: { status: { in: RELINKABLE } }, productChoice: { is: null } },
     data: { productId },
   });
+  await touchOrdersOfVariant(tx, itemId);
   return true;
 }
 
