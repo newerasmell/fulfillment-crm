@@ -116,6 +116,8 @@ export async function planInventoryPush(
      * push itself always checks the current names.
      */
     suspicious?: "live" | "stored";
+    /** CRM reservations computed once for several stores (the fast sync); default: read now. */
+    reservations?: Map<string, number>;
   } = {},
 ) {
   const db = accountDb(accountId);
@@ -126,7 +128,7 @@ export async function planInventoryPush(
   if (!store) throw new DomainError("not_found");
   const [settings, reservations, locations, links] = await Promise.all([
     getStockSettings(accountId),
-    crmReservations(accountId),
+    opts.reservations ?? crmReservations(accountId, opts.productIds),
     db.storeLocation.findMany({
       where: { storeId, connectionId: { not: null }, isActive: true },
       select: {
@@ -291,7 +293,13 @@ type Creator = { kind: "user"; actor: ScopedActor } | { kind: "system" };
  * Queues a push of the lines that differ. One open push per store (the existing one is returned); a store with
  * DISABLED push is refused here already (the sender checks the mode again at send time).
  */
-export async function createInventoryPush(storeId: string, by: Creator, now: Date = new Date()) {
+export async function createInventoryPush(
+  storeId: string,
+  by: Creator,
+  now: Date = new Date(),
+  /** Fast sync: only these masters' variants, with reservations computed once for every store. */
+  opts: { productIds?: string[]; reservations?: Map<string, number> } = {},
+) {
   const accountId = by.kind === "user" ? by.actor.accountId : null;
   if (by.kind === "user") assertCan(by.actor.role, "inventory.push");
   const acc = accountId ?? (await systemDb().store.findUniqueOrThrow({ where: { id: storeId } })).accountId;
@@ -309,7 +317,24 @@ export async function createInventoryPush(storeId: string, by: Creator, now: Dat
     throw new DomainError("not_found");
   if (store.archivedAt) throw new DomainError("store_archived");
   if (store.inventoryPushMode === "DISABLED") throw new DomainError("inventory_push_disabled");
-  const plan = await planInventoryPush(acc, storeId, now);
+  // A push of this store is already on its way: say so before planning (the fast sync asks every minute).
+  const alreadyOpen = await db.inventoryPush.findFirst({
+    where: { storeId, status: { in: OPEN } },
+    select: { id: true, status: true, nextAttemptAt: true },
+  });
+  if (alreadyOpen)
+    return {
+      pushId: alreadyOpen.id,
+      created: false as const,
+      reason: "push_open",
+      openStatus: alreadyOpen.status,
+      openDueAt: alreadyOpen.nextAttemptAt,
+      changes: 0,
+    };
+  const plan = await planInventoryPush(acc, storeId, now, {
+    productIds: opts.productIds,
+    reservations: opts.reservations,
+  });
   const result = await withAccountTransaction(acc, async (tx, { lockKey }) => {
     await lockKey(`inventory-push:${storeId}`);
     const open = await tx.inventoryPush.findFirst({
@@ -323,7 +348,7 @@ export async function createInventoryPush(storeId: string, by: Creator, now: Dat
       data: {
         accountId: acc,
         storeId,
-        trigger: by.kind === "user" ? "manual" : "cron",
+        trigger: by.kind === "user" ? "manual" : opts.productIds ? "fast" : "cron",
         buffer: plan.store.inventoryBuffer,
         createdById: by.kind === "user" ? by.actor.userId : null,
         lines: {
@@ -508,7 +533,7 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
   } catch (err) {
     return fail(`no Shopify client: ${scrubText((err as Error).message)}`);
   }
-  const lines = await db.inventoryPushLine.findMany({ where: { pushId: row.id }, orderBy: { id: "asc" } });
+  let lines = await db.inventoryPushLine.findMany({ where: { pushId: row.id }, orderBy: { id: "asc" } });
   const readAvailable = async (subset: typeof lines) => {
     const out = new Map<string, number | null>();
     const byLocation = new Map<string, typeof lines>();
@@ -535,7 +560,11 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
     // The targets were computed at create time: they must still be what a plan gives now, or nothing is sent.
     let fresh: Awaited<ReturnType<typeof planInventoryPush>>;
     try {
-      fresh = await planInventoryPush(row.accountId, row.storeId, now);
+      // Only this push's products are planned again (a fast push carries a few; a full one all of them).
+      const ids = lines.map((l) => l.productId);
+      fresh = await planInventoryPush(row.accountId, row.storeId, now, {
+        productIds: ids.every((x): x is string => !!x) ? [...new Set(ids)] : undefined,
+      });
     } catch (err) {
       return finalize({ lastError: `${PLAN_EXPIRED}: ${scrubText((err as Error).message)}` }, "FAILED");
     }
@@ -544,7 +573,28 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
       const f = freshOf.get(`${l.variantLinkId}|${l.locationGid}`);
       return !f || f.target !== l.target || f.connectionId !== l.connectionId;
     });
-    if (moved) return finalize({ lastError: PLAN_EXPIRED }, "FAILED");
+    if (moved) {
+      const { createdAt } = await db.inventoryPush.findUniqueOrThrow({
+        where: { id: row.id },
+        select: { createdAt: true },
+      });
+      // A push planned long ago (e.g. parked overnight) is never sent. A recent one takes the numbers of right now
+      // instead: with orders every second targets always move, and dropping it would leave the stores behind.
+      // Shopify's compare-and-set read (below) still guards every line.
+      if (now.getTime() - createdAt.getTime() > PUSH_PLAN_TTL_MS)
+        return finalize({ lastError: PLAN_EXPIRED }, "FAILED");
+      for (const l of lines) {
+        const f = freshOf.get(`${l.variantLinkId}|${l.locationGid}`);
+        if (!f) await db.inventoryPushLine.delete({ where: { id: l.id } });
+        else if (f.target !== l.target || f.connectionId !== l.connectionId)
+          await db.inventoryPushLine.update({
+            where: { id: l.id },
+            data: { target: f.target, sellable: f.sellable, connectionId: f.connectionId },
+          });
+      }
+      lines = await db.inventoryPushLine.findMany({ where: { pushId: row.id }, orderBy: { id: "asc" } });
+      if (!lines.length) return finalize({ lastError: PLAN_EXPIRED }, "FAILED");
+    }
     // First attempt: read what Shopify has right now; this becomes the compare-and-set value.
     let current: Map<string, number | null>;
     try {
@@ -712,6 +762,23 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: PushClients, 
       return s;
     }
   }
+  // Our copy of Shopify's numbers follows what was just set (or found already set), so the next plan (the fast
+  // sync runs every minute) does not see the same difference again before the next Shopify read.
+  const done = await db.inventoryPushLine.findMany({
+    where: { pushId: row.id, status: { in: ["applied", "unchanged"] } },
+    select: { variantLinkId: true, locationGid: true, target: true },
+  });
+  for (const d of done)
+    await db.shopifyInventoryLevel.updateMany({
+      // Never over a Shopify read newer than this push (e.g. a manual change in Shopify admin).
+      where: {
+        accountId: row.accountId,
+        variantLinkId: d.variantLinkId,
+        locationGid: d.locationGid,
+        fetchedAt: { lt: now },
+      },
+      data: { available: d.target },
+    });
   const s = await finalize({ sentAt: now }, "SENT");
   await audit(row, "sent", { batches: request.batches.length, ...(staleLines ? { staleLines } : {}) });
   return s;

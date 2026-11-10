@@ -20,6 +20,11 @@ import {
   sweepInboundAlerts,
 } from "./inbound";
 import { crmReservations, daysLeft, isStale, sellableOf } from "./levels";
+import { runFastStockSync } from "./fast-sync";
+import { touchOrdersOfVariant } from "./touch";
+import { transitionOrder } from "@/server/pipeline";
+import { withAccountTransaction } from "@/server/db/client";
+import { checkStockGuard } from "./guard-check";
 import {
   createInventoryPush,
   storePushes,
@@ -1069,6 +1074,170 @@ describe("reservations cover every order not inside the warehouse numbers yet", 
   });
 });
 
+describe("fast stock sync and the anti-sabotage hold", () => {
+  it("guard rule: per product and per order limits, only when enabled", () => {
+    const lines = [
+      { key: "a", quantity: 15 },
+      { key: "a", quantity: 6 },
+      { key: "b", quantity: 2 },
+    ];
+    expect(checkStockGuard({ enabled: true, maxPerProduct: 20, maxPerOrder: null }, lines)).toMatchObject({
+      hold: true,
+      maxProductQty: 21,
+      totalQty: 23,
+      reasons: ["per_product"],
+    });
+    expect(checkStockGuard({ enabled: true, maxPerProduct: null, maxPerOrder: 30 }, lines).hold).toBe(false);
+    expect(checkStockGuard({ enabled: true, maxPerProduct: 25, maxPerOrder: 22 }, lines).reasons).toEqual([
+      "per_order",
+    ]);
+    expect(checkStockGuard({ enabled: false, maxPerProduct: 1, maxPerOrder: 1 }, lines).hold).toBe(false);
+    expect(checkStockGuard(null, lines).hold).toBe(false);
+  });
+
+  it("an order blocks its unit in every store within a minute (only changed products); a held one blocks nothing", async () => {
+    const g = await group("fast");
+    await g.db.store.update({ where: { id: g.store.id }, data: { inventoryPushMode: "LIVE" } });
+    const p = await g.product("FAST-1");
+    const other = await g.product("FAST-2");
+    await g.vp(g.fhb.id, p.id, "R-FAST-1", { physical: 5, free: 5 });
+    await g.vp(g.fhb.id, other.id, "R-FAST-2", { physical: 3, free: 3 });
+    const { gid, link } = await mapped(g, p.id, g.fhb.id, 5, 8601);
+    // A second product at the same location differs too, but no order changed it: not in the fast push.
+    const ol = await g.link(other.id, 8602, "SH-8602");
+    await g.db.shopifyInventoryLevel.create({
+      data: {
+        accountId: g.accountId,
+        storeId: g.store.id,
+        variantLinkId: ol.id,
+        locationGid: gid,
+        inventoryItemGid: "gid://shopify/InventoryItem/8602",
+        available: 0,
+        fetchedAt: new Date(),
+      },
+    });
+    expect(await targetOf(g, gid)).toBe(5);
+
+    // Shopify of this store (the read-back answers what it has; a push sets it).
+    let available = 5;
+    const shop = fakeShopify({
+      InventoryReadBack: () => ({
+        nodes: [
+          {
+            id: "x",
+            tracked: true,
+            inventoryLevel: { quantities: [{ name: "available", quantity: available }] },
+          },
+        ],
+      }),
+      InventoryPush: (vars) => {
+        available = (vars.input as { quantities: { quantity: number }[] }).quantities[0]!.quantity;
+        return { inventorySetQuantities: { inventoryAdjustmentGroup: { id: "gid://x/1" }, userErrors: [] } };
+      },
+    });
+
+    // One unit ordered: the next run pushes only that product, right away, with 4.
+    await order(g, p.id, 1, "IMPORTED", null);
+    const sent: string[] = [];
+    const queued = await runFastStockSync(new Date(), async (q) => {
+      if (q.accountId === g.accountId) sent.push(q.pushId);
+    });
+    const mine = queued.filter((q) => q.accountId === g.accountId);
+    expect(mine).toHaveLength(1);
+    expect(sent).toEqual([mine[0]!.pushId]);
+    const push = await g.db.inventoryPush.findUniqueOrThrow({
+      where: { id: mine[0]!.pushId },
+      include: { lines: true },
+    });
+    expect(push.trigger).toBe("fast");
+    expect(push.lines.map((l) => [l.productId, l.target])).toEqual([[p.id, 4]]);
+
+    // Another unit is ordered before the push is sent: the fast push sends the number of that moment (3).
+    await order(g, p.id, 1, "IMPORTED", null);
+    expect(await processInventoryPush(push.id, shop.clients)).toBe("SENT");
+    expect(available).toBe(3);
+    // Our copy of Shopify's number follows, so the next run sees nothing left to send.
+    expect(
+      (await g.db.shopifyInventoryLevel.findFirstOrThrow({ where: { variantLinkId: link.id } })).available,
+    ).toBe(3);
+    expect((await runFastStockSync(new Date())).filter((q) => q.accountId === g.accountId)).toHaveLength(0);
+
+    // A cancel is only a status change (no new order): the next run still sees it and gives the unit back.
+    const toCancel = await g.db.order.findFirstOrThrow({ where: { lines: { some: { productId: p.id } } } });
+    await transitionOrder(g.accountId, {
+      orderId: toCancel.id,
+      to: "CANCELLED",
+      cause: "cancel",
+      actor: { kind: "user", userId: g.owner.userId },
+    });
+    const back = (await runFastStockSync(new Date())).filter((q) => q.accountId === g.accountId);
+    expect(back).toHaveLength(1);
+    const backLines = await g.db.inventoryPushLine.findMany({ where: { pushId: back[0]!.pushId } });
+    expect(backLines.map((l) => l.target)).toEqual([4]);
+
+    // While that push waits for its retry, the store is blocked: the run keeps its window (cursor unchanged) and
+    // sends the waiting push as soon as it is due, so nothing falls out of the overlap.
+    await g.db.inventoryPush.update({
+      where: { id: back[0]!.pushId },
+      data: { status: "PENDING", nextAttemptAt: new Date(Date.now() - 1000) },
+    });
+    const before = await g.db.stockSyncCursor.findUniqueOrThrow({ where: { accountId: g.accountId } });
+    await order(g, p.id, 1, "IMPORTED", null);
+    const resent: string[] = [];
+    await runFastStockSync(new Date(), async (q) => {
+      if (q.accountId === g.accountId) resent.push(q.pushId);
+    });
+    expect(resent).toEqual([back[0]!.pushId]);
+    expect(
+      (await g.db.stockSyncCursor.findUniqueOrThrow({ where: { accountId: g.accountId } })).lastRunAt,
+    ).toEqual(before.lastRunAt);
+    await g.db.inventoryPush.update({ where: { id: back[0]!.pushId }, data: { status: "SENT" } });
+
+    // A variant re-linked to another master touches its open orders, so the fast sync sees the move.
+    const o2 = await g.db.order.findFirstOrThrow({
+      where: { status: "IMPORTED", lines: { some: { productId: p.id } } },
+      include: { lines: true },
+    });
+    await g.db.orderLine.update({ where: { id: o2.lines[0]!.id }, data: { variantLinkId: link.id } });
+    const stamp = o2.updatedAt;
+    await new Promise((r) => setTimeout(r, 5));
+    await withAccountTransaction(g.accountId, (tx) => touchOrdersOfVariant(tx, link.id));
+    expect(
+      (await g.db.order.findUniqueOrThrow({ where: { id: o2.id } })).updatedAt.getTime(),
+    ).toBeGreaterThan(stamp.getTime());
+
+    // A quantity-held order (anti-sabotage) reserves nothing: the stores keep the units.
+    await g.db.order.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        source: "MANUAL",
+        number: "M-QTY",
+        status: "QTY_HOLD",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "PREPAID",
+        placedAt: new Date(),
+        lines: { create: [{ productId: p.id, title: "x", quantity: 20, unitPrice: 1 }] },
+      },
+    });
+    expect(await targetOf(g, gid)).toBe(3);
+  });
+
+  it("reservations for a few products equal the full read for them", async () => {
+    const g = await group("fast-resv");
+    const a = await g.product("FR-A");
+    const b = await g.product("FR-B");
+    await order(g, a.id, 2, "NEEDS_REVIEW", g.fhb.id);
+    await order(g, b.id, 3, "NEEDS_REVIEW", g.fhb.id);
+    const all = await crmReservations(g.accountId);
+    const onlyA = await crmReservations(g.accountId, [a.id]);
+    expect(onlyA.get(`${g.fhb.id}:${a.id}`)).toBe(all.get(`${g.fhb.id}:${a.id}`));
+    expect(onlyA.has(`${g.fhb.id}:${b.id}`)).toBe(false);
+  });
+});
+
 describe("push plans expire", () => {
   it("PAUSED, then warehouse free drops, then unpause: the old target is never sent", async () => {
     const g = await group("push-expire");
@@ -1095,18 +1264,16 @@ describe("push plans expire", () => {
     expect(await processInventoryPush(r.pushId!, s.clients)).toBe("PAUSED");
     await g.db.stockLevel.update({ where: { vendorProductId: v.id }, data: { free: 4, physical: 4 } });
     await systemDb().account.update({ where: { id: g.accountId }, data: { outboxPaused: false } });
-    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("FAILED");
-    expect(s.count("InventoryPush")).toBe(0);
-    expect(await g.db.inventoryPush.findUniqueOrThrow({ where: { id: r.pushId! } })).toMatchObject({
-      lastError: "plan_expired",
-    });
+    // Recent push: it takes the number of right now (4), never the old one (10).
+    expect(await processInventoryPush(r.pushId!, s.clients)).toBe("SENT");
+    expect(s.count("InventoryPush")).toBe(1);
+    const sentQty = s.calls.find((c) => c.op === "InventoryPush")!.vars as {
+      input: { quantities: { quantity: number }[] };
+    };
+    expect(sentQty.input.quantities.map((q) => q.quantity)).toEqual([4]);
     expect(await g.db.alert.count({ where: { kind: "inventory_push_failed" } })).toBe(0);
-    // The next push plans from today's numbers.
-    const r2 = await createInventoryPush(g.store.id, { kind: "system" });
-    expect(r2.created).toBe(true);
-    expect(await processInventoryPush(r2.pushId!, s.clients)).toBe("SENT");
-    const sent = s.calls.find((c) => c.op === "InventoryPush")!;
-    expect((sent.vars.input as { quantities: { quantity: number }[] }).quantities[0]!.quantity).toBe(4);
+    // Nothing left to send: our copy of Shopify's number followed the push.
+    expect((await createInventoryPush(g.store.id, { kind: "system" })).reason).toBe("nothing_to_push");
     expect(await targetOf(g, gid)).toBe(4);
   });
 

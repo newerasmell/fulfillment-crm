@@ -229,6 +229,26 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       entityId: held.id,
     },
   });
+  // Противосаботаж: an order held for its quantity (20 of one product), waiting for a person.
+  await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      shopifyOrderGid: "gid://shopify/Order/93006",
+      number: "#93006",
+      status: "QTY_HOLD",
+      customerName: "Тест Получател",
+      currency: "EUR",
+      subtotal: "200.00",
+      total: "200.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+      lines: { create: [{ title: "Синтетична тениска", quantity: 20, unitPrice: "10.00" }] },
+    },
+  });
   // An open task of the kind the Shopify import raises after approval (alerts screen, P4-08).
   await db.alert.create({
     data: {

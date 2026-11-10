@@ -39,7 +39,8 @@
     "lines": "Lines and companies",
     "countries": "Countries",
     "toWarehouse": "Create in warehouse",
-    "trackingLinks": "Tracking links"
+    "trackingLinks": "Tracking links",
+    "stockSync": "Stock sync"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -469,7 +470,8 @@
       "blocked": "Blocked",
       "transit": "In transit",
       "all": "All",
-      "awaitingTag": "Awaiting tag"
+      "awaitingTag": "Awaiting tag",
+      "qtyHold": "Suspicious"
     },
     "search": "Number, customer, email, phone, SKU",
     "store": "Store",
@@ -542,7 +544,8 @@
     "CANCELLED": "Cancelled",
     "UNKNOWN": "Unknown",
     "FULFILLED_EXTERNALLY": "Fulfilled outside the CRM",
-    "AWAITING_TAG": "Awaiting tag"
+    "AWAITING_TAG": "Awaiting tag",
+    "QTY_HOLD": "Suspicious quantity"
   },
   "fhb": {
     "errors": {
@@ -3655,6 +3658,50 @@
       "invalid_url": "The link must be a full https:// address.",
       "forbidden": "You may not do this.",
       "invalid": "Invalid data."
+    }
+  },
+  "stockSync": {
+    "title": "Stock sync",
+    "intro": "Stores that sell from one warehouse show one shared stock: a unit ordered in any of them is blocked and disappears from all of them within about a minute. A cancelled order gives it back; a returned parcel when the warehouse books it in.",
+    "noLine": "No line",
+    "groups": "Shared-stock groups (warehouse → stores)",
+    "warehouse": "Warehouse",
+    "stores": "Stores that sell from it",
+    "noWarehouses": "No warehouses connected.",
+    "noStores": "No store has mapped a Shopify location to this warehouse.",
+    "bufferHint": "Safety buffer: {n}",
+    "mode": {
+      "LIVE": "live",
+      "DRY_RUN": "dry run",
+      "DISABLED": "off"
+    },
+    "how": "Units are sent only to stores with Stock to Shopify = Live (Stores → store → Inventory). The full check of every product still runs every 10 minutes.",
+    "guard": {
+      "title": "Anti-sabotage",
+      "enabled": "Anti-sabotage on",
+      "perProduct": "Max units of one product",
+      "perOrder": "Max units in an order",
+      "save": "Save",
+      "saved": "Saved — applies to new orders.",
+      "hint": "An order above either limit is held in Suspicious and blocks no units until you approve it. Empty = no such limit.",
+      "error": {
+        "guard_needs_limit": "Set at least one limit to turn it on.",
+        "forbidden": "You may not do this.",
+        "not_found": "Line not found.",
+        "invalid": "Limits must be whole numbers from 1."
+      }
+    }
+  },
+  "qtyHold": {
+    "title": "Held: suspicious quantity",
+    "body": "{total} units in total ({max} of one product) — above the anti-sabotage limit. The order blocks no units and the other stores keep selling.",
+    "approve": "Approve (block the units)",
+    "reject": "Cancel the order",
+    "confirmApprove": "You approve the order: its units are blocked in every store and it enters review. Continue?",
+    "confirmReject": "You cancel the order. Continue?",
+    "error": {
+      "not_qty_hold": "The order is no longer held.",
+      "forbidden": "You may not do this."
     }
   }
 }

@@ -44,6 +44,7 @@ const ALL_STATUSES: CrmOrderStatus[] = [
   "UNKNOWN",
   "FULFILLED_EXTERNALLY",
   "AWAITING_TAG",
+  "QTY_HOLD",
 ];
 const CAUSES = [...new Set(RULES.map((r) => r.cause))] as TransitionCause[];
 

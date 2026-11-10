@@ -22,6 +22,7 @@ import {
   transition,
 } from "@/server/pipeline";
 import { matchBySku } from "./products";
+import { checkStockGuard } from "@/server/stock/guard-check";
 import { hasStoreTag } from "./order-tag-match";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -277,15 +278,44 @@ export async function importShopifyOrder(
       if (!existing) {
         // Shopify test orders are held: they must never reach a warehouse by accident.
         // Already fulfilled in Shopify when we first see it (history, or shipped by hand): nothing to review.
+        // Противосаботаж: more units than the store's product line allows → held, reserves nothing (other stores
+        // keep selling) until a person approves or cancels it.
+        const guard = store.companyId
+          ? await tx.lineStockGuard.findFirst({
+              where: { accountId, line: { companies: { some: { id: store.companyId } } } },
+              select: { enabled: true, maxPerProduct: true, maxPerOrder: true },
+            })
+          : null;
+        // Counted per master product (two variants of one product count together), else per Shopify variant.
+        const variantIds = o.lineItems.nodes.map((l) => l.variant?.id).filter((v): v is string => !!v);
+        const masters = guard?.enabled
+          ? new Map(
+              (
+                await tx.storeVariantLink.findMany({
+                  where: { storeId: store.id, shopifyVariantGid: { in: variantIds } },
+                  select: { shopifyVariantGid: true, productId: true },
+                })
+              ).map((v) => [v.shopifyVariantGid, v.productId]),
+            )
+          : new Map<string, string | null>();
+        const verdict = checkStockGuard(
+          guard,
+          o.lineItems.nodes.map((l) => ({
+            key: (l.variant?.id && masters.get(l.variant.id)) || l.variant?.id || l.id,
+            quantity: l.currentQuantity,
+          })),
+        );
         const status: CrmOrderStatus = o.cancelledAt
           ? "CANCELLED"
           : shopifyFulfilled(o)
             ? "FULFILLED_EXTERNALLY"
             : o.test
               ? "ON_HOLD"
-              : tagged
-                ? "IMPORTED"
-                : "AWAITING_TAG";
+              : verdict.hold
+                ? "QTY_HOLD"
+                : tagged
+                  ? "IMPORTED"
+                  : "AWAITING_TAG";
         const created = await tx.order.create({
           data: { accountId, source: "SHOPIFY", storeId: store.id, shopifyOrderGid: o.id, status, ...data },
         });
@@ -298,6 +328,14 @@ export async function importShopifyOrder(
         });
         orderId = created.id;
         outcome = "created";
+        if (status === "QTY_HOLD")
+          await openTask(
+            tx,
+            accountId,
+            created.id,
+            "order_qty_hold",
+            `Order ${o.name}: ${verdict.totalQty} units (${verdict.maxProductQty} of one product) — above the anti-sabotage limit, held: approve or cancel`,
+          );
       } else {
         await tx.order.update({ where: { id: existing.id }, data });
         // Still before approval here (PRE_APPROVAL): Shopify's cancel / fulfil applies directly.

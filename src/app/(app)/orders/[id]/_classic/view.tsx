@@ -1,5 +1,6 @@
 import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../../order-nav";
+import { QtyHoldBanner } from "../qty-hold";
 import { DesignToggle } from "../../design-toggle";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -235,6 +236,23 @@ export async function ClassicOrderView({
           </span>
         ))}
       </div>
+      {order.status === "QTY_HOLD" && (
+        <QtyHoldBanner
+          orderId={order.id}
+          totalQty={order.lines.reduce((n, l) => n + l.quantity, 0)}
+          maxProductQty={Math.max(
+            0,
+            ...Object.values(
+              order.lines.reduce<Record<string, number>>((m, l) => {
+                const k = l.productId ?? l.id;
+                m[k] = (m[k] ?? 0) + l.quantity;
+                return m;
+              }, {}),
+            ),
+          )}
+          canDecide={can(ctx.role, "orders.review")}
+        />
+      )}
       {heldCarriers.length > 0 && (
         <CarrierPick
           orderId={order.id}

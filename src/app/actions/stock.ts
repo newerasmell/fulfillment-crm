@@ -18,6 +18,7 @@ import {
   type ResolvedLine,
 } from "@/server/stock/inbound";
 import { createInventoryActivation } from "@/server/stock/activate";
+import { saveLineGuard } from "@/server/stock/guard";
 import { enqueueStock } from "@/server/stock/jobs";
 import { createInventoryPush } from "@/server/stock/push";
 import { updateStockSettings } from "@/server/stock/settings";
@@ -224,4 +225,24 @@ export async function activateLocationAction(
   }
   revalidatePath(`/stores/${storeId}/inventory`);
   return { ok: true };
+}
+
+/** "Синхронизация на наличности": a product line's anti-sabotage rule. */
+export async function saveLineGuardAction(input: {
+  lineId: string;
+  enabled: boolean;
+  maxPerProduct: string;
+  maxPerOrder: string;
+}): Promise<{ ok: true } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    await saveLineGuard(actorFrom(ctx), input);
+    revalidatePath("/settings/stock-sync");
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof z.ZodError) return { error: String(err.issues[0]?.message ?? "invalid") };
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError) return { error: err.code };
+    throw err;
+  }
 }

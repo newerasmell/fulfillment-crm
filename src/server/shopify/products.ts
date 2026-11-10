@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { touchOrdersOfVariant } from "@/server/stock/touch";
 import type { CrmOrderStatus } from "@/generated/prisma/client";
 import type { ShopifyClient } from "@/integrations/shopify/client";
 import {
@@ -106,6 +107,7 @@ export async function upsertVariant(accountId: string, store: StoreForSync, v: S
         where: { variantLinkId: link.id, productId: null, productChoice: { is: null } },
         data: { productId: match.productId },
       });
+    if (match) await touchOrdersOfVariant(tx, link.id);
     return { linkId: link.id, matched: !!link.productId };
   });
 }
@@ -215,6 +217,7 @@ async function applyLink(tx: Tx, linkId: string, productId: string, method: "man
     where: { variantLinkId: linkId, order: { status: { in: RELINKABLE } }, productChoice: { is: null } },
     data: { productId },
   });
+  await touchOrdersOfVariant(tx, linkId);
 }
 
 async function auditLink(

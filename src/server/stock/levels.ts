@@ -49,31 +49,38 @@ export function isStale(snapshotAt: Date, staleHours: number, now: Date) {
 }
 
 /** Units reserved by the CRM per (connection, product). */
-export async function crmReservations(accountId: string): Promise<Map<string, number>> {
+export async function crmReservations(
+  accountId: string,
+  /** Only these products (the fast sync and a fast push's re-plan): the same numbers, a much smaller read. */
+  onlyProductIds?: string[],
+): Promise<Map<string, number>> {
   const db = accountDb(accountId);
+  const only = onlyProductIds ? { in: onlyProductIds } : undefined;
+  const lineWhere = only ? { productId: only } : undefined;
+  const fLineWhere = only ? { orderLine: { productId: only } } : undefined;
   const [orders, queued, accepted] = await Promise.all([
     db.order.findMany({
-      where: { status: { in: [...ORDER_NOT_AT_WAREHOUSE] } },
+      where: { status: { in: [...ORDER_NOT_AT_WAREHOUSE] }, ...(only ? { lines: { some: lineWhere } } : {}) },
       select: {
         check: { select: { connectionId: true } },
-        lines: { select: { productId: true, quantity: true } },
+        lines: { where: lineWhere, select: { productId: true, quantity: true } },
         fulfillments: { select: { status: true } },
       },
     }),
     db.fulfillment.findMany({
-      where: { status: { in: [...NOT_AT_VENDOR_YET] } },
+      where: { status: { in: [...NOT_AT_VENDOR_YET] }, ...(only ? { lines: { some: fLineWhere } } : {}) },
       select: {
         connectionId: true,
-        lines: { select: { quantity: true, orderLine: { select: { productId: true } } } },
+        lines: { where: fLineWhere, select: { quantity: true, orderLine: { select: { productId: true } } } },
       },
     }),
     db.fulfillment.findMany({
-      where: { status: { in: [...AT_VENDOR] } },
+      where: { status: { in: [...AT_VENDOR] }, ...(only ? { lines: { some: fLineWhere } } : {}) },
       select: {
         connectionId: true,
         submittedAt: true,
         updatedAt: true,
-        lines: { select: { quantity: true, orderLine: { select: { productId: true } } } },
+        lines: { where: fLineWhere, select: { quantity: true, orderLine: { select: { productId: true } } } },
       },
     }),
   ]);

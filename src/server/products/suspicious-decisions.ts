@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { touchOrdersOfVariant } from "@/server/stock/touch";
 import type { Prisma } from "@/generated/prisma/client";
 import { logger } from "@/lib/logger";
 import { DomainError, type Actor } from "@/server/accounts";
@@ -142,6 +143,7 @@ export async function unlinkSuspiciousLink(
         },
         data: { productId: null },
       });
+      await touchOrdersOfVariant(tx, r.itemId);
     } else {
       const res = await tx.vendorProduct.updateMany({
         where: { id: r.itemId, productId: r.productId },

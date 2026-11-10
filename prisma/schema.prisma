@@ -112,6 +112,9 @@ enum CrmOrderStatus {
   /// The store takes only orders with its tag (StoreOrderTag) and this one has none yet: kept aside, not checked,
   /// never sent; enters review (IMPORTED) as soon as the tag appears in Shopify.
   AWAITING_TAG
+  /// Anti-sabotage (LineStockGuard): more units than the line allows in one order — held for a person, reserves no
+  /// stock (the other stores keep selling); "Одобри" sends it into review, "Откажи" cancels it.
+  QTY_HOLD
 }
 
 enum OrderSource {
@@ -242,6 +245,8 @@ model Account {
   shopifyCarrierAliases     ShopifyCarrierAlias[]
   storeOrderTags            StoreOrderTag[]
   carrierTrackingLinks      CarrierTrackingLink[]
+  lineStockGuards           LineStockGuard[]
+  stockSyncCursor           StockSyncCursor?
 }
 
 model User {
@@ -819,6 +824,8 @@ model Order {
   @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin)
   /// Справки (P10-04): orders by placement date, every status.
   @@index([accountId, placedAt])
+  /// Fast stock sync: orders changed in the last minutes.
+  @@index([accountId, updatedAt])
 }
 
 model OrderLine {
@@ -1768,6 +1775,7 @@ model ProductLine {
   catalogueRuns  MasterCatalogueRun[]
   mappingImports ProductMappingImport[]
   dismissals     ProductMatchDismissal[]
+  stockGuard     LineStockGuard?
 
   @@unique([accountId, id])
   @@unique([accountId, name])
@@ -2776,4 +2784,38 @@ model CarrierTrackingLink {
 
   @@unique([accountId, id])
   @@unique([accountId, carrierKey])
+}
+
+/// Противосаботаж per product line (owner request 2026-11-10): an order with more units of one product, or more
+/// units in total, than allowed is held as QTY_HOLD (reserves nothing) until a person approves or cancels it.
+model LineStockGuard {
+  id            String   @id @default(cuid())
+  accountId     String
+  lineId        String
+  enabled       Boolean  @default(false)
+  /// Held when any one product's quantity in the order is above this (null = no such limit).
+  maxPerProduct Int?
+  /// Held when the order's total quantity is above this (null = no such limit).
+  maxPerOrder   Int?
+  updatedById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  account Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  line    ProductLine @relation(fields: [accountId, lineId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, lineId])
+}
+
+/// Fast stock sync (owner request 2026-11-10): when the 1-minute sync last ran for this account. Each run looks at
+/// order lines and orders changed since then (with an overlap), so nothing is written on the order paths themselves.
+model StockSyncCursor {
+  id        String   @id @default(cuid())
+  accountId String   @unique
+  lastRunAt DateTime
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
 }

@@ -468,6 +468,7 @@ export async function checkOrder(
     // Waiting for its store's tag: never checked (nothing is stored or counted for it).
     const cur = await tx.order.findUnique({ where: { id: orderId }, select: { status: true } });
     if (cur?.status === "AWAITING_TAG") throw new DomainError("awaiting_tag");
+    if (cur?.status === "QTY_HOLD") throw new DomainError("qty_hold");
     await repairChosenLines(tx, orderId);
     const r = await transition(tx, {
       orderId,

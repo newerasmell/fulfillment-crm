@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { touchOrdersOfVariant } from "@/server/stock/touch";
 import type { Prisma } from "@/generated/prisma/client";
 import { logger } from "@/lib/logger";
 import { DomainError } from "@/server/accounts";
@@ -299,6 +300,7 @@ export async function autoLinkLine(accountId: string, lineId: string): Promise<n
             },
             data: { productId },
           });
+          await touchOrdersOfVariant(tx, r.id);
         }
         return n;
       });
