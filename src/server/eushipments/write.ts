@@ -3,6 +3,7 @@ import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { z } from "zod";
+import { resolveDeliveryOffice } from "./delivery-office";
 import { isLabelOnly } from "@/server/labels/pipeline-guard";
 import { Prisma, type Fulfillment, type OutboundStatus } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
@@ -564,14 +565,37 @@ async function euOrderPreflight(
   const cashReceiptCod = settings?.cashReceiptCod ?? false;
   const today = sofiaToday(now);
   const courier = await courierFor(accountId, connection.id, destination, input);
-  findings.push(...courier.findings);
+  // To a Speedy office (BG): the order's choice, or an "Office Speedy [id] NAME: …" address matched to ONE office.
+  const office = input.officeId
+    ? null
+    : await resolveDeliveryOffice(accountId, connection.id, courier.courierId, order);
+  const officeId = input.officeId ?? (office?.kind === "office" ? office.officeId : undefined);
+  findings.push(...courier.findings.filter((f) => !(officeId && f.code === "courier_office_only")));
+  if (office?.kind === "unresolved" && office.reason === "address_is_office")
+    findings.push(
+      block(
+        "office_address_as_street",
+        "recipient.streetName",
+        `Избрано е „До адрес“, но адресът е офис на Speedy („${office.search}“) — поправете адреса или изберете офиса в „Доставка“.`,
+        `"To address" is chosen but the address is a Speedy office ("${office.search}") — fix the address or choose the office under "Delivery".`,
+      ),
+    );
+  else if (office?.kind === "unresolved")
+    findings.push(
+      block(
+        "office_unresolved",
+        "recipient.officeId",
+        `Адресът е офис на Speedy („${office.search}“), но не е намерен точно един офис в списъка на склада — изберете офиса в „Доставка“.`,
+        `The address is a Speedy office ("${office.search}") but not exactly one office of the warehouse's list matches — choose the office under "Delivery".`,
+      ),
+    );
   const built = buildCreateOrder({
     referenceNumber: reference,
     senderId: companyId,
     waybillAvailableDate: input.waybillAvailableDate ?? today,
     courierId: courier.courierId,
     serviceName: courier.serviceName,
-    officeId: input.officeId,
+    officeId,
     shipmentPayer: input.shipmentPayer,
     address: (order.shippingAddress ?? {}) as Record<string, string | null>,
     phone: order.phone,
@@ -711,6 +735,9 @@ export async function queueEuOrder(
       });
       // The courier this shipment is created with (Shopify gets its name with the tracking number).
       const sentCourierId = (built.body as { courierId?: number }).courierId;
+      // The office the body goes to (chosen, or recognised from a Speedy office address).
+      const sentOfficeId =
+        (built.body as { recipient?: { officeId?: number | null } }).recipient?.officeId ?? null;
       const carrier = sentCourierId
         ? ((
             await tx.eushipmentsCourier.findFirst({
@@ -726,7 +753,7 @@ export async function queueEuOrder(
           data: {
             status: "QUEUED",
             carrier,
-            deliveryPoint: input.officeId ? { officeId: input.officeId } : Prisma.DbNull,
+            deliveryPoint: sentOfficeId ? { officeId: sentOfficeId } : Prisma.DbNull,
           },
         });
         // The order may have been edited since: the shipment's lines follow the body being queued now.
@@ -748,7 +775,7 @@ export async function queueEuOrder(
             externalId: reference,
             status: "QUEUED",
             carrier,
-            deliveryPoint: input.officeId ? { officeId: input.officeId } : undefined,
+            deliveryPoint: sentOfficeId ? { officeId: sentOfficeId } : undefined,
           },
         });
         await tx.fulfillmentLine.createMany({

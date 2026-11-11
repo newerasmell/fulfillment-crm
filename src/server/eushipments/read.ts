@@ -260,6 +260,9 @@ async function syncOfficesOfCourier(
         courierId,
         name: o.OFFICE_NAME.slice(0, 200),
         code: text(o.COURIER_OFFICE_CODE, 50),
+        // Missing = null (never 0).
+        courierOfficeId:
+          o.COURIER_OFFICE_ID == null || o.COURIER_OFFICE_ID === "" ? null : int(o.COURIER_OFFICE_ID),
         cityId: int(o.GROUP_CITY_ID ?? o.CITY_ID),
         cityName: text(o.CITY_NAME, 100),
         address: text(o.ADDRESS, 300),

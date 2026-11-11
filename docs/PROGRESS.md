@@ -427,6 +427,25 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   closed that task; a failed check is shown on the order and noted on the task; a reference deleted at the
   warehouse is left to a person. Open (later task): one overall deadline for a vendor send (incl. the FHB client's
   semaphore wait and 429 retries), so the 15-minute rule is enforced, not assumed.
+- 2026-11-11 Phones: the Italian mobile 392 783 8955 went out as +392 783 8955 (it begins with "39", Italy's code).
+  FHB/E.164: in a country WITHOUT a trunk prefix a number of at most the longest national length stays national
+  (IT 10, GR 10, PL/CZ/ES/PT/LU 9, DK/NO/CY/MT/EE/LV 8; a group rule without trunk: 10); countries with a trunk
+  prefix are unchanged (their national numbers are written with "0…"). euShipments rules: a number whose own
+  length is a valid national length is read as national (only custom rules can be affected). Tests per country.
+- 2026-11-11 "Липсващи артикули": units back in stock go to paid orders first (Shopify financial status PAID or
+  PARTIALLY_REFUNDED; AUTHORIZED/PENDING are unpaid), then oldest first — within the waiting orders, and within the
+  new orders of the automatic out_of_stock (the waiting orders are served before new ones, as before). An order
+  already READY keeps its units (a later paid order never takes them).
+- 2026-11-11 Order page: a square link icon opens the order in the store's Shopify admin in a new tab.
+- 2026-11-11 Speedy offices (orders to BG on an euShipments warehouse). The checkout writes the office into the
+  shipping address line 1: `Office Speedy [<speedy id>] <NAME>: <address>, <city>, <zip>, BG`. The euShipments API
+  takes `recipient.officeId` = the ID from GET /offices-by-courier (mirrored in EushipmentsOffice; its
+  COURIER_OFFICE_ID is now stored as `courierOfficeId`). Recognised (src/integrations/eushipments/speedy-office.ts)
+  and matched to ONE office of the order's courier: by `courierOfficeId` = the bracket number when the name agrees,
+  else by the exact normalised name; ambiguous / none / no courier → block "office_unresolved" (never sent as an
+  address). Order page "Доставка": До адрес / До офис + office search (Order.deliveryOffice; null = automatic).
+  Other countries unchanged. Open: confirm on production data that Speedy's bracket id equals COURIER_OFFICE_ID
+  ("Офиси, PUDO" shows it after the next office sync); until then the name match carries it.
 
 ## Open questions
 See SPEC.md §11.

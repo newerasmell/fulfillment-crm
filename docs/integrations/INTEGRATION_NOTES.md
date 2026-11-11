@@ -263,6 +263,9 @@ contracts. Separate base URL, separate auth call, camelCase.
   call `orders-history` with that refNum. A missing order comes back inside HTTP 200 as an item with
   `error: "Not found order…"`, `errorCode: 404` — that (and only that) means "safe to send".
   Use the same `{STORECODE}-{number}` as everywhere.
+- Office delivery: `recipient.officeId` = `ID` from `GET /offices-by-courier/{courierId}` (streetName then optional;
+  we send null). `COURIER_OFFICE_ID` is the courier's own office id. Speedy checkout addresses
+  ("Office Speedy [id] NAME: …") are matched to that list — see src/server/eushipments/delivery-office.ts.
 - Read-back after an unknown outcome uses the same lookup: found → created; the 404 item → absent; a found
   item whose last status is Deleted/Cancelled is neither (our assumption, the spec is silent) → UNCERTAIN +
   task. A create-order cut off by a stopped worker is never retried on its own; an OWNER/ADMIN may press

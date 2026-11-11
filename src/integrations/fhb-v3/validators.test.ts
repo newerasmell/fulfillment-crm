@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalisePhoneE164 } from "./phone";
+import { callingCodeOf, nationalMaxOf, NO_TRUNK_COUNTRIES, normalisePhoneE164 } from "./phone";
 import {
   findingsFromViolations,
   hasHardBlock,
@@ -53,6 +53,16 @@ describe("phone → E.164", () => {
     ["+359 0888 123 456", "BG", "+359888123456"],
     ["(0) 30-1234567", "DE", "+49301234567"],
     ["600 100 200", "PL", "+48600100200"],
+    // Italian mobiles start with 3 — "39…" is the number itself, not Italy's code (owner report 2026-11-11).
+    ["3927838955", "IT", "+393927838955"],
+    ["392 783 8955", "IT", "+393927838955"],
+    ["393927838955", "IT", "+393927838955"],
+    ["+39 392 783 8955", "IT", "+393927838955"],
+    ["0039 392 783 8955", "IT", "+393927838955"],
+    ["06 1234 5678", "IT", "+390612345678"],
+    ["359888123456", "BG", "+359888123456"],
+    ["30 6912345678", "GR", "+306912345678"],
+    ["6912345678", "GR", "+306912345678"],
     ["call me", "SK", null],
     ["12", "SK", null],
     ["0900000000", null, null],
@@ -61,6 +71,44 @@ describe("phone → E.164", () => {
   for (const [raw, country, want] of table) {
     it(`${raw} (${country}) → ${want}`, () => expect(normalisePhoneE164(raw, country)).toBe(want));
   }
+});
+
+describe("phone → E.164: the country code is never doubled nor swallowed", () => {
+  // Owner report 2026-11-11: 392 783 8955 (Italy, +39) went out as +392 783 8955. In a country without a trunk prefix,
+  // a national number of the longest national length that begins with the code's digits keeps the code added once.
+  for (const country of NO_TRUNK_COUNTRIES) {
+    it(`${country}: national number beginning with the code`, () => {
+      const cc = callingCodeOf(country)!;
+      const national = (cc + "1234567890123").slice(0, nationalMaxOf(country));
+      expect(normalisePhoneE164(national, country)).toBe(`+${cc}${national}`);
+      expect(normalisePhoneE164(cc + national, country)).toBe(`+${cc}${national}`);
+      expect(normalisePhoneE164(`+${cc}${national}`, country)).toBe(`+${cc}${national}`);
+    });
+  }
+  // International numbers written without "+": one code, shortest and longest real forms.
+  const intl: [string, string, string][] = [
+    ["49301234567", "DE", "+49301234567"],
+    ["4930123456", "DE", "+4930123456"],
+    ["436641234567", "AT", "+436641234567"],
+    ["4312345678", "AT", "+4312345678"],
+    ["39021234567", "IT", "+39021234567"],
+    ["393927838955", "IT", "+393927838955"],
+    ["35212345678", "LU", "+35212345678"],
+    ["36301234567", "HU", "+36301234567"],
+    ["359888123456", "BG", "+359888123456"],
+    ["421901123456", "SK", "+421901123456"],
+    ["420601123456", "CZ", "+420601123456"],
+    ["306912345678", "GR", "+306912345678"],
+    ["40721123456", "RO", "+40721123456"],
+    ["48600100200", "PL", "+48600100200"],
+    ["385911234567", "HR", "+385911234567"],
+  ];
+  for (const [raw, country, want] of intl)
+    it(`${raw} (${country}) → ${want}`, () => expect(normalisePhoneE164(raw, country)).toBe(want));
+  it("a group's own rule: guarded only without a trunk prefix", () => {
+    expect(normalisePhoneE164("3831234567", "XK", { cc: "383", trunk: "" })).toBe("+3833831234567");
+    expect(normalisePhoneE164("38344123456", "XK", { cc: "383", trunk: "0" })).toBe("+38344123456");
+  });
 });
 
 describe("FHB order pre-flight", () => {

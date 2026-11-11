@@ -523,7 +523,44 @@
       "newerHint": "Newer order (J)",
       "none": "No more"
     },
-    "codCollectable": "(to the warehouse: {amount} {currency})"
+    "codCollectable": "(to the warehouse: {amount} {currency})",
+    "openInShopify": "Open the order in Shopify (new tab)",
+    "deliveryOffice": {
+      "title": "Delivery",
+      "mode": {
+        "address": "To address",
+        "office": "To office"
+      },
+      "source": {
+        "chosen": "chosen by hand",
+        "speedy_id": "recognised from the address (Speedy ID)",
+        "name": "recognised from the address (by name)"
+      },
+      "unresolved": {
+        "no_match": "The address is a Speedy office (“{name}”) but the warehouse's list has no such office — choose it.",
+        "ambiguous": "The address is a Speedy office (“{name}”) but several offices match — choose the right one.",
+        "chosen_missing": "The chosen office (“{name}”) is no longer in the warehouse's list — choose again.",
+        "no_courier": "The address is a Speedy office (“{name}”) but no courier is chosen — choose a courier and the office.",
+        "address_is_office": "“To address” is chosen but the address is a Speedy office (“{name}”) — the warehouse would read it as an office. Fix the address or choose the office."
+      },
+      "search": "Search an office by name or Speedy ID",
+      "auto": "Recognise automatically from the address",
+      "locker": "locker",
+      "locked": "The delivery cannot change in this status.",
+      "saving": "Saving…",
+      "error": {
+        "not_editable": "The delivery cannot change in this status.",
+        "stale": "The order changed meanwhile — reload the page.",
+        "office_unknown": "The office is not in the warehouse's list.",
+        "forbidden": "You do not have permission for this.",
+        "other": "Failed — please try again.",
+        "no_courier": "The order has no courier — choose a courier, then the office.",
+        "office_not_supported": "The order's warehouse is not euShipments — office delivery is not supported here.",
+        "not_found": "Order not found.",
+        "invalid": "Invalid data."
+      },
+      "courier": "Courier: {name} (offices are searched in its list)"
+    }
   },
   "orderStatus": {
     "IMPORTED": "Imported",

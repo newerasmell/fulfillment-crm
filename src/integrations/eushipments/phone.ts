@@ -128,6 +128,9 @@ export function normalisePhone(
     nsn = intl.slice(rule.cc.length);
   } else if (
     compact.startsWith(rule.cc) &&
+    // A national number that merely begins with the code's digits stays national (owner report 2026-11-11:
+    // the Italian mobile 3927838955 begins with "39").
+    !rule.lengths.includes(compact.length) &&
     rule.lengths.some(
       (l) =>
         compact.length === rule.cc.length + l || compact.length === rule.cc.length + rule.trunk.length + l,

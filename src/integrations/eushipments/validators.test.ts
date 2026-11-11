@@ -7,7 +7,7 @@ import {
   vendorRefNumber,
   type BuildOrderInput,
 } from "./mapper";
-import { normalisePhone } from "./phone";
+import { normalisePhone, PHONE_RULES } from "./phone";
 import { addDays, hasBlocks, sofiaToday, storedAddressText, validateEuOrder } from "./validators";
 
 // Synthetic phone numbers only (well-formed, not real subscribers).
@@ -320,4 +320,20 @@ describe("product mapping", () => {
     expect(vendorRefNumber("SK-ABC", { prefix: "SK-" })).toBe("SK-ABC");
     expect(vendorRefNumber("ABC", {})).toBe("ABC");
   });
+});
+
+describe("phone: a national number that begins with the country code's digits (every built-in country)", () => {
+  // No-regression guard for the built-in rules (owner report 2026-11-11, +39 392…): their lengths never collide with
+  // code + national length, so these keep working; the custom-rule case is in rules-weights.test.ts.
+  for (const [country, rule] of Object.entries(PHONE_RULES)) {
+    it(country, () => {
+      for (const len of rule.lengths) {
+        if (len <= rule.cc.length) continue;
+        const nsn = (rule.cc + "1234567890").slice(0, len);
+        const want = rule.style === "national" ? `${rule.trunk}${nsn}` : `+${rule.cc}${nsn}`;
+        expect(normalisePhone(nsn, country)).toMatchObject({ ok: true, value: want });
+        expect(normalisePhone(`+${rule.cc}${nsn}`, country)).toMatchObject({ ok: true, value: want });
+      }
+    });
+  }
 });
