@@ -57,6 +57,15 @@ export class ShopifyClient {
     this.maxRetries = opts.maxRetries ?? 4;
   }
 
+  /**
+   * Forgets this store's cached token, so the next call fetches a new one. A token keeps the rights the app had
+   * when it was issued (owner report 2026-11-11: write_orders approved in the store, but a token from before the
+   * approval — cached up to 24 h — still lacked it).
+   */
+  dropToken() {
+    this.tokens.invalidate(this.domain, this.creds);
+  }
+
   /** Seconds to wait so that `cost` points are available, given the last known bucket. */
   private waitForBudgetMs(cost: number): number {
     if (!this.bucket) return 0;
@@ -135,6 +144,10 @@ export class ShopifyClient {
         await this.sleep(Math.max(1000, this.waitForBudgetMs(cost?.requestedQueryCost ?? 100)));
         continue;
       }
+      // Maybe a right approved after this token was issued: the next call fetches a new token. Never re-sent here
+      // (a mutation may have run before a nested field was denied; the caller decides).
+      if (body.errors?.some((e) => e.extensions?.code === "ACCESS_DENIED"))
+        this.tokens.invalidate(this.domain, this.creds);
       if (body.errors?.length) {
         throw new ShopifyError(
           "graphql_error",

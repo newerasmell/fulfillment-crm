@@ -267,6 +267,45 @@ describe("Shopify import (DB)", () => {
     await systemDb().store.update({ where: { id: storeId }, data: { connectionStatus: before as object } });
   });
 
+  it("rights approved after the cached token was issued: the test and the hourly refresh read with a new token", async () => {
+    // Every token request gets a new token; only tokens after the first carry write_orders (approved meanwhile).
+    let issued = 0;
+    const tokenCalls = () => issued;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/admin/oauth/access_token"))
+        return new Response(JSON.stringify({ access_token: `tok-${++issued}`, expires_in: 86399 }), {
+          status: 200,
+        });
+      const token = (init?.headers as Record<string, string>)["X-Shopify-Access-Token"];
+      const op = /(?:query|mutation)\s+(\w+)/.exec(JSON.parse(String(init?.body)).query)?.[1];
+      const data =
+        op === "Shop"
+          ? { shop: { name: "Demo", myshopifyDomain: DOMAIN, currencyCode: "EUR" } }
+          : {
+              currentAppInstallation: {
+                accessScopes: REQUIRED_SCOPES.filter((x) => token !== "tok-1" || x !== "write_orders").map(
+                  (handle) => ({ handle }),
+                ),
+              },
+            };
+      return new Response(JSON.stringify({ data }), { status: 200 });
+    });
+    const creds = { clientId: "client-id-0001", clientSecret: SECRET };
+    // The hourly refresh: the cached (old) token says write_orders is missing → read once more with a new one.
+    let tokens = new TokenProvider(fetchImpl);
+    await tokens.get(DOMAIN, creds);
+    const r = await refreshStoreScopes(accountId, storeId, { fetchImpl, tokens, sleep: async () => {} });
+    expect(r?.missingScopes).toEqual([]);
+    expect(tokenCalls()).toBe(2);
+    // The connection test always starts with a new token.
+    issued = 0;
+    tokens = new TokenProvider(fetchImpl);
+    await tokens.get(DOMAIN, creds);
+    const t = await testStoreConnection(accountId, storeId, { fetchImpl, tokens, sleep: async () => {} });
+    expect(t.missingScopes).toEqual([]);
+    expect(tokenCalls()).toBe(2);
+  });
+
   it("creates an order once; re-imports and older versions change nothing", async () => {
     const s = await store();
     const first = await importShopifyOrder(accountId, s, order());

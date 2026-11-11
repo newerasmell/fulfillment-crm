@@ -35,6 +35,8 @@ export async function testStoreConnection(
   let status: ConnectionStatus;
   try {
     const { client, store } = await shopifyClientForStore(accountId, storeId, opts);
+    // A new token: rights approved since the cached one was issued show up now.
+    client.dropToken();
     const { shop } = await client.query(SHOP_QUERY, {}, ShopResponse);
     status =
       shop.myshopifyDomain.toLowerCase() === store.domain
@@ -80,7 +82,12 @@ export async function refreshStoreScopes(
   if (!store || !last.ok || !last.at) return null; // never tested or broken: the connection test is what tells
   try {
     const { client } = await shopifyClientForStore(accountId, storeId, opts);
-    const r = await client.query(APP_SCOPES_QUERY, {}, AppScopesResponse);
+    let r = await client.query(APP_SCOPES_QUERY, {}, AppScopesResponse);
+    if (missingScopes(r.currentAppInstallation.accessScopes.map((a) => a.handle)).length) {
+      // Maybe only the cached token is older than the approval: read once more with a new one.
+      client.dropToken();
+      r = await client.query(APP_SCOPES_QUERY, {}, AppScopesResponse);
+    }
     const scopes = r.currentAppInstallation.accessScopes.map((a) => a.handle).sort();
     const next = {
       ...last,

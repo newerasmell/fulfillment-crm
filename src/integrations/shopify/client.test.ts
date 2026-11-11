@@ -59,6 +59,28 @@ describe("ShopifyClient", () => {
     expect(calls.filter((x) => x.url.endsWith("access_token"))).toHaveLength(3);
   });
 
+  it("ACCESS_DENIED: thrown, never re-sent; the next call fetches a new token", async () => {
+    const denied = () =>
+      json({
+        errors: [{ message: "Access denied for tagsAdd field.", extensions: { code: "ACCESS_DENIED" } }],
+      });
+    const { fetchImpl, calls } = fakeShopify([denied, shopOk]);
+    const c = new ShopifyClient("demo.myshopify.com", creds, { fetchImpl, sleep: async () => {} });
+    await expect(c.query(SHOP_QUERY, {}, ShopResponse)).rejects.toMatchObject({ code: "graphql_error" });
+    expect(calls.filter((x) => x.url.includes("graphql"))).toHaveLength(1);
+    await c.query(SHOP_QUERY, {}, ShopResponse);
+    expect(calls.filter((x) => x.url.endsWith("access_token"))).toHaveLength(2);
+  });
+
+  it("dropToken: the next call fetches a new token", async () => {
+    const { fetchImpl, calls } = fakeShopify([shopOk, shopOk]);
+    const c = new ShopifyClient("demo.myshopify.com", creds, { fetchImpl, sleep: async () => {} });
+    await c.query(SHOP_QUERY, {}, ShopResponse);
+    c.dropToken();
+    await c.query(SHOP_QUERY, {}, ShopResponse);
+    expect(calls.filter((x) => x.url.endsWith("access_token"))).toHaveLength(2);
+  });
+
   it("explains the different-organisation error", async () => {
     const fetchImpl = vi.fn(async () => new Response('{"error":"shop_not_permitted"}', { status: 400 }));
     const c = new ShopifyClient("demo.myshopify.com", creds, { fetchImpl, sleep: async () => {} });
