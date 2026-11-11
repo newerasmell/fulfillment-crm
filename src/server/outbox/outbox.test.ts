@@ -374,7 +374,9 @@ describe("outbox sender + liveMode gate", () => {
       return { outcome: "accepted" as const, response: {} };
     });
     const p = processOutbound(request.id, () => ({ send }));
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait until the sender is really inside the vendor call (a fixed sleep raced on a slow CI runner).
+    for (let i = 0; i < 200 && send.mock.calls.length === 0; i++) await new Promise((r) => setTimeout(r, 25));
+    expect(send).toHaveBeenCalledTimes(1);
     await sweepOutbox(new Date(Date.now() + STALE_SENDING_MS + 1000)); // declares it UNCERTAIN
     release();
     expect(await p).toBe("UNCERTAIN");
