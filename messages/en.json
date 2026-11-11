@@ -472,7 +472,8 @@
       "transit": "In transit",
       "all": "All",
       "awaitingTag": "Awaiting tag",
-      "qtyHold": "Suspicious"
+      "qtyHold": "Suspicious",
+      "issues": "With issues"
     },
     "search": "Number, customer, email, phone, SKU",
     "store": "Store",

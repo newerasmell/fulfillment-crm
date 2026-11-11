@@ -84,6 +84,32 @@ describe("orders read model", () => {
     expect((await listOrders({ ...all, activeCompanyId: b }, { tab: "all" })).total).toBe(1);
   });
 
+  it("'С грешки' on Начало and the orders tab are the same orders: open order tasks, any status", async () => {
+    const all = { accountId, companyScope: null, activeCompanyId: null };
+    const ready = (await listOrders(all, { tab: "ready" })).rows[0]!;
+    await accountDb(accountId).alert.create({
+      data: {
+        accountId,
+        kind: "shopify_writeback_failed",
+        isTask: true,
+        severity: "WARNING",
+        title: "x",
+        entityType: "Order",
+        entityId: ready.id,
+      },
+    });
+    const counts = await orderTabCounts(all, {});
+    expect(counts.issues).toBe(1);
+    expect((await listOrders(all, { tab: "issues" })).rows.map((o) => o.id)).toEqual([ready.id]);
+    expect((await dashboardSummary(all)).attention.errors).toBe(counts.issues);
+    // Not in another company's view.
+    expect((await orderTabCounts({ ...all, activeCompanyId: b }, {})).issues).toBe(0);
+    await accountDb(accountId).alert.updateMany({
+      where: { entityId: ready.id },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+  });
+
   it("detail refuses orders of another company or group", async () => {
     const [bOrder] = (await listOrders({ accountId, companyScope: null, activeCompanyId: b }, { tab: "all" }))
       .rows;
