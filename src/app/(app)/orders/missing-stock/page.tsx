@@ -27,10 +27,13 @@ export default async function MissingStockPage({
   const tab: StockWaitTab = (STOCK_WAIT_TABS as readonly string[]).includes(sp.tab ?? "")
     ? (sp.tab as StockWaitTab)
     : "out";
-  const [data, stores] = await Promise.all([
-    stockWaitOverview(actorFrom(ctx), tab),
-    outOfStockAutoTagStores(actorFrom(ctx)),
-  ]);
+  // The sidebar's product line / company, like every list (owner request 2026-11-11).
+  const view = {
+    ...actorFrom(ctx),
+    activeCompanyId: ctx.activeCompanyId,
+    lineCompanyIds: ctx.lineCompanyIds,
+  };
+  const [data, stores] = await Promise.all([stockWaitOverview(view, tab), outOfStockAutoTagStores(view)]);
   return (
     <>
       <PageHeader title={t("title")} subtitle={t("intro")} />
