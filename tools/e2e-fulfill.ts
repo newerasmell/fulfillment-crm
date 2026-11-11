@@ -3,6 +3,7 @@
 import { checkOrder } from "@/server/checks";
 import { systemDb } from "@/server/db/client";
 import { transitionOrder } from "@/server/pipeline";
+import { noCarrierKey } from "@/server/shopify/carrier-company";
 
 export const E2E_SHIPPED_ORDER = "#93004";
 export const E2E_FULFILL_ORDERS = { a: "#93001", b: "#93002", notApproved: "#93003" } as const;
@@ -205,6 +206,15 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       carrier: "E2E Local Courier",
       trackingNumbers: ["E2E-TRK-93005"],
       shippedAt: new Date(),
+    },
+  });
+  // A courier remembered for shipments without one (Настройки → Линкове за проследяване, "Забрави").
+  await db.shopifyCarrierAlias.create({
+    data: {
+      accountId,
+      carrierKey: noCarrierKey(connection.id, "GR", companyId),
+      carrierName: "NOCARRIER GR",
+      company: "ACS Courier",
     },
   });
   await db.shopifyWriteBack.create({

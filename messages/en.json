@@ -1556,7 +1556,8 @@
       "other": "Other courier (not in Shopify's list)…",
       "otherName": "Courier name, e.g. Express One",
       "otherLink": "Tracking link",
-      "otherHint": "Paste the tracking link with '{tracking}' in place of the number, e.g. https://tracking.expressone.hu/?plc_number='{tracking}'. Remembered for this courier (Settings → Tracking links)."
+      "otherHint": "Paste the tracking link with '{tracking}' in place of the number, e.g. https://tracking.expressone.hu/?plc_number='{tracking}'. Remembered for this courier (Settings → Tracking links).",
+      "rememberNone": "The choice is remembered for every shipment without a courier from this warehouse to the same country for this company (change it in Settings → Tracking links) — the waiting ones and the next ones pass on their own."
     }
   },
   "alerts": {
@@ -3669,6 +3670,20 @@
       "invalid_url": "The link must be a full https:// address.",
       "forbidden": "You may not do this.",
       "invalid": "Invalid data."
+    },
+    "noCarrier": {
+      "title": "Remembered couriers for shipments without one",
+      "intro": "When a warehouse sends no courier, the pick in “Choose the courier for Shopify” is remembered for the warehouse, country and company. “Forget” removes it — the next such shipment waits for a pick again.",
+      "none": "Nothing remembered yet.",
+      "warehouse": "Warehouse",
+      "country": "Country",
+      "company": "Company",
+      "courier": "Courier in Shopify",
+      "forget": "Forget",
+      "confirm": "Forget this courier? The next shipments without a courier from there will wait for a pick.",
+      "unknown": "(deleted warehouse)",
+      "forbidden": "You do not have permission for this.",
+      "failed": "Failed — please try again."
     }
   },
   "stockSync": {

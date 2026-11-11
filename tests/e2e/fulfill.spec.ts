@@ -112,7 +112,17 @@ test("tracking links: a courier's link template with a live test link; saved for
   );
   await row.getByRole("button", { name: "Запази" }).click();
   await expect(row).toContainText("Запазено");
+  // Couriers remembered for shipments without one: listed below, with "Забрави" for the owner.
+  await expect(page.getByRole("heading", { name: "Запомнени куриери за пратки без куриер" })).toBeVisible();
+  const rule = page.getByTestId("nocarrier-rule");
+  await expect(rule).toContainText("GR");
+  await expect(rule).toContainText("ACS Courier");
   await page.screenshot({ path: "test-results/tracking-links.png", fullPage: true });
+  page.once("dialog", (d) => d.accept());
+  await rule.getByRole("button", { name: "Забрави" }).click();
+  await expect(rule).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByText("Още няма запомнени.")).toBeVisible();
 });
 
 test("anti-sabotage: a held order under Подозрителни is cancelled; the stock sync page lists the groups", async ({

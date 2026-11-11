@@ -414,6 +414,7 @@ describe("Shopify write-back (DB, mocked Shopify)", () => {
     });
     expect(await processWriteBack(row.id, shop.clients)).toBe("FAILED");
     expect(shop.count("FulfillmentWriteBackRead")).toBe(1); // no read-back needed: nothing ran
+    expect(shop.count("FulfillmentWriteBack")).toBe(1); // never re-sent (not even with a new token)
     expect(await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_failed" } })).toBe(
       1,
     );

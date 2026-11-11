@@ -7,7 +7,7 @@ import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { ForbiddenError, assertCan } from "@/server/auth/rbac";
 import { setStoreOrderTag } from "@/server/shopify/order-tag";
-import { saveCarrierTrackingLink } from "@/server/shopify/tracking-links";
+import { deleteNoCarrierRule, saveCarrierTrackingLink } from "@/server/shopify/tracking-links";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
@@ -318,6 +318,21 @@ export async function saveStoreOrderTagAction(
   revalidatePath(`/stores/${storeId}`);
   revalidatePath("/orders");
   return { ok: true, setAside: r.setAside, released: r.released };
+}
+
+/** "Линкове за проследяване": forget one courier remembered for shipments without one. */
+export async function deleteNoCarrierRuleAction(
+  carrierKey: string,
+): Promise<{ ok: true } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    await deleteNoCarrierRule(actorFrom(ctx), carrierKey);
+    revalidatePath("/settings/tracking-links");
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof z.ZodError) return { error: "invalid" };
+    return (toError(err) as { error: string }) ?? { error: "unexpected" };
+  }
 }
 
 /** "Линкове за проследяване": save or clear one courier's tracking link template. */

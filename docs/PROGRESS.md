@@ -403,6 +403,19 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   page shows the Shopify amount with "(към склада: …)". Начало "С грешки" now opens the new orders tab "С грешки"
   (orders with an open task), the same definition as the card.
 
+- 2026-11-11 Couriers Shopify does not list ("Друг куриер": own name + tracking link template). Shipments the
+  warehouse sends without a courier (null, "" or spaces): the courier picked once is remembered per warehouse
+  connection + destination country + company (ShopifyCarrierAlias key `NOCARRIER:<connection>:<CC>:<company>`,
+  upper-case so no typed name can match it); the shipments waiting with the same key are released at once and the
+  next ones take it by themselves (also in DRY_RUN). Changing or forgetting a remembered courier needs
+  stores.manage; Настройки → Линкове за проследяване lists them with "Забрави" (audited).
+- 2026-11-11 Shopify tokens (cached in memory up to 24 h) keep the rights the app had when they were issued: a
+  right approved later (write_orders) was still reported missing. "Тествай връзката" now always takes a new token,
+  the hourly scope refresh re-reads once with a new token when something is missing, and an ACCESS_DENIED drops the
+  cached token (the request itself is never re-sent). Open (later task): ACCESS_DENIED still counts as "rejected
+  before execution" for fulfillment write-backs; Shopify does not document that a mutation never runs when a
+  nested field is denied — classify it as definite only with no data and root-level error paths.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —
