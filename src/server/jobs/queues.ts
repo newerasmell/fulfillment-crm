@@ -30,6 +30,8 @@ export const QUEUES = {
    * possible); harmless because the sender claims each request atomically and never double-sends.
    */
   outboxSend: { name: "outbox.send", options: { ...retry, expireInSeconds: 300 } },
+  /** "Провери в склада": one lookup at the warehouse for an interrupted create-order (data: RecheckJob). */
+  outboxRecheck: { name: "outbox.recheck", options: { retryLimit: 0, expireInSeconds: 300 } },
   /** Every minute: picks due outbox rows, turns crashed sends into UNCERTAIN tasks. */
   outboxSweep: { name: "outbox.sweep", options: { retryLimit: 0, expireInSeconds: 120 }, cron: "* * * * *" },
   /** Shopify: connection test for one store (data: { accountId, storeId }). */

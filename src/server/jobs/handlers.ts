@@ -2,6 +2,7 @@ import type { Job, PgBoss } from "pg-boss";
 import { logger } from "@/lib/logger";
 import { purgeOldLoginAttempts } from "@/server/auth/rate-limit";
 import { processOutbound, sweepOutbox } from "@/server/outbox/outbox";
+import { runWarehouseRecheck, type RecheckJob } from "@/server/outbox/recheck";
 import type { TransportResolver } from "@/server/outbox/transport";
 import { registerShopifyWorkers } from "@/server/shopify/jobs";
 import { registerFhbWorkers } from "@/server/fhb/jobs";
@@ -58,6 +59,16 @@ export async function registerWorkers(deps: WorkerDeps) {
     for (const job of jobs) {
       const status = await processOutbound(job.data.requestId, resolveTransport);
       logger.info({ requestId: job.data.requestId, status }, "outbox processed");
+    }
+  });
+
+  await boss.work<RecheckJob>(QUEUES.outboxRecheck.name, opts, async (jobs) => {
+    for (const job of jobs) {
+      const status = await runWarehouseRecheck(job.data, resolveTransport);
+      logger.info({ requestId: job.data.requestId, status }, "warehouse recheck");
+      // Not at the warehouse: it goes out again now (through the gate).
+      if (status === "PENDING")
+        await scheduleOutboxSend(boss, { requestId: job.data.requestId, accountId: job.data.accountId });
     }
   });
 

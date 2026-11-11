@@ -1909,6 +1909,29 @@
         "reroute_open": "A reroute is in progress — it decides the cancel.",
         "already_requested": "The cancel was already requested."
       }
+    },
+    "recheck": {
+      "title": "Unclear whether the order reached the warehouse",
+      "explain": "The send was interrupted (system restart during the request). Do not press “Fulfill” again — check first.",
+      "button": "Check at the warehouse",
+      "confirm": "The CRM looks the order up at the warehouse by its number. Found — it is marked sent. Not there — it is sent again (the warehouse is checked once more right before). Continue?",
+      "started": "Checking… the page refreshes in a few seconds.",
+      "failed": "Failed — please try again.",
+      "managersOnly": "An owner or administrator runs the check.",
+      "why": {
+        "checking": "A check is running — wait a few minutes.",
+        "too_recent": "The request was interrupted less than 15 minutes ago — wait, then check.",
+        "mode_not_live": "The warehouse connection is not in Canary or Live mode (or is off) — nothing is checked.",
+        "outbox_paused": "Sending to warehouses is paused — resume it and try again.",
+        "shipment_moved": "The shipment no longer waits for the warehouse — nothing is checked.",
+        "not_recheckable": "This request cannot be checked automatically — check the warehouse cabinet.",
+        "not_uncertain": "The request no longer has an unknown result.",
+        "not_scheduled": "The check could not be started — try again in 10 minutes.",
+        "not_found": "Request not found.",
+        "task_resolved": "The task for this request was already closed by a person — the CRM leaves it alone. Check the warehouse cabinet if needed.",
+        "deleted_there": "The reference belongs to a deleted/cancelled shipment at the warehouse — decide by hand (warehouse cabinet)."
+      },
+      "lastCheck": "Last check: {error}"
     }
   },
   "stock": {

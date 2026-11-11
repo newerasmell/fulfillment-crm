@@ -1046,6 +1046,19 @@ describe("EuShipmentsTransport (unit)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("create-order read-back: a deleted/cancelled shipment under our reference is neither created nor absent", async () => {
+    const call = {
+      operation: EU_OPS.createOrder,
+      idempotencyKey: "k",
+      payload: { body: { awb: { referenceNumber: "TST-DEL" } }, ctx: {} },
+      testMode: false,
+    };
+    await expect(transport(() => json([found("TST-DEL", "Deleted")])).readBack(call)).rejects.toThrow(
+      /deleted\/cancelled/,
+    );
+    expect(await transport(() => json([notFound("TST-DEL")])).readBack(call)).toEqual({ found: false });
+  });
+
   it("attach-pdf per-file errors are rejections; no read-back exists for attach or booking", async () => {
     const t = transport(() => json(R.attachPdfNotFound, 422));
     const call = {

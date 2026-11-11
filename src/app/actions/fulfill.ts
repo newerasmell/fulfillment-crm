@@ -18,6 +18,7 @@ import {
   type CanaryView,
 } from "@/server/fulfill";
 import { webBoss } from "@/server/jobs/boss";
+import { requestWarehouseRecheck } from "@/server/outbox/recheck";
 import { QUEUES } from "@/server/jobs/queues";
 
 /**
@@ -117,6 +118,31 @@ export async function confirmCanaryAction(
       "outbox send not scheduled; the sweep picks it up",
     );
   }
+  return { ok: true };
+}
+
+/** "Провери в склада": an interrupted create-order is looked up at the warehouse by the worker. */
+export async function warehouseRecheckAction(requestId: string): Promise<{ ok: true } | Fail> {
+  const ctx = await requireAccountContext();
+  let job;
+  try {
+    job = await requestWarehouseRecheck(actorFrom(ctx), { requestId });
+  } catch (err) {
+    return toError(err);
+  }
+  try {
+    const boss = await webBoss();
+    await boss.send(QUEUES.outboxRecheck.name, {
+      requestId: job.requestId,
+      accountId: job.accountId,
+      userId: job.userId,
+    });
+  } catch (err) {
+    // The mark stays; after 10 minutes the button can be pressed again.
+    logger.warn({ requestId, err: (err as Error).message }, "warehouse recheck not scheduled");
+    return { error: "recheck_not_scheduled" };
+  }
+  if (job.orderId) revalidatePath(`/orders/${job.orderId}`);
   return { ok: true };
 }
 

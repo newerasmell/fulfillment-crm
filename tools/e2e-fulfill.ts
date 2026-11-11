@@ -346,5 +346,48 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       entityId: orders.b!,
     },
   });
+  // A create-order cut off by a worker restart (unknown result): "Провери в склада" on its order.
+  const cut = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      shopifyOrderGid: "gid://shopify/Order/94007",
+      number: "#94007",
+      status: "QUEUED",
+      customerName: "Тест Получател",
+      currency: "EUR",
+      subtotal: "20.00",
+      total: "20.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+    },
+  });
+  const cf = await db.fulfillment.create({
+    data: {
+      accountId,
+      orderId: cut.id,
+      connectionId: connection.id,
+      externalId: "DM-94007",
+      status: "QUEUED",
+    },
+  });
+  await db.outboundRequest.create({
+    data: {
+      accountId,
+      connectionId: connection.id,
+      operation: "eushipments.createOrder",
+      idempotencyKey: "e2e-94007",
+      payload: { body: { awb: { referenceNumber: "DM-94007" } }, ctx: { fulfillmentId: cf.id } },
+      status: "UNCERTAIN",
+      evaluatedMode: "CANARY",
+      attempts: 1,
+      fulfillmentId: cf.id,
+      lockedAt: new Date(Date.now() - 3600_000),
+      lastError: "worker stopped during the vendor call",
+    },
+  });
   return { connectionId: connection.id, orders, shippedOrderId: shipped.id };
 }

@@ -415,6 +415,18 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   cached token (the request itself is never re-sent). Open (later task): ACCESS_DENIED still counts as "rejected
   before execution" for fulfillment write-backs; Shopify does not document that a mutation never runs when a
   nested field is denied — classify it as definite only with no data and root-level error paths.
+- 2026-11-11 "Провери в склада": a deploy restarted the worker inside an euShipments create-order; the request went
+  UNCERTAIN ("worker stopped during the vendor call"), the order stayed "На опашка", it was not at the warehouse and
+  nothing could send it again. On the order's shipments an OWNER/ADMIN now asks the worker to look it up
+  (src/server/outbox/recheck.ts) — only for create-orders cut off by a stopped worker whose read-back is a lookup
+  by our reference (euShipments orders-history, FHB GET /order), LIVE/CANARY call and connection, not paused, the
+  shipment still QUEUED/SUBMITTING, 15+ min after the call began. Found → SENT; absent → PENDING through the gate
+  (CANARY confirmation cleared); failed/deleted there → stays UNCERTAIN. Never automatic (an automatic version
+  was dropped after the audit: old and person-handled requests, DRY_RUN, updates/deletes). The sender's finalize
+  is fenced by the attempt; a SENT request resolves its "unknown result" task. Not offered when a person already
+  closed that task; a failed check is shown on the order and noted on the task; a reference deleted at the
+  warehouse is left to a person. Open (later task): one overall deadline for a vendor send (incl. the FHB client's
+  semaphore wait and 429 retries), so the 15-minute rule is enforced, not assumed.
 
 ## Open questions
 See SPEC.md §11.

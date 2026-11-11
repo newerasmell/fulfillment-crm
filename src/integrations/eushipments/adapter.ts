@@ -327,6 +327,11 @@ export class EuShipmentsTransport implements OutboundTransport {
         const lookup = classifyHistoryItem(historyItemFor(await client.ordersHistory([ref]), ref));
         if (lookup.kind === "not_found") return { found: false };
         if (lookup.kind === "error") throw new Error(`orders-history: ${lookup.error}`);
+        // Deleted / cancelled there: neither "created" nor safe to send again (the pre-send check rejects it too).
+        if (isDeleted(lookup.item))
+          throw new Error(
+            `reference ${ref} is a deleted/cancelled shipment at euShipments — check the cabinet`,
+          );
         // orders-history carries no orderId; the shipment is tracked by our reference from here on.
         await this.effect(call, "orderCreated", ctx, { orderId: null, recovered: true });
         return { found: true, response: { recoveredBy: "orders-history", awb: lookup.item.awb ?? null } };

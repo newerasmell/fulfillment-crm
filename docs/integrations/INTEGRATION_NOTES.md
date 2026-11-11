@@ -263,6 +263,10 @@ contracts. Separate base URL, separate auth call, camelCase.
   call `orders-history` with that refNum. A missing order comes back inside HTTP 200 as an item with
   `error: "Not found order…"`, `errorCode: 404` — that (and only that) means "safe to send".
   Use the same `{STORECODE}-{number}` as everywhere.
+- Read-back after an unknown outcome uses the same lookup: found → created; the 404 item → absent; a found
+  item whose last status is Deleted/Cancelled is neither (our assumption, the spec is silent) → UNCERTAIN +
+  task. A create-order cut off by a stopped worker is never retried on its own; an OWNER/ADMIN may press
+  "Провери в склада" on the order (src/server/outbox/recheck.ts), which runs this lookup once in the worker.
 - Content: `products[{refNumber, qty, price?, priceWithoutVat?}]` or `boxes[{refNumberBox, items[]}]`.
   For senders with Econt/Speedy cash-receipt config: **Σ(price × qty) must equal `awb.bankRepayment`**
   or the order is rejected — compute prices from Shopify line totals after discounts, then fix rounding on

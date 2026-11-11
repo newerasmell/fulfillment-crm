@@ -46,6 +46,8 @@ import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton }
 import { AiCard } from "./ai-card";
 import { CodEditor, CodRestoreButton, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
 import { CopyValue } from "@/components/ui/CopyValue";
+import { uncertainCreatesOf } from "@/server/outbox/recheck";
+import { WarehouseRecheck } from "./warehouse-recheck";
 import { EditableCard } from "@/components/ui/EditableCard";
 import { Field, fieldGridCls, Fold } from "@/components/ui/Fold";
 import { ChevronDownIcon } from "@/components/ui/icons";
@@ -100,11 +102,12 @@ export async function NewOrderView({
   }
   const { order, check } = data;
   const o = await getTranslations("override");
-  const [wOptions, wCodes, rv, wc] = await Promise.all([
+  const [wOptions, wCodes, rv, wc, uncertain] = await Promise.all([
     warehouseOptions(actorFrom(ctx), order.id),
     warehouseReasonCodes(ctx.accountId),
     rerouteView(actorFrom(ctx), order.id),
     warehouseCancelView(actorFrom(ctx), order.id),
+    uncertainCreatesOf(actorFrom(ctx), order.id),
   ]);
   const cancelRow = (fulfillmentId: string) => wc.rows.find((x) => x.fulfillmentId === fulfillmentId) ?? null;
   /** What happened to the last "Откажи в склада" request (the sender's liveMode decision included). */
@@ -729,6 +732,17 @@ export async function NewOrderView({
                         {o("shipments.raw")}: {f.rawStatus}
                       </span>
                     )}
+                    {uncertain
+                      .filter((u) => u.fulfillmentId === f.id)
+                      .map((u) => (
+                        <WarehouseRecheck
+                          key={u.requestId}
+                          requestId={u.requestId}
+                          refusal={u.refusal}
+                          canRun={can(ctx.role, "stores.manage")}
+                          lastCheckError={u.lastCheckError}
+                        />
+                      ))}
                     {(() => {
                       const row = cancelRow(f.id);
                       if (!row) return null;
