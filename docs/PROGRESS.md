@@ -403,6 +403,13 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   page shows the Shopify amount with "(към склада: …)". Начало "С грешки" now opens the new orders tab "С грешки"
   (orders with an open task), the same definition as the card.
 
+- 2026-11-11 Couriers Shopify does not list ("Друг куриер": own name + tracking link template). Shipments the
+  warehouse sends without a courier (null, "" or spaces): the courier picked once is remembered per warehouse
+  connection + destination country + company (ShopifyCarrierAlias key `NOCARRIER:<connection>:<CC>:<company>`,
+  upper-case so no typed name can match it); the shipments waiting with the same key are released at once and the
+  next ones take it by themselves (also in DRY_RUN). Changing or forgetting a remembered courier needs
+  stores.manage; Настройки → Линкове за проследяване lists them with "Забрави" (audited).
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

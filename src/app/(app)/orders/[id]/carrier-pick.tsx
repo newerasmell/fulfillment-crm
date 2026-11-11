@@ -130,9 +130,9 @@ function Row({
           <button type="submit" disabled={pending || !ready} className={`${buttonCls} px-3 py-1 text-sm`}>
             {t("save")}
           </button>
-          {s.carrier && (
-            <span className="w-full text-xs text-muted">{t("remember", { carrier: s.carrier })}</span>
-          )}
+          <span className="w-full text-xs text-muted">
+            {s.carrier ? t("remember", { carrier: s.carrier }) : t("rememberNone")}
+          </span>
         </>
       )}
       {error && (

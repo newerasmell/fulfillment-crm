@@ -2,9 +2,9 @@ import { z } from "zod";
 import { carrierKey } from "@/integrations/shopify/fulfillments";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb } from "@/server/db/client";
+import { accountDb, withAccountTransaction } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
-import { shopifyCompanyFor } from "./carrier-company";
+import { NOCARRIER_PREFIX, shopifyCompanyFor } from "./carrier-company";
 
 /**
  * "Линкове за проследяване" (owner request 2026-11-09): Shopify's tracking link pointed at the warehouse's page
@@ -174,4 +174,92 @@ export async function saveCarrierTrackingLink(
     userAgent: actor.userAgent,
   });
   return { urlTemplate: template };
+}
+
+export interface NoCarrierRuleRow {
+  carrierKey: string;
+  company: string;
+  connectionName: string | null;
+  countryCode: string | null;
+  companyName: string | null;
+  updatedAt: Date;
+}
+
+/**
+ * The couriers remembered for shipments a warehouse sends without one (per warehouse + country + company; owner
+ * request 2026-11-11), so a wrong pick can be seen and removed.
+ */
+export async function listNoCarrierRules(view: {
+  accountId: string;
+  /** A company-scoped person sees only their companies' rules. */
+  companyScope: readonly string[] | null;
+}): Promise<NoCarrierRuleRow[]> {
+  const { accountId, companyScope } = view;
+  const db = accountDb(accountId);
+  const rules = await db.shopifyCarrierAlias.findMany({
+    where: { carrierKey: { startsWith: NOCARRIER_PREFIX } },
+    select: { carrierKey: true, company: true, updatedAt: true },
+  });
+  const parts = rules
+    .map((r) => {
+      const [connectionId = "", country = "-", companyId = "-"] = r.carrierKey
+        .slice(NOCARRIER_PREFIX.length)
+        .split(":");
+      return { ...r, connectionId, country, companyId };
+    })
+    .filter((p) => !companyScope || companyScope.includes(p.companyId));
+  const [connections, companies] = await Promise.all([
+    db.fulfillmentConnection.findMany({
+      where: { id: { in: parts.map((p) => p.connectionId) } },
+      select: { id: true, name: true },
+    }),
+    db.company.findMany({
+      where: { id: { in: parts.map((p) => p.companyId) } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const conn = new Map(connections.map((c) => [c.id, c.name]));
+  const comp = new Map(companies.map((c) => [c.id, c.name]));
+  return parts
+    .map((p) => ({
+      carrierKey: p.carrierKey,
+      company: p.company,
+      connectionName: conn.get(p.connectionId) ?? null,
+      countryCode: p.country === "-" ? null : p.country,
+      companyName: comp.get(p.companyId) ?? null,
+      updatedAt: p.updatedAt,
+    }))
+    .sort(
+      (a, b) =>
+        (a.connectionName ?? "").localeCompare(b.connectionName ?? "") ||
+        (a.countryCode ?? "").localeCompare(b.countryCode ?? ""),
+    );
+}
+
+/** Forgets one remembered courier: the next shipment without one from there waits for a person again. Audited. */
+export async function deleteNoCarrierRule(actor: ScopedActor, rawKey: string) {
+  assertCan(actor.role, "stores.manage");
+  const key = z.string().min(1).max(300).startsWith(NOCARRIER_PREFIX).parse(rawKey);
+  const before = await withAccountTransaction(actor.accountId, async (tx) => {
+    const where = { accountId_carrierKey: { accountId: actor.accountId, carrierKey: key } };
+    const row = await tx.shopifyCarrierAlias.findUnique({ where, select: { company: true } });
+    if (!row) return null;
+    const gone = await tx.shopifyCarrierAlias.deleteMany({
+      where: { accountId: actor.accountId, carrierKey: key },
+    });
+    return gone.count === 1 ? row : null;
+  });
+  if (!before) return { deleted: false };
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "carrier.nocarrier_rule_deleted",
+    entityType: "ShopifyCarrierAlias",
+    entityId: key,
+    before: { company: before.company },
+    after: null,
+    ip: actor.ip,
+    userAgent: actor.userAgent,
+  });
+  return { deleted: true };
 }

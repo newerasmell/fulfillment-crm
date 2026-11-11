@@ -3,6 +3,7 @@ import { carrierKey, knownShopifyCompany, shopifyCompanyNamed } from "@/integrat
 import { DomainError } from "@/server/accounts";
 import { assertCan, can } from "@/server/auth/rbac";
 import { withAccountTransaction } from "@/server/db/client";
+import { noCarrierKey } from "@/server/shopify/carrier-company";
 import { TrackingTemplate } from "@/server/shopify/tracking-links";
 import type { ScopedActor } from "@/server/stores";
 import { CARRIER_UNKNOWN, resolveCarrierTasks } from "./writeback";
@@ -56,7 +57,12 @@ export async function setShipmentCarrier(actor: ScopedActor, raw: z.input<typeof
   const result = await withAccountTransaction(accountId, async (tx) => {
     const shipment = await tx.fulfillment.findFirst({
       where: { accountId, id: input.fulfillmentId, orderId: input.orderId },
-      select: { id: true, carrier: true, order: { select: { id: true, companyId: true } } },
+      select: {
+        id: true,
+        carrier: true,
+        connectionId: true,
+        order: { select: { id: true, companyId: true, countryCode: true } },
+      },
     });
     if (!shipment || (scope && !scope.includes(shipment.order.companyId ?? "")))
       throw new DomainError("not_found");
@@ -140,8 +146,36 @@ export async function setShipmentCarrier(actor: ScopedActor, raw: z.input<typeof
         update: { company, carrierName: name.slice(0, 200), updatedById: actor.userId },
       });
     } else {
-      // No carrier from the warehouse: this shipment's carrier is the company picked (a later warehouse name wins).
-      await tx.fulfillment.update({ where: { id: shipment.id }, data: { carrier: company } });
+      // No carrier from the warehouse: this shipment's carrier is the company picked (a later warehouse name wins),
+      // and the choice is remembered for this warehouse + destination country (owner request 2026-11-11: set once,
+      // every shipment without a courier from there gets it — the ones waiting now and the next ones).
+      await tx.fulfillment.updateMany({ where: { id: shipment.id, accountId }, data: { carrier: company } });
+      // Per company too: a member of one company never sets the courier of another company's shipments.
+      const ruleKey = noCarrierKey(
+        shipment.connectionId,
+        shipment.order.countryCode,
+        shipment.order.companyId,
+      );
+      const rule = await tx.shopifyCarrierAlias.findUnique({
+        where: { accountId_carrierKey: { accountId, carrierKey: ruleKey } },
+        select: { company: true },
+      });
+      if (rule && rule.company !== company && !canManage) throw new DomainError("carrier_alias_exists");
+      if (!rule || rule.company !== company)
+        await tx.shopifyCarrierAlias.upsert({
+          where: { accountId_carrierKey: { accountId, carrierKey: ruleKey } },
+          create: {
+            accountId,
+            carrierKey: ruleKey,
+            // Not shown as is (the settings page names warehouse, country and company).
+            carrierName: `NOCARRIER ${shipment.order.countryCode ?? "-"}`,
+            company,
+            updatedById: actor.userId,
+          },
+          update: { company, updatedById: actor.userId },
+        });
+      before = rule?.company ?? null;
+      if (rule && rule.company !== company) overwritten = { ...overwritten, alias: rule.company };
     }
 
     // Rows held for this shipment, and for the same courier name in the person's companies (the sweep releases
@@ -152,13 +186,41 @@ export async function setShipmentCarrier(actor: ScopedActor, raw: z.input<typeof
         ...held,
         ...(scope ? { order: { companyId: { in: scope } } } : {}),
       },
-      select: { id: true, orderId: true, fulfillmentId: true, fulfillment: { select: { carrier: true } } },
+      select: {
+        id: true,
+        orderId: true,
+        fulfillmentId: true,
+        order: { select: { countryCode: true, companyId: true } },
+        fulfillment: { select: { carrier: true, connectionId: true } },
+      },
     });
+    const sameNoCarrier = (r: (typeof rows)[number]) =>
+      !name &&
+      !r.fulfillment.carrier?.trim() &&
+      r.fulfillment.connectionId === shipment.connectionId &&
+      r.order.companyId === shipment.order.companyId &&
+      (r.order.countryCode ?? "").toUpperCase() === (shipment.order.countryCode ?? "").toUpperCase();
     const release = rows.filter(
       (r) =>
         r.fulfillmentId === shipment.id ||
-        (key !== null && !!r.fulfillment.carrier && carrierKey(r.fulfillment.carrier) === key),
+        (key !== null && !!r.fulfillment.carrier && carrierKey(r.fulfillment.carrier) === key) ||
+        sameNoCarrier(r),
     );
+    // The other shipments without a courier from the same warehouse and country take the courier now too.
+    const others = release.filter((r) => r.fulfillmentId !== shipment.id && sameNoCarrier(r));
+    if (others.length)
+      await tx.fulfillment.updateMany({
+        where: {
+          accountId,
+          id: { in: others.map((r) => r.fulfillmentId) },
+          // Blank as read (null, "" or spaces): a name the warehouse sent meanwhile is kept.
+          OR: [
+            { carrier: null },
+            { carrier: { in: [...new Set(others.map((r) => r.fulfillment.carrier ?? ""))] } },
+          ],
+        },
+        data: { carrier: company },
+      });
     await tx.shopifyWriteBack.updateMany({
       where: { accountId, id: { in: release.map((r) => r.id) }, ...held },
       data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null },
@@ -174,7 +236,7 @@ export async function setShipmentCarrier(actor: ScopedActor, raw: z.input<typeof
         after: {
           company,
           released: release.length,
-          remembered: !!key,
+          remembered: !!key || !name,
           custom,
           urlTemplate: template?.success ? template.data : null,
           overwritten,

@@ -2,9 +2,12 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
 import { euTestGroup } from "@/server/eushipments/test-fixtures";
+import { applyNoCarrierRule, noCarrierKey } from "./carrier-company";
 import {
   applyTrackingTemplate,
+  deleteNoCarrierRule,
   listCarrierTrackingLinks,
+  listNoCarrierRules,
   saveCarrierTrackingLink,
   trackingUrlFor,
 } from "./tracking-links";
@@ -77,5 +80,62 @@ describe("tracking link templates", () => {
         await g.db.auditLog.count({ where: { action: "carrier.tracking_link", entityId: "dpd baltics ee" } }),
       ).toBe(2);
     });
+    it("no-courier rules: listed with warehouse, country and company; forgotten by OWNER/ADMIN only (audited)", async () => {
+      const key = noCarrierKey(g.connection.id, "hu", g.company.id);
+      await g.db.shopifyCarrierAlias.create({
+        data: { accountId: g.accountId, carrierKey: key, carrierName: "NOCARRIER HU", company: "DPD" },
+      });
+      expect(await listNoCarrierRules({ accountId: g.accountId, companyScope: null })).toEqual([
+        expect.objectContaining({
+          carrierKey: key,
+          company: "DPD",
+          connectionName: g.connection.name,
+          countryCode: "HU",
+          companyName: g.company.name,
+        }),
+      ]);
+      // A person scoped to another company does not see it.
+      expect(await listNoCarrierRules({ accountId: g.accountId, companyScope: ["other-company"] })).toEqual(
+        [],
+      );
+      expect(await listNoCarrierRules({ accountId: g.accountId, companyScope: [g.company.id] })).toHaveLength(
+        1,
+      );
+      // Named-courier aliases are not listed here.
+      await g.db.shopifyCarrierAlias.create({
+        data: {
+          accountId: g.accountId,
+          carrierKey: "some courier",
+          carrierName: "Some Courier",
+          company: "GLS",
+        },
+      });
+      expect(await listNoCarrierRules({ accountId: g.accountId, companyScope: null })).toHaveLength(1);
+      await expect(deleteNoCarrierRule({ ...g.owner, role: "OPERATOR" }, key)).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
+      await expect(deleteNoCarrierRule(g.owner, "some courier")).rejects.toThrow();
+      expect(await deleteNoCarrierRule(g.owner, key)).toEqual({ deleted: true });
+      expect(await deleteNoCarrierRule(g.owner, key)).toEqual({ deleted: false });
+      expect(await listNoCarrierRules({ accountId: g.accountId, companyScope: null })).toEqual([]);
+      expect(await g.db.shopifyCarrierAlias.count({ where: { carrierKey: "some courier" } })).toBe(1);
+      expect(
+        await g.db.auditLog.count({ where: { action: "carrier.nocarrier_rule_deleted", entityId: key } }),
+      ).toBe(1);
+      await g.db.shopifyCarrierAlias.deleteMany({});
+    });
+  });
+
+  it("applyNoCarrierRule: a courier name written meanwhile wins over the rule", async () => {
+    const fake = {
+      shopifyCarrierAlias: { findUnique: async () => ({ company: "Speedy" }) },
+      fulfillment: {
+        updateMany: async () => ({ count: 0 }),
+        findFirst: async () => ({ carrier: "DPD Hungary" }),
+      },
+    };
+    const f = { id: "f1", carrier: null, connectionId: "c1", countryCode: "HU", companyId: "co1" };
+    expect(await applyNoCarrierRule(fake as never, "a1", f)).toBe("DPD Hungary");
+    expect(await applyNoCarrierRule(fake as never, "a1", { ...f, carrier: "GLS" })).toBe("GLS");
   });
 });

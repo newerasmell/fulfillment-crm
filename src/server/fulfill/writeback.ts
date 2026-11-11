@@ -36,7 +36,7 @@ import { scrubText } from "@/lib/scrub";
 import { recordAudit } from "@/server/audit";
 import { accountDb, systemDb, withSystemTransaction } from "@/server/db/client";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
-import { shopifyCompanyFor } from "@/server/shopify/carrier-company";
+import { applyNoCarrierRule, shopifyCompanyFor } from "@/server/shopify/carrier-company";
 import { trackingUrlFor } from "@/server/shopify/tracking-links";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
 
@@ -136,11 +136,13 @@ async function reviewHeldRows() {
       kind: true,
       value: true,
       store: { select: { writeBackMode: true } },
-      order: { select: { status: true } },
+      order: { select: { status: true, countryCode: true, companyId: true } },
       fulfillment: {
         select: {
+          id: true,
           status: true,
           carrier: true,
+          connectionId: true,
           trackingNumbers: true,
           reroutesFrom: { where: { status: { in: ["CANCEL_QUEUED", "DONE"] } }, select: { id: true } },
         },
@@ -161,7 +163,20 @@ async function reviewHeldRows() {
     let data: Prisma.ShopifyWriteBackUpdateManyMutationInput | null = null;
     if (gone || superseded)
       data = { status: "REFUSED", lastError: gone ? "shipment_cancelled" : TRACKING_SUPERSEDED };
-    else if (h.store.writeBackMode !== "LIVE" || (await shopifyCompanyFor(db, h.accountId, f.carrier)))
+    else if (
+      h.store.writeBackMode !== "LIVE" ||
+      (await shopifyCompanyFor(
+        db,
+        h.accountId,
+        await applyNoCarrierRule(db, h.accountId, {
+          id: f.id,
+          carrier: f.carrier,
+          connectionId: f.connectionId,
+          countryCode: h.order.countryCode,
+          companyId: h.order.companyId,
+        }),
+      ))
+    )
       data = { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null };
     if (!data) {
       await openCarrierTask(h.accountId, h.orderId, f.carrier);
@@ -571,11 +586,12 @@ export async function processWriteBack(
       include: {
         store: { select: { writeBackMode: true } },
         account: { select: { outboxPaused: true } },
-        order: { select: { status: true } },
+        order: { select: { status: true, countryCode: true, companyId: true } },
         fulfillment: {
           select: {
             status: true,
             carrier: true,
+            connectionId: true,
             trackingNumbers: true,
             reroutesFrom: { where: { status: { in: ["CANCEL_QUEUED", "DONE"] } }, select: { id: true } },
           },
@@ -614,6 +630,15 @@ export async function processWriteBack(
     // A tracking number the shipment no longer has (re-labelled): never sent over the newer one.
     if (row.kind === "TRACKING" && !row.fulfillment.trackingNumbers.includes(row.value))
       return refuse(TRACKING_SUPERSEDED);
+    // No courier from the warehouse: the one remembered for this warehouse + country + company, if any (also in
+    // DRY_RUN, so the recorded request is what LIVE would send).
+    row.fulfillment.carrier = await applyNoCarrierRule(tx, row.accountId, {
+      id: row.fulfillmentId,
+      carrier: row.fulfillment.carrier,
+      connectionId: row.fulfillment.connectionId,
+      countryCode: row.order.countryCode,
+      companyId: row.order.companyId,
+    });
     if (mode === "LIVE" && (row.kind === "TRACKING" || (row.kind === "FULFIL" && row.trackingNumber))) {
       const company = await shopifyCompanyFor(tx, row.accountId, row.fulfillment.carrier);
       if (!company) {
