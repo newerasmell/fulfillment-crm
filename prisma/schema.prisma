@@ -411,43 +411,46 @@ model Credential {
 // ───────────────────────── channels & warehouses ─────────────────────────
 
 model Store {
-  id                String               @id @default(cuid())
-  accountId         String
+  id                     String               @id @default(cuid())
+  accountId              String
   /// Owning company. Nullable only until the backfill migration has run everywhere.
-  companyId         String?
-  domain            String
+  companyId              String?
+  domain                 String
   /// Short internal code of the store (lists, routing labels). Not part of warehouse order ids any more.
-  code              String
+  code                   String
   /// Optional prefix in front of the Shopify order number in warehouse order ids ({PREFIX}-{number});
   /// null = the Shopify order number as it is. Existing shipments keep the id they were sent with.
-  vendorIdPrefix    String?
-  name              String
-  currency          String
-  countries         String[]
-  credentialId      String?
-  webhookStatus     Json                 @default("{}")
-  syncCursors       Json                 @default("{}")
+  vendorIdPrefix         String?
+  name                   String
+  currency               String
+  countries              String[]
+  credentialId           String?
+  webhookStatus          Json                 @default("{}")
+  syncCursors            Json                 @default("{}")
   /// Shop name as Shopify reports it (filled by the connection test).
-  shopName          String?
+  shopName               String?
   /// Payment gateway names that mean cash on delivery in this store (case-insensitive), e.g. "Cash on Delivery (COD)".
-  codGateways       String[]             @default(["Cash on Delivery (COD)", "cash_on_delivery", "Наложен платеж"])
+  codGateways            String[]             @default(["Cash on Delivery (COD)", "cash_on_delivery", "Наложен платеж"])
   /// Prefix this store adds to SKUs (stripped before matching variants to master products).
-  skuPrefix         String?
+  skuPrefix              String?
   /// Last connection test: {ok, at, error?, shopName?, currency?}
-  connectionStatus  Json                 @default("{}")
-  writeBackMode     StoreWriteMode       @default(READ_ONLY)
-  inventoryPushMode InventoryPushMode    @default(DISABLED)
-  inventoryBuffer   Int                  @default(0)
+  connectionStatus       Json                 @default("{}")
+  writeBackMode          StoreWriteMode       @default(READ_ONLY)
+  /// "Липсващи артикули": new orders (created since then) the CRM cannot fill from one warehouse get the out_of_stock
+  /// tag by itself; null = off (owner request 2026-11-11).
+  outOfStockAutoTagSince DateTime?
+  inventoryPushMode      InventoryPushMode    @default(DISABLED)
+  inventoryBuffer        Int                  @default(0)
   /// "Тегло към Shopify": product weight write-back (DISABLED → DRY_RUN → LIVE); raising it is OWNER-only.
-  weightWriteMode   InventoryPushMode    @default(DISABLED)
-  notifyCustomer    Boolean              @default(true)
+  weightWriteMode        InventoryPushMode    @default(DISABLED)
+  notifyCustomer         Boolean              @default(true)
   /// "Маркирай изпълнена в Shopify": ON_TRACKING (default, unchanged behaviour) | ON_ACCEPT.
-  fulfilTrigger     ShopifyFulfilTrigger @default(ON_TRACKING)
+  fulfilTrigger          ShopifyFulfilTrigger @default(ON_TRACKING)
   /// Archived: no jobs, webhooks ignored, hidden from pickers; orders stay as history.
-  archivedAt        DateTime?
-  archivedById      String?
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
+  archivedAt             DateTime?
+  archivedById           String?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
 
   account              Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
   company              Company?                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: NoAction)

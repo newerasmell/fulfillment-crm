@@ -19,6 +19,7 @@ import { systemDb, withSystemTransaction } from "@/server/db/client";
 import type { StoreClientFactory } from "@/server/fulfill/writeback";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
+import { SHOPIFY_TEST_TAG, transition } from "@/server/pipeline";
 import { syncStockWait } from "@/server/stock/waiting";
 
 /**
@@ -49,6 +50,7 @@ type Row = {
   orderId: string;
   add: string[];
   remove: string[];
+  createdById: string | null;
   order: { shopifyOrderGid: string | null; number: string };
 };
 type Claim =
@@ -293,7 +295,10 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
       },
     });
     if (res.count !== 1) return null;
-    await followLocally(row, tags, tx);
+    const left = await followLocally(row, tags, tx);
+    // "Потвърди" on an order a person held until the stock came (e.g. "чака наличност"): with the confirmation tag
+    // in Shopify now, it is released into review in the name of the person who confirmed.
+    if (left && row.createdById) await releaseConfirmedHold(tx, row);
     // An earlier failure of this order's tags is settled now.
     await tx.alert.updateMany({
       where: {
@@ -310,6 +315,60 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
   if (!status) return currentStatus(row);
   await audit(row, "sent", { add: delta.add, remove: delta.remove });
   return status;
+}
+
+/**
+ * "Потвърди" on an order a person held until its stock came: with the confirmation tag in Shopify now, it is released
+ * into review in the name of the person who confirmed. Only a hold older than that click (a hold put on after it, for
+ * whatever reason, stays); a release the pipeline refuses becomes a task instead of disappearing.
+ */
+async function releaseConfirmedHold(
+  tx: Prisma.TransactionClient,
+  row: {
+    id: string;
+    accountId: string;
+    orderId: string;
+    createdById: string | null;
+    order: { number: string };
+  },
+) {
+  const order = await tx.order.findFirst({
+    where: { id: row.orderId, accountId: row.accountId },
+    select: { status: true },
+  });
+  if (order?.status !== "ON_HOLD") return;
+  const write = await tx.shopifyTagWrite.findFirst({
+    where: { id: row.id, accountId: row.accountId },
+    select: { createdAt: true },
+  });
+  const held = await tx.orderEvent.findFirst({
+    where: { accountId: row.accountId, orderId: row.orderId, toStatus: "ON_HOLD" },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (!write || (held && held.createdAt > write.createdAt)) return;
+  const r = await transition(tx, {
+    orderId: row.orderId,
+    to: "IMPORTED",
+    cause: "release",
+    actor: { kind: "user", userId: row.createdById! },
+    source: "stock_wait",
+    reason: "items back in stock, confirmed",
+    mode: "follow",
+  });
+  if (r.changed) return;
+  await tx.alert.create({
+    data: {
+      accountId: row.accountId,
+      kind: "stock_wait_release_refused",
+      isTask: true,
+      severity: "WARNING",
+      title: `Order ${row.order.number}: confirmed (items back in stock) but still held — release it by hand`,
+      body: `refused: ${r.reason ?? "unknown"}${r.guard ? ` (${r.guard})` : ""}`,
+      entityType: "Order",
+      entityId: row.orderId,
+    },
+  });
 }
 
 const currentStatus = async (row: { id: string; accountId: string }) =>
@@ -331,18 +390,25 @@ async function followLocally(
     await t.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))) l`;
     const order = await t.order.findFirst({
       where: { id: row.orderId, accountId: row.accountId },
-      select: { raw: true },
+      select: { raw: true, tags: true },
     });
     if (!order) return;
     const raw =
       order.raw && typeof order.raw === "object" && !Array.isArray(order.raw)
         ? { ...order.raw, tags }
         : order.raw;
+    // Our own marker of a Shopify test order is not a Shopify tag: it stays (the import adds it the same way).
+    const ours = order.tags.includes(SHOPIFY_TEST_TAG) ? [...tags, SHOPIFY_TEST_TAG] : tags;
     await t.order.updateMany({
       where: { id: row.orderId, accountId: row.accountId },
-      data: { tags, ...(raw ? { raw: json(raw) } : {}) },
+      data: { tags: ours, ...(raw ? { raw: json(raw) } : {}) },
     });
-    await syncStockWait(t, row.accountId, row.orderId);
+    const before = await t.orderStockWait.findFirst({
+      where: { accountId: row.accountId, orderId: row.orderId },
+      select: { id: true },
+    });
+    const stage = await syncStockWait(t, row.accountId, row.orderId);
+    return !!before && !stage;
   };
   return tx ? apply(tx) : withSystemTransaction(apply);
 }

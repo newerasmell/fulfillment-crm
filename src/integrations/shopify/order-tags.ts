@@ -42,7 +42,17 @@ export const OrderTagsRemoveSchema = z.object({
   tagsRemove: z.object({ userErrors: UserErrors }).nullable(),
 });
 
-const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+/**
+ * Pure: a tag as people mean it — case, spaces, underscores and hyphens do not matter ("Waiting for stock",
+ * "waiting_for_stock" and "WAITING-FOR-STOCK" are one tag; owner report 2026-11-11).
+ */
+export const normalizeTag = (t: string) =>
+  t
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
+export const sameTag = (a: string, b: string) => normalizeTag(a) === normalizeTag(b);
+const same = sameTag;
 
 /**
  * Pure: what still has to change on an order with `current` tags. Tags compare case-insensitively (Shopify keeps

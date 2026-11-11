@@ -1,6 +1,6 @@
 "use server";
 
-import { decideStockWait } from "@/server/stock/waiting";
+import { decideStockWait, setOutOfStockAutoTag } from "@/server/stock/waiting";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { DomainError } from "@/server/accounts";
@@ -296,6 +296,21 @@ export async function decideStockWaitAction(input: {
   const ctx = await requireAccountContext();
   try {
     const r = await decideStockWait(actorFrom(ctx), input);
+    revalidatePath("/orders/missing-stock");
+    return { ok: true, ...r };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Липсващи артикули": the automatic out_of_stock tag of one store on / off. */
+export async function setOutOfStockAutoTagAction(input: {
+  storeId: string;
+  enabled: boolean;
+}): Promise<{ ok: true; enabled: boolean } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await setOutOfStockAutoTag(actorFrom(ctx), input);
     revalidatePath("/orders/missing-stock");
     return { ok: true, ...r };
   } catch (err) {

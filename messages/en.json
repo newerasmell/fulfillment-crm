@@ -3766,6 +3766,11 @@
       "stock_wait_nothing_to_do": "Nothing to change (already changed, another change is on its way, or the order is not in this tab).",
       "forbidden": "You are not allowed to do this."
     },
-    "withoutTags": "without {tags}"
+    "withoutTags": "without {tags}",
+    "auto": {
+      "title": "Automatic out_of_stock tag ({n} stores)",
+      "hint": "For the ticked stores: a new order (from the moment it is switched on) that no warehouse of its line can fill gets the out_of_stock tag by itself and appears here. Orders with unknown products are not tagged.",
+      "readOnly": "Shopify writing is read only — the tag will not reach Shopify"
+    }
   }
 }
