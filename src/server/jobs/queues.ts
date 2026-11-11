@@ -33,6 +33,12 @@ export const QUEUES = {
   /** Every minute: picks due outbox rows, turns crashed sends into UNCERTAIN tasks. */
   outboxSweep: { name: "outbox.sweep", options: { retryLimit: 0, expireInSeconds: 120 }, cron: "* * * * *" },
   /** Shopify: connection test for one store (data: { accountId, storeId }). */
+  /** Hourly: re-read the rights the Shopify app holds on every connected store (read-only, light). */
+  shopifyScopeRefresh: {
+    name: "shopify.scopeRefresh",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 900 },
+    cron: "19 * * * *",
+  },
   shopifyTestConnection: {
     name: "shopify.testConnection",
     options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 120 },

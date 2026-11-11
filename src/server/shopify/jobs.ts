@@ -7,7 +7,7 @@ import { readCredentialSecret } from "@/server/security/credentials";
 import { QUEUES } from "@/server/jobs/queues";
 import { accountDb, systemDb } from "@/server/db/client";
 import { purgeStore } from "@/server/store-lifecycle";
-import { testStoreConnection } from "./connection";
+import { refreshStoreScopes, testStoreConnection } from "./connection";
 import { syncStoreOrders } from "./orders";
 import { syncStoreProducts } from "./products";
 import { shopifyClientForStore } from "./store-client";
@@ -227,6 +227,15 @@ export async function runRemoveWebhooks(data: RemoveWebhooksJob, opts: ShopifyCl
 }
 
 export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingIntervalSeconds: number }) {
+  await boss.work(QUEUES.shopifyScopeRefresh.name, opts, async () => {
+    const stores = await systemDb().store.findMany({
+      where: { archivedAt: null },
+      select: { id: true, accountId: true },
+    });
+    let refreshed = 0;
+    for (const s of stores) if (await refreshStoreScopes(s.accountId, s.id)) refreshed++;
+    logger.info({ stores: stores.length, refreshed }, "shopify access scopes refreshed");
+  });
   await boss.work<StoreJob>(QUEUES.shopifyTestConnection.name, opts, async (jobs) => {
     for (const { data } of jobs) {
       if (await isArchived(data.accountId, data.storeId)) continue;
@@ -243,7 +252,21 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
   await boss.work<StoreJob>(QUEUES.shopifyRegisterWebhooks.name, opts, async (jobs) => {
     for (const { data } of jobs) {
       if (!(await connectedStore(data.accountId, data.storeId))) continue;
-      const uri = validCallbackUrl(data.callbackUrl) ?? webhookCallbackUrl();
+      // The web passes its public URL; the worker (no public URL of its own) uses APP_URL when set, or the one
+      // recorded at the last registration.
+      const prev = (
+        await accountDb(data.accountId).store.findUnique({
+          where: { id: data.storeId },
+          select: { webhookStatus: true },
+        })
+      )?.webhookStatus as { uri?: string; topics?: string[] } | null;
+      // Only a URL the web service gave (now or at an earlier registration), or APP_URL: never one guessed.
+      const uri = validCallbackUrl(data.callbackUrl) ?? webhookCallbackUrl() ?? validCallbackUrl(prev?.uri);
+      if (!uri && !data.callbackUrl) {
+        // An automatic run that cannot know the URL never overwrites the status with "0 subscriptions".
+        logger.warn({ storeId: data.storeId }, "shopify webhooks: public URL unknown, status left as it was");
+        continue;
+      }
       if (!uri) {
         await accountDb(data.accountId).store.update({
           where: { id: data.storeId },

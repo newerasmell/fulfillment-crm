@@ -258,6 +258,7 @@ export async function registerStoreWebhooks(
     ok: errors.length === 0,
     at: new Date().toISOString(),
     topics: [...have].sort(),
+    uri,
     ...(errors.length ? { errors } : {}),
   };
   await accountDb(accountId).store.update({ where: { id: storeId }, data: { webhookStatus: status } });

@@ -3747,7 +3747,7 @@
       "confirmPicked": "Confirm ({n})"
     },
     "notExpectedHint": "Not expected — the tag stays out_of_stock",
-    "noScope": "The store lacks write_orders — add it to the app",
+    "noScope": "The store lacks write_orders at the last check — add it to the app; rights are re-read every hour, or at once with \"Test connection\" on the store",
     "readOnly": "Write to Shopify: read only",
     "queued": "Sent to Shopify: {n}{skipped, plural, =0 {} other { · skipped: #}}",
     "write": {

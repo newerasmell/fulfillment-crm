@@ -16,7 +16,7 @@ import {
   upsertVariant,
   cleanVariantTitle,
 } from "./products";
-import { testStoreConnection } from "./connection";
+import { refreshStoreScopes, testStoreConnection } from "./connection";
 import { missingScopes, REQUIRED_SCOPES } from "@/integrations/shopify/scopes";
 import {
   processShopifyWebhook,
@@ -235,6 +235,36 @@ describe("Shopify import (DB)", () => {
     expect(((await store()).connectionStatus as { missingScopes: string[] }).missingScopes).toContain(
       "write_inventory",
     );
+  });
+
+  it("hourly scope refresh: only the rights are re-read; the rest of the last test stays", async () => {
+    const all = fakeShopify({
+      AppScopes: () => ({
+        currentAppInstallation: { accessScopes: REQUIRED_SCOPES.map((handle) => ({ handle })) },
+      }),
+    });
+    const r = await refreshStoreScopes(accountId, storeId, all.opts);
+    expect(r?.missingScopes).toEqual([]);
+    const cs = (await store()).connectionStatus as { ok: boolean; shopName?: string; scopes: string[] };
+    expect(cs.ok).toBe(true);
+    expect(cs.scopes).toContain("write_orders");
+    // A failed read changes nothing.
+    const down = fakeShopify({
+      AppScopes: () => {
+        throw new Error("network down");
+      },
+    });
+    expect(await refreshStoreScopes(accountId, storeId, { ...down.opts, maxRetries: 0 })).toBeNull();
+    expect(((await store()).connectionStatus as { scopes: string[] }).scopes).toContain("write_orders");
+    // A store whose last test failed is left to the connection test (no Shopify call).
+    const before = (await store()).connectionStatus;
+    await systemDb().store.update({
+      where: { id: storeId },
+      data: { connectionStatus: { ok: false, at: "x" } },
+    });
+    const none = fakeShopify({});
+    expect(await refreshStoreScopes(accountId, storeId, none.opts)).toBeNull();
+    await systemDb().store.update({ where: { id: storeId }, data: { connectionStatus: before as object } });
   });
 
   it("creates an order once; re-imports and older versions change nothing", async () => {
@@ -784,7 +814,7 @@ describe("Shopify import (DB)", () => {
     const status = await registerStoreWebhooks(accountId, storeId, uri, fake.opts);
     expect(created).not.toContain("ORDERS_CREATE");
     expect(created).toHaveLength(WEBHOOK_TOPICS.length - 1);
-    expect(status).toMatchObject({ ok: true });
+    expect(status).toMatchObject({ ok: true, uri });
     expect(status.topics).toHaveLength(WEBHOOK_TOPICS.length);
   });
 });

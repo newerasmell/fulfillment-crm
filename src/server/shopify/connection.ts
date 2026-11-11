@@ -19,6 +19,8 @@ export interface ConnectionStatus {
   /** Scopes the app holds on the store, and the required ones it lacks (null = could not be read). */
   scopes?: string[];
   missingScopes?: string[] | null;
+  /** When the scopes were last read (connection test or the hourly refresh). */
+  scopesAt?: string;
   /** ShopifyError code or "unexpected"; never a secret or a raw response. */
   error?: string;
 }
@@ -60,4 +62,40 @@ export async function testStoreConnection(
     data: { connectionStatus: status as object },
   });
   return status;
+}
+
+/**
+ * Re-reads only the rights the app holds on a store (owner report 2026-11-11: write_orders added in the Dev
+ * Dashboard, but the page still said it was missing — the rights were from the last connection test). Read-only and
+ * light; keeps the rest of the last connection status. A failed read changes nothing.
+ */
+export async function refreshStoreScopes(
+  accountId: string,
+  storeId: string,
+  opts: ShopifyClientOptions = {},
+) {
+  const db = accountDb(accountId);
+  const store = await db.store.findUnique({ where: { id: storeId }, select: { connectionStatus: true } });
+  const last = (store?.connectionStatus ?? {}) as Partial<ConnectionStatus>;
+  if (!store || !last.ok || !last.at) return null; // never tested or broken: the connection test is what tells
+  try {
+    const { client } = await shopifyClientForStore(accountId, storeId, opts);
+    const r = await client.query(APP_SCOPES_QUERY, {}, AppScopesResponse);
+    const scopes = r.currentAppInstallation.accessScopes.map((a) => a.handle).sort();
+    const next = {
+      ...last,
+      scopes,
+      missingScopes: missingScopes(scopes),
+      scopesAt: new Date().toISOString(),
+    };
+    // Only over the status it read: a connection test that finished meanwhile is newer and stays.
+    const res = await db.store.updateMany({
+      where: { id: storeId, connectionStatus: { path: ["at"], equals: last.at } },
+      data: { connectionStatus: next as object },
+    });
+    return res.count === 1 ? next : null;
+  } catch (err) {
+    logger.warn({ storeId, err: (err as Error).message }, "shopify access scopes refresh failed");
+    return null;
+  }
 }
