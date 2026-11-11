@@ -431,6 +431,125 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
     expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
   });
 
+  it("a courier Shopify does not list (Express One): our name and tracking link go to Shopify; remembered", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["643525237218000013605451"], null);
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9547777"),
+    });
+    const fulfil = await row(f.id, "FULFIL");
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("AWAITING_CONFIRMATION");
+    // Without a link there is nothing to send (Shopify would guess again); a bad link is refused.
+    await expect(
+      setShipmentCarrier(g.owner, {
+        orderId: f.orderId,
+        fulfillmentId: f.id,
+        company: "Express One",
+        custom: true,
+      }),
+    ).rejects.toMatchObject({ code: "tracking_template_required" });
+    await expect(
+      setShipmentCarrier(g.owner, {
+        orderId: f.orderId,
+        fulfillmentId: f.id,
+        company: "Express One",
+        custom: true,
+        urlTemplate: "http://tracking.example/?n=1",
+      }),
+    ).rejects.toMatchObject({ code: "tracking_template_invalid" });
+    await setShipmentCarrier(g.owner, {
+      orderId: f.orderId,
+      fulfillmentId: f.id,
+      company: "Express One",
+      custom: true,
+      urlTemplate: "https://tracking.example/?plc_number={tracking}",
+    });
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
+    expect(shop.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: {
+        trackingInfo: {
+          number: "643525237218000013605451",
+          company: "Express One",
+          url: "https://tracking.example/?plc_number=643525237218000013605451",
+        },
+      },
+    });
+    // The next shipment of that courier goes straight through.
+    const next = await shipment("SHIPPED", ["643525237218000099999999"], "Express One");
+    await sweepWriteBacks();
+    const shop2 = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9547778"),
+    });
+    expect(await processWriteBack((await row(next.f.id, "FULFIL")).id, shop2.clients)).toBe("SENT");
+    expect(shop2.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: { trackingInfo: { company: "Express One" } },
+    });
+    expect(shop2.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: { trackingInfo: { url: "https://tracking.example/?plc_number=643525237218000099999999" } },
+    });
+
+    // A warehouse name Shopify does not know + the typed courier: the warehouse name gets the company and our link.
+    const named = await shipment("SHIPPED", ["EO-NAMED-1"], "EXPRESSONE HU");
+    await sweepWriteBacks();
+    const shop3 = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9547779"),
+    });
+    const namedRow = (await row(named.f.id, "FULFIL")).id;
+    expect(await processWriteBack(namedRow, shop3.clients)).toBe("AWAITING_CONFIRMATION");
+    // An operator may not change the link already set for "Express One" ...
+    await expect(
+      setShipmentCarrier(
+        { ...g.owner, role: "OPERATOR" },
+        {
+          orderId: named.f.orderId,
+          fulfillmentId: named.f.id,
+          company: "Express One",
+          custom: true,
+          urlTemplate: "https://evil.example/?n={tracking}",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "tracking_link_exists" });
+    // ... but can use it as it is (no link typed: the saved one is copied to the warehouse name).
+    await setShipmentCarrier(
+      { ...g.owner, role: "OPERATOR" },
+      { orderId: named.f.orderId, fulfillmentId: named.f.id, company: "Express One", custom: true },
+    );
+    expect(await processWriteBack(namedRow, shop3.clients)).toBe("SENT");
+    expect(shop3.varsOf("FulfillmentWriteBack")[0]).toMatchObject({
+      fulfillment: {
+        trackingInfo: { company: "Express One", url: "https://tracking.example/?plc_number=EO-NAMED-1" },
+      },
+    });
+    await db().carrierTrackingLink.deleteMany({ where: { accountId: g.accountId } });
+    await db().shopifyCarrierAlias.deleteMany({ where: { accountId: g.accountId } });
+  });
+
+  it("a 'custom' name Shopify knows by its carrier word stays Shopify's company (no alias override)", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
+    const { f } = await shipment("SHIPPED", ["TRK-DPDX"], null);
+    await sweepWriteBacks();
+    const shop = fakeShopify({
+      FulfillmentWriteBackRead: () => orderRead(),
+      FulfillmentWriteBack: () => created("gid://shopify/Fulfillment/9547790"),
+    });
+    const fulfil = await row(f.id, "FULFIL");
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("AWAITING_CONFIRMATION");
+    expect(
+      await setShipmentCarrier(g.owner, {
+        orderId: f.orderId,
+        fulfillmentId: f.id,
+        company: "DPD Express",
+        custom: true,
+      }),
+    ).toMatchObject({ company: "DPD" });
+    expect(await db().shopifyCarrierAlias.count({ where: { accountId: g.accountId } })).toBe(0);
+    expect(await processWriteBack(fulfil.id, shop.clients)).toBe("SENT");
+  });
+
   it("a courier's tracking link template replaces the warehouse's link in Shopify", async () => {
     await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_TRACKING" });
     await db().carrierTrackingLink.create({
