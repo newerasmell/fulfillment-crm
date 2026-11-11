@@ -446,6 +446,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   address). Order page "Доставка": До адрес / До офис + office search (Order.deliveryOffice; null = automatic).
   Other countries unchanged. Open: confirm on production data that Speedy's bracket id equals COURIER_OFFICE_ID
   ("Офиси, PUDO" shows it after the next office sync); until then the name match carries it.
+- 2026-11-11 "lost the tag Confirmed after it was sent" task on an order whose Shopify tags had it: an app rewriting
+  the tags made one import see the order without it. The task now closes by itself when an import sees the tag
+  again. Open (owner decision): the same transient rewrite sets an APPROVED, not yet sent order aside
+  (AWAITING_TAG), so it has to be reviewed and approved again.
 
 ## Open questions
 See SPEC.md §11.
