@@ -1,3 +1,4 @@
+import { collectableCod } from "@/lib/cod-rounding";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
@@ -199,6 +200,8 @@ async function fhbPreflight(
       codCurrency = localCurrency;
     }
     if (codAmount !== null && codCurrency === order.currency) codCurrency = localCurrency;
+    // Whole units where the courier collects whole units (HUF): the amount that can actually be collected.
+    if (codAmount !== null) codAmount = collectableCod(codAmount, codCurrency);
   }
   let value: number | null = null;
   if (localCurrency && order.currency.toUpperCase() === localCurrency) value = toNumber(order.total);

@@ -1,3 +1,4 @@
+import { collectableCod } from "@/lib/cod-rounding";
 import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../../order-nav";
 import { QtyHoldBanner } from "../qty-hold";
@@ -282,6 +283,10 @@ export async function ClassicOrderView({
                 <dt className="text-muted">{t("payment")}</dt>
                 <dd className="m-0">
                   {order.paymentMethod === "COD" ? `${t("cod")} · ${money(order.codAmount)}` : t("prepaid")}
+                  {order.paymentMethod === "COD" &&
+                    order.codAmount != null &&
+                    collectableCod(Number(order.codAmount), order.currency) !== Number(order.codAmount) &&
+                    ` ${t("codCollectable", { amount: collectableCod(Number(order.codAmount), order.currency), currency: order.currency })}`}
                   {payment && payment.gateways.length > 0 && (
                     <span className="text-muted" data-testid="payment-gateways">
                       {" "}

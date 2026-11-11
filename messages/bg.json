@@ -522,7 +522,8 @@
       "olderHint": "По-стара поръчка (K)",
       "newerHint": "По-нова поръчка (J)",
       "none": "Няма повече"
-    }
+    },
+    "codCollectable": "(към склада: {amount} {currency})"
   },
   "orderStatus": {
     "IMPORTED": "Внесена",

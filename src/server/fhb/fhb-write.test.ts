@@ -354,6 +354,29 @@ describe("FHB order create through the outbox", () => {
     ).toBeNull();
   });
 
+  it("a whole-unit COD currency (HUF) goes out in whole units: no fractional warning", async () => {
+    const s = await setup("LIVE");
+    // Synthetic: the destination is set to collect HUF (the rounding depends on the currency only).
+    await systemDb().countrySetting.updateMany({
+      where: { accountId: s.account.id, country: "SK" },
+      data: { currency: "HUF" },
+    });
+    await systemDb().order.update({
+      where: { id: s.order.id },
+      data: { currency: "HUF", subtotal: "32825.10", total: "32825.10", codAmount: "32825.10" },
+    });
+    const body = await previewFhbOrderPayload(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(body).toMatchObject({ cod: 32825 });
+    const findings = await previewFhbOrderFindings(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(findings.map((f) => f.code)).not.toContain("fhb.cod.fractional");
+  });
+
   it("duplicate-submit: a timed-out create that FHB did receive is recovered by read-back, never re-sent", async () => {
     const s = await setup("LIVE");
     const { request } = await submitFhbOrder(s.owner, {

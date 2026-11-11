@@ -1,3 +1,4 @@
+import { collectableCod } from "@/lib/cod-rounding";
 import { z } from "zod";
 import type { CrmOrderStatus, Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
@@ -267,9 +268,14 @@ const num = (d: Prisma.Decimal | null) => (d == null ? null : Number(d));
 
 function codOf(o: Row["order"]) {
   if (o.paymentMethod !== "COD") return null;
+  // What the warehouse collects: whole forints for HUF (collectableCod), as sent.
   if (o.codLocalAmount != null && o.codLocalCurrency)
-    return { amount: num(o.codLocalAmount)!, currency: o.codLocalCurrency };
-  if (o.codAmount != null) return { amount: num(o.codAmount)!, currency: o.currency };
+    return {
+      amount: collectableCod(num(o.codLocalAmount)!, o.codLocalCurrency),
+      currency: o.codLocalCurrency,
+    };
+  if (o.codAmount != null)
+    return { amount: collectableCod(num(o.codAmount)!, o.currency), currency: o.currency };
   return null;
 }
 

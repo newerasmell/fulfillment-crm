@@ -20,6 +20,7 @@ import {
   voidLabel,
   type ManualShipmentInput,
 } from "./index";
+import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
 import {
@@ -53,6 +54,30 @@ function fetchMock(route: Route) {
 }
 
 const DUP = "manual.duplicate_recipient";
+
+describe("manual shipment input: HUF cash on delivery", () => {
+  it("is rounded to the whole forint (owner decision 2026-11-11); other currencies unchanged", () => {
+    const parse = (cod: number, currency: string) =>
+      ManualShipmentSchema.parse({
+        kind: "JOY_LABEL",
+        companyId: "c",
+        connectionId: "x",
+        recipient: {
+          name: "Test Buyer",
+          phone: "+36000000000",
+          address1: "Example 1",
+          city: "Testville",
+          zip: "1000",
+          countryCode: "HU",
+        },
+        cod,
+        currency,
+      }).cod;
+    expect(parse(32825.1, "HUF")).toBe(32825);
+    expect(parse(32825.5, "huf")).toBe(32826);
+    expect(parse(12.34, "EUR")).toBe(12.34);
+  });
+});
 
 describe("manual shipments and labels (P7)", () => {
   let g: Awaited<ReturnType<typeof euTestGroup>>;
