@@ -450,6 +450,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the tags made one import see the order without it. The task now closes by itself when an import sees the tag
   again. Open (owner decision): the same transient rewrite sets an APPROVED, not yet sent order aside
   (AWAITING_TAG), so it has to be reviewed and approved again.
+- 2026-11-12 Наличности failed with "Unable to start a transaction in the given time" during a burst of Shopify
+  webhooks: every scoped query holds a pooled connection for its RLS transaction and pg's default pool is 10. Pool
+  per process is now 15 (env DB_POOL_MAX, 5–50, set in render.yaml). Missing bg/en label stock.push.trigger.fast added. The real failure
+  of Наличности with 4000+ masters: one read of every master × its variants in every store passed PostgreSQL's 32767
+  bind parameters ("query parameter limit exceeded"). The board now reads the ids first, then the rows in chunks
+  (≤ ~20 000 parameters each); 4500 masters × 12 stores load in ~2 s locally. The stock-alert sweep
+  (discrepancies.ts) now reads flat and joins in memory. Open: stock/push.ts, stock/activate.ts and
+  lines/suggestions.ts still read one store / line with a nested relation (fails around 16k rows per store or line).
+- 2026-11-12 Speedy offices without a default courier for BG: the "Доставка" search lists the offices of every
+  office-delivering courier of the country with the courier's name; the office a person picks decides the courier
+  (stored in Order.deliveryOffice.courierId, sent as courierId). Nothing is picked automatically.
 
 ## Open questions
 See SPEC.md §11.

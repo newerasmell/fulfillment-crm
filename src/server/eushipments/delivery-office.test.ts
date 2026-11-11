@@ -117,6 +117,7 @@ describe("delivery to a Speedy office", () => {
       mode: "office",
       officeId: 88247,
       name: "ПЛЕВЕН - ХАДЖИ ДИМИТЪР (УЛ.)",
+      courierId: COURIER,
     });
     expect(
       await db().auditLog.count({ where: { entityId: order.id, action: "order.delivery_office" } }),
@@ -199,5 +200,103 @@ describe("delivery to a Speedy office", () => {
       queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id }),
     ).rejects.toBeTruthy();
     expect(await db().outboundRequest.count({ where: { fulfillmentId: f.id } })).toBe(1);
+  });
+
+  it("no courier set for BG: the search lists every office courier's offices; the pick decides the courier", async () => {
+    const { order, product } = await officeOrder();
+    const now = new Date();
+    await db().eushipmentsCountryCourier.deleteMany({
+      where: { connectionId: g.connection.id, country: "BG" },
+    });
+    await db().eushipmentsCountry.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        countryId: 359,
+        name: "Bulgaria",
+        isoCode: "BG",
+        syncedAt: now,
+      },
+    });
+    await db().eushipmentsCourier.createMany({
+      data: [
+        { courierId: COURIER, name: "Speedy(Bulgaria)", toOffice: true, toAddress: true },
+        { courierId: OTHER_COURIER, name: "Econt(Bulgaria)", toOffice: true, toAddress: true },
+        { courierId: 7899, name: "Address only", toOffice: false, toAddress: true },
+      ].map((c) => ({
+        ...c,
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        country: "Bulgaria",
+        syncedAt: now,
+      })),
+    });
+    try {
+      // Not chosen by itself: a person picks.
+      expect((await deliveryOfficeView(g.owner, order.id))?.resolution).toMatchObject({
+        kind: "unresolved",
+        reason: "no_courier",
+      });
+      const found = await searchDeliveryOffices(g.owner, order.id, "САН СТЕФАНО");
+      expect(found.map((o) => [o.officeId, o.courierName]).sort()).toEqual([
+        [88275, "Speedy(Bulgaria)"],
+        [88900, "Econt(Bulgaria)"],
+      ]);
+      const fresh = await db().order.findUniqueOrThrow({ where: { id: order.id } });
+      // A courier that does not deliver to offices (or is not BG's) cannot be used.
+      await expect(
+        setDeliveryOffice(g.owner, {
+          orderId: order.id,
+          version: fresh.updatedAt.toISOString(),
+          choice: { mode: "office", officeId: 88275, name: "x", courierId: 7899 },
+        }),
+      ).rejects.toMatchObject({ code: "office_unknown" });
+      await setDeliveryOffice(g.owner, {
+        orderId: order.id,
+        version: fresh.updatedAt.toISOString(),
+        choice: { mode: "office", officeId: 88275, name: "x", courierId: COURIER },
+      });
+      const saved = await db().order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(saved.deliveryOffice).toMatchObject({ officeId: 88275, courierId: COURIER });
+      expect(await resolveDeliveryOffice(g.accountId, g.connection.id, undefined, saved)).toMatchObject({
+        kind: "office",
+        officeId: 88275,
+        courierId: COURIER,
+        source: "chosen",
+      });
+      // The body goes with the picked office's courier.
+      const { previewEuOrderPayload } = await import("./write");
+      void product;
+      const body = await previewEuOrderPayload(g.accountId, {
+        orderId: order.id,
+        connectionId: g.connection.id,
+      });
+      expect(body).toMatchObject({ courierId: COURIER, recipient: { officeId: 88275 } });
+      // …and the order is not blocked for a missing courier any more (the picked office's courier is checked).
+      const { previewEuOrderFindings } = await import("./write");
+      const codes = (
+        await previewEuOrderFindings(g.accountId, { orderId: order.id, connectionId: g.connection.id })
+      ).map((f) => f.code);
+      expect(codes).not.toContain("courier_choice_missing");
+      expect(codes).not.toContain("office_unresolved");
+      // A stored pick without a courier (older data) and no courier for the country: a person picks again.
+      expect(
+        await resolveDeliveryOffice(g.accountId, g.connection.id, undefined, {
+          ...saved,
+          deliveryOffice: { mode: "office", officeId: 88275, name: "x" },
+        }),
+      ).toMatchObject({ kind: "unresolved", reason: "no_courier" });
+      // A courier set later that is not the picked office's: picked again.
+      expect(await resolveDeliveryOffice(g.accountId, g.connection.id, OTHER_COURIER, saved)).toMatchObject({
+        kind: "unresolved",
+        reason: "chosen_missing",
+      });
+    } finally {
+      await db().eushipmentsCourier.deleteMany({ where: { connectionId: g.connection.id } });
+      await db().eushipmentsCountry.deleteMany({ where: { connectionId: g.connection.id } });
+      await db().eushipmentsCountryCourier.create({
+        data: { accountId: g.accountId, connectionId: g.connection.id, country: "BG", courierId: COURIER },
+      });
+    }
   });
 });

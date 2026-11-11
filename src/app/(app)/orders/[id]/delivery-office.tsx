@@ -13,6 +13,8 @@ type Resolution =
 
 interface Office {
   officeId: number;
+  courierId: number;
+  courierName: string;
   courierOfficeId: number | null;
   name: string;
   cityName: string | null;
@@ -124,12 +126,15 @@ export function DeliveryOffice({
                     type="button"
                     className="w-full px-2 py-1 text-left hover:bg-hover"
                     disabled={pending}
-                    onClick={() => save({ mode: "office", officeId: o.officeId, name: o.name })}
+                    onClick={() =>
+                      save({ mode: "office", officeId: o.officeId, name: o.name, courierId: o.courierId })
+                    }
                   >
                     <span className="font-semibold">{o.name}</span>
+                    <span className="ml-2 rounded-full bg-hover px-2 py-0.5 text-xs">{o.courierName}</span>
                     <span className="block text-xs text-muted">
                       {[o.cityName, o.address].filter(Boolean).join(", ")}
-                      {o.courierOfficeId ? ` · Speedy ${o.courierOfficeId}` : ""}
+                      {o.courierOfficeId ? ` · № ${o.courierOfficeId}` : ""}
                       {o.isStation ? ` · ${t("locker")}` : ""}
                     </span>
                   </button>

@@ -564,12 +564,20 @@ async function euOrderPreflight(
   );
   const cashReceiptCod = settings?.cashReceiptCod ?? false;
   const today = sofiaToday(now);
-  const courier = await courierFor(accountId, connection.id, destination, input);
+  let courier = await courierFor(accountId, connection.id, destination, input);
   // To a Speedy office (BG): the order's choice, or an "Office Speedy [id] NAME: …" address matched to ONE office.
   const office = input.officeId
     ? null
     : await resolveDeliveryOffice(accountId, connection.id, courier.courierId, order);
   const officeId = input.officeId ?? (office?.kind === "office" ? office.officeId : undefined);
+  // No courier for the country, and a person picked an office: its courier is the order's courier — checked like
+  // a chosen one (unknown / wrong country / office-only), never "choose a courier".
+  if (!courier.courierId && office?.kind === "office")
+    courier = await courierFor(accountId, connection.id, destination, {
+      ...input,
+      courierId: office.courierId,
+      officeId: office.officeId,
+    });
   findings.push(...courier.findings.filter((f) => !(officeId && f.code === "courier_office_only")));
   if (office?.kind === "unresolved" && office.reason === "address_is_office")
     findings.push(
