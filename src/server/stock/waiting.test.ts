@@ -19,6 +19,7 @@ import {
   discoverStockWaits,
   setOutOfStockAutoTag,
   evaluateStockWaits,
+  outOfStockAutoTagStores,
   stockWaitOverview,
   stockWaitStage,
   stockWaitState,
@@ -305,6 +306,17 @@ describe("missing-stock flow (database, mocked Shopify)", () => {
     ]);
     const page = await stockWaitOverview(owner, "out");
     expect(page.count.out).toBeGreaterThanOrEqual(1);
+    // The sidebar's product line: another line's companies see none of these.
+    const otherLine = await stockWaitOverview({ ...owner, lineCompanyIds: ["no-such-company"] }, "out");
+    expect(otherLine.count.out).toBe(0);
+    expect(otherLine.rows).toHaveLength(0);
+    expect((await stockWaitOverview({ ...owner, activeCompanyId: "no-such-company" }, "out")).count.out).toBe(
+      0,
+    );
+    expect(await outOfStockAutoTagStores({ ...owner, lineCompanyIds: ["no-such-company"] })).toEqual([]);
+    expect((await stockWaitOverview({ ...owner, lineCompanyIds: [companyId] }, "out")).count.out).toBe(
+      page.count.out,
+    );
     expect(page.rows.find((x) => x.orderId === o.id)?.canWriteTags).toBe(true);
 
     await expect(

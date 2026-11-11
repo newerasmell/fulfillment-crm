@@ -9,6 +9,7 @@ import { sameTag } from "@/integrations/shopify/order-tags";
 import { shopifyTagsOf } from "@/server/shopify/order-tag-match";
 import { queueTagChange } from "@/server/shopify/tag-queue";
 import type { ScopedActor } from "@/server/stores";
+import { companyFilter } from "@/server/companies";
 import { CLOSED_INBOUND } from "./board";
 import { crmReservations, isStale, reservationKey, sellableOf } from "./levels";
 import { getStockSettings, staleHoursFor } from "./settings";
@@ -623,11 +624,20 @@ export async function runStockWaitEvaluation(now: Date = new Date()) {
 
 // ───────────── page + actions ─────────────
 
-const scopeWhere = (actor: ScopedActor): Prisma.OrderWhereInput =>
-  actor.companyScope ? { companyId: { in: actor.companyScope } } : {};
+/**
+ * The member's view: the sidebar's company or product line (P5-00). activeCompanyId / lineCompanyIds must come from
+ * the server-built session context (already inside the member's company scope), never from client input.
+ */
+type ViewActor = ScopedActor & { activeCompanyId?: string | null; lineCompanyIds?: string[] | null };
+const scopeWhere = (actor: ViewActor) =>
+  companyFilter({
+    companyScope: actor.companyScope,
+    activeCompanyId: actor.activeCompanyId ?? null,
+    lineCompanyIds: actor.lineCompanyIds ?? null,
+  });
 
 /** The page: counts per tab and the rows of one tab (company-scoped). */
-export async function stockWaitOverview(actor: ScopedActor, tab: StockWaitTab) {
+export async function stockWaitOverview(actor: ViewActor, tab: StockWaitTab) {
   assertCan(actor.role, "account.read");
   const db = accountDb(actor.accountId);
   const order = scopeWhere(actor);
@@ -815,9 +825,9 @@ export async function setOutOfStockAutoTag(actor: ScopedActor, raw: z.input<type
 }
 
 /** Stores and their automatic-tag setting (the page's settings card; company-scoped). */
-export async function outOfStockAutoTagStores(actor: ScopedActor) {
+export async function outOfStockAutoTagStores(actor: ViewActor) {
   return accountDb(actor.accountId).store.findMany({
-    where: { archivedAt: null, ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}) },
+    where: { archivedAt: null, ...scopeWhere(actor) },
     select: { id: true, name: true, outOfStockAutoTagSince: true, writeBackMode: true },
     orderBy: { name: "asc" },
   });
