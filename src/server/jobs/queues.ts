@@ -175,6 +175,18 @@ export const QUEUES = {
     options: { retryLimit: 0, policy: "stately", expireInSeconds: 600 },
     cron: "*/2 * * * *",
   },
+  /** Every minute: order tag changes → Shopify ("Липсващи артикули"; store writeBackMode gate in the sender). */
+  shopifyTagWrite: {
+    name: "shopify.tagWrite",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "* * * * *",
+  },
+  /** Every 2 min: re-evaluate the orders tagged out_of_stock / waiting_for_stock (stock back, inbound expected). */
+  stockWaitEvaluate: {
+    name: "stock.waitEvaluate",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 240 },
+    cron: "*/2 * * * *",
+  },
   /** Every 2 min: product weight → Shopify (store weightWriteMode gate in the sender). */
   shopifyWeightWrite: {
     name: "shopify.weightWrite",

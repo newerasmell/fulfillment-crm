@@ -115,7 +115,7 @@ test("tracking links: a courier's link template with a live test link; saved for
   await page.screenshot({ path: "test-results/tracking-links.png", fullPage: true });
 });
 
-test("anti-sabotage: a held order under Подозрителни is approved; the stock sync page lists the groups", async ({
+test("anti-sabotage: a held order under Подозрителни is cancelled; the stock sync page lists the groups", async ({
   page,
 }) => {
   test.setTimeout(240_000);
@@ -126,7 +126,9 @@ test("anti-sabotage: a held order under Подозрителни is approved; th
   await expect(hold).toContainText("20 бр. общо");
   await page.screenshot({ path: "test-results/qty-hold.png", fullPage: false });
   page.once("dialog", (d) => d.accept());
-  await hold.getByRole("button", { name: "Одобри (блокирай бройките)" }).click();
+  // Cancelled (approving is covered by the unit tests): an approved order would change the review counts the
+  // Shopify spec checks later in the same run.
+  await hold.getByRole("button", { name: "Откажи поръчката" }).click();
   await expect(hold).toHaveCount(0, { timeout: 30_000 });
   await page.getByRole("link", { name: "Синхронизация на наличности" }).click();
   await expect(page.getByRole("heading", { name: "Синхронизация на наличности" })).toBeVisible();
@@ -157,4 +159,25 @@ test("alerts and tasks: count on Начало, one list, take it, resolve with a
   await expect(page.getByRole("row", { name: /E2E: поръчка отказана/ })).toHaveCount(0, { timeout: 30_000 });
   await page.goto("/settings/audit");
   await expect(page.getByRole("cell", { name: "alert.resolve" }).first()).toBeVisible();
+});
+
+test("missing items: tabs, expected item, confirm a ready order (tags go to Shopify via the outbox)", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.getByRole("link", { name: "Липсващи артикули" }).click();
+  await expect(page.getByRole("heading", { name: "Липсващи артикули", level: 1 })).toBeVisible();
+  const out = page.getByTestId("missing-stock-row").filter({ hasText: "#93101" });
+  await expect(out).toContainText("липсва");
+  await expect(out).toContainText("очакват се 5 бр.");
+  await expect(out.getByTestId("missing-stock-action")).toHaveText("Чака зареждане");
+  await page.screenshot({ path: "test-results/missing-stock-out.png", fullPage: true });
+  await page.getByRole("link", { name: /За потвърждение/ }).click();
+  const ready = page.getByTestId("missing-stock-row").filter({ hasText: "#93102" });
+  await expect(ready).toContainText("зареден отново");
+  await ready.getByTestId("missing-stock-action").click();
+  await expect(page.getByRole("status")).toContainText("Изпратено към Shopify: 1");
+  await expect(ready.getByTestId("missing-stock-write")).toContainText("Сменя се на Confirmed");
+  await page.screenshot({ path: "test-results/missing-stock-ready.png", fullPage: true });
 });

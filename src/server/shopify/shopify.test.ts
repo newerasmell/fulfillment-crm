@@ -227,7 +227,8 @@ describe("Shopify import (DB)", () => {
     // write_X covers read_X: read_orders and read_products are not missing.
     expect(r.missingScopes).toEqual(
       REQUIRED_SCOPES.filter(
-        (x) => !["read_orders", "read_products", "write_products", "read_inventory"].includes(x),
+        (x) =>
+          !["read_orders", "write_orders", "read_products", "write_products", "read_inventory"].includes(x),
       ),
     );
     expect(missingScopes([...REQUIRED_SCOPES])).toEqual([]);

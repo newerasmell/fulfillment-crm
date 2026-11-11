@@ -40,7 +40,8 @@
     "countries": "Countries",
     "toWarehouse": "Create in warehouse",
     "trackingLinks": "Tracking links",
-    "stockSync": "Stock sync"
+    "stockSync": "Stock sync",
+    "missingStock": "Missing items"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -3703,5 +3704,68 @@
       "not_qty_hold": "The order is no longer held.",
       "forbidden": "You may not do this."
     }
+  },
+  "missingStock": {
+    "title": "Missing items",
+    "intro": "Orders tagged out_of_stock or waiting_for_stock in Shopify. The CRM follows when the missing items are expected and when they are back; units go to the oldest orders first.",
+    "tab": {
+      "out": "Missing",
+      "waiting": "Waiting for stock",
+      "partial": "Partly available",
+      "ready": "To confirm"
+    },
+    "tabHint": {
+      "out": "Tag out_of_stock. When every missing item is in an open inbound request (Inbound), you can switch the tag to waiting_for_stock.",
+      "waiting": "Tag waiting_for_stock. None of the missing items is back yet.",
+      "partial": "Some missing items are back, others are not. A task is opened for every item that comes back.",
+      "ready": "Every item is available in one warehouse. Confirm sets the Confirmed tag (or the store's tag) and the order enters review."
+    },
+    "empty": "No orders here.",
+    "notYet": "Being checked… (up to 2 minutes)",
+    "pick": "Select",
+    "pickOne": "Select {n}",
+    "pickAll": "Select all ({n})",
+    "readyAt": "Available at",
+    "col": {
+      "order": "Order",
+      "items": "Items",
+      "shopify": "Shopify"
+    },
+    "line": {
+      "available": "available",
+      "back": "back in stock",
+      "missing": "missing",
+      "unlinked": "not linked to a product",
+      "expected": "{n} expected at {warehouse}",
+      "expectedAt": "by {date}",
+      "notExpected": "not in an open inbound request"
+    },
+    "action": {
+      "waiting": "Waiting for stock",
+      "confirm": "Confirm",
+      "waitingPicked": "Waiting for stock ({n})",
+      "confirmPicked": "Confirm ({n})"
+    },
+    "notExpectedHint": "Not expected — the tag stays out_of_stock",
+    "noScope": "The store lacks write_orders — add it to the app",
+    "readOnly": "Write to Shopify: read only",
+    "queued": "Sent to Shopify: {n}{skipped, plural, =0 {} other { · skipped: #}}",
+    "write": {
+      "PENDING": "Changing to {tags}…",
+      "SENDING": "Changing to {tags}…",
+      "PAUSED": "Paused (writes stopped)",
+      "HELD": "Held",
+      "AWAITING_CONFIRMATION": "Awaiting confirmation",
+      "REFUSED": "Refused: the store is read only",
+      "DRY_RUN_RECORDED": "Recorded as a test: {tags} (nothing sent)",
+      "SENT": "Written: {tags}",
+      "FAILED": "Failed: {tags}",
+      "UNCERTAIN": "Unclear result"
+    },
+    "error": {
+      "stock_wait_nothing_to_do": "Nothing to change (already changed, another change is on its way, or the order is not in this tab).",
+      "forbidden": "You are not allowed to do this."
+    },
+    "withoutTags": "without {tags}"
   }
 }

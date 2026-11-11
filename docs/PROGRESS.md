@@ -374,6 +374,19 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   moved (fulfillmentOrderMove) to the location mapped to the warehouse the parcel left, then one fulfillmentCreate;
   FULFIL rows failed earlier with "multiple_locations" are re-armed once by the sweep.
 
+- 2026-11-10 "Липсващи артикули" (Поръчки → Липсващи артикули): a Shopify order tagged out_of_stock (by a person)
+  is followed from the import (OrderStockWait). Every 2 minutes (stock.waitEvaluate) the free units per warehouse,
+  after every OTHER order's reservations, are shared among the followed orders oldest first, each taking its lines
+  from ONE warehouse. out_of_stock + every missing item in an open CRM inbound request → "Чака зареждане" (tag →
+  waiting_for_stock); waiting → PARTIAL (task per new item back) → READY (task once; an out_of_stock order whose items
+  all came back is READY too) → "Потвърди" sets the store's confirmation tag (none: only the flow tag is removed) and
+  the import moves it into review. Tags go to Shopify through the ShopifyTagWrite outbox (writeBackMode gate; read →
+  tagsAdd → tagsRemove, idempotent; our copy follows). Needs the write_orders scope (GATE: add it to the app version,
+  release, approve in every store). Only CRM inbound requests count (FHB/euShipments have no list of requests made in
+  their portals). Design choice: an older order that is partly covered keeps its units even if its other items never
+  come; a younger order needing them waits (FIFO).
+  Migration 20261111100000 (two new tables; additive).
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

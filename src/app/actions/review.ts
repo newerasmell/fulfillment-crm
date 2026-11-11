@@ -1,5 +1,6 @@
 "use server";
 
+import { decideStockWait } from "@/server/stock/waiting";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { DomainError } from "@/server/accounts";
@@ -282,6 +283,21 @@ export async function decideQtyHoldAction(input: {
     revalidatePath(orderPath(d.orderId));
     revalidatePath("/orders");
     return { ok: true, status: r.status };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Липсващи артикули": "Чака зареждане" / "Потвърди" for one or many orders (tags change in Shopify via the outbox). */
+export async function decideStockWaitAction(input: {
+  action: "waiting" | "confirm";
+  orderIds: string[];
+}): Promise<{ ok: true; queued: number; skipped: number } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await decideStockWait(actorFrom(ctx), input);
+    revalidatePath("/orders/missing-stock");
+    return { ok: true, ...r };
   } catch (err) {
     return toError(err);
   }

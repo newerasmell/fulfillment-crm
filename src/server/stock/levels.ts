@@ -53,6 +53,8 @@ export async function crmReservations(
   accountId: string,
   /** Only these products (the fast sync and a fast push's re-plan): the same numbers, a much smaller read. */
   onlyProductIds?: string[],
+  /** Orders left out (the missing-stock evaluation shares the remaining units among these itself). */
+  opts: { excludeOrderIds?: string[] } = {},
 ): Promise<Map<string, number>> {
   const db = accountDb(accountId);
   const only = onlyProductIds ? { in: onlyProductIds } : undefined;
@@ -60,7 +62,11 @@ export async function crmReservations(
   const fLineWhere = only ? { orderLine: { productId: only } } : undefined;
   const [orders, queued, accepted] = await Promise.all([
     db.order.findMany({
-      where: { status: { in: [...ORDER_NOT_AT_WAREHOUSE] }, ...(only ? { lines: { some: lineWhere } } : {}) },
+      where: {
+        status: { in: [...ORDER_NOT_AT_WAREHOUSE] },
+        ...(only ? { lines: { some: lineWhere } } : {}),
+        ...(opts.excludeOrderIds?.length ? { id: { notIn: opts.excludeOrderIds } } : {}),
+      },
       select: {
         check: { select: { connectionId: true } },
         lines: { where: lineWhere, select: { productId: true, quantity: true } },
