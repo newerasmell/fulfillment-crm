@@ -16,6 +16,8 @@ import {
   queueEuProduct,
   queueEuTransfer,
   localCod,
+  previewEuOrderFindings,
+  previewEuOrderPayload,
   referenceFor,
   reshipReference,
 } from "./write";
@@ -148,6 +150,104 @@ describe("euShipments write side through the outbox (DB)", () => {
       const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
       expect(q.status).toBe("queued");
     } finally {
+      await g.db.countrySetting.deleteMany({ where: { country: "BG" } });
+    }
+  });
+
+  it("Speedy office (BG): recognised from the address → recipient.officeId; unmatched → blocked, never an address", async () => {
+    await g.db.countrySetting.upsert({
+      where: { accountId_country: { accountId: g.accountId, country: "BG" } },
+      create: { accountId: g.accountId, country: "BG", currency: "EUR" },
+      update: { currency: "EUR" },
+    });
+    const courierId = 7701;
+    const now = new Date();
+    await g.db.eushipmentsOffice.createMany({
+      data: [
+        { officeId: 99275, courierOfficeId: 275, name: "ПЛЕВЕН - САН СТЕФАНО (УЛ.)" },
+        { officeId: 99247, courierOfficeId: 247, name: "ПЛЕВЕН - ХАДЖИ ДИМИТЪР (УЛ.)" },
+      ].map((o) => ({
+        ...o,
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        courierId,
+        syncedAt: now,
+      })),
+    });
+    try {
+      const { order, product } = await euTestOrder(g, { number: "#1888" });
+      await mapProduct(product.id, `ref-${product.sku}`);
+      const office =
+        "Office Speedy [275] ПЛЕВЕН - САН СТЕФАНО (УЛ.): ул. Сан Стефано No 35, Плевен, 5800, BG";
+      await g.db.order.update({
+        where: { id: order.id },
+        data: {
+          shippingAddress: {
+            ...(order.shippingAddress as object),
+            address1: office,
+            address2: null,
+            city: "Плевен",
+            zip: "5800",
+          },
+        },
+      });
+      const body = (o = order.id) =>
+        previewEuOrderPayload(g.accountId, { orderId: o, connectionId: g.connection.id, courierId });
+      expect((await body())?.recipient).toMatchObject({ officeId: 99275, streetName: null });
+      expect(
+        (
+          await previewEuOrderFindings(g.accountId, {
+            orderId: order.id,
+            connectionId: g.connection.id,
+            courierId,
+          })
+        ).map((f) => f.code),
+      ).not.toContain("office_unresolved");
+      // An office the list does not have: blocked (never sent as an address).
+      await g.db.order.update({
+        where: { id: order.id },
+        data: {
+          shippingAddress: {
+            ...(order.shippingAddress as object),
+            address1: office.replace("275", "999").replace("САН СТЕФАНО", "НЯМА ТАКЪВ"),
+          },
+        },
+      });
+      expect(
+        (
+          await previewEuOrderFindings(g.accountId, {
+            orderId: order.id,
+            connectionId: g.connection.id,
+            courierId,
+          })
+        ).find((f) => f.code === "office_unresolved")?.severity,
+      ).toBe("block");
+      // A person picks the office; or chooses "До адрес".
+      await g.db.order.update({
+        where: { id: order.id },
+        data: { deliveryOffice: { mode: "office", officeId: 99247, name: "ПЛЕВЕН - ХАДЖИ ДИМИТЪР (УЛ.)" } },
+      });
+      expect((await body())?.recipient).toMatchObject({ officeId: 99247 });
+      // "До адрес" while the address is still the office line: blocked (the street would read as an office).
+      await g.db.order.update({ where: { id: order.id }, data: { deliveryOffice: { mode: "address" } } });
+      expect(
+        (
+          await previewEuOrderFindings(g.accountId, {
+            orderId: order.id,
+            connectionId: g.connection.id,
+            courierId,
+          })
+        ).find((f) => f.code === "office_address_as_street")?.severity,
+      ).toBe("block");
+      // Another country: unchanged, even with an office-looking address.
+      const { order: ro } = await euTestOrder(g, { number: "#1889", country: "RO" });
+      await g.db.order.update({
+        where: { id: ro.id },
+        data: { shippingAddress: { ...(ro.shippingAddress as object), address1: office } },
+      });
+      expect((await body(ro.id))?.recipient).toMatchObject({ officeId: null, streetName: office });
+    } finally {
+      await g.db.eushipmentsOffice.deleteMany({ where: { courierId } });
       await g.db.countrySetting.deleteMany({ where: { country: "BG" } });
     }
   });
@@ -1044,6 +1144,19 @@ describe("EuShipmentsTransport (unit)", () => {
     });
     expect(r.outcome).toBe("rejected");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("create-order read-back: a deleted/cancelled shipment under our reference is neither created nor absent", async () => {
+    const call = {
+      operation: EU_OPS.createOrder,
+      idempotencyKey: "k",
+      payload: { body: { awb: { referenceNumber: "TST-DEL" } }, ctx: {} },
+      testMode: false,
+    };
+    await expect(transport(() => json([found("TST-DEL", "Deleted")])).readBack(call)).rejects.toThrow(
+      /deleted\/cancelled/,
+    );
+    expect(await transport(() => json([notFound("TST-DEL")])).readBack(call)).toEqual({ found: false });
   });
 
   it("attach-pdf per-file errors are rejections; no read-back exists for attach or booking", async () => {

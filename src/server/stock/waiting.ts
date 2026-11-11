@@ -22,13 +22,20 @@ import { getStockSettings, staleHoursFor } from "./settings";
  *  - waiting_for_stock: WAITING → PARTIAL (some of the lines missing when it started waiting are back; a task) →
  *    READY (every line in ONE warehouse, the parcel leaves one warehouse; a task) → "Потвърди" sets the store's
  *    confirmation tag (default "Confirmed") and the order enters review like any confirmed order.
- * Units back in stock go to the waiting orders oldest first (allocateStockWaits): two orders are never both READY
+ * Units back in stock go to the waiting orders, paid ones first, then oldest first (allocateStockWaits): two orders are never both READY
  * for the same unit. These orders already reserve their units (AWAITING_TAG and the pre-approval statuses do), so
  * the stores never sell what came back for them; the shares are computed from the warehouse numbers minus every
  * OTHER order's reservations. Tag changes go to Shopify through the ShopifyTagWrite outbox (store writeBackMode).
  */
 
 export const OUT_OF_STOCK_TAG = "out_of_stock";
+
+/**
+ * Paid in Shopify: the money is in — PAID, or PARTIALLY_REFUNDED (paid, then part given back). AUTHORIZED (a card
+ * hold not captured yet) and PENDING are not paid. Pure.
+ */
+export const isPaid = (financialStatus: string | null | undefined) =>
+  ["PAID", "PARTIALLY_REFUNDED"].includes((financialStatus ?? "").toUpperCase());
 export const WAITING_TAG = "waiting_for_stock";
 
 export type StockWaitStage = typeof OUT_OF_STOCK_TAG | typeof WAITING_TAG;
@@ -134,6 +141,10 @@ export interface WaitLine {
 export interface WaitOrder {
   orderId: string;
   placedAt: Date;
+  /** Paid in Shopify (financial status PAID): served before the unpaid ones (owner request 2026-11-11). */
+  paid?: boolean;
+  /** Already READY (people were told "confirm it"): keeps its units, a later paid order never takes them. */
+  ready?: boolean;
   lines: WaitLine[];
   /** Warehouses that may ship it (its product line's), in a stable order. */
   connectionIds: string[];
@@ -148,7 +159,9 @@ export interface WaitAllocation {
 }
 
 /**
- * Pure: shares the free units (`pool`, per reservationKey) among the waiting orders, oldest first. Each order takes
+ * Pure: shares the free units (`pool`, per reservationKey) among the waiting orders: an order already READY keeps
+ * its units; then paid orders first (owner request 2026-11-11: a customer who already paid gets the unit before a
+ * cash-on-delivery order), oldest first within each. Each order takes
  * its lines from the ONE warehouse that covers most of them (a parcel leaves one warehouse); covered lines take
  * their units from the pool, so a later order only gets what is left. Lines without a master product are never
  * covered.
@@ -156,7 +169,11 @@ export interface WaitAllocation {
 export function allocateStockWaits(orders: WaitOrder[], pool: Map<string, number>): WaitAllocation[] {
   const left = new Map(pool);
   const sorted = [...orders].sort(
-    (a, b) => a.placedAt.getTime() - b.placedAt.getTime() || a.orderId.localeCompare(b.orderId),
+    (a, b) =>
+      Number(!!b.ready) - Number(!!a.ready) ||
+      Number(!!b.paid) - Number(!!a.paid) ||
+      a.placedAt.getTime() - b.placedAt.getTime() ||
+      a.orderId.localeCompare(b.orderId),
   );
   const out: WaitAllocation[] = [];
   for (const o of sorted) {
@@ -241,6 +258,7 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
           number: true,
           placedAt: true,
           status: true,
+          shopifyFinancialStatus: true,
           company: { select: { lineId: true } },
           lines: {
             select: { id: true, productId: true, quantity: true, title: true, sku: true },
@@ -306,6 +324,8 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
       rows.map((r) => ({
         orderId: r.orderId,
         placedAt: r.order.placedAt,
+        paid: isPaid(r.order.shopifyFinancialStatus),
+        ready: r.state === "READY",
         lines: r.order.lines.map((l) => ({ lineId: l.id, productId: l.productId, quantity: l.quantity })),
         connectionIds: connectionsFor(r.order.company?.lineId),
       })),
@@ -386,7 +406,7 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
         },
       });
       if (res.count !== 1) return;
-      // Dropped below READY (a unit went to an older order): its "confirm it" task no longer applies; the marker
+      // Dropped below READY (a unit went to an order ahead of it — e.g. its numbers went down): its "confirm it" task no longer applies; the marker
       // stays, so coming back does not notify again.
       if (state !== "READY") await resolveTasks(tx, accountId, r.orderId, [READY_TASK]);
       if (!notify) return;
@@ -467,6 +487,7 @@ async function autoTag(
       candidates.map((c) => ({
         orderId: c.id,
         placedAt: c.placedAt,
+        paid: isPaid(c.shopifyFinancialStatus),
         lines: c.lines.map((l) => ({ lineId: l.id, productId: l.productId, quantity: l.quantity })),
         connectionIds: ctx.connectionsFor(c.company?.lineId),
       })),
@@ -555,6 +576,7 @@ async function autoTagCandidates(accountId: string, now: Date) {
       id: true,
       storeId: true,
       placedAt: true,
+      shopifyFinancialStatus: true,
       company: { select: { lineId: true } },
       lines: { select: { id: true, productId: true, quantity: true }, orderBy: { id: "asc" } },
     },

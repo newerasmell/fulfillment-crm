@@ -11,6 +11,8 @@ import type { Prisma } from "@/generated/prisma/client";
 type Dec = Prisma.Decimal | { toString(): string } | null | undefined;
 
 export interface FingerprintOrder {
+  /** Delivery to a courier office chosen by a person (null = automatic: not part of the hash, so old checks stay). */
+  deliveryOffice?: unknown;
   customerName: string | null;
   email: string | null;
   phone: string | null;
@@ -59,6 +61,7 @@ export function orderFingerprint(o: FingerprintOrder): string {
     codLocalCurrency: o.codLocalCurrency,
     tags: [...o.tags].sort(),
     lines,
+    ...(o.deliveryOffice != null ? { deliveryOffice: o.deliveryOffice } : {}),
   });
   return createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
@@ -76,6 +79,7 @@ export const FINGERPRINT_SELECT = {
   codLocalAmount: true,
   codLocalCurrency: true,
   tags: true,
+  deliveryOffice: true,
   lines: { select: { sku: true, productId: true, quantity: true, unitPrice: true } },
 } as const;
 

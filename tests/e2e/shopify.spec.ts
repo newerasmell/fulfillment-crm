@@ -14,7 +14,8 @@ test("orders: tabs with counts, filters and a read-only detail", async ({ page }
   // The Shopify test order is held, never in the review queue.
   await tabs.getByRole("link", { name: /Блокирани/ }).click();
   await expect(page.getByText("тест", { exact: true })).toBeVisible();
-  await expect(page.getByText("Задържана")).toBeVisible();
+  // (Other specs' seeds hold orders too: look at the test order's own row.)
+  await expect(page.getByRole("row", { name: /#1003/ })).toContainText("Задържана");
   await tabs.getByRole("link", { name: /За преглед/ }).click();
   await expect(page).toHaveURL(/tab=review/);
   await expect(page.getByRole("row")).toHaveCount(3);

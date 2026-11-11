@@ -26,12 +26,15 @@ import type { OutboundCall, OutboundTransport, TransportResolver } from "./trans
  *  - a request is claimed under a row lock and marked SENDING before the call, so a crash mid-call leaves
  *    evidence instead of a silent retry;
  *  - an unknown outcome (timeout/5xx) is resolved by reading back at the vendor before any retry, and
- *    becomes UNCERTAIN + an operator task when no read-back exists. UNCERTAIN is never retried automatically.
+ *    becomes UNCERTAIN + an operator task when no read-back exists. UNCERTAIN is never retried automatically (an OWNER/ADMIN may
+ *    ask for a lookup at the warehouse: recheck.ts).
  * Transports must time out well below STALE_SENDING_MS.
  */
 
 export const MAX_ATTEMPTS = 5;
 export const STALE_SENDING_MS = 10 * 60_000;
+/** lastError of a request whose worker stopped inside the vendor call (deploy / restart): outcome unknown. */
+export const WORKER_STOPPED = "worker stopped during the vendor call";
 const backoffMs = (attempt: number) => Math.min(60 * 60_000, 30_000 * 2 ** Math.max(0, attempt - 1));
 
 /** Statuses the sender may (re)evaluate. Everything else is terminal or in flight. */
@@ -138,6 +141,34 @@ async function createUncertainTask(accountId: string, requestId: string, operati
       entityId: requestId,
     },
   });
+}
+
+/** Resolves the open "unknown result" tasks of one request (scoped by account), with a note. */
+export async function resolveUncertainTasks(
+  accountId: string,
+  requestId: string,
+  note: string,
+  now = new Date(),
+) {
+  const db = systemDb();
+  const open = await db.alert.findMany({
+    where: {
+      accountId,
+      entityType: "OutboundRequest",
+      entityId: requestId,
+      kind: "outbox_uncertain",
+      status: { not: "RESOLVED" },
+    },
+    select: { id: true },
+  });
+  for (const a of open) {
+    const moved = await db.alert.updateMany({
+      where: { id: a.id, accountId, status: { not: "RESOLVED" } },
+      data: { status: "RESOLVED", resolvedAt: now },
+    });
+    if (moved.count === 1)
+      await db.alertNote.create({ data: { accountId, alertId: a.id, action: "auto_resolve", note } });
+  }
 }
 
 /** Create-order operations that hand a shipment (and its COD) to a warehouse. */
@@ -377,11 +408,17 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
    * (the call took too long), the late result goes to the audit log for the operator instead.
    */
   const finalize = async (data: Prisma.OutboundRequestUpdateManyMutationInput, status: OutboundStatus) => {
+    // Fenced by this attempt: a late answer of an older attempt (a worker that was declared stopped, then the
+    // request re-sent after a check at the warehouse) never overwrites the newer one.
     const res = await db.outboundRequest.updateMany({
-      where: { id, status: "SENDING" },
+      where: { id, status: "SENDING", attempts: plan.attempts },
       data: { ...data, status },
     });
-    if (res.count === 1) return status;
+    if (res.count === 1) {
+      // Sent after all (e.g. after "Провери в склада"): an open "unknown result" task of it is done.
+      if (status === "SENT") await resolveUncertainTasks(plan.accountId, id, "sent to the warehouse");
+      return status;
+    }
     const current = await db.outboundRequest.findUniqueOrThrow({ where: { id }, select: { status: true } });
     await audit("outbox.late_result", { wouldBe: status, lastError: data.lastError ?? null });
     // Tell the operator working the UNCERTAIN task what the vendor finally answered.
@@ -493,10 +530,9 @@ export async function sweepOutbox(
   for (const s of stale) {
     const moved = await db.outboundRequest.updateMany({
       where: { id: s.id, status: "SENDING" },
-      data: { status: "UNCERTAIN", lastError: "worker stopped during the vendor call" },
+      data: { status: "UNCERTAIN", lastError: WORKER_STOPPED },
     });
-    if (moved.count === 1)
-      await createUncertainTask(s.accountId, s.id, s.operation, "worker stopped during the vendor call");
+    if (moved.count === 1) await createUncertainTask(s.accountId, s.id, s.operation, WORKER_STOPPED);
   }
   const due = { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] };
   const fresh = await db.outboundRequest.findMany({

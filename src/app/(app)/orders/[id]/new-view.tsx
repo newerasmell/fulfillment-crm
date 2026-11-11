@@ -46,6 +46,10 @@ import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton }
 import { AiCard } from "./ai-card";
 import { CodEditor, CodRestoreButton, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
 import { CopyValue } from "@/components/ui/CopyValue";
+import { uncertainCreatesOf } from "@/server/outbox/recheck";
+import { deliveryOfficeView } from "@/server/eushipments/delivery-office";
+import { DeliveryOffice } from "./delivery-office";
+import { WarehouseRecheck } from "./warehouse-recheck";
 import { EditableCard } from "@/components/ui/EditableCard";
 import { Field, fieldGridCls, Fold } from "@/components/ui/Fold";
 import { ChevronDownIcon } from "@/components/ui/icons";
@@ -57,6 +61,7 @@ import {
   PHONE_FINDING_CODES,
   productOfWeightFinding,
 } from "@/server/countries/order-fixes";
+import { OpenInShopifyLink } from "@/components/ui/OpenInShopifyLink";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
 
@@ -100,12 +105,14 @@ export async function NewOrderView({
   }
   const { order, check } = data;
   const o = await getTranslations("override");
-  const [wOptions, wCodes, rv, wc] = await Promise.all([
+  const [wOptions, wCodes, rv, wc, uncertain] = await Promise.all([
     warehouseOptions(actorFrom(ctx), order.id),
     warehouseReasonCodes(ctx.accountId),
     rerouteView(actorFrom(ctx), order.id),
     warehouseCancelView(actorFrom(ctx), order.id),
+    uncertainCreatesOf(actorFrom(ctx), order.id),
   ]);
+  const delivery = await deliveryOfficeView(actorFrom(ctx), order.id);
   const cancelRow = (fulfillmentId: string) => wc.rows.find((x) => x.fulfillmentId === fulfillmentId) ?? null;
   /** What happened to the last "Откажи в склада" request (the sender's liveMode decision included). */
   const cancelRequestText = (req: NonNullable<(typeof wc.rows)[number]["request"]>) =>
@@ -250,6 +257,11 @@ export async function NewOrderView({
         <span className="text-muted">
           Shopify: {order.shopifyFinancialStatus ?? "—"} / {order.shopifyFulfillmentStatus ?? "—"}
         </span>
+        <OpenInShopifyLink
+          domain={order.store?.domain}
+          orderGid={order.shopifyOrderGid}
+          label={t("openInShopify")}
+        />
         {order.tags.map((tag) => (
           <span key={tag} className="rounded-full bg-hover px-2 py-0.5 text-xs">
             {tag}
@@ -707,6 +719,20 @@ export async function NewOrderView({
             </details>
           </Card>
 
+          {delivery && (
+            <Card>
+              <h2 className="m-0 mb-2 text-base font-semibold">{t("deliveryOffice.title")}</h2>
+              <DeliveryOffice
+                orderId={order.id}
+                version={delivery.version}
+                resolution={delivery.resolution}
+                courierName={delivery.courierName}
+                manual={delivery.manual}
+                editable={delivery.editable && can(ctx.role, "orders.review")}
+              />
+            </Card>
+          )}
+
           <AiCard actor={actorFrom(ctx)} orderId={order.id} />
 
           <Fold
@@ -729,6 +755,17 @@ export async function NewOrderView({
                         {o("shipments.raw")}: {f.rawStatus}
                       </span>
                     )}
+                    {uncertain
+                      .filter((u) => u.fulfillmentId === f.id)
+                      .map((u) => (
+                        <WarehouseRecheck
+                          key={u.requestId}
+                          requestId={u.requestId}
+                          refusal={u.refusal}
+                          canRun={can(ctx.role, "stores.manage")}
+                          lastCheckError={u.lastCheckError}
+                        />
+                      ))}
                     {(() => {
                       const row = cancelRow(f.id);
                       if (!row) return null;

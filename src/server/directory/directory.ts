@@ -221,7 +221,7 @@ function euOfficeWhere(
       { code: contains(q) },
       { address: contains(q) },
     ];
-    if (/^\d{1,9}$/.test(q)) or.push({ officeId: Number(q) });
+    if (/^\d{1,9}$/.test(q)) or.push({ officeId: Number(q) }, { courierOfficeId: Number(q) });
     and.push({ OR: or });
   }
   return { AND: and };
@@ -344,7 +344,8 @@ export async function listOffices(ctx: DirectoryCtx, raw: unknown, connectionTyp
         vendor: "eu",
         connection: { id: o.connectionId, name: connName.get(o.connectionId) ?? "—" },
         code: String(o.officeId),
-        courierCode: o.code,
+        // The courier's own office id (e.g. Speedy's "[275]") and its office code.
+        courierCode: [o.courierOfficeId, o.code].filter((x) => x != null && x !== "").join(" · ") || null,
         name: o.name,
         courier: c?.name ?? String(o.courierId),
         city: o.cityName,

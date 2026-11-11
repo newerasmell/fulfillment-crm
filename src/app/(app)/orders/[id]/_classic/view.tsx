@@ -44,6 +44,8 @@ import {
 } from "./override-ui";
 import { AddressEditor, ApplyFixButton, DecisionBar, RawDetails, RecheckButton } from "./review-ui";
 import { AiCard } from "./ai-card";
+import { deliveryOfficeView } from "@/server/eushipments/delivery-office";
+import { DeliveryOffice } from "../delivery-office";
 import { CodEditor, LineProductPicker, MarkGatewaysCodButton } from "./line-product-ui";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { PhoneRuleForm } from "@/components/rules-weights/PhoneRuleForm";
@@ -53,6 +55,7 @@ import {
   PHONE_FINDING_CODES,
   productOfWeightFinding,
 } from "@/server/countries/order-fixes";
+import { OpenInShopifyLink } from "@/components/ui/OpenInShopifyLink";
 
 /** Order detail (DESIGN.md screen 3, SPEC §6.1, P4-04): review an order and decide. */
 
@@ -96,6 +99,7 @@ export async function ClassicOrderView({
   }
   const { order, check } = data;
   const o = await getTranslations("override");
+  const delivery = await deliveryOfficeView(actorFrom(ctx), order.id);
   const [wOptions, wCodes, rv, wc] = await Promise.all([
     warehouseOptions(actorFrom(ctx), order.id),
     warehouseReasonCodes(ctx.accountId),
@@ -231,6 +235,11 @@ export async function ClassicOrderView({
         <span className="text-muted">
           Shopify: {order.shopifyFinancialStatus ?? "—"} / {order.shopifyFulfillmentStatus ?? "—"}
         </span>
+        <OpenInShopifyLink
+          domain={order.store?.domain}
+          orderGid={order.shopifyOrderGid}
+          label={t("openInShopify")}
+        />
         {order.tags.map((tag) => (
           <span key={tag} className="rounded-full bg-hover px-2 py-0.5 text-xs">
             {tag}
@@ -484,6 +493,19 @@ export async function ClassicOrderView({
         </div>
 
         <div className="flex min-w-0 flex-col gap-4">
+          {delivery && (
+            <Card>
+              <h2 className="m-0 mb-2 text-base font-semibold">{t("deliveryOffice.title")}</h2>
+              <DeliveryOffice
+                orderId={order.id}
+                version={delivery.version}
+                resolution={delivery.resolution}
+                courierName={delivery.courierName}
+                manual={delivery.manual}
+                editable={delivery.editable && can(ctx.role, "orders.review")}
+              />
+            </Card>
+          )}
           <AiCard actor={actorFrom(ctx)} orderId={order.id} />
           <Card>
             <div className="flex flex-wrap items-center justify-between gap-2">

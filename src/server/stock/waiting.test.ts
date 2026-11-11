@@ -24,6 +24,7 @@ import {
   stockWaitStage,
   stockWaitState,
   syncStockWait,
+  isPaid,
 } from "./waiting";
 
 // Synthetic data only; Shopify is mocked (no network).
@@ -40,6 +41,59 @@ describe("missing-stock flow (pure)", () => {
     // One comparison everywhere: the store's confirmation tag gate agrees with the tag writer.
     expect(hasStoreTag(["Ready to ship"], "ready_to_ship")).toBe(true);
     expect(tagDelta(["Ready to ship"], ["ready_to_ship"], [])).toEqual({ remove: [], add: [] });
+  });
+
+  it("a paid order gets the units before an older unpaid one; oldest first among each", () => {
+    const one = (id: string) => [{ lineId: `${id}-a`, productId: "A", quantity: 1 }];
+    const r = allocateStockWaits(
+      [
+        { orderId: "cod-old", placedAt: new Date(1000), lines: one("cod-old"), connectionIds: ["W1"] },
+        {
+          orderId: "paid-new",
+          placedAt: new Date(3000),
+          paid: true,
+          lines: one("paid-new"),
+          connectionIds: ["W1"],
+        },
+        {
+          orderId: "paid-old",
+          placedAt: new Date(2000),
+          paid: true,
+          lines: one("paid-old"),
+          connectionIds: ["W1"],
+        },
+      ],
+      new Map([["W1:A", 2]]),
+    );
+    expect(r.map((x) => [x.orderId, x.full])).toEqual([
+      ["paid-old", true],
+      ["paid-new", true],
+      ["cod-old", false],
+    ]);
+    expect(isPaid("PAID")).toBe(true);
+    expect(isPaid("paid")).toBe(true);
+    expect(isPaid("PARTIALLY_REFUNDED")).toBe(true);
+    expect(isPaid("AUTHORIZED")).toBe(false);
+    // An order already READY keeps its unit; a newer paid one waits.
+    const kept = allocateStockWaits(
+      [
+        {
+          orderId: "ready-cod",
+          placedAt: new Date(1000),
+          ready: true,
+          lines: one("ready-cod"),
+          connectionIds: ["W1"],
+        },
+        { orderId: "paid", placedAt: new Date(500), paid: true, lines: one("paid"), connectionIds: ["W1"] },
+      ],
+      new Map([["W1:A", 1]]),
+    );
+    expect(kept.map((x) => [x.orderId, x.full])).toEqual([
+      ["ready-cod", true],
+      ["paid", false],
+    ]);
+    expect(isPaid("PENDING")).toBe(false);
+    expect(isPaid(null)).toBe(false);
   });
 
   it("units go to the oldest order first, all lines from ONE warehouse", () => {

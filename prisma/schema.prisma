@@ -780,6 +780,10 @@ model Order {
   email                    String?
   phone                    String?
   shippingAddressOriginal  Json?
+  /// Delivery to a courier office chosen by a person (owner request 2026-11-11, Speedy offices in BG):
+  /// {mode: "address"} | {mode: "office", officeId, name}. Null = automatic (an "Office Speedy [id] NAME: …"
+  /// address is recognised and matched to the warehouse's office list).
+  deliveryOffice           Json?
   shippingAddress          Json?
   billingAddress           Json?
   currency                 String
@@ -1446,25 +1450,27 @@ model EushipmentsCity {
 
 /// GET /offices-by-courier/{courierId}: offices and parcel lockers (recipient.officeId = officeId).
 model EushipmentsOffice {
-  id           String   @id @default(cuid())
-  accountId    String
-  connectionId String
-  officeId     Int
-  courierId    Int
-  name         String
-  code         String?
-  cityId       Int?
-  cityName     String?
-  address      String?
-  postCode     String?
-  region       String?
-  isStation    Boolean  @default(false)
-  codSupport   Boolean  @default(false)
-  latitude     String?
-  longitude    String?
+  id              String   @id @default(cuid())
+  accountId       String
+  connectionId    String
+  officeId        Int
+  courierId       Int
+  /// The office's id in the courier's own list (COURIER_OFFICE_ID; for Speedy the number in "Office Speedy [n]").
+  courierOfficeId Int?
+  name            String
+  code            String?
+  cityId          Int?
+  cityName        String?
+  address         String?
+  postCode        String?
+  region          String?
+  isStation       Boolean  @default(false)
+  codSupport      Boolean  @default(false)
+  latitude        String?
+  longitude       String?
   /// {weekday: [begin, end], saturday: [begin, end]}
-  workHours    Json?
-  syncedAt     DateTime
+  workHours       Json?
+  syncedAt        DateTime
 
   connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
 

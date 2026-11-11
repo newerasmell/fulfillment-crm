@@ -62,6 +62,38 @@ const TRUNK: Readonly<Record<string, string>> = Object.freeze({
   UA: "0",
 });
 
+/**
+ * Countries WITHOUT a trunk prefix: the longest national number, as people write it (owner report 2026-11-11: the
+ * Italian mobile 392 783 8955 begins with "39", Italy's code, and went out as +392 783 8955). In these countries a
+ * national number is written without a leading 0, so it can begin with the code's digits; a number of at most this
+ * length is national, a longer one already carries the code. Countries with a trunk prefix (DE, AT, BG…) write
+ * national numbers with it ("0…"), so there a number beginning with the code is international.
+ */
+const NATIONAL_MAX: Readonly<Record<string, number>> = Object.freeze({
+  CY: 8,
+  CZ: 9,
+  DK: 8,
+  EE: 8,
+  ES: 9,
+  GR: 10,
+  IT: 10,
+  // LU landlines can reach 11 digits; 9 (mobiles 6xx…) is a deliberate heuristic, not the ITU maximum.
+  LU: 9,
+  LV: 8,
+  MT: 8,
+  NO: 8,
+  PL: 9,
+  PT: 9,
+});
+
+/** A group's own rule without a trunk prefix: national numbers of up to 10 digits stay national. */
+const DEFAULT_NATIONAL_MAX = 10;
+
+/** Countries with a known calling code, and those without a trunk prefix (for tests). */
+export const KNOWN_PHONE_COUNTRIES = Object.keys(CALLING_CODES);
+export const NO_TRUNK_COUNTRIES = Object.keys(NATIONAL_MAX);
+export const nationalMaxOf = (country: string) => NATIONAL_MAX[country.toUpperCase()] ?? DEFAULT_NATIONAL_MAX;
+
 export const callingCodeOf = (country: string | null | undefined) =>
   country ? (CALLING_CODES[country.toUpperCase()] ?? null) : null;
 
@@ -91,7 +123,13 @@ export function normalisePhoneE164(
   } else {
     if (!/^\d+$/.test(s) || !cc) return null;
     if (trunk && s.startsWith(trunk)) digits = cc + s.slice(trunk.length);
-    else if (s.startsWith(cc) && s.length - cc.length >= 8) digits = s;
+    else if (
+      s.startsWith(cc) &&
+      s.length - cc.length >= 8 &&
+      // Without a trunk prefix, a national number may begin with the code's digits: it stays national.
+      !(!trunk && s.length <= (known && country ? nationalMaxOf(country) : DEFAULT_NATIONAL_MAX))
+    )
+      digits = s;
     else digits = cc + s;
   }
   if (!/^[1-9]\d{7,14}$/.test(digits)) return null;

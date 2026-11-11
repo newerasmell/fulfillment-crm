@@ -93,6 +93,43 @@ test("unknown courier: the order asks for Shopify's carrier; the pick releases t
   await expect(wb).not.toContainText("чака потвърждение");
 });
 
+test("interrupted send: the order offers 'Провери в склада' (OWNER) and hands the lookup to the worker", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94007");
+  await page.getByRole("link", { name: "#94007" }).click();
+  await page.getByTestId("fold-shipments").locator(":scope > summary").click();
+  const box = page.getByTestId("warehouse-recheck");
+  await expect(box).toContainText("Неясно дали поръчката е стигнала до склада");
+  await page.screenshot({ path: "test-results/warehouse-recheck.png", fullPage: false });
+  page.once("dialog", (d) => d.accept());
+  await box.getByRole("button", { name: "Провери в склада" }).click();
+  await expect(box).toContainText("Проверява се");
+});
+
+test("Speedy office (BG): recognised from the address; a person can pick another office or 'До адрес'", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94008");
+  await page.getByRole("link", { name: "#94008" }).click();
+  const box = page.getByTestId("delivery-office");
+  await expect(box.getByTestId("delivery-office-selected")).toContainText("ПЛЕВЕН - САН СТЕФАНО (УЛ.)");
+  await expect(box).toContainText("разпознат от адреса");
+  await box.screenshot({ path: "test-results/delivery-office.png" });
+  await box.getByRole("textbox").fill("ХАДЖИ");
+  await box.getByRole("button", { name: /ПЛЕВЕН - ХАДЖИ ДИМИТЪР/ }).click();
+  await expect(box.getByTestId("delivery-office-selected")).toContainText("ХАДЖИ ДИМИТЪР", {
+    timeout: 30_000,
+  });
+  await expect(box).toContainText("избран ръчно");
+  await box.getByRole("button", { name: "До адрес" }).click();
+  await expect(box.getByTestId("delivery-office-selected")).toHaveCount(0, { timeout: 30_000 });
+});
+
 test("tracking links: a courier's link template with a live test link; saved for new tracking", async ({
   page,
 }) => {

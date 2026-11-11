@@ -346,5 +346,115 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       entityId: orders.b!,
     },
   });
+  // A Bulgarian order to a Speedy office (address line from the checkout), on its own warehouse connection with
+  // Speedy as the BG courier and two synthetic offices: "Доставка" shows it recognised, a person can switch it.
+  const speedyConn = await db.fulfillmentConnection.create({
+    data: {
+      accountId,
+      companyId,
+      type: "EUSHIPMENTS",
+      name: "euShipments Офиси",
+      vendorIds: { companyId: 4243 },
+      liveMode: "READ_ONLY",
+    },
+  });
+  await db.eushipmentsCountryCourier.create({
+    data: { accountId, connectionId: speedyConn.id, country: "BG", courierId: 15 },
+  });
+  await db.eushipmentsOffice.createMany({
+    data: [
+      { officeId: 90275, courierOfficeId: 275, name: "ПЛЕВЕН - САН СТЕФАНО (УЛ.)", cityName: "Плевен" },
+      { officeId: 90247, courierOfficeId: 247, name: "ПЛЕВЕН - ХАДЖИ ДИМИТЪР (УЛ.)", cityName: "Плевен" },
+    ].map((o) => ({ ...o, accountId, connectionId: speedyConn.id, courierId: 15, syncedAt: new Date() })),
+  });
+  const officeOrder = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      number: "#94008",
+      status: "IMPORTED",
+      customerName: "Тест Получател",
+      phone: "0888 123 499",
+      shippingAddress: {
+        name: "Тест Получател",
+        address1: "Office Speedy [275] ПЛЕВЕН - САН СТЕФАНО (УЛ.): ул. Сан Стефано No 35, Плевен, 5800, BG",
+        city: "Плевен",
+        zip: "5800",
+        countryCode: "BG",
+        phone: "0888 123 499",
+      },
+      currency: "EUR",
+      subtotal: "40.00",
+      total: "40.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+      lines: {
+        create: [
+          { productId: product.id, sku: product.sku, title: "Примерен", quantity: 1, unitPrice: "40.00" },
+        ],
+      },
+    },
+  });
+  // Sent from this warehouse (a person's choice keeps it through every re-check).
+  await db.orderWarehouseChoice.create({
+    data: {
+      accountId,
+      orderId: officeOrder.id,
+      connectionId: speedyConn.id,
+      reasonCode: "other",
+      reasonText: "e2e",
+    },
+  });
+  await checkOrder(accountId, officeOrder.id, { actor: { kind: "system" } });
+  // On hold (still editable): it stays out of the review counts other specs assert.
+  await db.order.update({ where: { id: officeOrder.id }, data: { status: "ON_HOLD" } });
+
+  // A create-order cut off by a worker restart (unknown result): "Провери в склада" on its order.
+  const cut = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      shopifyOrderGid: "gid://shopify/Order/94007",
+      number: "#94007",
+      status: "QUEUED",
+      customerName: "Тест Получател",
+      currency: "EUR",
+      subtotal: "20.00",
+      total: "20.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+    },
+  });
+  const cf = await db.fulfillment.create({
+    data: {
+      accountId,
+      orderId: cut.id,
+      connectionId: connection.id,
+      externalId: "DM-94007",
+      status: "QUEUED",
+    },
+  });
+  await db.outboundRequest.create({
+    data: {
+      accountId,
+      connectionId: connection.id,
+      operation: "eushipments.createOrder",
+      idempotencyKey: "e2e-94007",
+      payload: { body: { awb: { referenceNumber: "DM-94007" } }, ctx: { fulfillmentId: cf.id } },
+      status: "UNCERTAIN",
+      evaluatedMode: "CANARY",
+      attempts: 1,
+      fulfillmentId: cf.id,
+      // Two days ago: not part of today's CANARY cap (the bulk Fulfill test counts it).
+      lockedAt: new Date(Date.now() - 2 * 86_400_000),
+      lastError: "worker stopped during the vendor call",
+    },
+  });
   return { connectionId: connection.id, orders, shippedOrderId: shipped.id };
 }

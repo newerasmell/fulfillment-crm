@@ -47,3 +47,11 @@ export const ChevronDownIcon = ({ className = "h-4 w-4" }: { className?: string 
 /** A square, quiet icon button (pencil / refresh / undo in card headers and rows). */
 export const iconButtonCls =
   "inline-grid h-8 w-8 shrink-0 place-items-center rounded-[8px] border border-transparent text-muted hover:border-line hover:bg-hover hover:text-ink disabled:opacity-50";
+
+export const ExternalLinkIcon = ({ className = "h-4 w-4" }: { className?: string }) => (
+  <svg {...base} className={className}>
+    <path d="M14 4h6v6" />
+    <path d="M20 4 10 14" />
+    <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+  </svg>
+);

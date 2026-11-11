@@ -148,6 +148,16 @@ describe("phone rules (pure): the group's own rule replaces the built-in euShipm
     expect(normalisePhone("99 1234", "CY", CY_RULE)).toMatchObject({ ok: false, reason: "wrong_length" });
     // Without an own rule, BG and GR keep the guideline's national format.
     expect(normalisePhone("0888 123 456", "BG")).toMatchObject({ ok: true, value: "0888123456" });
+    // A national number beginning with the code's digits (Italian mobiles start with 3: 39…) stays national.
+    const IT_RULE = { style: "international" as const, cc: "39", trunk: "", lengths: [8, 9, 10] };
+    expect(normalisePhone("3927838955", "IT", IT_RULE)).toMatchObject({ ok: true, value: "+393927838955" });
+    expect(normalisePhone("393927838955", "IT", IT_RULE)).toMatchObject({ ok: true, value: "+393927838955" });
+    expect(normalisePhone("+39 392 783 8955", "IT", IT_RULE)).toMatchObject({
+      ok: true,
+      value: "+393927838955",
+    });
+    // The deliberate trade-off: a length that is both national and code + national is read as national.
+    expect(normalisePhone("3912345678", "IT", IT_RULE)).toMatchObject({ ok: true, value: "+393912345678" });
     expect(effectivePhoneRule("BG", null)).toEqual({ rule: PHONE_RULES.BG, source: "builtin" });
     expect(normalisePhone("+30 698 092 8108", "GR")).toMatchObject({ ok: true, value: "6980928108" });
     // An own rule replaces it (owner decision 2026-11-06: ACS Greece accepts +30): GR goes out with +30.
