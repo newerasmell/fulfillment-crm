@@ -4,6 +4,7 @@ import { ShopifyError } from "@/integrations/shopify/errors";
 import { SYNTHETIC_ORDERS } from "@/integrations/shopify/__fixtures__/orders";
 import type { ShopifyOrder } from "@/integrations/shopify/orders";
 import { euTestGroup } from "@/server/eushipments/test-fixtures";
+import { hasStoreTag } from "@/server/shopify/order-tag-match";
 import { importShopifyOrder } from "@/server/shopify/orders";
 import { applyTagChange, tagDelta } from "@/integrations/shopify/order-tags";
 import { ForbiddenError } from "@/server/auth/rbac";
@@ -15,6 +16,8 @@ import type { ScopedActor } from "@/server/stores";
 import {
   allocateStockWaits,
   decideStockWait,
+  discoverStockWaits,
+  setOutOfStockAutoTag,
   evaluateStockWaits,
   stockWaitOverview,
   stockWaitStage,
@@ -29,6 +32,13 @@ describe("missing-stock flow (pure)", () => {
     expect(stockWaitStage(["vip", "Out_Of_Stock"])).toBe("out_of_stock");
     expect(stockWaitStage(["out_of_stock", "WAITING_FOR_STOCK"])).toBe("waiting_for_stock");
     expect(stockWaitStage(["Confirmed"])).toBeNull();
+    // Typed by a person in Shopify (owner report 2026-11-11): spaces / hyphens / case do not matter.
+    expect(stockWaitStage(["Waiting for stock"])).toBe("waiting_for_stock");
+    expect(stockWaitStage(["out-of-stock"])).toBe("out_of_stock");
+    expect(stockWaitStage(["out of stockings"])).toBeNull();
+    // One comparison everywhere: the store's confirmation tag gate agrees with the tag writer.
+    expect(hasStoreTag(["Ready to ship"], "ready_to_ship")).toBe(true);
+    expect(tagDelta(["Ready to ship"], ["ready_to_ship"], [])).toEqual({ remove: [], add: [] });
   });
 
   it("units go to the oldest order first, all lines from ONE warehouse", () => {
@@ -570,6 +580,295 @@ describe("missing-stock flow (database, mocked Shopify)", () => {
     await expect(
       decideStockWait(otherActor, { action: "confirm", orderIds: [mine.orderId] }),
     ).rejects.toMatchObject({ code: "stock_wait_nothing_to_do" });
+  });
+
+  it("an order tagged before this existed (any spelling) is found; confirming a held one releases it", async () => {
+    const p = await product("W-G");
+    await stock(fhbId, p.id, 1);
+    const gid = `gid://shopify/Order/7799${++n}`;
+    shopTags.set(gid, ["Waiting for stock"]);
+    const o = await db().order.create({
+      data: {
+        accountId,
+        companyId,
+        storeId,
+        source: "SHOPIFY",
+        shopifyOrderGid: gid,
+        number: `#W-old-${n}`,
+        status: "ON_HOLD",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "COD",
+        placedAt: new Date(Date.now() - 86_400_000),
+        tags: ["Waiting for stock"],
+        raw: { tags: ["Waiting for stock"] },
+        lines: { create: [{ productId: p.id, title: "x", quantity: 1, unitPrice: 1 }] },
+      },
+    });
+    expect(await row(o.id)).toBeNull();
+    expect(await discoverStockWaits()).toBeGreaterThanOrEqual(1);
+    expect((await row(o.id))!.stage).toBe("waiting_for_stock");
+    await evaluateStockWaits(accountId);
+    expect((await row(o.id))!.state).toBe("READY");
+    await decideStockWait(owner, { action: "confirm", orderIds: [o.id] });
+    // Still held until Shopify has the confirmation tag (the review gate needs it)…
+    expect((await db().order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("ON_HOLD");
+    expect(await sendAll()).toEqual(["SENT"]);
+    // …then released into review in the name of the person who confirmed.
+    expect((await db().order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("IMPORTED");
+    const ev = await db().orderEvent.findFirst({
+      where: { orderId: o.id, toStatus: "IMPORTED" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(ev?.userId).toBe(owner.userId);
+    // The person's spelling is what gets removed.
+    expect(shopTags.get(gid)).toEqual(["Confirmed"]);
+    expect(await row(o.id)).toBeNull();
+  });
+
+  it("automatic out_of_stock: new orders no warehouse can fill, once, only after it is switched on", async () => {
+    const empty = await product("W-H0");
+    const full = await product("W-H1");
+    await stock(fhbId, empty.id, 0);
+    await stock(fhbId, full.id, 5);
+    const plain = (productId: string) =>
+      db().order.create({
+        data: {
+          accountId,
+          companyId,
+          storeId,
+          source: "SHOPIFY",
+          shopifyOrderGid: `gid://shopify/Order/7788${++n}`,
+          number: `#W-auto-${n}`,
+          status: "AWAITING_TAG",
+          currency: "EUR",
+          subtotal: 1,
+          total: 1,
+          paymentMethod: "COD",
+          placedAt: new Date(),
+          tags: [],
+          raw: { tags: [] },
+          lines: { create: [{ productId, title: "x", quantity: 1, unitPrice: 1 }] },
+        },
+      });
+    const before = await plain(empty.id);
+    await expect(
+      setOutOfStockAutoTag({ ...owner, role: "OPERATOR" }, { storeId, enabled: true }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await setOutOfStockAutoTag(owner, { storeId, enabled: true });
+    try {
+      const missing = await plain(empty.id);
+      const fine = await plain(full.id);
+      const r = await evaluateStockWaits(accountId);
+      expect(r.tagged).toBe(1);
+      const writes = await db().shopifyTagWrite.findMany({
+        where: { orderId: { in: [before.id, missing.id, fine.id] } },
+      });
+      // Only the new order that cannot be filled; the one from before the switch is left alone.
+      expect(writes.map((w) => [w.orderId, w.add])).toEqual([[missing.id, ["out_of_stock"]]]);
+      expect((await evaluateStockWaits(accountId)).tagged).toBe(0); // once
+      expect(await sendAll()).toContain("SENT");
+      expect((await row(missing.id))!.stage).toBe("out_of_stock");
+    } finally {
+      await setOutOfStockAutoTag(owner, { storeId, enabled: false });
+    }
+  });
+
+  it("automatic out_of_stock never tags an order its own units cover, nor on old numbers, empty or non-LIVE", async () => {
+    const one = await product("W-I1");
+    const stale = await product("W-I2");
+    await stock(fhbId, one.id, 1);
+    await stock(fhbId, stale.id, 0);
+    // An older order waits for the same product: the new order keeps the unit it reserved (no double promise).
+    const waiting = await order(["waiting_for_stock"], [{ productId: one.id, quantity: 1 }], 120);
+    await setOutOfStockAutoTag(owner, { storeId, enabled: true });
+    const mk = (lines: { productId: string; quantity: number }[]) =>
+      db().order.create({
+        data: {
+          accountId,
+          companyId,
+          storeId,
+          source: "SHOPIFY",
+          shopifyOrderGid: `gid://shopify/Order/7766${++n}`,
+          number: `#W-auto2-${n}`,
+          status: "AWAITING_TAG",
+          currency: "EUR",
+          subtotal: 1,
+          total: 1,
+          paymentMethod: "COD",
+          placedAt: new Date(),
+          tags: [],
+          raw: { tags: [] },
+          lines: { create: lines.map((l) => ({ ...l, title: "x", unitPrice: 1 })) },
+        },
+      });
+    try {
+      const self = await mk([{ productId: one.id, quantity: 1 }]);
+      const old = await mk([{ productId: stale.id, quantity: 1 }]);
+      const none = await mk([]);
+      // The warehouse numbers of `stale` are days old: a stopped sync must not tag.
+      const vp = await db().vendorProduct.findFirstOrThrow({ where: { productId: stale.id } });
+      await systemDb().stockLevel.update({
+        where: { vendorProductId: vp.id },
+        data: { snapshotAt: new Date(Date.now() - 30 * 86_400_000) },
+      });
+      expect((await evaluateStockWaits(accountId)).tagged).toBe(0);
+      expect((await row(waiting.id))!.state).toBe("WAITING");
+      // Fresh 0 at FHB, but euShipments' numbers are old (it may hold the units): not tagged either.
+      const two = await product("W-I3");
+      await stock(fhbId, two.id, 0);
+      await stock(euId, two.id, 0);
+      const euVp = await db().vendorProduct.findFirstOrThrow({
+        where: { productId: two.id, connectionId: euId },
+      });
+      await systemDb().stockLevel.update({
+        where: { vendorProductId: euVp.id },
+        data: { snapshotAt: new Date(Date.now() - 30 * 86_400_000) },
+      });
+      const split = await mk([{ productId: two.id, quantity: 1 }]);
+      expect((await evaluateStockWaits(accountId)).tagged).toBe(0);
+      expect(await db().shopifyTagWrite.count({ where: { orderId: split.id } })).toBe(0);
+      expect(
+        await db().shopifyTagWrite.count({ where: { orderId: { in: [self.id, old.id, none.id] } } }),
+      ).toBe(0);
+      // Not written to Shopify (READ_ONLY): not looked at at all, so its one tag is never used up.
+      await systemDb().stockLevel.update({
+        where: { vendorProductId: vp.id },
+        data: { snapshotAt: new Date() },
+      });
+      await db().store.update({ where: { id: storeId }, data: { writeBackMode: "READ_ONLY" } });
+      expect((await evaluateStockWaits(accountId)).tagged).toBe(0);
+      await db().store.update({ where: { id: storeId }, data: { writeBackMode: "LIVE" } });
+      expect((await evaluateStockWaits(accountId)).tagged).toBe(1);
+      expect((await db().shopifyTagWrite.findFirstOrThrow({ where: { orderId: old.id } })).add).toEqual([
+        "out_of_stock",
+      ]);
+      await sendAll();
+    } finally {
+      await setOutOfStockAutoTag(owner, { storeId, enabled: false });
+    }
+  });
+
+  it("automatic out_of_stock: new orders share the last unit oldest first; free 0 counts; one write per order", async () => {
+    const last = await product("W-K1");
+    const nofree = await product("W-K2");
+    await stock(fhbId, last.id, 1);
+    await stock(fhbId, nofree.id, 0);
+    // The warehouse holds 3 of nofree, none free (e.g. all promised to accepted orders).
+    const vp = await db().vendorProduct.findFirstOrThrow({ where: { productId: nofree.id } });
+    await systemDb().stockLevel.update({ where: { vendorProductId: vp.id }, data: { physical: 3, free: 0 } });
+    await setOutOfStockAutoTag(owner, { storeId, enabled: true });
+    const mk = (productId: string, ageMin: number) =>
+      db().order.create({
+        data: {
+          accountId,
+          companyId,
+          storeId,
+          source: "SHOPIFY",
+          shopifyOrderGid: `gid://shopify/Order/7755${++n}`,
+          number: `#W-auto3-${n}`,
+          status: "AWAITING_TAG",
+          currency: "EUR",
+          subtotal: 1,
+          total: 1,
+          paymentMethod: "COD",
+          // After the switch-on (older ones are not "new"); ageMin only orders them.
+          placedAt: new Date(Date.now() + 60_000 - ageMin * 1000),
+          tags: [],
+          raw: { tags: [] },
+          lines: { create: [{ productId, title: "x", quantity: 1, unitPrice: 1 }] },
+        },
+      });
+    try {
+      const older = await mk(last.id, 10);
+      const newer = await mk(last.id, 5);
+      const free0 = await mk(nofree.id, 1);
+      // Two runs at the same moment: one write per order.
+      const runs = await Promise.all([evaluateStockWaits(accountId), evaluateStockWaits(accountId)]);
+      expect(runs.reduce((n2, r) => n2 + r.tagged, 0)).toBe(2);
+      const writes = await db().shopifyTagWrite.findMany({
+        where: { orderId: { in: [older.id, newer.id, free0.id] } },
+        select: { orderId: true },
+      });
+      expect(writes.map((w) => w.orderId).sort()).toEqual([newer.id, free0.id].sort());
+      await sendAll();
+    } finally {
+      await setOutOfStockAutoTag(owner, { storeId, enabled: false });
+    }
+  });
+
+  it("a release the pipeline refuses (Shopify test order) becomes a task", async () => {
+    const p = await product("W-L");
+    await stock(fhbId, p.id, 2);
+    const gid = `gid://shopify/Order/7744${++n}`;
+    shopTags.set(gid, ["Waiting for stock"]);
+    const o = await db().order.create({
+      data: {
+        accountId,
+        companyId,
+        storeId,
+        source: "SHOPIFY",
+        shopifyOrderGid: gid,
+        number: `#W-test-${n}`,
+        status: "ON_HOLD",
+        currency: "EUR",
+        subtotal: 1,
+        total: 1,
+        paymentMethod: "COD",
+        placedAt: new Date(Date.now() - 3_600_000),
+        tags: ["Waiting for stock", "shopify-test"],
+        raw: { tags: ["Waiting for stock"] },
+        lines: { create: [{ productId: p.id, title: "x", quantity: 1, unitPrice: 1 }] },
+      },
+    });
+    await withAccountTransaction(accountId, (tx) => syncStockWait(tx, accountId, o.id));
+    await evaluateStockWaits(accountId);
+    await decideStockWait(owner, { action: "confirm", orderIds: [o.id] });
+    expect(await sendAll()).toEqual(["SENT"]);
+    const after = await db().order.findUniqueOrThrow({ where: { id: o.id } });
+    expect(after.status).toBe("ON_HOLD");
+    // Our marker of a Shopify test order survives the tag change.
+    expect(after.tags).toContain("shopify-test");
+    expect(await openTasks(o.id, "stock_wait_release_refused")).toBe(1);
+  });
+
+  it("confirm releases only a hold older than the click; other accounts' stores are not found", async () => {
+    const p = await product("W-J");
+    await stock(fhbId, p.id, 2);
+    const o = await order(["waiting_for_stock"], [{ productId: p.id, quantity: 1 }], 30);
+    await evaluateStockWaits(accountId);
+    expect((await row(o.id))!.state).toBe("READY");
+    await decideStockWait(owner, { action: "confirm", orderIds: [o.id] });
+    // Put on hold AFTER the click (for another reason): the confirmation does not release it.
+    await db().order.update({ where: { id: o.id }, data: { status: "ON_HOLD" } });
+    await db().orderEvent.create({
+      data: {
+        accountId,
+        orderId: o.id,
+        fromStatus: "AWAITING_TAG",
+        toStatus: "ON_HOLD",
+        cause: "hold",
+        actorType: "user",
+        userId: owner.userId,
+        source: "test",
+      },
+    });
+    expect(await sendAll()).toEqual(["SENT"]);
+    expect((await db().order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe("ON_HOLD");
+
+    const other = await bootstrapOwner({
+      email: `wait-o2-${Date.now()}@example.com`,
+      name: "O",
+      accountName: "Other 2",
+      password: "correct horse battery staple",
+    });
+    await expect(
+      setOutOfStockAutoTag(
+        { userId: other.user.id, accountId: other.account.id, role: "OWNER", companyScope: null },
+        { storeId, enabled: true },
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });
 

@@ -387,6 +387,17 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   come; a younger order needing them waits (FIFO).
   Migration 20261111100000 (two new tables; additive).
 
+- 2026-11-11 missing items follow-ups: the flow's tags match whatever the spelling ("Waiting for stock" =
+  waiting_for_stock); orders tagged before the feature (or with a missed webhook) are found every 2 minutes by their
+  tags; confirming an order a person held (ON_HOLD) releases it into review once Shopify has the confirmation tag (in
+  the name of the person who confirmed). Automatic out_of_stock per store (Липсващи артикули → settings,
+  stores.manage; Store.outOfStockAutoTagSince, migration 20261111120000, additive): a new order (since it was switched
+  on, within its first day, LIVE stores only) that no ONE warehouse of its line can fill — counting its own reserved
+  units, after the waiting orders' share — gets the tag by itself, once; unknown products, stale or missing warehouse
+  numbers are left to people. A confirmed release only lifts a hold older than the click (otherwise a task). Tag
+  comparison (incl. the store's confirmation gate) ignores case, spaces, underscores, hyphens. The tag search for
+  untracked orders runs every 30 minutes.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

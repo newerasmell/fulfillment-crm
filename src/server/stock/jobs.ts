@@ -119,7 +119,7 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
 
   await boss.work(QUEUES.stockWaitEvaluate.name, opts, async () => {
     const r = await runStockWaitEvaluation(new Date());
-    if (r.notified) logger.info(r, "missing-stock orders: notified");
+    if (r.notified || r.tagged || r.discovered) logger.info(r, "missing-stock orders");
   });
 
   await boss.work(QUEUES.stockInventoryPushSweep.name, opts, async () => {

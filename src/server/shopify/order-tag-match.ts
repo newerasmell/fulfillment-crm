@@ -1,7 +1,12 @@
-/** The store's required tag matches one of the order's Shopify tags: trimmed, case-insensitive ("confirmed" = "Confirmed"). */
+import { normalizeTag } from "@/integrations/shopify/order-tags";
+
+/**
+ * The store's required tag matches one of the order's Shopify tags — the same comparison everywhere (normalizeTag):
+ * case, spaces, underscores and hyphens do not matter ("confirmed" = "Confirmed", "Ready to ship" = "ready_to_ship").
+ */
 export function hasStoreTag(tags: readonly string[] | null | undefined, required: string) {
-  const want = required.trim().toLowerCase();
-  return !!want && (tags ?? []).some((t) => t.trim().toLowerCase() === want);
+  const want = normalizeTag(required);
+  return !!want && (tags ?? []).some((t) => normalizeTag(t) === want);
 }
 
 /** Shopify's tags of an order from its stored payload (falls back to the order's own tags). */

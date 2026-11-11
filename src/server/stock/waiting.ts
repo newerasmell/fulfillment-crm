@@ -4,12 +4,14 @@ import { logger } from "@/lib/logger";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
-import { hasStoreTag, shopifyTagsOf } from "@/server/shopify/order-tag-match";
+import { accountDb, systemDb, withAccountTransaction, withSystemTransaction } from "@/server/db/client";
+import { sameTag } from "@/integrations/shopify/order-tags";
+import { shopifyTagsOf } from "@/server/shopify/order-tag-match";
 import { queueTagChange } from "@/server/shopify/tag-queue";
 import type { ScopedActor } from "@/server/stores";
 import { CLOSED_INBOUND } from "./board";
-import { crmReservations, reservationKey, sellableOf } from "./levels";
+import { crmReservations, isStale, reservationKey, sellableOf } from "./levels";
+import { getStockSettings, staleHoursFor } from "./settings";
 
 /**
  * "Липсващи артикули" (owner request 2026-11-10). A person tags a Shopify order `out_of_stock` when an item is not
@@ -54,8 +56,9 @@ const READY_TASK = "order_stock_ready";
 
 /** Pure: the flow's tag on an order (case-insensitive); waiting_for_stock wins when both are there. */
 export function stockWaitStage(tags: readonly string[]): StockWaitStage | null {
-  if (hasStoreTag(tags, WAITING_TAG)) return WAITING_TAG;
-  if (hasStoreTag(tags, OUT_OF_STOCK_TAG)) return OUT_OF_STOCK_TAG;
+  // "Waiting for stock" typed by a person is the same tag as waiting_for_stock (sameTag).
+  if (tags.some((t) => sameTag(t, WAITING_TAG))) return WAITING_TAG;
+  if (tags.some((t) => sameTag(t, OUT_OF_STOCK_TAG))) return OUT_OF_STOCK_TAG;
   return null;
 }
 
@@ -251,20 +254,27 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
   for (const r of rows)
     if (!followed.includes(r))
       await withAccountTransaction(accountId, (tx) => syncStockWait(tx, accountId, r.orderId));
-  if (!followed.length) return { evaluated: 0, notified: 0 };
   rows.splice(0, rows.length, ...followed);
+  const candidates = await autoTagCandidates(accountId, now);
+  if (!rows.length && !candidates.length) return { evaluated: 0, notified: 0, tagged: 0 };
   const productIds = [
-    ...new Set(rows.flatMap((r) => r.order.lines.map((l) => l.productId)).filter((x): x is string => !!x)),
+    ...new Set(
+      [...rows.map((r) => r.order), ...candidates]
+        .flatMap((o) => o.lines.map((l) => l.productId))
+        .filter((x): x is string => !!x),
+    ),
   ];
   const [reservations, vps, inbound] = await Promise.all([
+    // Only the followed orders are left out: a new order keeps its own reservation (its units are never handed to
+    // an older waiting order), so the waiting orders see exactly what they saw before the automatic tag existed.
     crmReservations(accountId, productIds, { excludeOrderIds: rows.map((r) => r.orderId) }),
     db.vendorProduct.findMany({
       where: { productId: { in: productIds }, archived: false, connection: { enabled: true } },
       select: {
         connectionId: true,
         productId: true,
-        stockLevel: { select: { physical: true, free: true } },
-        connection: { select: { company: { select: { lineId: true } } } },
+        stockLevel: { select: { physical: true, free: true, snapshotAt: true } },
+        connection: { select: { type: true, company: { select: { lineId: true } } } },
       },
       orderBy: { id: "asc" },
     }),
@@ -301,6 +311,15 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
       pool,
     ).map((a) => [a.orderId, a]),
   );
+  const tagged = candidates.length
+    ? await autoTag(accountId, now, candidates, {
+        vps,
+        rowOrderIds: rows.map((r) => r.orderId),
+        rows,
+        allocations,
+        connectionsFor,
+      })
+    : 0;
   let notified = 0;
   for (const r of rows) {
     const a = allocations.get(r.orderId)!;
@@ -390,24 +409,216 @@ export async function evaluateStockWaits(accountId: string, now: Date = new Date
       notified++;
     });
   }
-  return { evaluated: rows.length, notified };
+  return { evaluated: rows.length, notified, tagged };
+}
+
+type Candidate = Awaited<ReturnType<typeof autoTagCandidates>>[number];
+
+/**
+ * Automatic out_of_stock: a new order no ONE warehouse of its line can fill. Per order, against the warehouse numbers
+ * minus every other order's reservations and minus what the waiting orders were given — its own reservation is
+ * added back (it holds its units already). Not when any item has no fresh warehouse snapshot (a stopped stock sync
+ * must not tag every new order), and once per order. Queued only for stores that write to Shopify (LIVE).
+ */
+async function autoTag(
+  accountId: string,
+  now: Date,
+  candidates: Candidate[],
+  ctx: {
+    vps: {
+      connectionId: string;
+      productId: string | null;
+      stockLevel: { physical: number; free: number; snapshotAt: Date } | null;
+      connection: { type: string };
+    }[];
+    rowOrderIds: string[];
+    rows: { order: { lines: { id: string; productId: string | null; quantity: number }[] } }[];
+    allocations: Map<string, WaitAllocation>;
+    connectionsFor: (lineId: string | null | undefined) => string[];
+  },
+) {
+  const settings = await getStockSettings(accountId);
+  // The new orders share the units among themselves oldest first, like the waiting orders do: the warehouse numbers
+  // minus every OTHER order's reservations (theirs and the waiting orders' left out), minus what the waiting orders
+  // were given. Unclamped: a negative number stays negative. Only fresh snapshots count.
+  const reservations = await crmReservations(accountId, [...new Set(ctx.vps.map((v) => v.productId!))], {
+    excludeOrderIds: [...ctx.rowOrderIds, ...candidates.map((c) => c.id)],
+  });
+  const pool = new Map<string, number>();
+  const carriers = new Set<string>();
+  for (const v of ctx.vps) {
+    const k = reservationKey(v.connectionId, v.productId!);
+    carriers.add(k);
+    if (pool.has(k) || !v.stockLevel) continue;
+    if (isStale(v.stockLevel.snapshotAt, staleHoursFor(settings, v.connection.type), now)) continue;
+    // min(free − given, physical − reserved − given) = min(free, physical − reserved) − given.
+    pool.set(k, Math.min(v.stockLevel.free, v.stockLevel.physical - (reservations.get(k) ?? 0)));
+  }
+  for (const r of ctx.rows)
+    for (const l of r.order.lines) {
+      const a = [...ctx.allocations.values()].find((x) => x.covered.includes(l.id));
+      if (!a?.connectionId || !l.productId) continue;
+      const k = reservationKey(a.connectionId, l.productId);
+      if (pool.has(k)) pool.set(k, pool.get(k)! - l.quantity);
+    }
+  const shares = new Map(
+    allocateStockWaits(
+      candidates.map((c) => ({
+        orderId: c.id,
+        placedAt: c.placedAt,
+        lines: c.lines.map((l) => ({ lineId: l.id, productId: l.productId, quantity: l.quantity })),
+        connectionIds: ctx.connectionsFor(c.company?.lineId),
+      })),
+      pool,
+    ).map((a) => [a.orderId, a]),
+  );
+  let tagged = 0;
+  for (const c of candidates) {
+    if (shares.get(c.id)!.full) continue;
+    const conns = ctx.connectionsFor(c.company?.lineId);
+    // Every warehouse of its line that carries the product has fresh numbers (one stopped sync could be hiding
+    // the units): otherwise people decide.
+    const known = c.lines.every((l) => {
+      const at = conns.filter((conn) => carriers.has(reservationKey(conn, l.productId!)));
+      return at.length > 0 && at.every((conn) => pool.has(reservationKey(conn, l.productId!)));
+    });
+    if (!known) continue;
+    const queued = await withAccountTransaction(accountId, async (tx, { lockKey, lockForUpdate }) => {
+      await lockKey(`order-tags:${c.id}`);
+      await lockForUpdate("Order", c.id);
+      // Again under the lock: approved, sent, followed or tagged meanwhile → nothing.
+      const now2 = await tx.order.findFirst({
+        where: { id: c.id, accountId, status: { in: [...AUTO_TAG_STATUSES] }, stockWait: null },
+        select: { id: true },
+      });
+      if (!now2) return false;
+      const before = await tx.shopifyTagWrite.count({
+        where: { accountId, orderId: c.id, add: { has: OUT_OF_STOCK_TAG } },
+      });
+      if (before) return false;
+      await queueTagChange(tx, {
+        accountId,
+        storeId: c.storeId!,
+        orderId: c.id,
+        add: [OUT_OF_STOCK_TAG],
+        remove: [],
+      });
+      return true;
+    });
+    if (!queued) continue;
+    tagged++;
+    await recordAudit({
+      accountId,
+      action: "order.stock_wait.auto_out_of_stock",
+      entityType: "Order",
+      entityId: c.id,
+      after: { add: [OUT_OF_STOCK_TAG] },
+    });
+  }
+  return tagged;
+}
+
+/** Statuses of a new order the automatic out_of_stock tag may look at (not held, not with a warehouse). */
+const AUTO_TAG_STATUSES = ["AWAITING_TAG", "IMPORTED", "CHECKING", "NEEDS_REVIEW", "READY"] as const;
+/** How long after it came in a new order is still looked at (stock sold elsewhere meanwhile counts too). */
+export const AUTO_TAG_WINDOW_MS = 24 * 3_600_000;
+
+/**
+ * New Shopify orders of stores with the automatic tag on: created since it was switched on and within the last day,
+ * not followed yet, not tagged by us before, every line linked to a master product.
+ */
+async function autoTagCandidates(accountId: string, now: Date) {
+  const db = accountDb(accountId);
+  const stores = await db.store.findMany({
+    // Only stores that write to Shopify: a refused or test write would use up the order's one tag.
+    where: { outOfStockAutoTagSince: { not: null }, archivedAt: null, writeBackMode: "LIVE" },
+    select: { id: true, outOfStockAutoTagSince: true },
+  });
+  if (!stores.length) return [];
+  const windowStart = new Date(now.getTime() - AUTO_TAG_WINDOW_MS);
+  return db.order.findMany({
+    where: {
+      source: "SHOPIFY",
+      status: { in: [...AUTO_TAG_STATUSES] },
+      stockWait: null,
+      tagWrites: { none: { add: { has: OUT_OF_STOCK_TAG } } },
+      AND: [{ lines: { some: {} } }, { lines: { none: { productId: null } } }],
+      // Came in after the switch-on and within the last day, by Shopify's date too (a backfill of old orders is not
+      // "new").
+      OR: stores.map((st) => {
+        const from = st.outOfStockAutoTagSince! > windowStart ? st.outOfStockAutoTagSince! : windowStart;
+        return { storeId: st.id, createdAt: { gte: from }, placedAt: { gte: from } };
+      }),
+    },
+    select: {
+      id: true,
+      storeId: true,
+      placedAt: true,
+      company: { select: { lineId: true } },
+      lines: { select: { id: true, productId: true, quantity: true }, orderBy: { id: "asc" } },
+    },
+    orderBy: { placedAt: "asc" },
+    take: 300,
+  });
+}
+
+/**
+ * Orders that carry a flow tag but are not followed (tagged before this existed, or a webhook was missed): found by
+ * their tags, whatever the spelling ("Waiting for stock", "OUT_OF_STOCK"…), and handed to syncStockWait.
+ */
+export async function discoverStockWaits(limit = 500) {
+  const found = await withSystemTransaction(
+    (tx) => tx.$queryRaw<{ id: string; accountId: string }[]>`
+      SELECT o.id, o."accountId" FROM "Order" o
+      WHERE o.source = 'SHOPIFY'::"OrderSource"
+        AND o.status = ANY(ARRAY['IMPORTED', 'CHECKING', 'NEEDS_REVIEW', 'READY', 'ON_HOLD', 'AWAITING_TAG']::"CrmOrderStatus"[])
+        AND NOT EXISTS (SELECT 1 FROM "OrderStockWait" w WHERE w."accountId" = o."accountId" AND w."orderId" = o.id)
+        AND EXISTS (
+          SELECT 1 FROM unnest(o.tags) t
+          WHERE regexp_replace(lower(trim(t)), '[[:space:]_-]+', ' ', 'g') IN ('out of stock', 'waiting for stock')
+        )
+      ORDER BY o."updatedAt" DESC
+      LIMIT ${limit}`,
+  );
+  for (const o of found)
+    await withAccountTransaction(o.accountId, (tx) => syncStockWait(tx, o.accountId, o.id));
+  return found.length;
 }
 
 /** Cron: every account that follows orders. */
+let lastDiscoveryAt = 0;
+/** The tag search scans orders: every 30 minutes (the import notices tags on its own; this catches the rest). */
+export const DISCOVERY_EVERY_MS = 30 * 60_000;
+
 export async function runStockWaitEvaluation(now: Date = new Date()) {
-  const accounts = await systemDb().orderStockWait.findMany({
-    select: { accountId: true },
-    distinct: ["accountId"],
-  });
+  let discovered = 0;
+  if (now.getTime() - lastDiscoveryAt >= DISCOVERY_EVERY_MS) {
+    discovered = await discoverStockWaits();
+    lastDiscoveryAt = now.getTime();
+  }
+  const [waiting, auto] = await Promise.all([
+    systemDb().orderStockWait.findMany({ select: { accountId: true }, distinct: ["accountId"] }),
+    systemDb().store.findMany({
+      where: { outOfStockAutoTagSince: { not: null }, archivedAt: null, writeBackMode: "LIVE" },
+      select: { accountId: true },
+      distinct: ["accountId"],
+    }),
+  ]);
+  const accounts = [...new Set([...waiting, ...auto].map((a) => a.accountId))].map((accountId) => ({
+    accountId,
+  }));
   let notified = 0;
+  let tagged = 0;
   for (const { accountId } of accounts) {
     try {
-      notified += (await evaluateStockWaits(accountId, now)).notified;
+      const r = await evaluateStockWaits(accountId, now);
+      notified += r.notified;
+      tagged += r.tagged;
     } catch (err) {
       logger.warn({ accountId, err: (err as Error).message }, "stock wait evaluation failed for an account");
     }
   }
-  return { accounts: accounts.length, notified };
+  return { accounts: accounts.length, notified, tagged, discovered };
 }
 
 // ───────────── page + actions ─────────────
@@ -540,7 +751,7 @@ export async function decideStockWait(actor: ScopedActor, raw: z.input<typeof St
         storeId: row.order.storeId,
         orderId,
         add,
-        remove: remove.filter((r) => hasStoreTag(tags, r)),
+        remove: remove.filter((r) => tags.some((t) => sameTag(t, r))),
         createdById: actor.userId,
       });
       return { id, add, remove };
@@ -563,4 +774,51 @@ export async function decideStockWait(actor: ScopedActor, raw: z.input<typeof St
   }
   if (!queued && skipped) throw new DomainError("stock_wait_nothing_to_do");
   return { queued, skipped };
+}
+
+export const OutOfStockAutoTagInput = z.object({ storeId: z.string().min(1).max(64), enabled: z.boolean() });
+
+/**
+ * Turns the automatic out_of_stock tag of one store on (from now: only orders that come in after this) or off.
+ * stores.manage; audited.
+ */
+export async function setOutOfStockAutoTag(actor: ScopedActor, raw: z.input<typeof OutOfStockAutoTagInput>) {
+  assertCan(actor.role, "stores.manage");
+  const { storeId, enabled } = OutOfStockAutoTagInput.parse(raw);
+  const db = accountDb(actor.accountId);
+  const store = await db.store.findFirst({
+    where: {
+      id: storeId,
+      archivedAt: null,
+      ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
+    },
+    select: { id: true, outOfStockAutoTagSince: true },
+  });
+  if (!store) throw new DomainError("not_found");
+  if (enabled === !!store.outOfStockAutoTagSince) return { enabled };
+  await db.store.update({
+    where: { id: storeId },
+    data: { outOfStockAutoTagSince: enabled ? new Date() : null },
+  });
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "store.out_of_stock_auto_tag",
+    entityType: "Store",
+    entityId: storeId,
+    before: { enabled: !!store.outOfStockAutoTagSince },
+    after: { enabled },
+    ip: actor.ip,
+    userAgent: actor.userAgent,
+  });
+  return { enabled };
+}
+
+/** Stores and their automatic-tag setting (the page's settings card; company-scoped). */
+export async function outOfStockAutoTagStores(actor: ScopedActor) {
+  return accountDb(actor.accountId).store.findMany({
+    where: { archivedAt: null, ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}) },
+    select: { id: true, name: true, outOfStockAutoTagSince: true, writeBackMode: true },
+    orderBy: { name: "asc" },
+  });
 }

@@ -3,7 +3,13 @@ import { hrefWith, Tabs } from "@/app/(app)/warehouses/fhb/ui";
 import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
-import { STOCK_WAIT_TABS, stockWaitOverview, type StockWaitTab } from "@/server/stock/waiting";
+import {
+  outOfStockAutoTagStores,
+  STOCK_WAIT_TABS,
+  stockWaitOverview,
+  type StockWaitTab,
+} from "@/server/stock/waiting";
+import { AutoTagSettings } from "./auto-tag";
 import { StockWaitList } from "./list";
 
 /**
@@ -21,7 +27,10 @@ export default async function MissingStockPage({
   const tab: StockWaitTab = (STOCK_WAIT_TABS as readonly string[]).includes(sp.tab ?? "")
     ? (sp.tab as StockWaitTab)
     : "out";
-  const data = await stockWaitOverview(actorFrom(ctx), tab);
+  const [data, stores] = await Promise.all([
+    stockWaitOverview(actorFrom(ctx), tab),
+    outOfStockAutoTagStores(actorFrom(ctx)),
+  ]);
   return (
     <>
       <PageHeader title={t("title")} subtitle={t("intro")} />
@@ -35,6 +44,15 @@ export default async function MissingStockPage({
         }))}
       />
       <Card>
+        <AutoTagSettings
+          canEdit={can(ctx.role, "stores.manage")}
+          stores={stores.map((st) => ({
+            id: st.id,
+            name: st.name,
+            enabled: !!st.outOfStockAutoTagSince,
+            readOnly: st.writeBackMode === "READ_ONLY",
+          }))}
+        />
         <p className="m-0 mb-3 text-sm text-muted">{t(`tabHint.${tab}`)}</p>
         {data.rows.length === 0 ? (
           <p className="m-0 text-sm text-muted" data-testid="missing-stock-empty">
