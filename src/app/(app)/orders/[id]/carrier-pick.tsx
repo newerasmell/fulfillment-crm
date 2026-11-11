@@ -10,6 +10,8 @@ import { buttonCls, inputCls } from "@/components/ui/form";
  * Shown on the order while a Shopify tracking write-back waits because Shopify does not know the shipment's carrier
  * (owner request 2026-11-06): a person picks the right Shopify company; the CRM then sends the tracking.
  */
+const OTHER = "__other__";
+
 export function CarrierPick({
   orderId,
   shipments,
@@ -51,6 +53,11 @@ function Row({
   const t = useTranslations("fulfill.carrierPick");
   const router = useRouter();
   const [company, setCompany] = useState("");
+  // "Друг куриер": a courier Shopify does not list (e.g. Express One), with our tracking link.
+  const [customName, setCustomName] = useState("");
+  const [template, setTemplate] = useState("");
+  const custom = company === OTHER;
+  const ready = custom ? !!customName.trim() && !!template.trim() : !!company;
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   return (
@@ -58,9 +65,19 @@ function Row({
       className="flex flex-wrap items-center gap-2 text-sm"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!company) return;
+        if (!ready) return;
         start(async () => {
-          const r = await setShipmentCarrierAction({ orderId, fulfillmentId: s.fulfillmentId, company });
+          const r = await setShipmentCarrierAction(
+            custom
+              ? {
+                  orderId,
+                  fulfillmentId: s.fulfillmentId,
+                  company: customName.trim(),
+                  custom: true,
+                  urlTemplate: template.trim(),
+                }
+              : { orderId, fulfillmentId: s.fulfillmentId, company },
+          );
           if ("error" in r) setError(r.error);
           else router.refresh();
         });
@@ -80,13 +97,37 @@ function Row({
             data-testid={`carrier-select-${s.fulfillmentId}`}
           >
             <option value="">{t("choose")}</option>
+            <option value={OTHER}>{t("other")}</option>
             {companies.map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
             ))}
           </select>
-          <button type="submit" disabled={pending || !company} className={`${buttonCls} px-3 py-1 text-sm`}>
+          {custom && (
+            <>
+              <input
+                className={`${inputCls} w-40`}
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                placeholder={t("otherName")}
+                aria-label={t("otherName")}
+                maxLength={64}
+                data-testid={`carrier-custom-name-${s.fulfillmentId}`}
+              />
+              <input
+                className={`${inputCls} min-w-72 flex-1`}
+                value={template}
+                onChange={(e) => setTemplate(e.target.value)}
+                placeholder="https://…?number={tracking}"
+                aria-label={t("otherLink")}
+                maxLength={500}
+                data-testid={`carrier-custom-link-${s.fulfillmentId}`}
+              />
+              <span className="w-full text-xs text-muted">{t("otherHint")}</span>
+            </>
+          )}
+          <button type="submit" disabled={pending || !ready} className={`${buttonCls} px-3 py-1 text-sm`}>
             {t("save")}
           </button>
           {s.carrier && (

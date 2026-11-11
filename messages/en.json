@@ -1547,8 +1547,16 @@
         "carrier_not_shopify": "Choose a carrier from Shopify's list.",
         "not_found": "Shipment not found.",
         "forbidden": "You may not change shipments.",
-        "not_held": "This shipment is no longer waiting for a carrier."
-      }
+        "not_held": "This shipment is no longer waiting for a carrier.",
+        "tracking_template_required": "A courier outside Shopify's list needs a tracking link with '{tracking}'.",
+        "tracking_template_invalid": "The link must be https and contain '{tracking}'.",
+        "tracking_link_exists": "This courier already has a tracking link. Only an owner/admin can change it (Settings → Tracking links).",
+        "carrier_alias_exists": "This name is already mapped to another courier. Only an owner/admin can change it."
+      },
+      "other": "Other courier (not in Shopify's list)…",
+      "otherName": "Courier name, e.g. Express One",
+      "otherLink": "Tracking link",
+      "otherHint": "Paste the tracking link with '{tracking}' in place of the number, e.g. https://tracking.expressone.hu/?plc_number='{tracking}'. Remembered for this courier (Settings → Tracking links)."
     }
   },
   "alerts": {

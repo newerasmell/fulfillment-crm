@@ -125,6 +125,8 @@ export async function setShipmentCarrierAction(input: {
   orderId: string;
   fulfillmentId: string;
   company: string;
+  custom?: boolean;
+  urlTemplate?: string | null;
 }): Promise<{ ok: true; released: number } | Fail> {
   const ctx = await requireAccountContext();
   try {
@@ -133,6 +135,8 @@ export async function setShipmentCarrierAction(input: {
       orderId,
       fulfillmentId: input.fulfillmentId,
       company: input.company,
+      custom: input.custom === true,
+      urlTemplate: input.urlTemplate ?? null,
     });
     revalidatePath(`/orders/${orderId}`);
     return { ok: true, released: r.released };
