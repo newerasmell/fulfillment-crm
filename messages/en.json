@@ -472,7 +472,8 @@
       "transit": "In transit",
       "all": "All",
       "awaitingTag": "Awaiting tag",
-      "qtyHold": "Suspicious"
+      "qtyHold": "Suspicious",
+      "issues": "With issues"
     },
     "search": "Number, customer, email, phone, SKU",
     "store": "Store",
@@ -521,7 +522,8 @@
       "olderHint": "Older order (K)",
       "newerHint": "Newer order (J)",
       "none": "No more"
-    }
+    },
+    "codCollectable": "(to the warehouse: {amount} {currency})"
   },
   "orderStatus": {
     "IMPORTED": "Imported",

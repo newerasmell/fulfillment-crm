@@ -116,6 +116,14 @@ describe("euShipments write side through the outbox (DB)", () => {
     };
     expect(localCod(base, "EUR")).toEqual({ amount: "127.00", currency: "EUR" });
     expect(localCod({ ...base, currency: "eur" }, "EUR")).toEqual({ amount: "127.00", currency: "EUR" });
+    // HUF goes out in whole forints (owner decision 2026-11-11); other currencies unchanged.
+    expect(localCod({ ...base, currency: "HUF", codAmount: "32825.10" }, "HUF")).toEqual({
+      amount: "32825",
+      currency: "HUF",
+    });
+    expect(
+      localCod({ ...base, currency: "EUR", codLocalAmount: "32825.60", codLocalCurrency: "huf" }, "HUF"),
+    ).toEqual({ amount: "32826", currency: "HUF" });
     expect(localCod(base, "RON")).toBeNull(); // EUR order to a RON country without a stored local amount
     expect(localCod({ ...base, codLocalAmount: "632.00", codLocalCurrency: "RON" }, "RON")).toEqual({
       amount: "632.00",

@@ -398,6 +398,11 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   comparison (incl. the store's confirmation gate) ignores case, spaces, underscores, hyphens. The tag search for
   untracked orders runs every 30 minutes.
 
+- 2026-11-11 HUF cash on delivery is rounded to the whole forint (half-up) before it goes to a warehouse (FHB v3,
+  euShipments, Joy manual labels); the COD board, reports and shipments show/expect the rounded amount; the order
+  page shows the Shopify amount with "(към склада: …)". Начало "С грешки" now opens the new orders tab "С грешки"
+  (orders with an open task), the same definition as the card.
+
 ## Open questions
 See SPEC.md §11.
 - For GATE P3-G1 (ask euShipments): (1) which endpoint returns a product's stored barcode (get-products has none) —

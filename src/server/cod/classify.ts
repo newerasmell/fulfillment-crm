@@ -1,3 +1,4 @@
+import { collectableCod } from "@/lib/cod-rounding";
 /**
  * COD board (P6-02): pure part. One row per CRM shipment with cash on delivery: what we expect (the order's COD
  * in the destination country's local currency, CLAUDE.md) against what the warehouse reports —
@@ -119,12 +120,16 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
 
 export function classifyCod(s: CodShipmentIn, opts: { now: Date; missingDays: number }): CodRow {
   const isCod = s.order.paymentMethod === "COD";
-  const expected = isCod
+  // What the warehouse was asked to collect: whole forints for HUF (collectableCod), like the payloads.
+  const raw = isCod
     ? s.order.codLocalAmount != null
       ? { amount: s.order.codLocalAmount, currency: s.order.codLocalCurrency ?? s.order.currency }
       : s.order.codAmount != null
         ? { amount: s.order.codAmount, currency: s.order.currency }
         : null
+    : null;
+  const expected = raw
+    ? { amount: collectableCod(Number(raw.amount), raw.currency), currency: raw.currency }
     : null;
   const vendor = vendorOf(s);
   const delivered = !!s.deliveredAt || s.status === "DELIVERED" || s.status === "COD_PAID";

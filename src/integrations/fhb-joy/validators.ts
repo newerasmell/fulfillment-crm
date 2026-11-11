@@ -1,3 +1,4 @@
+import { WHOLE_UNIT_COD_CURRENCIES } from "@/lib/cod-rounding";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 import type { ValidationFinding } from "@/integrations/fhb-v3/validators";
 import { JOY_LIMITS } from "./schemas";
@@ -64,8 +65,8 @@ const f = (
 const blank = (v: string | null | undefined) => !v || !v.trim();
 const len = (v: string | null | undefined) => (v ?? "").trim().length;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** Whole-unit currencies where a fractional COD is suspicious (rounding rules not modelled; §2.3). */
-const WHOLE_UNIT = new Set(["HUF"]);
+/** Whole-unit currencies (one list, src/lib/cod-rounding.ts): a fractional COD here was not rounded. */
+const WHOLE_UNIT = WHOLE_UNIT_COD_CURRENCIES;
 
 export function validateJoyShipment(d: JoyShipmentDraft): ValidationFinding[] {
   const out: ValidationFinding[] = [];

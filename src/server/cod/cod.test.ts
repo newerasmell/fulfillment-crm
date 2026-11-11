@@ -4,6 +4,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { accountDb, systemDb } from "@/server/db/client";
 import { updateReturnsCodSettings } from "@/server/returns/settings";
 import { exportCodCsv, listCod, sweepCodMismatches } from "./board";
+import { collectableCod } from "@/lib/cod-rounding";
 import { bucketOf, classifyCod, totalsBy, type CodShipmentIn } from "./classify";
 
 // Synthetic data only. The COD board reads the local mirrors (FhbCodMirror, EushipmentsTracking); no vendor call.
@@ -53,6 +54,43 @@ describe("classifyCod (pure)", () => {
       mismatch: null,
     });
     expect(classifyCod(base({ status: "SHIPPED", deliveredAt: null }), opts).bucket).toBe("in_transit");
+  });
+
+  it("HUF: the warehouse got the whole forints (owner decision 2026-11-11), so that is no mismatch", () => {
+    const huf = (cod: number) =>
+      classifyCod(
+        base({
+          order: {
+            paymentMethod: "COD",
+            currency: "HUF",
+            codAmount: 32825.1,
+            codLocalAmount: null,
+            codLocalCurrency: null,
+          },
+          fhb: { cod, status: "waiting", receivedAt: null, paidAt: null },
+        }),
+        opts,
+      ).mismatch;
+    expect(huf(32825)).toBeNull();
+    // Expected (board, totals, CSV, report) is the collectable amount, so totals reconcile.
+    const row = classifyCod(
+      base({
+        order: {
+          paymentMethod: "COD",
+          currency: "HUF",
+          codAmount: 32825.1,
+          codLocalAmount: null,
+          codLocalCurrency: null,
+        },
+        fhb: { cod: 32825, status: "paid", receivedAt: ago(2), paidAt: ago(1) },
+      }),
+      opts,
+    );
+    expect(row.expected).toEqual({ amount: 32825, currency: "HUF" });
+    expect(huf(32826)).toBe("amount");
+    expect(collectableCod(32825.5, "huf")).toBe(32826);
+    expect(collectableCod(32825.49, "HUF")).toBe(32825);
+    expect(collectableCod(12.34, "EUR")).toBe(12.34);
   });
 
   it("FHB: paid / received / unknown raw status; amount and missing mismatches", () => {

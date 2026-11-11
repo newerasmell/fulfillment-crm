@@ -125,9 +125,10 @@ status list "current as of July 2026".
   The shipment id is in the path (and in the HMAC scope) because the payload format is not documented: the
   URL itself must say which order to re-read. On any call, re-read `GET /order?id=` and update from that. Do
   not parse the body as truth.
-- Rounding: per-country COD rounding rules are **not modelled yet** (gap). Amounts go out with 2 decimals;
-  until rules exist, a fractional COD in a whole-unit currency (HUF) is a soft pre-flight finding
-  (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked
+- Rounding (owner decision 2026-11-11): a COD in a whole-unit currency (HUF) is rounded half-up to the whole
+  unit before it is sent (`collectableCod`, src/lib/cod-rounding.ts) — FHB v3 create/update, euShipments, FHB Joy
+  manual labels — and the COD board expects that amount back. Other currencies go out with 2 decimals. A
+  fractional HUF that still reaches a validator was not rounded and is a soft finding (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked
   unless a local-currency amount is stored on the order.
 
 ### 2.4 Status mapping (documented vs observed — handle both)

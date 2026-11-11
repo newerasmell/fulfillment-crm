@@ -14,7 +14,7 @@ import { StatusChip } from "./orders/status";
 const ATTENTION = [
   { key: "review", href: "/orders?tab=review" },
   { key: "blocked", href: "/orders?tab=blocked" },
-  { key: "errors", href: "/orders?tab=blocked" },
+  { key: "errors", href: "/orders?tab=issues" },
   { key: "returns", href: "/returns?tab=todo" },
   { key: "tickets", href: "/tickets?tab=unreviewed" },
   { key: "stockouts", href: "/products" },

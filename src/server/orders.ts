@@ -12,6 +12,11 @@ export const ORDER_TABS = {
   review: ["IMPORTED", "CHECKING", "NEEDS_REVIEW"],
   ready: ["READY", "APPROVED", "QUEUED"],
   blocked: ["BLOCKED", "ON_HOLD", "SUBMIT_FAILED", "EXCEPTION", "UNKNOWN"],
+  /**
+   * "С грешки": orders with an open task (Shopify write failed, unknown carrier, stock back…), whatever their status
+   * — the number on Начало (owner report 2026-11-11: it linked to Блокирани, which counts statuses only).
+   */
+  issues: null,
   transit: ["SUBMITTING", "ACCEPTED", "PROCESSING", "SHIPPED"],
   all: null,
 } as const satisfies Record<string, readonly CrmOrderStatus[] | null>;
@@ -53,15 +58,28 @@ function baseWhere(ctx: Ctx, f: Omit<OrderFilters, "tab" | "page">): Prisma.Orde
   };
 }
 
+/** Orders with an open task (alerts carry the order as entity, not a relation). */
+async function openTaskOrderIds(accountId: string) {
+  const open = await accountDb(accountId).alert.findMany({
+    where: { isTask: true, status: { not: "RESOLVED" }, entityType: "Order" },
+    select: { entityId: true },
+    distinct: ["entityId"],
+    take: 5000,
+  });
+  return open.map((a) => a.entityId!).filter(Boolean);
+}
+
 /** "Всички" leaves out orders still waiting for their store's tag (owner request 2026-11-09: they are not work yet). */
-const tabWhere = (tab: OrderTab): Prisma.OrderWhereInput => {
+async function tabWhere(accountId: string, tab: OrderTab): Promise<Prisma.OrderWhereInput> {
+  if (tab === "issues")
+    return { status: { not: "AWAITING_TAG" }, id: { in: await openTaskOrderIds(accountId) } };
   const statuses = ORDER_TABS[tab];
   return statuses ? { status: { in: [...statuses] } } : { status: { not: "AWAITING_TAG" } };
-};
+}
 
 export async function listOrders(ctx: Ctx, f: OrderFilters) {
   const db = accountDb(ctx.accountId);
-  const where = { ...baseWhere(ctx, f), ...tabWhere(f.tab) };
+  const where = { ...baseWhere(ctx, f), ...(await tabWhere(ctx.accountId, f.tab)) };
   const page = Math.max(1, f.page ?? 1);
   const [rows, total] = await Promise.all([
     db.order.findMany({
@@ -138,14 +156,16 @@ export async function orderTabCounts(ctx: Ctx, f: Omit<OrderFilters, "tab" | "pa
     _count: { _all: true },
   });
   const byStatus = new Map(grouped.map((g) => [g.status, g._count._all]));
+  const issues = await db.order.count({
+    where: { ...baseWhere(ctx, f), ...(await tabWhere(ctx.accountId, "issues")) },
+  });
   const sum = (s: readonly CrmOrderStatus[] | null) =>
     s
       ? s.reduce((n, st) => n + (byStatus.get(st) ?? 0), 0)
       : [...byStatus.entries()].reduce((a, [st, n]) => (st === "AWAITING_TAG" ? a : a + n), 0);
-  return Object.fromEntries(Object.entries(ORDER_TABS).map(([k, v]) => [k, sum(v)])) as Record<
-    OrderTab,
-    number
-  >;
+  return Object.fromEntries(
+    Object.entries(ORDER_TABS).map(([k, v]) => [k, k === "issues" ? issues : sum(v)]),
+  ) as Record<OrderTab, number>;
 }
 
 /** One order for the detail page; not_found when it belongs to a company outside the member's scope. */
@@ -210,22 +230,8 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
   };
 
   const counts = await orderTabCounts(ctx, {});
-  // Alerts carry no company: count only open order tasks whose order is visible in this scope.
-  const openTasks = await db.alert.findMany({
-    where: { isTask: true, status: { not: "RESOLVED" }, entityType: "Order" },
-    select: { entityId: true },
-    distinct: ["entityId"],
-    take: 5000,
-  });
-  const errors = openTasks.length
-    ? await db.order.count({
-        where: {
-          ...scope,
-          status: { not: "AWAITING_TAG" },
-          id: { in: openTasks.map((a) => a.entityId!).filter(Boolean) },
-        },
-      })
-    : 0;
+  // The same orders as the "С грешки" tab (open order tasks, in this scope).
+  const errors = counts.issues;
   const [today, yesterday, recent] = await Promise.all([
     dayStats(startToday, new Date(startToday.getTime() + 86_400_000)),
     dayStats(startYesterday, startToday),
@@ -295,7 +301,7 @@ export async function orderNeighbours(
   });
   if (!cur) return { newer: null, older: null };
   const base: Prisma.OrderWhereInput = list
-    ? { ...baseWhere(ctx, list), ...tabWhere(list.tab) }
+    ? { ...baseWhere(ctx, list), ...(await tabWhere(ctx.accountId, list.tab)) }
     : { ...companyFilter(ctx), status: { notIn: ["CANCELLED", "FULFILLED_EXTERNALLY", "AWAITING_TAG"] } };
   const [newer, older] = await Promise.all([
     db.order.findFirst({

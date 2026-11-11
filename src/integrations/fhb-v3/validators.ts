@@ -1,3 +1,4 @@
+import { WHOLE_UNIT_COD_CURRENCIES } from "@/lib/cod-rounding";
 import { normalisePhoneE164 } from "./phone";
 import { FHB_EMAIL_MAX, FHB_NOTE_MAX, FHB_PHONE_MAX, FHB_PRODUCT_NAME_MAX, FHB_URL_MAX } from "./schemas";
 
@@ -94,8 +95,11 @@ export interface FhbOrderCheck {
 
 export const DEFAULT_STOCK_MAX_AGE_MS = 60 * 60_000;
 
-/** Currencies whose cash on delivery is collected in whole units (no rounding rule stored per country yet). */
-export const WHOLE_UNIT_COD_CURRENCIES: ReadonlySet<string> = new Set(["HUF"]);
+/**
+ * Currencies whose cash on delivery is collected in whole units: one list (src/lib/cod-rounding.ts), the same the
+ * CRM rounds with before sending (owner decision 2026-11-11), so a fractional amount here means it was not rounded.
+ */
+export { WHOLE_UNIT_COD_CURRENCIES } from "@/lib/cod-rounding";
 
 export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
   const out: ValidationFinding[] = [];
@@ -320,8 +324,8 @@ export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
   } else if (o.isCod && o.codAmount !== null && o.codAmount <= 0) {
     out.push(f("fhb.cod.zero", "hard", "cod", "Наложеният платеж е 0.", "The COD amount is zero."));
   }
-  // Per-country rounding rules are not modelled yet (INTEGRATION_NOTES §2.3). Until they are, a COD with a
-  // fractional part in a currency that is collected in whole units is flagged for the operator.
+  // The CRM rounds whole-unit currencies (HUF) before sending (collectableCod); a fractional amount that still
+  // reaches the validator was not rounded and is flagged (INTEGRATION_NOTES §2.3).
   if (
     o.isCod &&
     o.codAmount !== null &&

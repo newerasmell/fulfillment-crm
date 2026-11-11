@@ -1,3 +1,4 @@
+import { collectableCod } from "@/lib/cod-rounding";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { z } from "zod";
 import { Prisma, type ConnectionType } from "@/generated/prisma/client";
@@ -140,7 +141,9 @@ export const ManualShipmentInput = z
   .superRefine((v, ctx) => {
     if (v.kind === "WAREHOUSE" && v.lines.length === 0)
       ctx.addIssue({ code: "custom", path: ["lines"], message: "at least one product" });
-  });
+  })
+  // Whole units where the courier collects whole units (HUF, owner decision 2026-11-11): what is typed is rounded.
+  .transform((v) => ({ ...v, cod: v.cod == null ? v.cod : collectableCod(v.cod, v.currency) }));
 export type ManualShipmentInput = z.input<typeof ManualShipmentInput>;
 type Parsed = z.output<typeof ManualShipmentInput>;
 

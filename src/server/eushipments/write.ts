@@ -1,3 +1,4 @@
+import { collectableCod, WHOLE_UNIT_COD_CURRENCIES } from "@/lib/cod-rounding";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
@@ -204,10 +205,17 @@ export function localCod(
   },
   localCurrency: string | null,
 ): { amount: string; currency: string } | null {
-  if (localCurrency && order.currency.toUpperCase() === localCurrency.toUpperCase())
-    return { amount: (order.codAmount ?? order.total).toString(), currency: localCurrency.toUpperCase() };
-  if (order.codLocalAmount != null && order.codLocalCurrency)
-    return { amount: order.codLocalAmount.toString(), currency: order.codLocalCurrency.toUpperCase() };
+  // Whole units where the courier collects whole units (HUF, collectableCod); other currencies unchanged.
+  const collectable = (amount: string, currency: string) =>
+    WHOLE_UNIT_COD_CURRENCIES.has(currency) ? String(collectableCod(Number(amount), currency)) : amount;
+  if (localCurrency && order.currency.toUpperCase() === localCurrency.toUpperCase()) {
+    const currency = localCurrency.toUpperCase();
+    return { amount: collectable((order.codAmount ?? order.total).toString(), currency), currency };
+  }
+  if (order.codLocalAmount != null && order.codLocalCurrency) {
+    const currency = order.codLocalCurrency.toUpperCase();
+    return { amount: collectable(order.codLocalAmount.toString(), currency), currency };
+  }
   return null;
 }
 
