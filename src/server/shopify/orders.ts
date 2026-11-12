@@ -182,6 +182,9 @@ export async function importShopifyOrder(
         if (existing.status === "FULFILLED_EXTERNALLY" || existing.status === "CANCELLED") {
           return { orderId: existing.id, outcome: "updated" as const };
         }
+        // The tag is back (owner report 2026-11-11: an app rewrote the order's tags and Confirmed was missing for a
+        // moment): the "lost the tag" task no longer applies.
+        if (gate && tagged) await resolveTagRemovedTask(tx, accountId, existing.id);
         // Already with a warehouse and the store's tag was removed in Shopify: nothing is stopped, a person checks.
         if (
           !tagged &&
@@ -486,6 +489,26 @@ async function replaceLines(
   }
 }
 
+/** Closes an open "lost the tag after it was sent" task once Shopify shows the tag again (with a note). */
+async function resolveTagRemovedTask(tx: Prisma.TransactionClient, accountId: string, orderId: string) {
+  const open = await tx.alert.findMany({
+    where: {
+      accountId,
+      entityType: "Order",
+      entityId: orderId,
+      kind: "shopify_tag_removed_after_send",
+      status: { not: "RESOLVED" },
+    },
+    select: { id: true },
+  });
+  for (const a of open) {
+    await tx.alert.update({ where: { id: a.id }, data: { status: "RESOLVED", resolvedAt: new Date() } });
+    await tx.alertNote.create({
+      data: { accountId, alertId: a.id, action: "auto_resolve", note: "the tag is back in Shopify" },
+    });
+  }
+}
+
 async function openTask(
   tx: Prisma.TransactionClient,
   accountId: string,
@@ -494,7 +517,7 @@ async function openTask(
   title: string,
 ) {
   const open = await tx.alert.findFirst({
-    where: { entityType: "Order", entityId: orderId, kind, status: { not: "RESOLVED" } },
+    where: { accountId, entityType: "Order", entityId: orderId, kind, status: { not: "RESOLVED" } },
   });
   if (open) return;
   await tx.alert.create({

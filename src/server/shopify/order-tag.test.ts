@@ -122,6 +122,26 @@ describe("Само поръчки с таг (database)", () => {
     expect(
       await g.db.alert.count({ where: { kind: "shopify_tag_removed_after_send", entityId: sent } }),
     ).toBe(1);
+    // The tag comes back (an app rewrote the tags for a moment): the task closes by itself.
+    await imp(order(["Confirmed", "tracking"], s, 2));
+    expect(
+      await g.db.alert.findFirstOrThrow({
+        where: { kind: "shopify_tag_removed_after_send", entityId: sent },
+      }),
+    ).toMatchObject({ status: "RESOLVED" });
+    expect(
+      await g.db.alertNote.count({
+        where: { action: "auto_resolve", alert: { entityId: sent, kind: "shopify_tag_removed_after_send" } },
+      }),
+    ).toBe(1);
+    expect(await status(sent)).toBe("ACCEPTED");
+    // Lost again later: exactly one new task.
+    await imp(order(["tracking"], s, 3));
+    expect(
+      await g.db.alert.count({
+        where: { kind: "shopify_tag_removed_after_send", entityId: sent, status: { not: "RESOLVED" } },
+      }),
+    ).toBe(1);
   });
 
   it("backstop: without the tag nothing approves, queues, releases or restarts it; it is never checked", async () => {

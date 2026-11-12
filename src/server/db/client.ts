@@ -48,10 +48,22 @@ export class TenantScopeError extends Error {
 
 const globalForPrisma = globalThis as unknown as { __crmPrisma?: PrismaClient };
 
+/**
+ * Connections per process (env DB_POOL_MAX, 5–50; default 15). Budget: web + worker × (pool + pg-boss) must stay under
+ * the database's connection limit even while a deploy runs old and new instances side by side.
+ */
+export function poolMax(env: Record<string, string | undefined> = process.env) {
+  const n = Number(env.DB_POOL_MAX);
+  return Number.isInteger(n) && n >= 5 && n <= 50 ? n : 15;
+}
+
 function createBaseClient(url = process.env.DATABASE_URL) {
   if (!url) throw new Error("DATABASE_URL is not set");
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url }),
+    // pg's default pool is 10 connections. Every scoped query holds one for its short RLS transaction, so a burst of
+    // Shopify webhooks plus a heavy page used them all (owner report 2026-11-12: "Unable to start a transaction in
+    // the given time" on Наличности). DB_POOL_MAX raises it per process (web and worker each have their own pool).
+    adapter: new PrismaPg({ connectionString: url, max: poolMax() }),
     // Every scoped query runs in its own short transaction (RLS). Prisma's defaults (2 s to get a connection, 5 s
     // to finish) failed whole pages under load (owner report 2026-11-09: a store with 3800+ products — "Unable
     // to start a transaction in the given time" / "expired transaction"). Callers can still pass their own.

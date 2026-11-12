@@ -183,6 +183,16 @@ function productSelect(connectionIds: string[], storeIds: string[]) {
   } satisfies Prisma.ProductSelect;
 }
 
+/**
+ * Masters per chunk so that no nested read (variants of every store, their inventory levels, vendor products) needs
+ * more than ~20 000 bind parameters (PostgreSQL's limit is 32 767), with room for several listings per store. Pure.
+ */
+export function boardChunkSize(stores: number, connections: number) {
+  // Composite keys bind ~2 values per parent, and a master may have a few listings per store: budget 4 per store.
+  const perMaster = 4 * Math.max(1, stores, connections);
+  return Math.max(20, Math.min(500, Math.floor(20_000 / perMaster)));
+}
+
 /** Pure: one board row from a loaded master (exported for tests). */
 export function buildRow(
   p: Loaded,
@@ -366,7 +376,11 @@ export async function stockBoard(
     locationMaps(ctx.accountId, storeIds),
   ]);
   const q = opts.q?.trim() ?? "";
-  const products = await accountDb(ctx.accountId).product.findMany({
+  const db = accountDb(ctx.accountId);
+  // Ids first, then the rows in chunks: one query for thousands of masters × their variants in every store passed
+  // PostgreSQL's 32767 bind parameters (owner report 2026-11-12: a warehouse with 4000+ products, "query parameter
+  // limit … exceeded"). Each chunk is its own short query (and RLS transaction).
+  const ids = await db.product.findMany({
     where: {
       archived: view === "archive",
       ...(view === "bundles"
@@ -378,10 +392,21 @@ export async function stockBoard(
         : {}),
       AND: [boardProductWhere(ctx), searchProductWhere(q)],
     },
-    select: productSelect(connectionIds, storeIds),
+    select: { id: true },
     orderBy: { sku: "asc" },
     take: BOARD_MAX_PRODUCTS,
   });
+  const chunk = boardChunkSize(storeIds.length, connectionIds.length);
+  const products: Loaded[] = [];
+  for (let i = 0; i < ids.length; i += chunk) {
+    const part = await db.product.findMany({
+      // Same view filter again (a master archived between the two reads stays out of the stock view).
+      where: { id: { in: ids.slice(i, i + chunk).map((x) => x.id) }, archived: view === "archive" },
+      select: productSelect(connectionIds, storeIds),
+      orderBy: { sku: "asc" },
+    });
+    products.push(...part);
+  }
   const buffers = new Map(stores.map((s) => [s.id, s.inventoryBuffer]));
   const rows = products.map((p) =>
     buildRow(p, { connections, reservations, sales, settings, locationMap: maps, buffers, now }),
@@ -408,7 +433,7 @@ export async function stockBoard(
     settings,
     counts,
     total: sorted.length,
-    truncated: products.length >= BOARD_MAX_PRODUCTS,
+    truncated: ids.length >= BOARD_MAX_PRODUCTS,
     rows: shown,
   };
 }

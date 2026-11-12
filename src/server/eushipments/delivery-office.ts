@@ -15,7 +15,16 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 
 export const DeliveryOfficeChoice = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("address") }),
-  z.object({ mode: z.literal("office"), officeId: z.number().int().positive(), name: z.string().max(200) }),
+  z.object({
+    mode: z.literal("office"),
+    officeId: z.number().int().positive(),
+    name: z.string().max(200),
+    /**
+     * The courier of the office a person picked (owner request 2026-11-12: with no courier set for the country, the
+     * office list shows every office courier and the pick decides the courier too).
+     */
+    courierId: z.number().int().positive().optional(),
+  }),
 ]);
 export type DeliveryOfficeChoice = z.infer<typeof DeliveryOfficeChoice>;
 
@@ -29,6 +38,8 @@ export type OfficeResolution =
       officeId: number;
       name: string;
       source: "chosen" | "speedy_id" | "name";
+      /** The courier the office belongs to (sent as the body's courierId when the order has none). */
+      courierId: number;
     }
   /** An office address (or a chosen office) that is not one office of the list: blocked for a person. */
   | {
@@ -61,14 +72,24 @@ export async function resolveDeliveryOffice(
       return parsed
         ? { kind: "unresolved", reason: "address_is_office", search: parsed.officeName }
         : { kind: "address" };
-    // An office belongs to one courier: without the order's courier nothing can be checked.
-    if (!courierId) return { kind: "unresolved", reason: "no_courier", search: choice.data.name };
+    // An office belongs to one courier: the order's courier, or the courier of the office a person picked.
+    const chosenCourier = courierId ?? choice.data.courierId;
+    if (!chosenCourier) return { kind: "unresolved", reason: "no_courier", search: choice.data.name };
+    // A courier set for the order later (default courier) that is not the picked office's: pick again.
+    if (courierId && choice.data.courierId && choice.data.courierId !== courierId)
+      return { kind: "unresolved", reason: "chosen_missing", search: choice.data.name };
     const office = await db.eushipmentsOffice.findFirst({
-      where: { connectionId, officeId: choice.data.officeId, courierId },
+      where: { connectionId, officeId: choice.data.officeId, courierId: chosenCourier },
       select: { officeId: true, name: true },
     });
     return office
-      ? { kind: "office", officeId: office.officeId, name: office.name, source: "chosen" }
+      ? {
+          kind: "office",
+          officeId: office.officeId,
+          name: office.name,
+          source: "chosen",
+          courierId: chosenCourier,
+        }
       : { kind: "unresolved", reason: "chosen_missing", search: choice.data.name };
   }
   if (!parsed) return { kind: "address" };
@@ -89,7 +110,7 @@ export async function resolveDeliveryOffice(
     "speedy office recognised",
   );
   if (m.kind === "matched")
-    return { kind: "office", officeId: m.office.officeId, name: m.office.name, source: m.by };
+    return { kind: "office", officeId: m.office.officeId, name: m.office.name, source: m.by, courierId };
   return {
     kind: "unresolved",
     reason: m.kind === "ambiguous" ? "ambiguous" : "no_match",
@@ -138,7 +159,7 @@ async function orderForOffice(actor: Actor, orderId: string) {
   const courier = await courierFor(actor.accountId, connectionId, country, {
     ...(Number.isInteger(routed) && routed > 0 ? { courierId: routed } : {}),
   });
-  return { order, connectionId, courierId: courier.courierId };
+  return { order, connectionId, courierId: courier.courierId, country };
 }
 
 /** What the order page shows under "Доставка" (orders to Bulgaria on an euShipments warehouse only). */
@@ -150,13 +171,14 @@ export async function deliveryOfficeView(actor: Actor, orderId: string) {
   if (!OFFICE_COUNTRIES.has(country) || !ctx.connectionId) return null;
   const resolution = await resolveDeliveryOffice(actor.accountId, ctx.connectionId, ctx.courierId, ctx.order);
   const chosen = DeliveryOfficeChoice.safeParse(ctx.order.deliveryOffice);
-  const courierName = ctx.courierId
+  const shownCourier = ctx.courierId ?? (resolution.kind === "office" ? resolution.courierId : undefined);
+  const courierName = shownCourier
     ? ((
         await accountDb(actor.accountId).eushipmentsCourier.findFirst({
-          where: { connectionId: ctx.connectionId, courierId: ctx.courierId },
+          where: { connectionId: ctx.connectionId, courierId: shownCourier },
           select: { name: true },
         })
-      )?.name ?? String(ctx.courierId))
+      )?.name ?? String(shownCourier))
     : null;
   return {
     resolution,
@@ -167,17 +189,38 @@ export async function deliveryOfficeView(actor: Actor, orderId: string) {
   };
 }
 
-/** Offices of the order's warehouse and courier, by name (or by an id typed as a number). At most 20. */
+/** The couriers whose offices may be picked: the order's courier, else every office courier of the country. */
+async function officeCouriers(
+  actor: Actor,
+  connectionId: string,
+  courierId: number | undefined,
+  country: string | null,
+) {
+  const { countryCouriers } = await import("./write");
+  const all = await countryCouriers(actor.accountId, connectionId, country);
+  const list = courierId ? all.filter((c) => c.courierId === courierId) : all.filter((c) => c.toOffice);
+  // A set courier missing from the mirror still counts (its offices are what the body would use).
+  if (courierId && !list.length) return [{ courierId, name: String(courierId) }];
+  return list.map((c) => ({ courierId: c.courierId, name: c.name }));
+}
+
+/**
+ * Offices of the order's warehouse, by name (or by an id typed as a number): of the order's courier, or — none set —
+ * of every office courier of the country, each with its courier's name. At most 30.
+ */
 export async function searchDeliveryOffices(actor: Actor, orderId: string, q: string) {
   const ctx = await orderForOffice(actor, orderId);
-  if (!ctx?.connectionId || !ctx.courierId) return [];
+  if (!ctx?.connectionId) return [];
+  const couriers = await officeCouriers(actor, ctx.connectionId, ctx.courierId, ctx.country ?? null);
+  if (!couriers.length) return [];
+  const courierName = new Map(couriers.map((c) => [c.courierId, c.name]));
   const term = q.trim().slice(0, 100);
   if (term.length < 2) return [];
   const asNumber = /^\d{1,9}$/.test(term) ? Number(term) : null;
   const rows = await accountDb(actor.accountId).eushipmentsOffice.findMany({
     where: {
       connectionId: ctx.connectionId,
-      courierId: ctx.courierId,
+      courierId: { in: couriers.map((c) => c.courierId) },
       OR: [
         { name: { contains: term, mode: "insensitive" } },
         ...(asNumber ? [{ courierOfficeId: asNumber }, { officeId: asNumber }] : []),
@@ -185,16 +228,17 @@ export async function searchDeliveryOffices(actor: Actor, orderId: string, q: st
     },
     select: {
       officeId: true,
+      courierId: true,
       courierOfficeId: true,
       name: true,
       cityName: true,
       address: true,
       isStation: true,
     },
-    orderBy: { name: "asc" },
-    take: 20,
+    orderBy: [{ name: "asc" }, { courierId: "asc" }],
+    take: 30,
   });
-  return rows;
+  return rows.map((r) => ({ ...r, courierName: courierName.get(r.courierId) ?? String(r.courierId) }));
 }
 
 export const SetDeliveryInput = z.object({
@@ -216,13 +260,19 @@ export async function setDeliveryOffice(
   if (!ctx.connectionId) throw new DomainError("office_not_supported");
   let choice = input.choice;
   if (choice?.mode === "office") {
-    if (!ctx.courierId) throw new DomainError("no_courier");
+    // Only an office of the order's courier, or (none set) of one of the country's office couriers.
+    const allowed = (await officeCouriers(actor, ctx.connectionId, ctx.courierId, ctx.country ?? null)).map(
+      (c) => c.courierId,
+    );
+    const wanted = ctx.courierId ?? choice.courierId;
+    if (!wanted) throw new DomainError("no_courier");
+    if (!allowed.includes(wanted)) throw new DomainError("office_unknown");
     const office = await accountDb(actor.accountId).eushipmentsOffice.findFirst({
-      where: { connectionId: ctx.connectionId, officeId: choice.officeId, courierId: ctx.courierId },
-      select: { officeId: true, name: true },
+      where: { connectionId: ctx.connectionId, officeId: choice.officeId, courierId: wanted },
+      select: { officeId: true, name: true, courierId: true },
     });
     if (!office) throw new DomainError("office_unknown");
-    choice = { mode: "office", officeId: office.officeId, name: office.name };
+    choice = { mode: "office", officeId: office.officeId, name: office.name, courierId: office.courierId };
   }
   await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
     await lockForUpdate("Order", input.orderId);

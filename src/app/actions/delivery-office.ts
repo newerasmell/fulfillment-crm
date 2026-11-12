@@ -24,7 +24,7 @@ export async function searchOfficesAction(orderId: string, q: string) {
 export async function setDeliveryOfficeAction(input: {
   orderId: string;
   version: string;
-  choice: { mode: "address" } | { mode: "office"; officeId: number; name: string } | null;
+  choice: { mode: "address" } | { mode: "office"; officeId: number; name: string; courierId?: number } | null;
 }): Promise<{ ok: true } | { error: string }> {
   const ctx = await requireAccountContext();
   try {

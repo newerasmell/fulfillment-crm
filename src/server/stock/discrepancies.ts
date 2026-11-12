@@ -45,17 +45,21 @@ export async function stockFindings(accountId: string, now: Date = new Date()): 
     select: { id: true, name: true, type: true },
   });
   const connectionIds = connections.map((c) => c.id);
-  const vps = await db.vendorProduct.findMany({
-    where: { accountId, connectionId: { in: connectionIds }, archived: false, productId: { not: null } },
-    select: {
-      id: true,
-      connectionId: true,
-      productId: true,
-      vendorId: true,
-      stockLevel: { select: { physical: true, free: true, snapshotAt: true } },
-    },
-    orderBy: { id: "asc" },
-  });
+  // Flat reads joined in memory: a nested relation over the whole catalogue binds one value per parent and passed
+  // PostgreSQL's 32767 bind parameters with thousands of products (owner report 2026-11-12).
+  const [vpRows, levelRows] = await Promise.all([
+    db.vendorProduct.findMany({
+      where: { accountId, connectionId: { in: connectionIds }, archived: false, productId: { not: null } },
+      select: { id: true, connectionId: true, productId: true, vendorId: true },
+      orderBy: { id: "asc" },
+    }),
+    db.stockLevel.findMany({
+      where: { accountId, vendorProduct: { connectionId: { in: connectionIds }, archived: false } },
+      select: { vendorProductId: true, physical: true, free: true, snapshotAt: true },
+    }),
+  ]);
+  const levelOf = new Map(levelRows.map((l) => [l.vendorProductId, l]));
+  const vps = vpRows.map((v) => ({ ...v, stockLevel: levelOf.get(v.id) ?? null }));
   // Sellable per (connection, product): first non-archived vendor product, as on the board.
   const sellable = new Map<string, number>();
   for (const vp of vps) {
@@ -93,23 +97,26 @@ export async function stockFindings(accountId: string, now: Date = new Date()): 
   const totalOf = (productId: string) =>
     connectionIds.reduce((s, cid) => s + (sellable.get(reservationKey(cid, productId)) ?? 0), 0);
 
-  const [locations, links] = await Promise.all([
+  const [locations, linkRows] = await Promise.all([
     db.storeLocation.findMany({
       where: { accountId, connectionId: { not: null } },
       select: { storeId: true, shopifyLocationGid: true, connectionId: true },
     }),
     db.storeVariantLink.findMany({
       where: { accountId, productId: { not: null }, inventoryLevels: { some: {} } },
-      select: {
-        id: true,
-        storeId: true,
-        productId: true,
-        sku: true,
-        title: true,
-        inventoryLevels: { select: { locationGid: true, available: true, tracked: true } },
-      },
+      select: { id: true, storeId: true, productId: true, sku: true, title: true },
     }),
   ]);
+  const levelsOfLink = new Map<string, { locationGid: string; available: number; tracked: boolean }[]>();
+  for (const l of await db.shopifyInventoryLevel.findMany({
+    where: { accountId, variantLink: { productId: { not: null } } },
+    select: { variantLinkId: true, locationGid: true, available: true, tracked: true },
+  })) {
+    const list = levelsOfLink.get(l.variantLinkId) ?? [];
+    list.push(l);
+    levelsOfLink.set(l.variantLinkId, list);
+  }
+  const links = linkRows.map((k) => ({ ...k, inventoryLevels: levelsOfLink.get(k.id) ?? [] }));
   const mapped = new Map(locations.map((l) => [`${l.storeId}:${l.shopifyLocationGid}`, l.connectionId!]));
   for (const link of links) {
     const tracked = link.inventoryLevels.filter((l) => l.tracked);
