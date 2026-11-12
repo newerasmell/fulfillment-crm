@@ -8,6 +8,7 @@ import { suspiciousItemIds } from "@/server/products/suspicious";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
+import { GONE_NOT_FOUND } from "@/server/eushipments/statuses";
 import { previewEuOrderFindings, previewEuOrderPayload } from "@/server/eushipments/write";
 import { previewFhbOrderFindings, previewFhbOrderPayload } from "@/server/fhb/orders";
 import { orderFingerprint, transition, type PipelineActor } from "@/server/pipeline";
@@ -145,6 +146,48 @@ async function vendorFindings(
       message_en: "This connection type does not ship orders from stock.",
     },
   ];
+}
+
+/** Open tasks that say a person must look in the euShipments cabinet before the order goes out again. */
+export const GONE_SHIPMENT_TASKS = [
+  "eushipments_cancelled_at_vendor",
+  "eushipments_not_found",
+  "eushipments_gone_shipment_live",
+  "eushipments_delete_unconfirmed",
+];
+
+/**
+ * An earlier euShipments shipment of the order given up / cancelled on "not found" (rawStatus GONE_NOT_FOUND) may
+ * still sit in the cabinet (owner report 2026-11-12): no new shipment, to any warehouse and under any
+ * reference, while its task is open. A person checks the cabinet and closes the task (that is the decision).
+ */
+async function goneShipmentFindings(accountId: string, orderId: string): Promise<Finding[]> {
+  const db = accountDb(accountId);
+  const gone = await db.fulfillment.findMany({
+    where: { orderId, status: "CANCELLED", rawStatus: GONE_NOT_FOUND },
+    select: { id: true, externalId: true },
+  });
+  if (!gone.length) return [];
+  const open = await db.alert.findMany({
+    where: {
+      accountId,
+      kind: { in: GONE_SHIPMENT_TASKS },
+      entityType: "Fulfillment",
+      entityId: { in: gone.map((f) => f.id) },
+      status: { not: "RESOLVED" },
+    },
+    select: { entityId: true },
+  });
+  return gone
+    .filter((f) => open.some((a) => a.entityId === f.id))
+    .map((f) => ({
+      code: "order.previous_shipment_unconfirmed",
+      severity: "hard" as const,
+      source: "order" as const,
+      field: null,
+      message_bg: `Пратка ${f.externalId} в euShipments може още да е в кабинета (orders-history не я показва). Проверете в кабинета, затворете задачата ѝ и проверете поръчката отново.`,
+      message_en: `Shipment ${f.externalId} may still be in the euShipments cabinet (orders-history does not list it). Check the cabinet, close its task, then check the order again.`,
+    }));
 }
 
 export async function validateOrder(
@@ -321,7 +364,12 @@ export async function validateOrder(
           },
         ]
       : [];
-  const findings = sortFindings([...level.findings, ...vendor, ...choiceFindings]);
+  const findings = sortFindings([
+    ...level.findings,
+    ...vendor,
+    ...choiceFindings,
+    ...(await goneShipmentFindings(accountId, order.id)),
+  ]);
   const result: OrderCheckResult = {
     orderId: order.id,
     connectionId: connection?.id ?? null,

@@ -349,7 +349,7 @@ describe("euShipments read side (DB)", () => {
 
   it("orders-history: batches of 100, per-item results, final status stops polling", async () => {
     await g.db.fulfillment.deleteMany({ where: { connectionId: g.connection.id } });
-    const fs = [];
+    const fs: { id: string }[] = [];
     for (let i = 0; i < 102; i++) {
       const { order } = await euTestOrder(g, { number: `#P${i}` });
       fs.push(
@@ -406,7 +406,8 @@ describe("euShipments read side (DB)", () => {
     expect(t0.stopPolling).toBe(true);
     const t1 = await g.db.eushipmentsTracking.findUniqueOrThrow({ where: { fulfillmentId: fs[1]!.id } });
     expect(t1.lastError).toBe("not found at euShipments");
-    expect(await g.db.alert.count({ where: { kind: "eushipments_not_found", entityId: fs[1]!.id } })).toBe(1);
+    // A new order is often not listed at first: no task on the first "not found".
+    expect(await g.db.alert.count({ where: { kind: "eushipments_not_found", entityId: fs[1]!.id } })).toBe(0);
     const t2 = await g.db.eushipmentsTracking.findUniqueOrThrow({ where: { fulfillmentId: fs[2]!.id } });
     expect(t2.lastError).toContain("Some other problem");
 
@@ -414,11 +415,33 @@ describe("euShipments read side (DB)", () => {
     const v2 = vendor({
       "/fulfilment/orders-history": (_u, body) => json(history(body!.orders as { refNum: string }[])),
     });
-    await pollEuOrders(g.accountId, g.connection.id, { ...v2.deps, now });
+    const later = new Date(Date.now() + 31 * 60_000);
+    await pollEuOrders(g.accountId, g.connection.id, { ...v2.deps, now: later });
     const asked = v2.calls.flatMap((c) => (c.body!.orders as { refNum: string }[]).map((o) => o.refNum));
     expect(asked).not.toContain("TST-P0");
     expect(asked).toHaveLength(101);
-    expect(await g.db.alert.count({ where: { kind: "eushipments_not_found", entityId: fs[1]!.id } })).toBe(1);
+    // Second "not found", 30+ min after it went out: one task; a third poll does not duplicate it.
+    const notFoundTasks = (status?: "RESOLVED") =>
+      g.db.alert.count({
+        where: { kind: "eushipments_not_found", entityId: fs[1]!.id, ...(status ? { status } : {}) },
+      });
+    expect(await notFoundTasks()).toBe(1);
+    await pollEuOrders(g.accountId, g.connection.id, { ...v2.deps, now: later });
+    expect(await notFoundTasks()).toBe(1);
+    // Listed at last: the task closes by itself.
+    const listed = vendor({
+      "/fulfilment/orders-history": (_u, body) =>
+        json(
+          (body!.orders as { refNum: string }[]).map(({ refNum }) => ({
+            refNum,
+            awb: null,
+            error: null,
+            statusesHistory: [{ ID: 1, STATUS: "Information received", DATE: "2026-11-02 08:00:00" }],
+          })),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { ...listed.deps, now: later });
+    expect(await notFoundTasks("RESOLVED")).toBe(1);
   });
 
   it("orders-history: one failing batch does not stop the others; all failing fails the job", async () => {

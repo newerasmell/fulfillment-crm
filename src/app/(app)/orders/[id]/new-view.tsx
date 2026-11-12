@@ -764,6 +764,7 @@ export async function NewOrderView({
                           refusal={u.refusal}
                           canRun={can(ctx.role, "stores.manage")}
                           lastCheckError={u.lastCheckError}
+                          canConfirmAbsent={u.canConfirmAbsent}
                         />
                       ))}
                     {(() => {

@@ -469,6 +469,24 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   first prefix; one digit short is refused (never sent with the prefix inside). FHB/E.164 knows LT's national length
   (8): a prefix after +370 is dropped, another length is refused. One-prefix countries behave as before. pg-boss
   pools: worker 5, web 2.
+- 2026-11-12 euShipments "not found" never cancels any more: an owner-reported order was in the cabinet in "Information received"
+  while orders-history kept answering "not found"; after two such polls the CRM cancelled the shipment, blocked the
+  order and its task said to send it again (a duplicate). Now "not found" only opens a task ("check the cabinet, do
+  not send again"). Shipments the older code gave up ("not found at euShipments", cancelled, order still BLOCKED by
+  it, no other active shipment) are still asked for 14 days and made active again when orders-history lists them
+  (not as deleted): order BLOCKED → ACCEPTED (cause vendor_reinstate, system only), tasks closed, an orphaned Shopify
+  fulfillment is theirs again (its refused Shopify rows go out again). If the CRM had asked to delete it, or the
+  order was handled since (latest event is not that block, another active shipment, re-routed), nothing changes and
+  one CRITICAL task says it is live in the cabinet (possible double). Old "send it again" tasks are retitled.
+  A delete the CRM sent with a lost answer is still confirmed by "not found" twice. Read-back after an unclear
+  create no longer trusts "not found" (stays UNCERTAIN); after "Провери в склада" an OWNER/ADMIN who checked the
+  cabinet can press "Проверих в кабинета — няма я, изпрати" (euShipments only; also after a timeout whose read-back
+  could not decide). An order whose earlier euShipments shipment was given up on "not found" is not sent again
+  (any warehouse, any reference) while that shipment's task is open. The delete read-back no longer takes one
+  "not found" as the delete. The "not found" task waits for a second poll 30+ min after the send and closes by
+  itself when listed. A failed pre-send orders-history check is a plain retry (create-order never left). Open: ask euShipments why orders-history does not
+  list orders in "Information received" — the pre-send check relies on it to prevent duplicates.
+
 
 ## Open questions
 See SPEC.md §11.

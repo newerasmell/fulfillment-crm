@@ -16,8 +16,8 @@ import {
 } from "@/integrations/eushipments/status-map";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { crmCancelLeft, warehouseCancelConfirmed } from "@/server/override/cancel-effects";
-import { followShipment, isSupersededShipment, VENDOR_FROM } from "@/server/pipeline";
+import { CANCEL_OPERATIONS, crmCancelLeft, warehouseCancelConfirmed } from "@/server/override/cancel-effects";
+import { followShipment, isSupersededShipment, transition, VENDOR_FROM } from "@/server/pipeline";
 
 /**
  * euShipments status tracking on the CRM side (P3-03): the per-group mapping table, applying an
@@ -411,41 +411,211 @@ export async function applyOrderHistory(
 }
 
 /**
- * A shipment the vendor provably had (we recorded its history before) and that orders-history now answers as
- * "not found" on two polls in a row: removed in the cabinet. Same handling as a "Deleted" status without a CRM
- * delete request — shipment CANCELLED, order BLOCKED, one CRITICAL task; a person resends or cancels in Shopify.
+ * A shipment whose CRM delete left the CRM (answer lost / unknown) and that orders-history no longer lists on two
+ * polls in a row: taken as the delete's confirmation (BLOCKED with attribution, warehouseCancelConfirmed). Only then —
+ * "not found" alone never cancels anything (owner report 2026-11-12: orders in "Information received" are not
+ * always listed). If it shows up live later, the poller opens a task (reinstateGoneShipment refuses it).
  */
-export async function markGoneAtVendor(accountId: string, fulfillmentId: string) {
+export async function confirmDeleteByNotFound(
+  accountId: string,
+  fulfillmentId: string,
+  /** When the previous "not found" was polled: it must come after the delete went out, not before. */
+  previousNotFoundAt: Date,
+) {
   return withAccountTransaction(accountId, async (tx, { lockKey }) => {
     await lockKey(`eushipments:fulfillment:${fulfillmentId}`);
     const f = await tx.fulfillment.findUniqueOrThrow({
       where: { id: fulfillmentId },
-      select: { id: true, orderId: true, externalId: true, status: true },
+      select: { id: true, orderId: true, status: true, externalId: true },
     });
     if (f.status === "CANCELLED" || (await isSupersededShipment(tx, f.id))) return false;
-    const requested = await crmCancelLeft(tx, accountId, f.id);
+    // Only a delete whose answer was lost (UNCERTAIN, not one still on its way) and "not found" both times after it.
+    // The newest delete of it decides (an older unclear one does not count against a newer refused one).
+    const del = await tx.outboundRequest.findFirst({
+      where: { accountId, fulfillmentId: f.id, operation: { in: [...CANCEL_OPERATIONS] } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { status: true, lockedAt: true, createdAt: true },
+    });
+    if (!del || del.status !== "UNCERTAIN" || previousNotFoundAt <= (del.lockedAt ?? del.createdAt))
+      return false;
+    // Not proof on its own: the order is not sent again until a person checked the cabinet (validateOrder).
+    await openAlertOnce(tx, {
+      kind: "eushipments_delete_unconfirmed",
+      severity: "CRITICAL",
+      isTask: true,
+      title: `euShipments: изтриването на ${f.externalId} не е потвърдено — проверете в кабинета, че я няма, и затворете задачата (чак тогава изпратете отново)`,
+      body: `The CRM asked euShipments to delete ${f.externalId}; the answer was lost and orders-history no longer lists it. That is taken as the delete, but orders-history does not list every order: check the cabinet.`,
+      fulfillmentId: f.id,
+      accountId,
+    });
     await tx.fulfillment.update({
       where: { id: f.id },
-      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+      data: { status: "CANCELLED", rawStatus: GONE_NOT_FOUND },
     });
-    if (requested)
-      await warehouseCancelConfirmed(tx, {
-        accountId,
-        orderId: f.orderId,
-        fulfillmentId: f.id,
-        source: "eushipments.not_found",
-      });
-    else await advanceOrderStatus(tx, f.orderId, "BLOCKED", "eushipments.not_found", f.id);
-    if (!requested)
-      await openAlertOnce(tx, {
-        kind: "eushipments_cancelled_at_vendor",
-        severity: "CRITICAL",
-        isTask: true,
-        title: `euShipments: пратка ${f.externalId} вече не съществува в кабинета — изпратете поръчката отново или я откажете в Shopify`,
-        body: `orders-history answers "not found" for ${f.externalId} on two polls in a row; it existed before.`,
-        fulfillmentId: f.id,
-        accountId,
-      });
+    await warehouseCancelConfirmed(tx, {
+      accountId,
+      orderId: f.orderId,
+      fulfillmentId: f.id,
+      source: "eushipments.not_found",
+    });
     return true;
   });
+}
+
+/** rawStatus of a shipment the CRM gave up because orders-history kept answering "not found". */
+export const GONE_NOT_FOUND = "not found at euShipments";
+const ORPHANED_WRITEBACK = "shipment_cancelled_after_fulfil";
+
+export type ReinstateResult =
+  | { ok: true }
+  /** Not a shipment given up as "not found" (any more): nothing to do. */
+  | { ok: false; why: "not_gone" }
+  /** The CRM asked the warehouse to delete it, or a person already acted on the order: a person decides. */
+  | { ok: false; why: "cancel_requested" | "handled" };
+
+/**
+ * A shipment given up as "not found at euShipments" (older code) that orders-history now lists, not as deleted:
+ * active again (owner report 2026-11-12: an order sat in "Information received" in the cabinet while orders-history
+ * said "not found"; the CRM had cancelled it and blocked the order). Only when nothing else happened since:
+ * no CRM delete of it left the CRM, it is not re-routed / replaced, the order is still BLOCKED by that very
+ * "not found" (its latest event) and no other shipment of the order is active. Otherwise `handled` /
+ * `cancel_requested` and nothing changes (the caller opens a task). The caller then applies the history as usual.
+ */
+export async function reinstateGoneShipment(
+  accountId: string,
+  fulfillmentId: string,
+): Promise<ReinstateResult> {
+  return withAccountTransaction(accountId, async (tx, { lockKey }) => {
+    await lockKey(`eushipments:fulfillment:${fulfillmentId}`);
+    const f = await tx.fulfillment.findUniqueOrThrow({
+      where: { id: fulfillmentId },
+      select: { id: true, orderId: true, status: true, rawStatus: true, order: { select: { status: true } } },
+    });
+    if (f.status !== "CANCELLED" || f.rawStatus !== GONE_NOT_FOUND) return { ok: false, why: "not_gone" };
+    if (await crmCancelLeft(tx, accountId, f.id)) return { ok: false, why: "cancel_requested" };
+    if (f.order.status !== "BLOCKED" || (await isSupersededShipment(tx, f.id)))
+      return { ok: false, why: "handled" };
+    const last = await tx.orderEvent.findFirst({
+      where: { accountId, orderId: f.orderId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { toStatus: true, source: true },
+    });
+    if (last?.toStatus !== "BLOCKED" || last.source !== "eushipments.not_found")
+      return { ok: false, why: "handled" };
+    const other = await tx.fulfillment.count({
+      where: { orderId: f.orderId, id: { not: f.id }, status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+    });
+    if (other) return { ok: false, why: "handled" };
+    await tx.fulfillment.update({ where: { id: f.id }, data: { status: "ACCEPTED", rawStatus: null } });
+    const moved = await transition(tx, {
+      orderId: f.orderId,
+      to: "ACCEPTED",
+      cause: "vendor_reinstate",
+      actor: { kind: "system" },
+      source: "eushipments.found_again",
+      reason: "listed by orders-history again",
+    });
+    if (!moved.changed) throw new Error(`reinstate refused: ${moved.reason ?? "?"}`);
+    // Shopify: a fulfillment flagged as orphaned is this shipment's again; rows refused because it was cancelled
+    // go out again (unique per shipment + kind: never a second Shopify fulfillment).
+    await tx.shopifyWriteBack.updateMany({
+      where: { accountId, fulfillmentId: f.id, lastError: ORPHANED_WRITEBACK },
+      data: { lastError: null },
+    });
+    await tx.shopifyWriteBack.updateMany({
+      where: { accountId, fulfillmentId: f.id, status: "REFUSED", lastError: "shipment_cancelled" },
+      // The send path applies the store's mode and the carrier hold again (AWAITING_CONFIRMATION when unknown).
+      data: { status: "PENDING", attempts: 0, nextAttemptAt: null, lastError: null },
+    });
+    const stillOrphaned = await tx.shopifyWriteBack.count({
+      where: { accountId, orderId: f.orderId, lastError: ORPHANED_WRITEBACK },
+    });
+    // The tasks about it being gone no longer apply.
+    const tasks = await tx.alert.findMany({
+      where: {
+        accountId,
+        status: { not: "RESOLVED" },
+        OR: [
+          {
+            kind: {
+              in: [
+                "eushipments_cancelled_at_vendor",
+                "eushipments_not_found",
+                "eushipments_delete_unconfirmed",
+              ],
+            },
+            entityType: "Fulfillment",
+            entityId: f.id,
+          },
+          ...(stillOrphaned
+            ? []
+            : [{ kind: "shopify_writeback_orphaned", entityType: "Order", entityId: f.orderId }]),
+        ],
+      },
+      select: { id: true },
+    });
+    for (const a of tasks) {
+      await tx.alert.update({ where: { id: a.id }, data: { status: "RESOLVED", resolvedAt: new Date() } });
+      await tx.alertNote.create({
+        data: { accountId, alertId: a.id, action: "auto_resolve", note: "found at euShipments again" },
+      });
+    }
+    return { ok: true };
+  });
+}
+
+/**
+ * A shipment given up as "not found" that orders-history lists live, but which the CRM cannot take back (a delete
+ * was asked for, or the order was handled since — re-sent, re-routed, cancelled): one CRITICAL task, the warehouse
+ * may ship it next to whatever replaced it.
+ */
+export async function openGoneLiveTask(
+  accountId: string,
+  fulfillmentId: string,
+  reference: string,
+  vendorStatus: string,
+  why: "cancel_requested" | "handled",
+) {
+  return withAccountTransaction(accountId, async (tx, { lockKey }) => {
+    await lockKey(`eushipments:fulfillment:${fulfillmentId}`);
+    return openAlertOnce(tx, {
+      kind: "eushipments_gone_shipment_live",
+      severity: "CRITICAL",
+      isTask: true,
+      title: `euShipments: ${reference} е активна в кабинета („${vendorStatus}“), а в CRM е отказана — проверете за двойна пратка и изтрийте излишната в кабинета`,
+      body:
+        why === "cancel_requested"
+          ? `The CRM asked euShipments to delete ${reference} and later took "not found" as the confirmation; orders-history now lists it as "${vendorStatus}". The warehouse may ship it.`
+          : `${reference} was given up as "not found"; since then the order was handled (re-sent, re-routed or cancelled). orders-history now lists it as "${vendorStatus}": the warehouse may ship it next to the replacement.`,
+      fulfillmentId,
+      accountId,
+    });
+  });
+}
+
+/**
+ * Older code titled the "gone" task "send it again" (and never resolves it): every such open task of the account is
+ * retitled "check the cabinet, do not send again". Idempotent; run with each poll.
+ */
+export async function retitleGoneTasks(accountId: string) {
+  const db = accountDb(accountId);
+  const old = await db.alert.findMany({
+    where: {
+      accountId,
+      kind: "eushipments_cancelled_at_vendor",
+      status: { not: "RESOLVED" },
+      title: { contains: "изпратете поръчката отново" },
+    },
+    select: { id: true, title: true },
+    take: 200,
+  });
+  for (const a of old) {
+    const ref = /пратка (\S+)/.exec(a.title)?.[1] ?? "";
+    await db.alert.updateMany({
+      where: { id: a.id, accountId },
+      data: {
+        title: `euShipments: ${ref} не се намира в orders-history — проверете в кабинета (НЕ изпращайте отново)`,
+      },
+    });
+  }
 }

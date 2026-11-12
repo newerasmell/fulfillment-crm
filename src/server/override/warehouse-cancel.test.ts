@@ -4,7 +4,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { withAccountTransaction } from "@/server/db/client";
 import { createFhbConnection } from "@/server/fhb/connection";
 import { createFhbTransportResolver } from "@/server/fhb/transport";
-import { applyOrderHistory, markGoneAtVendor } from "@/server/eushipments/statuses";
+import { applyOrderHistory, confirmDeleteByNotFound } from "@/server/eushipments/statuses";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { euShipmentsTransportFor } from "@/server/eushipments/transport";
 import { confirmCanary, processOutbound } from "@/server/outbox/outbox";
@@ -286,6 +286,34 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
   });
 
   describe("unknown outcome → read-back", () => {
+    it("euShipments 503 on orders-delete, orders-history 'not found' → UNCERTAIN (not proof of the delete)", async () => {
+      const { order, fulfillment } = await shipped();
+      const before = await status(order.id);
+      const r = await cancel(fulfillment.id);
+      const eu = euVendor({
+        del: () => jsonRes({ error: "busy" }, 503),
+        history: (refNum) => ({
+          refNum,
+          error: "Not found order with specified reference number!",
+          errorCode: 404,
+        }),
+      });
+      expect(await processOutbound(r.requestId, vendors(eu))).toBe("UNCERTAIN");
+      expect(await shipStatus(fulfillment.id)).not.toBe("CANCELLED");
+      expect(await status(order.id)).toBe(before);
+      // A delete euShipments did answer is confirmed by the same lookup (reroute read-back).
+      const t = vendors(eu)({ id: g.connection.id, type: "EUSHIPMENTS" });
+      const req = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: r.requestId } });
+      const call = {
+        operation: req.operation,
+        idempotencyKey: req.idempotencyKey,
+        payload: req.payload,
+        testMode: false,
+      };
+      await expect(t!.readBack!(call)).rejects.toThrow(/not proof/);
+      expect((await t!.readBack!({ ...call, vendorAnswered: true })).found).toBe(true);
+    });
+
     it("euShipments 503 on orders-delete, orders-history read-back 'Deleted' → CANCELLED / BLOCKED", async () => {
       const { order, fulfillment } = await shipped();
       const r = await cancel(fulfillment.id);
@@ -378,24 +406,41 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
         ).toBe(0);
       });
 
-    it("a vendor-refused (FAILED) request, then 'not found' twice → CRITICAL cabinet task", async () => {
+    it("a vendor-refused (FAILED) request, then 'not found': no delete left the CRM, nothing is cancelled", async () => {
       const { order, fulfillment } = await shipped();
+      const before = await status(order.id);
       const r = await cancel(fulfillment.id);
       const refusing = vendors(euVendor({ del: () => jsonRes({ error: "Order cannot be deleted" }) }));
       expect(await processOutbound(r.requestId, refusing)).toBe("FAILED");
-      expect(await markGoneAtVendor(g.accountId, fulfillment.id)).toBe(true);
-      expect(await status(order.id)).toBe("BLOCKED");
-      expect(await vendorAlerts(fulfillment.id)).toBe(1);
+      expect(await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date())).toBe(false);
+      expect(await shipStatus(fulfillment.id)).not.toBe("CANCELLED");
+      expect(await status(order.id)).toBe(before);
       expect(
         await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancelled" } }),
       ).toBe(0);
     });
 
-    it("a request that left the CRM (answer lost), then 'not found' twice → BLOCKED with attribution, no task", async () => {
+    it("a request that left the CRM (answer lost), then 'not found' twice → BLOCKED with attribution, a cabinet task", async () => {
       const { order, fulfillment } = await shipped();
       const r = await cancel(fulfillment.id);
+      const sentAt = new Date(Date.now() - 60 * 60_000);
+      await g.db.outboundRequest.update({
+        where: { id: r.requestId },
+        data: { status: "SENDING", lockedAt: sentAt },
+      });
+      // Still on its way: never confirmed.
+      expect(await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date())).toBe(false);
       await g.db.outboundRequest.update({ where: { id: r.requestId }, data: { status: "UNCERTAIN" } });
-      expect(await markGoneAtVendor(g.accountId, fulfillment.id)).toBe(true);
+      // The first "not found" was seen before the delete went out: no proof of it.
+      expect(
+        await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date(sentAt.getTime() - 60_000)),
+      ).toBe(false);
+      expect(await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date())).toBe(true);
+      expect(
+        await g.db.alert.count({
+          where: { kind: "eushipments_delete_unconfirmed", entityId: fulfillment.id },
+        }),
+      ).toBe(1);
       expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
       expect(await status(order.id)).toBe("BLOCKED");
       expect(await vendorAlerts(fulfillment.id)).toBe(0);

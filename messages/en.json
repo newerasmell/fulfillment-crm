@@ -1966,9 +1966,13 @@
         "not_scheduled": "The check could not be started — try again in 10 minutes.",
         "not_found": "Request not found.",
         "task_resolved": "The task for this request was already closed by a person — the CRM leaves it alone. Check the warehouse cabinet if needed.",
-        "deleted_there": "The reference belongs to a deleted/cancelled shipment at the warehouse — decide by hand (warehouse cabinet)."
+        "deleted_there": "The reference belongs to a deleted/cancelled shipment at the warehouse — decide by hand (warehouse cabinet).",
+        "first": "Press “Check at the warehouse” first."
       },
-      "lastCheck": "Last check: {error}"
+      "lastCheck": "Last check: {error}",
+      "absentButton": "Checked the cabinet — not there, send",
+      "absentConfirm": "This sends the order again. Do it ONLY if you checked the warehouse cabinet and there is no order with this number (euShipments does not always list it while it is in “Information received”). Continue?",
+      "absentStarted": "Sending again…"
     }
   },
   "stock": {

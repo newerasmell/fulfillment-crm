@@ -151,6 +151,9 @@ describe("rule table (pure)", () => {
   it("forbidden samples", () => {
     const no: [TransitionCause, CrmOrderStatus, CrmOrderStatus, "user" | "system" | "ai"][] = [
       ["vendor", "DELIVERED", "SHIPPED", "system"], // never backwards
+      ["vendor_reinstate", "CANCELLED", "ACCEPTED", "system"], // only a "not found" block is undone
+      ["vendor_reinstate", "BLOCKED", "ACCEPTED", "user"],
+      ["vendor_reinstate", "BLOCKED", "SHIPPED", "system"],
       ["vendor", "ON_HOLD", "ACCEPTED", "system"], // operator state is never overwritten by a vendor
       ["vendor", "CANCELLED", "SHIPPED", "system"],
       ["vendor", "IMPORTED", "SHIPPED", "system"], // nothing was sent yet

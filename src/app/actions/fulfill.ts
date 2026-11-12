@@ -18,7 +18,7 @@ import {
   type CanaryView,
 } from "@/server/fulfill";
 import { webBoss } from "@/server/jobs/boss";
-import { requestWarehouseRecheck } from "@/server/outbox/recheck";
+import { confirmAbsentAndResend, requestWarehouseRecheck } from "@/server/outbox/recheck";
 import { QUEUES } from "@/server/jobs/queues";
 
 /**
@@ -118,6 +118,32 @@ export async function confirmCanaryAction(
       "outbox send not scheduled; the sweep picks it up",
     );
   }
+  return { ok: true };
+}
+
+/** "Проверих в кабинета — няма я, изпрати": a person confirms the order is not at the warehouse; sent again. */
+export async function confirmAbsentResendAction(requestId: string): Promise<{ ok: true } | Fail> {
+  const ctx = await requireAccountContext();
+  let r;
+  try {
+    r = await confirmAbsentAndResend(actorFrom(ctx), { requestId });
+  } catch (err) {
+    return toError(err);
+  }
+  try {
+    const boss = await webBoss();
+    await boss.send(
+      QUEUES.outboxSend.name,
+      { requestId: r.requestId, accountId: r.accountId },
+      { singletonKey: r.requestId },
+    );
+  } catch (err) {
+    logger.warn(
+      { requestId, err: (err as Error).message },
+      "outbox send not scheduled; the sweep picks it up",
+    );
+  }
+  if (r.orderId) revalidatePath(`/orders/${r.orderId}`);
   return { ok: true };
 }
 

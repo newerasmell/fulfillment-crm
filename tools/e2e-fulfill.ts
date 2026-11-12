@@ -454,6 +454,13 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       // Two days ago: not part of today's CANARY cap (the bulk Fulfill test counts it).
       lockedAt: new Date(Date.now() - 2 * 86_400_000),
       lastError: "worker stopped during the vendor call",
+      // An earlier "Провери в склада" could not decide (euShipments "not found" is no proof).
+      lastResponse: {
+        recheck: {
+          error: "orders-history does not list DM-94007 — check the euShipments cabinet",
+          at: new Date().toISOString(),
+        },
+      },
     },
   });
   return { connectionId: connection.id, orders, shippedOrderId: shipped.id };

@@ -262,14 +262,36 @@ contracts. Separate base URL, separate auth call, camelCase.
   "to avoid duplicate shipments". We enforce it: unique constraint in our DB, and before any (re)submit
   call `orders-history` with that refNum. A missing order comes back inside HTTP 200 as an item with
   `error: "Not found order…"`, `errorCode: 404` — that (and only that) means "safe to send".
+  **Observed 2026-11-12:** an order sitting in *Information received* in the cabinet was answered
+  "Not found order" by orders-history for hours. So "not found" is NOT proof of absence: the pre-send check
+  still refuses only a found reference, but "not found" never cancels a shipment, and after an unclear send it is
+  never taken as "absent" (see read-back). Open question to euShipments.
   Use the same `{STORECODE}-{number}` as everywhere.
 - Office delivery: `recipient.officeId` = `ID` from `GET /offices-by-courier/{courierId}` (streetName then optional;
   we send null). `COURIER_OFFICE_ID` is the courier's own office id. Speedy checkout addresses
   ("Office Speedy [id] NAME: …") are matched to that list — see src/server/eushipments/delivery-office.ts.
-- Read-back after an unknown outcome uses the same lookup: found → created; the 404 item → absent; a found
-  item whose last status is Deleted/Cancelled is neither (our assumption, the spec is silent) → UNCERTAIN +
-  task. A create-order cut off by a stopped worker is never retried on its own; an OWNER/ADMIN may press
-  "Провери в склада" on the order (src/server/outbox/recheck.ts), which runs this lookup once in the worker.
+- Read-back after an unknown outcome uses the same lookup: found → created; the 404 item → **not decided**
+  (see the 2026-11-12 observation) → UNCERTAIN + task, never re-sent on its own; a found item whose last status
+  is Deleted/Cancelled → UNCERTAIN + task (our assumption, the spec is silent). A create-order cut off by a
+  stopped worker is never retried on its own; an OWNER/ADMIN may press "Провери в склада" on the order
+  (src/server/outbox/recheck.ts), which runs this lookup once in the worker. When it cannot decide, the same
+  person may press "Проверих в кабинета — няма я, изпрати" after looking in the cabinet (audited; through the
+  liveMode gate, CANARY asks for a new click).
+- Polling: "not found" for a created shipment → one CRITICAL task "check the cabinet, do not send again";
+  the shipment stays. Only for a delete the CRM sent with a lost answer, "not found" twice in a row confirms
+  it. A shipment given up as "not found" by older code is made active again when orders-history lists it
+  (not as deleted), if nothing happened to the order since; otherwise one CRITICAL task (possible double).
+  The "not found" task opens on the second such poll, 30+ min after the send, and closes by itself once listed.
+  While a shipment given up on "not found" has an open task, the order cannot be sent again (validator
+  `order.previous_shipment_unconfirmed`, hard): a person checks the cabinet and closes the task.
+- Delete read-back: a found item whose last status is Deleted → confirmed; "not found" confirms only a delete
+  euShipments answered (reroute confirmation); after an unclear delete it is UNCERTAIN, and the poller takes
+  "not found" twice — both polled after the delete went out, the delete UNCERTAIN (not still SENDING) — as the
+  confirmation, with a task to check the cabinet before sending again. Listed as Deleted later closes that task.
+- The pre-send orders-history check failing (error / unreadable item) means create-order was not called: the
+  adapter throws `NotSentError` and the outbox retries with backoff (no read-back, no task).
+- A create-order UNCERTAIN because its read-back could not decide (`…; read-back failed: …`) can be checked with
+  "Провери в склада" like one cut off by a stopped worker.
 - Content: `products[{refNumber, qty, price?, priceWithoutVat?}]` or `boxes[{refNumberBox, items[]}]`.
   For senders with Econt/Speedy cash-receipt config: **Σ(price × qty) must equal `awb.bankRepayment`**
   or the order is rejected — compute prices from Shopify line totals after discounts, then fix rounding on
@@ -285,7 +307,7 @@ contracts. Separate base URL, separate auth call, camelCase.
   themselves on the `streetName` keyword — "to office:" vs "office" — so never rely on it).
 - Delete: `DELETE /orders-delete/{refNumber}` or `/orders/{id}` — only in *Information received*,
   *Awaiting pickup* or *New*, and **not older than 14 days**. The CRM's "Откажи в склада" uses `/orders-delete/{refNumber}` through the
-  outbox only inside that window; a confirmed delete (answer, or orders-history "Deleted" / "not found" for a delete
+  outbox only inside that window; a confirmed delete (answer, or orders-history "Deleted" / "not found" twice for a delete
   the CRM sent — not a DRY_RUN/READ_ONLY/refused row) → shipment CANCELLED, order BLOCKED; a vendor error answer
   leaves the shipment and opens a task. After that the order can **never be sent to euShipments again** (the
   reference is always `{PREFIX}-{number}` and a deleted reference is refused by the pre-send check, on any

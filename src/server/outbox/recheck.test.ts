@@ -4,6 +4,7 @@ import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { processOutbound, sweepOutbox, STALE_SENDING_MS, WORKER_STOPPED } from "./outbox";
 import {
+  confirmAbsentAndResend,
   RECHECK_MIN_AGE_MS,
   RECHECKING,
   requestWarehouseRecheck,
@@ -117,6 +118,110 @@ describe("warehouse recheck of an interrupted create-order", () => {
     expect(send).not.toHaveBeenCalled();
     expect(await openTasks(req.id)).toBe(1);
     await requestWarehouseRecheck(g.owner, { requestId: req.id }); // allowed again
+  });
+
+  it("euShipments cannot say 'absent': a person checks the cabinet, confirms, it goes out once through the gate", async () => {
+    const { req } = await interrupted();
+    // Not before a check.
+    await expect(confirmAbsentAndResend(g.owner, { requestId: req.id })).rejects.toMatchObject({
+      code: "recheck_first",
+    });
+    const job = await requestWarehouseRecheck(g.owner, { requestId: req.id });
+    const { send, resolve } = transport(async () => {
+      throw new Error("orders-history does not list RC — check the euShipments cabinet");
+    });
+    expect(await runWarehouseRecheck(job, resolve)).toBe("UNCERTAIN");
+    await expect(
+      confirmAbsentAndResend({ ...g.owner, role: "OPERATOR" }, { requestId: req.id }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await db().outboundRequest.update({
+      where: { id: req.id },
+      data: { confirmedAt: new Date(), confirmedById: g.owner.userId },
+    });
+    const r = await confirmAbsentAndResend(g.owner, { requestId: req.id });
+    expect(r.requestId).toBe(req.id);
+    expect(await reqOf(req.id)).toMatchObject({ status: "PENDING", confirmedAt: null, confirmedById: null });
+    expect(
+      await db().auditLog.count({ where: { entityId: req.id, action: "outbox.resend_confirmed_absent" } }),
+    ).toBe(1);
+    // Twice: refused (no longer UNCERTAIN).
+    await expect(confirmAbsentAndResend(g.owner, { requestId: req.id })).rejects.toMatchObject({
+      code: "recheck_not_uncertain",
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(await processOutbound(req.id, resolve)).toBe("SENT");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a send that timed out and whose read-back could not decide can be checked and confirmed absent", async () => {
+    const { req, order } = await interrupted();
+    await db().outboundRequest.update({
+      where: { id: req.id },
+      data: {
+        lastError:
+          "timeout; read-back failed: orders-history does not list RC — check the euShipments cabinet",
+      },
+    });
+    expect(await uncertainCreatesOf(g.owner, order.id)).toEqual([
+      expect.objectContaining({ requestId: req.id, refusal: null, canConfirmAbsent: true }),
+    ]);
+    const job = await requestWarehouseRecheck(g.owner, { requestId: req.id });
+    const { send, resolve } = transport(async () => {
+      throw new Error("orders-history does not list RC — check the euShipments cabinet");
+    });
+    expect(await runWarehouseRecheck(job, resolve)).toBe("UNCERTAIN");
+    // The send's own error is kept next to the check's answer.
+    expect((await reqOf(req.id)).lastResponse).toMatchObject({
+      recheck: {
+        original: expect.stringContaining("read-back failed"),
+        error: expect.stringContaining("does not list"),
+      },
+    });
+    // Another company's user cannot; a person who closed the task by hand decided already.
+    await expect(
+      confirmAbsentAndResend({ ...g.owner, companyScope: ["other-company"] }, { requestId: req.id }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await confirmAbsentAndResend(g.owner, { requestId: req.id });
+    expect(await processOutbound(req.id, resolve)).toBe("SENT");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm-absent is refused once the task was closed by hand, and for a read-back naming a deleted shipment", async () => {
+    const closed = await interrupted();
+    const job = await requestWarehouseRecheck(g.owner, { requestId: closed.req.id });
+    const { resolve } = transport(async () => {
+      throw new Error("orders-history does not list RC");
+    });
+    await runWarehouseRecheck(job, resolve);
+    await db().alert.updateMany({
+      where: { entityId: closed.req.id, kind: "outbox_uncertain" },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    await expect(confirmAbsentAndResend(g.owner, { requestId: closed.req.id })).rejects.toMatchObject({
+      code: "recheck_task_resolved",
+    });
+    const gone = await interrupted();
+    await db().outboundRequest.update({
+      where: { id: gone.req.id },
+      data: {
+        lastError: "timeout; read-back failed: reference RC is a deleted/cancelled shipment at euShipments",
+      },
+    });
+    await expect(requestWarehouseRecheck(g.owner, { requestId: gone.req.id })).rejects.toMatchObject({
+      code: "recheck_deleted_there",
+    });
+  });
+
+  it("a shipment the warehouse lists as deleted is never confirmed absent", async () => {
+    const { req } = await interrupted();
+    const job = await requestWarehouseRecheck(g.owner, { requestId: req.id });
+    const { resolve } = transport(async () => {
+      throw new Error("RC is deleted/cancelled at euShipments");
+    });
+    await runWarehouseRecheck(job, resolve);
+    await expect(confirmAbsentAndResend(g.owner, { requestId: req.id })).rejects.toMatchObject({
+      code: "recheck_deleted_there",
+    });
   });
 
   it("refused: too recent, a DRY_RUN call, a lowered mode, a moved shipment, another company's order", async () => {

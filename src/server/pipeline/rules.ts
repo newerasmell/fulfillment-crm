@@ -55,6 +55,12 @@ export type TransitionCause =
   /** The order follows its shipment's vendor status (FHB status map, euShipments history/COD). */
   | "vendor"
   /**
+   * A shipment the CRM had given up as "not found at the warehouse" turns up there after all (owner report
+   * 2026-11-12: orders-history did not list an order still in "Information received"): BLOCKED → ACCEPTED, then the
+   * vendor status follows as usual. Only the system, only from BLOCKED.
+   */
+  | "vendor_reinstate"
+  /**
    * Shopify import changed the order's data (address, phone, COD, lines…) while it was being checked or
    * waiting for review: it starts over at IMPORTED and the check sweep validates it again.
    */
@@ -94,6 +100,7 @@ export const CAUSES: readonly TransitionCause[] = [
   "submitting",
   "submit_failed",
   "vendor",
+  "vendor_reinstate",
   "data_changed",
   "reroute",
   "tag_missing",
@@ -228,6 +235,7 @@ export const RULES: readonly TransitionRule[] = [
   { cause: "tag_missing", from: TAG_GATED_FROM, to: ["AWAITING_TAG"], actors: ["system", "user"] },
   { cause: "tag_added", from: ["AWAITING_TAG"], to: ["IMPORTED"], actors: ["system", "user"] },
   { cause: "qty_release", from: ["QTY_HOLD"], to: ["IMPORTED", "AWAITING_TAG"], actors: ["user", "system"] },
+  { cause: "vendor_reinstate", from: ["BLOCKED"], to: ["ACCEPTED"], actors: ["system"] },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,

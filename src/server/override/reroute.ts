@@ -700,6 +700,7 @@ export async function processReroute(
         idempotencyKey: req.idempotencyKey,
         payload: req.payload,
         testMode: false,
+        vendorAnswered: true, // req is SENT: the old warehouse answered the cancel
       });
       confirmed = rb.found;
       response = rb.response ?? null;
