@@ -73,5 +73,5 @@ databases:
   - name: fulfillment-crm-db
     databaseName: fulfillment_crm
     region: frankfurt
-    plan: basic-256mb
+    plan: basic-1gb
     postgresMajorVersion: "16"
