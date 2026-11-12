@@ -5,6 +5,7 @@ import {
   effectivePhoneRule,
   normalisePhone,
   PHONE_RULES,
+  PhoneRuleSchema,
 } from "@/integrations/eushipments/phone";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 import { estimateQueryCost } from "@/integrations/shopify/query-cost";
@@ -156,6 +157,19 @@ describe("phone rules (pure): the group's own rule replaces the built-in euShipm
       ok: true,
       value: "+393927838955",
     });
+    // Several national prefixes (Lithuania: 8 until 2025, 0 since): "0, 8" is stored as "0,8"; both are stripped,
+    // a national-style number is sent with the first.
+    const LT = PhoneRuleSchema.parse({ style: "international", cc: "370", trunk: "0, 8", lengths: [8] });
+    expect(LT.trunk).toBe("0,8");
+    for (const raw of ["861234567", "061234567", "+370 612 34567", "37061234567"])
+      expect(normalisePhone(raw, "LT", LT)).toMatchObject({ ok: true, value: "+37061234567" });
+    const LTn = { ...LT, style: "national" as const };
+    expect(normalisePhone("861234567", "LT", LTn)).toMatchObject({ ok: true, value: "061234567" });
+    // One digit short, with either prefix: reported, never sent with the prefix inside.
+    for (const raw of ["06123456", "86123456"])
+      expect(normalisePhone(raw, "LT", LT)).toMatchObject({ ok: false, reason: "wrong_length" });
+    expect(PhoneRuleSchema.parse({ ...LT, trunk: "0,0" }).trunk).toBe("0");
+    expect(() => PhoneRuleSchema.parse({ ...LT, trunk: "0,8,9,7,6" })).toThrow();
     // The deliberate trade-off: a length that is both national and code + national is read as national.
     expect(normalisePhone("3912345678", "IT", IT_RULE)).toMatchObject({ ok: true, value: "+393912345678" });
     expect(effectivePhoneRule("BG", null)).toEqual({ rule: PHONE_RULES.BG, source: "builtin" });

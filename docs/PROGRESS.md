@@ -452,7 +452,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   (AWAITING_TAG), so it has to be reviewed and approved again.
 - 2026-11-12 Наличности failed with "Unable to start a transaction in the given time" during a burst of Shopify
   webhooks: every scoped query holds a pooled connection for its RLS transaction and pg's default pool is 10. Pool
-  per process is now 15 (env DB_POOL_MAX, 5–50, set in render.yaml). Missing bg/en label stock.push.trigger.fast added. The real failure
+  per process is DB_POOL_MAX (5–50, default 10, set in render.yaml). 2026-11-12: the basic-256mb database went down under
+  load (P1001 during a deploy, then Unavailable); every connection costs its memory, so the pool stays 10 (raised only after watching it under load). Recommended: basic-1gb (owner's decision — cost); render.yaml must then say the same, or a
+  blueprint sync would try to change it back. Missing bg/en label stock.push.trigger.fast added. The real failure
   of Наличности with 4000+ masters: one read of every master × its variants in every store passed PostgreSQL's 32767
   bind parameters ("query parameter limit exceeded"). The board now reads the ids first, then the rows in chunks
   (≤ ~20 000 parameters each); 4500 masters × 12 stores load in ~2 s locally. The stock-alert sweep
@@ -461,6 +463,12 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-12 Speedy offices without a default courier for BG: the "Доставка" search lists the offices of every
   office-delivering courier of the country with the courier's name; the office a person picks decides the courier
   (stored in Order.deliveryOffice.courierId, sent as courierId). Nothing is picked automatically.
+- 2026-11-12 Phones with several national prefixes: Lithuania moved from 8 to 0 in 2025 and orders come with both.
+  The built-in LT rule (FHB/E.164) takes "0,8"; a country's own rule (Настройки → Държави) accepts several prefixes,
+  comma-separated (up to 4). The longest prefix that leaves a valid length is dropped; a national-style number is sent with the
+  first prefix; one digit short is refused (never sent with the prefix inside). FHB/E.164 knows LT's national length
+  (8): a prefix after +370 is dropped, another length is refused. One-prefix countries behave as before. pg-boss
+  pools: worker 5, web 2.
 
 ## Open questions
 See SPEC.md §11.

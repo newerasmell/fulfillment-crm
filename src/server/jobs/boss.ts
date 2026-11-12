@@ -14,7 +14,8 @@ export function createBoss(opts: { url?: string; worker: boolean }) {
     migrate: opts.worker,
     supervise: opts.worker,
     schedule: opts.worker,
-    max: opts.worker ? 10 : 3,
+    // Every connection costs database memory (the basic plan went down under load, owner report 2026-11-12).
+    max: opts.worker ? 5 : 2,
   });
 }
 

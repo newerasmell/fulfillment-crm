@@ -39,7 +39,10 @@ const CALLING_CODES: Readonly<Record<string, string>> = Object.freeze({
   UA: "380",
 });
 
-/** National trunk prefix dropped before the calling code. Countries absent here have none (IT keeps its 0). */
+/**
+ * National trunk prefix(es) dropped before the calling code ("0,8": several, the longest match first). Countries
+ * absent here have none (IT keeps its 0).
+ */
 const TRUNK: Readonly<Record<string, string>> = Object.freeze({
   AT: "0",
   BE: "0",
@@ -52,7 +55,9 @@ const TRUNK: Readonly<Record<string, string>> = Object.freeze({
   HR: "0",
   HU: "06",
   IE: "0",
-  LT: "8",
+  // Lithuania changed its national prefix from 8 to 0 in 2025; numbers come written both ways (owner report
+  // 2026-11-12).
+  LT: "0,8",
   NL: "0",
   RO: "0",
   RS: "0",
@@ -86,6 +91,13 @@ const NATIONAL_MAX: Readonly<Record<string, number>> = Object.freeze({
   PT: 9,
 });
 
+/**
+ * National number length of countries with several national prefixes (LT: 8 until 2025, 0 since — owner report
+ * 2026-11-12): a prefix written after "+370" is dropped, and a number of another length is refused (a typo is never
+ * sent as an impossible number).
+ */
+const NSN_LENGTH: Readonly<Record<string, number>> = Object.freeze({ LT: 8 });
+
 /** A group's own rule without a trunk prefix: national numbers of up to 10 digits stay national. */
 const DEFAULT_NATIONAL_MAX = 10;
 
@@ -114,23 +126,37 @@ export function normalisePhoneE164(
   const known = callingCodeOf(country);
   const cc = known ?? custom?.cc ?? null;
   const trunk = known ? (country ? TRUNK[country.toUpperCase()] : undefined) : custom?.trunk || undefined;
+  // Same parsing as the euShipments rule's trunksOf (kept here so this adapter does not import from euShipments).
+  const trunks = (trunk ?? "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
   let digits: string;
   if (s.startsWith("+")) {
     digits = s.slice(1);
     if (!/^\d+$/.test(digits)) return null;
     // "+359 0888…": a trunk 0 kept after the country code by mistake.
-    if (cc && trunk === "0" && digits.startsWith(`${cc}0`)) digits = cc + digits.slice(cc.length + 1);
+    if (cc && trunks.includes("0") && digits.startsWith(`${cc}0`)) digits = cc + digits.slice(cc.length + 1);
   } else {
     if (!/^\d+$/.test(s) || !cc) return null;
-    if (trunk && s.startsWith(trunk)) digits = cc + s.slice(trunk.length);
+    const lead = [...trunks].sort((a, b) => b.length - a.length).find((t) => s.startsWith(t));
+    if (lead) digits = cc + s.slice(lead.length);
     else if (
       s.startsWith(cc) &&
       s.length - cc.length >= 8 &&
       // Without a trunk prefix, a national number may begin with the code's digits: it stays national.
-      !(!trunk && s.length <= (known && country ? nationalMaxOf(country) : DEFAULT_NATIONAL_MAX))
+      !(!trunks.length && s.length <= (known && country ? nationalMaxOf(country) : DEFAULT_NATIONAL_MAX))
     )
       digits = s;
     else digits = cc + s;
+  }
+  const nsnLength = known && country ? NSN_LENGTH[country.toUpperCase()] : undefined;
+  if (nsnLength && cc && digits.startsWith(cc)) {
+    let rest = digits.slice(cc.length);
+    const lead = trunks.find((t) => rest.startsWith(t) && rest.length - t.length === nsnLength);
+    if (lead) rest = rest.slice(lead.length);
+    if (rest.length !== nsnLength) return null;
+    digits = cc + rest;
   }
   if (!/^[1-9]\d{7,14}$/.test(digits)) return null;
   return `+${digits}`;

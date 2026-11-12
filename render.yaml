@@ -34,9 +34,9 @@ services:
       # from the right). Verify at GATE P0-G1: the web log line "login request" shows xffEntries per login.
       - key: TRUSTED_PROXY_HOPS
         value: "1"
-      # Database connections per process (5–50, default 15; src/server/db/client.ts).
+      # Database connections per process (5–50, default 10; src/server/db/client.ts).
       - key: DB_POOL_MAX
-        value: "15"
+        value: "10"
       - key: DATABASE_URL
         fromDatabase:
           name: fulfillment-crm-db
@@ -62,7 +62,7 @@ services:
       - key: SERVICE_NAME
         value: worker
       - key: DB_POOL_MAX
-        value: "15"
+        value: "10"
       - key: DATABASE_URL
         fromDatabase:
           name: fulfillment-crm-db

@@ -99,7 +99,7 @@ export function PhoneRuleForm({
             name="trunk"
             value={trunk}
             onChange={(e) => setTrunk(e.target.value)}
-            inputMode="numeric"
+            placeholder="0, 8"
             className={`${inputCls} font-mono`}
           />
         </label>
