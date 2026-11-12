@@ -17,7 +17,8 @@ function RuleText({ rule, t }: { rule: PhoneRule; t: (k: string) => string }) {
   return (
     <span className="font-mono text-[13px]">
       {rule.style === "international" ? `+${rule.cc}` : t("styleNational")}
-      {rule.trunk ? ` · trunk ${rule.trunk}` : ""} · {rule.lengths.join("/")}
+      {rule.trunk ? ` · ${t("trunkShort")} ${rule.trunk.split(",").join(", ")}` : ""} ·{" "}
+      {rule.lengths.join("/")}
     </span>
   );
 }

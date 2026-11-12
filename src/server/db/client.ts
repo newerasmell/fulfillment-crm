@@ -49,12 +49,14 @@ export class TenantScopeError extends Error {
 const globalForPrisma = globalThis as unknown as { __crmPrisma?: PrismaClient };
 
 /**
- * Connections per process (env DB_POOL_MAX, 5–50; default 15). Budget: web + worker × (pool + pg-boss) must stay under
- * the database's connection limit even while a deploy runs old and new instances side by side.
+ * Connections per process (env DB_POOL_MAX, 5–50; default 10). Budget: web + worker × (pool + pg-boss) must stay under
+ * the database's connection limit even while a deploy runs old and new instances side by side, and every connection
+ * costs database memory (owner report 2026-11-12: the 256 MB database went down under load). Raise it only after
+ * watching the database under load.
  */
 export function poolMax(env: Record<string, string | undefined> = process.env) {
   const n = Number(env.DB_POOL_MAX);
-  return Number.isInteger(n) && n >= 5 && n <= 50 ? n : 15;
+  return Number.isInteger(n) && n >= 5 && n <= 50 ? n : 10;
 }
 
 function createBaseClient(url = process.env.DATABASE_URL) {

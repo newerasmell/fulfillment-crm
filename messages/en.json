@@ -3522,7 +3522,7 @@
     "styleNational": "National (without the country code)",
     "cc": "Country calling code",
     "ccFixed": "Set by the country (ITU) — cannot be changed.",
-    "trunk": "National trunk prefix (e.g. 0)",
+    "trunk": "National prefixes (several comma-separated, e.g. 0, 8)",
     "lengths": "Digits after the code",
     "lengthsHint": "One or more numbers, comma separated (e.g. 8 or 9, 10).",
     "warning": "The euShipments guideline does not document a format for {cc}. Confirm the format with the warehouse before sending orders — the rule applies to every order to {cc}.",
@@ -3558,7 +3558,8 @@
     "currencyMissing": "Unknown currency — enter it",
     "overridesBuiltin": "replaces the euShipments guideline:",
     "override": "Replace with our rule (e.g. with the country code)",
-    "warningOverride": "The euShipments guideline describes another format for {cc}. Your rule replaces it for every order to {cc} — use it only once the warehouse/courier confirmed it (e.g. ACS Greece accepts +30)."
+    "warningOverride": "The euShipments guideline describes another format for {cc}. Your rule replaces it for every order to {cc} — use it only once the warehouse/courier confirmed it (e.g. ACS Greece accepts +30).",
+    "trunkShort": "prefix"
   },
   "weights": {
     "title": "Weight",

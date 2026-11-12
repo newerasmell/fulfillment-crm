@@ -12,6 +12,13 @@
 
 import { z } from "zod";
 
+/** The national prefixes of a rule ("0,8" → ["0", "8"]), in the order written. Pure. */
+export const trunksOf = (trunk: string) =>
+  trunk
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
 export type PhoneRule =
   | { style: "national"; cc: string; trunk: string; lengths: number[] }
   | { style: "international"; cc: string; trunk: string; lengths: number[] };
@@ -25,7 +32,12 @@ export const PhoneRuleSchema = z
   .object({
     style: z.enum(["national", "international"]),
     cc: z.string().regex(/^[1-9]\d{0,3}$/),
-    trunk: z.string().regex(/^\d{0,2}$/),
+    // One or more national prefixes, comma-separated (owner request 2026-11-12: Lithuania moved from 8 to 0 in 2025
+    // and both are written now): "0, 8". The first is the one a national-style number is sent with.
+    trunk: z
+      .string()
+      .regex(/^\s*(\d{1,2}(\s*,\s*\d{1,2}){0,3})?\s*$/)
+      .transform((t) => [...new Set(trunksOf(t))].join(",")),
     lengths: z.array(z.number().int().min(4).max(13)).min(1).max(4),
   })
   .strict();
@@ -110,6 +122,7 @@ export function normalisePhone(
   const compact = original.replace(/[\s\u00A0().\-/]/g, "");
   if (!/^\+?\d+$/.test(compact)) return { ok: false, original, reason: "invalid_characters" };
 
+  const trunks = trunksOf(rule.trunk);
   let intl: string | null = null; // digits after the country calling code, if one was given
   if (compact.startsWith("+")) intl = compact.slice(1);
   else if (compact.startsWith("00")) intl = compact.slice(2);
@@ -133,7 +146,8 @@ export function normalisePhone(
     !rule.lengths.includes(compact.length) &&
     rule.lengths.some(
       (l) =>
-        compact.length === rule.cc.length + l || compact.length === rule.cc.length + rule.trunk.length + l,
+        compact.length === rule.cc.length + l ||
+        trunks.some((t) => compact.length === rule.cc.length + t.length + l),
     )
   ) {
     // Country code typed without "+"/"00" (e.g. 359888123456).
@@ -141,13 +155,20 @@ export function normalisePhone(
   } else {
     nsn = compact;
   }
-  // A national trunk prefix (national form, or doubled after the country code: +36 06…, +359 0…). No
-  // national significant number of these countries starts with its trunk prefix, so stripping is safe.
-  if (rule.trunk && nsn.startsWith(rule.trunk)) {
-    nsn = nsn.slice(rule.trunk.length);
+  // A national trunk prefix (national form, or doubled after the country code: +36 06…, +359 0…, +370 8…): the
+  // longest that leaves a number of a valid length. No national number of these countries starts with a prefix.
+  const strip = [...trunks]
+    .sort((a, b) => b.length - a.length)
+    .find((t) => nsn.startsWith(t) && rule.lengths.includes(nsn.length - t.length));
+  if (strip) nsn = nsn.slice(strip.length);
+  else {
+    // No prefix leaves a valid length: still dropped (a typo is reported as a bad length, never sent with the
+    // prefix inside — e.g. LT 0612345, one digit short).
+    const lead = [...trunks].sort((a, b) => b.length - a.length).find((t) => nsn.startsWith(t));
+    if (lead) nsn = nsn.slice(lead.length);
   }
   if (!rule.lengths.includes(nsn.length)) return { ok: false, original, reason: "wrong_length" };
 
-  const value = rule.style === "national" ? `${rule.trunk}${nsn}` : `+${rule.cc}${nsn}`;
+  const value = rule.style === "national" ? `${trunks[0] ?? ""}${nsn}` : `+${rule.cc}${nsn}`;
   return { ok: true, value, original, changed: value !== original };
 }
