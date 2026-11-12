@@ -365,8 +365,8 @@ export async function courierFor(
       block(
         "courier_choice_missing",
         "courierId",
-        `За ${country} има ${mirror.length} куриера в euShipments — изберете куриер по подразбиране (Складове → euShipments → Куриери).`,
-        `There are ${mirror.length} euShipments couriers for ${country} — choose a default courier (Warehouses → euShipments → Couriers).`,
+        `За ${country} има ${mirror.length} куриера в euShipments — изберете куриер по подразбиране (Складове → euShipments връзката → таб „Куриери и офиси“ → „Куриер по подразбиране по държава“, ред ${country}).`,
+        `There are ${mirror.length} euShipments couriers for ${country} — choose a default courier (Warehouses → the euShipments connection → “Couriers & offices” tab → “Default courier per country”, row ${country}).`,
       ),
     );
   if (courierId) {
