@@ -17,7 +17,7 @@ import { transition } from "@/server/pipeline";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
 import { scrubText } from "@/lib/scrub";
 import { evaluateGate, isRaise } from "./gate";
-import type { OutboundCall, OutboundTransport, TransportResolver } from "./transport";
+import { NotSentError, type OutboundCall, type OutboundTransport, type TransportResolver } from "./transport";
 
 /**
  * Outbox: every vendor write is a row in OutboundRequest, created idempotently and sent by the worker.
@@ -35,6 +35,8 @@ export const MAX_ATTEMPTS = 5;
 export const STALE_SENDING_MS = 10 * 60_000;
 /** lastError of a request whose worker stopped inside the vendor call (deploy / restart): outcome unknown. */
 export const WORKER_STOPPED = "worker stopped during the vendor call";
+/** Inside lastError of a request left UNCERTAIN because its read-back could not decide (`<send error>; read-back failed: …`). */
+export const READBACK_FAILED = "; read-back failed: ";
 const backoffMs = (attempt: number) => Math.min(60 * 60_000, 30_000 * 2 ** Math.max(0, attempt - 1));
 
 /** Statuses the sender may (re)evaluate. Everything else is terminal or in flight. */
@@ -440,8 +442,15 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
   } catch (err) {
     const detail = scrubText(err instanceof Error ? err.message : String(err));
     logger.warn({ requestId: id, operation: call.operation, err: detail }, "outbound send outcome unknown");
-    if (call.testMode) {
-      // Validate-only call: nothing can have been created, a plain retry is safe.
+    if (err instanceof NotSentError && plan.attempts >= MAX_ATTEMPTS) {
+      // Never left, but still failing: given up visibly (as any request after MAX_ATTEMPTS).
+      const status = await finalize({ lastError: `max attempts (not sent): ${detail}` }, "FAILED");
+      if (status === "FAILED") await audit("outbox.failed", { error: detail, notSent: true });
+      return status;
+    }
+    if (call.testMode || err instanceof NotSentError) {
+      // Validate-only call, or the transport knows the call never left: nothing can have been created, a plain
+      // retry is safe.
       return finalize(
         { lastError: detail, nextAttemptAt: new Date(now.getTime() + backoffMs(plan.attempts)) },
         "PENDING",
@@ -460,9 +469,9 @@ async function send(id: string, plan: Extract<Plan, { kind: "send" }>, now: Date
       found = await transport.readBack(call);
     } catch (readErr) {
       const rd = scrubText(readErr instanceof Error ? readErr.message : String(readErr));
-      const status = await finalize({ lastError: `${detail}; read-back failed: ${rd}` }, "UNCERTAIN");
+      const status = await finalize({ lastError: `${detail}${READBACK_FAILED}${rd}` }, "UNCERTAIN");
       if (status === "UNCERTAIN") {
-        await createUncertainTask(plan.accountId, id, call.operation, `${detail}; read-back failed: ${rd}`);
+        await createUncertainTask(plan.accountId, id, call.operation, `${detail}${READBACK_FAILED}${rd}`);
         await audit("outbox.uncertain", { error: detail, readBackError: rd });
       }
       return status;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
+import { NotSentError } from "@/server/outbox/transport";
 import type { OutboundCall, OutboundTransport, ReadBackResult, SendResult } from "@/server/outbox/transport";
 import { classifyHistoryItem, historyItemFor, type EuShipmentsClient } from "./client";
 import { EuShipmentsError } from "./errors";
@@ -175,16 +176,13 @@ export class EuShipmentsTransport implements OutboundTransport {
             try {
               pre = classifyHistoryItem(historyItemFor(await client.ordersHistory([ref]), ref));
             } catch (err) {
-              throw new EuShipmentsError(
-                "unknown_outcome",
+              // create-order was not called: retried later (never a read-back or a task for a person).
+              throw new NotSentError(
                 scrubText(`orders-history before create-order failed: ${(err as Error).message}`),
               );
             }
             if (pre.kind === "error")
-              throw new EuShipmentsError(
-                "unknown_outcome",
-                `orders-history before create-order: ${pre.error}`,
-              );
+              throw new NotSentError(`orders-history before create-order: ${pre.error}`);
             if (pre.kind === "found") {
               if (isDeleted(pre.item)) {
                 const error = `reference ${ref} is already used by a deleted/cancelled shipment at euShipments`;
@@ -307,7 +305,7 @@ export class EuShipmentsTransport implements OutboundTransport {
           return { outcome: "rejected", response: null, error: `unsupported operation ${call.operation}` };
       }
     } catch (err) {
-      if (err instanceof EuShipmentsError) throw err; // unknown outcome → the outbox reads back
+      if (err instanceof EuShipmentsError || err instanceof NotSentError) throw err; // unknown outcome → read-back
       // Anything else happened before the request left (e.g. the body failed its schema): nothing was sent.
       return {
         outcome: "rejected",
@@ -325,7 +323,13 @@ export class EuShipmentsTransport implements OutboundTransport {
       case EU_OPS.createOrder: {
         const ref = String((body as { awb?: { referenceNumber?: unknown } }).awb?.referenceNumber ?? "");
         const lookup = classifyHistoryItem(historyItemFor(await client.ordersHistory([ref]), ref));
-        if (lookup.kind === "not_found") return { found: false };
+        // "Not found" after an unclear send proves nothing (owner report 2026-11-12: orders-history kept answering
+        // "not found" for an order sitting in "Information received" in the cabinet): never a resend on its own —
+        // UNCERTAIN, a person checks the cabinet.
+        if (lookup.kind === "not_found")
+          throw new Error(
+            `orders-history does not list ${ref} (orders in "Information received" are not always listed) — check the euShipments cabinet`,
+          );
         if (lookup.kind === "error") throw new Error(`orders-history: ${lookup.error}`);
         // Deleted / cancelled there: neither "created" nor safe to send again (the pre-send check rejects it too).
         if (isDeleted(lookup.item))
@@ -352,6 +356,12 @@ export class EuShipmentsTransport implements OutboundTransport {
         const lookup = classifyHistoryItem(historyItemFor(await client.ordersHistory([ref]), ref));
         if (lookup.kind === "error") throw new Error(`orders-history: ${lookup.error}`);
         if (lookup.kind === "found" && !isDeleted(lookup.item)) return { found: false };
+        // "Not found" is no proof of a delete (orders in "Information received" are not always listed): only after
+        // euShipments answered the delete itself. Otherwise UNCERTAIN; the poller confirms it on two such polls.
+        if (lookup.kind === "not_found" && !call.vendorAnswered)
+          throw new Error(
+            `orders-history does not list ${ref} — not proof of the delete; check the euShipments cabinet`,
+          );
         await this.effect(call, "orderDeleted", ctx);
         return { found: true, response: { recoveredBy: "orders-history" } };
       }
@@ -379,7 +389,8 @@ export class EuShipmentsTransport implements OutboundTransport {
 }
 
 const DELETED = new Set(["deleted", "cancelled", "canceled/deleted"]);
-function isDeleted(item: HistoryItem) {
+/** The item's last status is Deleted / Cancelled at euShipments. Pure. */
+export function isDeleted(item: HistoryItem) {
   const last = (item.statusesHistory ?? []).at(-1);
   return !!last && DELETED.has(normaliseStatusText(last.STATUS));
 }

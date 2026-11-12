@@ -7,7 +7,7 @@ import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb, systemDb } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
-import { globalOutboxPaused, resolveUncertainTasks, WORKER_STOPPED } from "./outbox";
+import { globalOutboxPaused, READBACK_FAILED, resolveUncertainTasks, WORKER_STOPPED } from "./outbox";
 import type { TransportResolver } from "./transport";
 
 /**
@@ -70,10 +70,13 @@ export function recheckRefusal(
 ): Why | null {
   if (r.status !== "UNCERTAIN") return "not_uncertain";
   if (!RECHECKABLE_OPS.has(r.operation)) return "not_recheckable";
-  if (r.lastError === DELETED_THERE) return "deleted_there";
+  // A send that timed out and whose read-back could not decide (e.g. euShipments "not found"): checked the same way.
+  const undecided = !!r.lastError?.includes(READBACK_FAILED);
+  if (r.lastError === DELETED_THERE || (undecided && /deleted\/cancelled/i.test(r.lastError ?? "")))
+    return "deleted_there";
   if (taskResolved) return "task_resolved";
   const checking = r.lastError === RECHECKING;
-  if (r.lastError !== WORKER_STOPPED && !checking) return "not_recheckable";
+  if (r.lastError !== WORKER_STOPPED && !checking && !undecided) return "not_recheckable";
   if (checking && now.getTime() - r.updatedAt.getTime() < RECHECK_RETRY_MS) return "checking";
   // The interrupted call was a real one (a DRY_RUN validate-only call is never looked up as if it were real).
   if (r.evaluatedMode !== "LIVE" && r.evaluatedMode !== "CANARY") return "mode_not_live";
@@ -108,6 +111,13 @@ const select = {
   },
   fulfillment: { select: { status: true, order: { select: { id: true, companyId: true } } } },
 } satisfies Prisma.OutboundRequestSelect;
+
+type RecheckInfo = { error?: string; at?: string; original?: string };
+const recheckOf = (v: unknown): RecheckInfo =>
+  ((v as { recheck?: RecheckInfo } | null)?.recheck ?? {}) as RecheckInfo;
+/** The send's own error before any check (kept across checks). */
+const originalOf = (r: { lastError: string | null; lastResponse: unknown }) =>
+  (recheckOf(r.lastResponse).original ?? r.lastError ?? "").slice(0, 1000);
 
 /** Whether a person already closed the request's "unknown result" task (and none is open). */
 async function taskResolved(accountId: string, requestId: string) {
@@ -160,7 +170,11 @@ export async function requestWarehouseRecheck(
   if (why) throw new DomainError(`recheck_${why}`);
   const claimed = await db.outboundRequest.updateMany({
     where: { id: r.id, accountId: actor.accountId, status: "UNCERTAIN", lastError: r.lastError },
-    data: { lastError: RECHECKING },
+    data: {
+      lastError: RECHECKING,
+      // The first error of the send (e.g. "timeout; read-back failed: …") is kept: the marker replaces it.
+      lastResponse: { recheck: { ...recheckOf(r.lastResponse), original: originalOf(r) } },
+    },
   });
   if (claimed.count !== 1) throw new DomainError("recheck_checking");
   await recordAudit({
@@ -206,7 +220,17 @@ export async function runWarehouseRecheck(
         lastError: lastError.slice(0, 2000),
         // What the last check said, shown on the order (the request's own response stays empty: never answered).
         ...(checkError
-          ? { lastResponse: { recheck: { error: checkError.slice(0, 500), at: now.toISOString() } } }
+          ? {
+              lastResponse: {
+                recheck: {
+                  error: checkError.slice(0, 500),
+                  at: now.toISOString(),
+                  ...(recheckOf(r.lastResponse).original
+                    ? { original: recheckOf(r.lastResponse).original }
+                    : {}),
+                },
+              },
+            }
           : {}),
       },
     });
@@ -315,6 +339,68 @@ export async function uncertainCreatesOf(actor: ScopedActor, orderId: string, no
         await taskResolved(r.accountId, r.id),
       ),
       lastCheckError: (r.lastResponse as { recheck?: { error?: string } } | null)?.recheck?.error ?? null,
+      canConfirmAbsent: r.operation === "eushipments.createOrder",
     });
   return out;
+}
+
+/**
+ * "Проверих в кабинета — няма я, изпрати": after a check that could not find it (orders-history does not list every
+ * order — owner report 2026-11-12), an OWNER / ADMIN who looked in the warehouse's cabinet sends it again. Only after
+ * such a check, under the same conditions as the check itself. Through the gate (CANARY asks for a new click).
+ */
+export async function confirmAbsentAndResend(
+  actor: ScopedActor,
+  raw: z.input<typeof RecheckInput>,
+  now: Date = new Date(),
+) {
+  assertCan(actor.role, "stores.manage");
+  const { requestId } = RecheckInput.parse(raw);
+  const db = accountDb(actor.accountId);
+  const r = await db.outboundRequest.findFirst({
+    where: { id: requestId, accountId: actor.accountId },
+    select,
+  });
+  const companyId = r?.fulfillment?.order.companyId ?? "";
+  if (!r || (actor.companyScope && !actor.companyScope.includes(companyId)))
+    throw new DomainError("not_found");
+  const why = recheckRefusal(
+    r,
+    r.connection.account.outboxPaused,
+    now,
+    await taskResolved(actor.accountId, r.id),
+  );
+  if (why) throw new DomainError(`recheck_${why}`);
+  // euShipments only: its lookup cannot prove absence. FHB's GET /order can (absent → sent again on its own).
+  if (r.operation !== "eushipments.createOrder") throw new DomainError("recheck_not_recheckable");
+  if (!(r.lastResponse as { recheck?: { error?: string } } | null)?.recheck?.error)
+    throw new DomainError("recheck_first");
+  const moved = await db.outboundRequest.updateMany({
+    where: { id: r.id, accountId: actor.accountId, status: "UNCERTAIN", lastError: WORKER_STOPPED },
+    data: {
+      status: "PENDING",
+      nextAttemptAt: null,
+      confirmedAt: null,
+      confirmedById: null,
+      lastError: `not in the warehouse's cabinet (checked by a person) after: ${WORKER_STOPPED}`,
+    },
+  });
+  if (moved.count !== 1) throw new DomainError("recheck_checking");
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "outbox.resend_confirmed_absent",
+    entityType: "OutboundRequest",
+    entityId: r.id,
+    after: { operation: r.operation, idempotencyKey: r.idempotencyKey },
+    ip: actor.ip,
+    userAgent: actor.userAgent,
+  });
+  await noteTasks(
+    actor.accountId,
+    r.id,
+    actor.userId,
+    "Проверено в кабинета: поръчката я няма — изпраща се отново.",
+  );
+  return { requestId: r.id, accountId: actor.accountId, orderId: r.fulfillment?.order.id ?? null };
 }

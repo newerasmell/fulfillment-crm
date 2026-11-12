@@ -11,7 +11,16 @@ import { scrubText } from "@/lib/scrub";
 import { DomainError } from "@/server/accounts";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { euReadClientFor } from "./connection";
-import { advanceOrderStatus, applyOrderHistory, EU_EVENT_SOURCE, markGoneAtVendor } from "./statuses";
+import {
+  advanceOrderStatus,
+  applyOrderHistory,
+  confirmDeleteByNotFound,
+  GONE_NOT_FOUND,
+  openGoneLiveTask,
+  reinstateGoneShipment,
+  retitleGoneTasks,
+} from "./statuses";
+import { isDeleted } from "@/integrations/eushipments/adapter";
 import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
 /**
@@ -638,8 +647,8 @@ export const POLLED_STATUSES: CrmOrderStatus[] = [
 const MAX_POLL_PER_RUN = 5000;
 const NOT_FOUND_ALERT = "eushipments_not_found";
 const NOT_FOUND_TEXT = "not found at euShipments";
-/** A freshly created shipment may not be in orders-history yet: never call it removed before this. */
-const GONE_AFTER_MS = 30 * 60_000;
+/** A freshly created shipment may not be listed yet: no "not found" task before this. */
+const NOT_FOUND_TASK_AFTER_MS = 30 * 60_000;
 
 /**
  * orders-history in batches of 100 for every open shipment of the connection. Per-item errors inside HTTP 200
@@ -661,8 +670,19 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
     );
     const open = (
       await db.fulfillment.findMany({
-        where: { connectionId, status: { in: POLLED_STATUSES } },
-        select: { id: true, externalId: true },
+        where: {
+          connectionId,
+          OR: [
+            { status: { in: POLLED_STATUSES } },
+            // Given up as "not found" (older code): still asked for two weeks, and made active again when found.
+            {
+              status: "CANCELLED",
+              rawStatus: GONE_NOT_FOUND,
+              updatedAt: { gte: new Date(now.getTime() - 14 * 86_400_000) },
+            },
+          ],
+        },
+        select: { id: true, externalId: true, status: true },
         orderBy: { updatedAt: "asc" },
         take: MAX_POLL_PER_RUN + stopped.size,
       })
@@ -670,6 +690,7 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
       .filter((f) => !stopped.has(f.id))
       .slice(0, MAX_POLL_PER_RUN);
 
+    await retitleGoneTasks(accountId);
     const track = (
       fulfillmentId: string,
       referenceNumber: string,
@@ -705,7 +726,24 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
         const lookup = classifyHistoryItem(historyItemFor(items, f.externalId));
         if (lookup.kind === "found") {
           try {
+            // Listed again (and not as deleted): an earlier "not found" cancel is undone first.
+            // A person already acted on it (order restarted, re-routed…) or it is deleted there: left alone.
+            if (f.status === "CANCELLED") {
+              const back = isDeleted(lookup.item) ? null : await reinstateGoneShipment(accountId, f.id);
+              if (!back?.ok) {
+                // Deleted there: it really is gone. Live but taken over by a person: a task (it may ship twice).
+                // Listed as Deleted: the vendor proves it gone — its "check the cabinet" tasks close.
+                if (!back) await resolveGoneTasks(accountId, f.id, "listed as Deleted at euShipments");
+                if (back && back.why !== "not_gone") {
+                  const vendorStatus = (lookup.item.statusesHistory ?? []).at(-1)?.STATUS ?? "?";
+                  await openGoneLiveTask(accountId, f.id, f.externalId, vendorStatus.slice(0, 80), back.why);
+                }
+                await track(f.id, f.externalId, { polledAt: now, stopPolling: true, lastError: null });
+                continue;
+              }
+            }
             const r = await applyOrderHistory(accountId, f.id, lookup.item, now);
+            await resolveNotFoundAlert(accountId, f.id);
             await track(f.id, f.externalId, { polledAt: now, stopPolling: r.stopPolling, lastError: null });
             updated++;
           } catch (err) {
@@ -717,32 +755,38 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
           }
         } else if (lookup.kind === "not_found") {
           notFound++;
-          // Second "not found" in a row (≥ GONE_AFTER_MS after it was sent) for a shipment the vendor provably had:
-          // we recorded its history, or euShipments confirmed the create (vendor order id / request SENT).
-          // Then it was removed in the cabinet.
+          if (f.status === "CANCELLED") {
+            // Given up earlier: no new task each poll (its old task is retitled above).
+            await track(f.id, f.externalId, { polledAt: now, lastError: NOT_FOUND_TEXT });
+            continue;
+          }
+          // A delete the CRM sent (answer lost) and "not found" twice in a row: that is the delete's confirmation.
           const prior = await db.eushipmentsTracking.findUnique({
             where: { fulfillmentId: f.id },
-            select: { lastError: true },
+            select: { lastError: true, polledAt: true },
           });
-          const shipment = await db.fulfillment.findUniqueOrThrow({
-            where: { id: f.id },
-            select: { vendorOrderId: true, submittedAt: true, createdAt: true },
-          });
-          const sentAt = shipment.submittedAt ?? shipment.createdAt;
-          const confirmed =
-            !!shipment.vendorOrderId ||
-            (await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: EU_EVENT_SOURCE } })) >
-              0 ||
-            (await db.outboundRequest.count({
-              where: { fulfillmentId: f.id, operation: "eushipments.createOrder", status: "SENT" },
-            })) > 0;
-          const existedBefore =
+          if (
             prior?.lastError === NOT_FOUND_TEXT &&
-            confirmed &&
-            now.getTime() - sentAt.getTime() >= GONE_AFTER_MS;
+            prior.polledAt &&
+            (await confirmDeleteByNotFound(accountId, f.id, prior.polledAt))
+          ) {
+            await track(f.id, f.externalId, { polledAt: now, lastError: NOT_FOUND_TEXT });
+            continue;
+          }
+          // Never cancelled on "not found" alone (owner report 2026-11-12: an order was in the cabinet in "Information
+          // received" while orders-history kept answering "not found"; cancelling it invited a duplicate resend).
+          // A person checks the cabinet; a shipment deleted there comes back as a Deleted item and is handled then.
           await track(f.id, f.externalId, { polledAt: now, lastError: NOT_FOUND_TEXT });
-          if (existedBefore && (await markGoneAtVendor(accountId, f.id))) continue;
-          await openNotFoundAlert(accountId, f.id, f.externalId);
+          // A new order is often not listed at first: a task only on the second "not found", 30+ min after it went out.
+          const sent = await db.fulfillment.findUniqueOrThrow({
+            where: { id: f.id },
+            select: { submittedAt: true, createdAt: true },
+          });
+          if (
+            prior?.lastError === NOT_FOUND_TEXT &&
+            now.getTime() - (sent.submittedAt ?? sent.createdAt).getTime() >= NOT_FOUND_TASK_AFTER_MS
+          )
+            await openNotFoundAlert(accountId, f.id, f.externalId);
         } else {
           errors++;
           await track(f.id, f.externalId, { polledAt: now, lastError: lookup.error.slice(0, 300) });
@@ -753,6 +797,39 @@ export async function pollEuOrders(accountId: string, connectionId: string, deps
     if (batches > 0 && failedBatches === batches) throw lastError;
     return { shipments: open.length, batches, failedBatches, updated, notFound, errors };
   });
+}
+
+/** Listed now: its "not found" task closes by itself. */
+function resolveNotFoundAlert(accountId: string, fulfillmentId: string) {
+  return resolveGoneTasks(accountId, fulfillmentId, "listed by orders-history", [NOT_FOUND_ALERT]);
+}
+
+async function resolveGoneTasks(
+  accountId: string,
+  fulfillmentId: string,
+  note: string,
+  kinds = [NOT_FOUND_ALERT, "eushipments_delete_unconfirmed", "eushipments_cancelled_at_vendor"],
+) {
+  const db = accountDb(accountId);
+  const open = await db.alert.findMany({
+    where: {
+      accountId,
+      kind: { in: kinds },
+      entityType: "Fulfillment",
+      entityId: fulfillmentId,
+      status: { not: "RESOLVED" },
+    },
+    select: { id: true },
+  });
+  for (const a of open) {
+    await db.alert.updateMany({
+      where: { id: a.id, accountId, status: { not: "RESOLVED" } },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    await db.alertNote.create({
+      data: { accountId, alertId: a.id, action: "auto_resolve", note },
+    });
+  }
 }
 
 async function openNotFoundAlert(accountId: string, fulfillmentId: string, reference: string) {
@@ -774,8 +851,8 @@ async function openNotFoundAlert(accountId: string, fulfillmentId: string, refer
         kind: NOT_FOUND_ALERT,
         severity: "CRITICAL",
         isTask: true,
-        title: "euShipments: shipment not found at the vendor",
-        body: `orders-history answers "not found" for ${reference}, which the CRM records as created. Check the euShipments cabinet.`,
+        title: `euShipments: ${reference} не се намира в orders-history — проверете в кабинета (НЕ изпращайте отново)`,
+        body: `orders-history answers "not found" for ${reference}, which the CRM records as created. The shipment stays as it is: check the euShipments cabinet. If it is really gone there, cancel or re-route it from the order page.`,
         entityType: "Fulfillment",
         entityId: fulfillmentId,
       },

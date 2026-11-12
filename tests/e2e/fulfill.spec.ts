@@ -103,6 +103,10 @@ test("interrupted send: the order offers 'Провери в склада' (OWNER
   await page.getByTestId("fold-shipments").locator(":scope > summary").click();
   const box = page.getByTestId("warehouse-recheck");
   await expect(box).toContainText("Неясно дали поръчката е стигнала до склада");
+  await expect(box.getByTestId("warehouse-recheck-last")).toContainText("DM-94007");
+  await expect(box.getByTestId("warehouse-recheck-absent")).toHaveText(
+    "Проверих в кабинета — няма я, изпрати",
+  );
   await page.screenshot({ path: "test-results/warehouse-recheck.png", fullPage: false });
   page.once("dialog", (d) => d.accept());
   await box.getByRole("button", { name: "Провери в склада" }).click();

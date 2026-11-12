@@ -284,7 +284,7 @@ describe("euShipments write side through the outbox (DB)", () => {
     ).toBe("1-EUR2849-3");
   });
 
-  it("a shipment that existed and is 'not found' twice in a row is treated as removed in the cabinet", async () => {
+  it("'not found' (even twice, for a shipment that existed) never cancels: a task for a person", async () => {
     const { order } = await euTestOrder(g, { number: "#1881" });
     await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
     const f = await g.db.fulfillment.create({
@@ -311,16 +311,18 @@ describe("euShipments write side through the outbox (DB)", () => {
     const { pollEuOrders } = await import("./read");
     const v = vendor({}); // orders-history answers the documented "not found" item by default
     await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
-    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("ACCEPTED"); // once: alert only
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("ACCEPTED");
     await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
-    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
-    expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("BLOCKED");
+    // Owner report 2026-11-12: orders-history may not list an order still in "Information received".
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("ACCEPTED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
     expect(
       await g.db.alert.count({ where: { kind: "eushipments_cancelled_at_vendor", entityId: f.id } }),
-    ).toBe(1);
+    ).toBe(0);
+    expect(await g.db.alert.count({ where: { kind: "eushipments_not_found", entityId: f.id } })).toBe(1);
   });
 
-  it("a confirmed create with no history yet ('not found' twice, sent > 30 min ago) is removed; a fresh one is not", async () => {
+  it("a confirmed create with no history yet ('not found' twice, sent > 30 min ago) stays; a shipment given up earlier comes back when listed", async () => {
     const mk = async (n: string, ago: number) => {
       const { order } = await euTestOrder(g, { number: `#${n}` });
       await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
@@ -343,9 +345,317 @@ describe("euShipments write side through the outbox (DB)", () => {
     const v = vendor({});
     await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
     await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
-    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: old.f.id } })).status).toBe("CANCELLED");
-    expect((await g.db.order.findUniqueOrThrow({ where: { id: old.order.id } })).status).toBe("BLOCKED");
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: old.f.id } })).status).toBe("ACCEPTED");
     expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fresh.f.id } })).status).toBe("ACCEPTED");
+
+    // Given up by the older code (cancelled, order blocked, tasks open): listed again → active again, tasks closed.
+    const gone = await mk("1884", 2 * 3600_000);
+    await g.db.fulfillment.update({
+      where: { id: gone.f.id },
+      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+    });
+    await g.db.order.update({ where: { id: gone.order.id }, data: { status: "BLOCKED" } });
+    const blockedByNotFound = (orderId: string) =>
+      g.db.orderEvent.create({
+        data: {
+          accountId: g.accountId,
+          orderId,
+          fromStatus: "ACCEPTED",
+          toStatus: "BLOCKED",
+          cause: "vendor",
+          actorType: "system",
+          source: "eushipments.not_found",
+        },
+      });
+    await blockedByNotFound(gone.order.id);
+    // Shopify: fulfilled before (flagged orphaned) + a tracking row refused as "cancelled".
+    const wb = (kind: "FULFIL" | "TRACKING", status: "SENT" | "REFUSED", lastError: string) =>
+      g.db.shopifyWriteBack.create({
+        data: {
+          accountId: g.accountId,
+          storeId: g.store.id,
+          orderId: gone.order.id,
+          fulfillmentId: gone.f.id,
+          kind,
+          value: kind === "TRACKING" ? "T1" : "",
+          status,
+          lastError,
+          attempts: 3,
+        },
+      });
+    const fulfil = await wb("FULFIL", "SENT", "shipment_cancelled_after_fulfil");
+    const tracking = await wb("TRACKING", "REFUSED", "shipment_cancelled");
+    await g.db.alert.create({
+      data: {
+        accountId: g.accountId,
+        kind: "shopify_writeback_orphaned",
+        severity: "WARNING",
+        isTask: true,
+        title: "o",
+        entityType: "Order",
+        entityId: gone.order.id,
+      },
+    });
+    await g.db.alert.create({
+      data: {
+        accountId: g.accountId,
+        kind: "eushipments_cancelled_at_vendor",
+        severity: "CRITICAL",
+        isTask: true,
+        title:
+          "euShipments: пратка TST-1884 вече не съществува в кабинета — изпратете поръчката отново или я откажете в Shopify",
+        entityType: "Fulfillment",
+        entityId: gone.f.id,
+      },
+    });
+    // Still not listed: nothing changes, no new task.
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: gone.f.id } })).status).toBe("CANCELLED");
+    expect(await g.db.alert.count({ where: { kind: "eushipments_not_found", entityId: gone.f.id } })).toBe(0);
+    // Its old "send it again" task is retitled.
+    expect(
+      (
+        await g.db.alert.findFirstOrThrow({
+          where: { kind: "eushipments_cancelled_at_vendor", entityId: gone.f.id },
+        })
+      ).title,
+    ).toMatch(/НЕ изпращайте отново/);
+    const listed = vendor({
+      "/fulfilment/orders-history": (_p, body) =>
+        json(
+          ((body as { orders: { refNum: string }[] }).orders ?? []).map((o) =>
+            o.refNum === "TST-1884" ? found("TST-1884", "Information received") : notFound(o.refNum),
+          ),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: listed.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: gone.f.id } })).status).toBe("ACCEPTED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: gone.order.id } })).status).toBe("ACCEPTED");
+    expect(
+      await g.db.alert.count({
+        where: { kind: "eushipments_cancelled_at_vendor", entityId: gone.f.id, status: { not: "RESOLVED" } },
+      }),
+    ).toBe(0);
+    expect(
+      await g.db.alert.count({
+        where: { kind: "shopify_writeback_orphaned", entityId: gone.order.id, status: "OPEN" },
+      }),
+    ).toBe(0);
+    expect(await g.db.shopifyWriteBack.findUniqueOrThrow({ where: { id: fulfil.id } })).toMatchObject({
+      status: "SENT",
+      lastError: null,
+    });
+    expect(await g.db.shopifyWriteBack.findUniqueOrThrow({ where: { id: tracking.id } })).toMatchObject({
+      status: "PENDING",
+      attempts: 0,
+      lastError: null,
+    });
+    // A given-up shipment whose order a person already restarted is left alone — with a task (it may ship twice).
+    const acted = await mk("1885", 2 * 3600_000);
+    await g.db.fulfillment.update({
+      where: { id: acted.f.id },
+      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+    });
+    await g.db.order.update({ where: { id: acted.order.id }, data: { status: "IMPORTED" } });
+    const listed2 = vendor({
+      "/fulfilment/orders-history": (_p, body) =>
+        json(
+          ((body as { orders: { refNum: string }[] }).orders ?? []).map((o) =>
+            o.refNum === "TST-1885" ? found("TST-1885", "Information received") : notFound(o.refNum),
+          ),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: listed2.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: acted.f.id } })).status).toBe(
+      "CANCELLED",
+    );
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: acted.order.id } })).status).toBe("IMPORTED");
+    const live = () =>
+      g.db.alert.count({
+        where: { kind: "eushipments_gone_shipment_live", entityId: acted.f.id, severity: "CRITICAL" },
+      });
+    expect(await live()).toBe(1);
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: listed2.clientOptions });
+    expect(await live()).toBe(1); // polling stopped: once
+    // While that task is open the order is not sent again — to any warehouse, under any reference.
+    const { validateOrder } = await import("@/server/checks/validate");
+    const blocked = async () =>
+      (await validateOrder(g.accountId, acted.order.id, { persist: false })).findings.some(
+        (x) => x.code === "order.previous_shipment_unconfirmed" && x.severity === "hard",
+      );
+    expect(await blocked()).toBe(true);
+    await g.db.alert.updateMany({
+      where: { entityId: acted.f.id, kind: "eushipments_gone_shipment_live" },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    expect(await blocked()).toBe(false); // a person checked the cabinet and closed it
+
+    // Blocked by "not found" but then something else happened to the order (latest event): left alone too.
+    const later = await mk("1886", 2 * 3600_000);
+    await g.db.fulfillment.update({
+      where: { id: later.f.id },
+      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+    });
+    await g.db.order.update({ where: { id: later.order.id }, data: { status: "BLOCKED" } });
+    await blockedByNotFound(later.order.id);
+    await new Promise((r) => setTimeout(r, 5));
+    await g.db.orderEvent.create({
+      data: {
+        accountId: g.accountId,
+        orderId: later.order.id,
+        fromStatus: "BLOCKED",
+        toStatus: "BLOCKED",
+        cause: "manual",
+        actorType: "user",
+        source: "override",
+      },
+    });
+    const listed3 = vendor({
+      "/fulfilment/orders-history": (_p, body) =>
+        json(
+          ((body as { orders: { refNum: string }[] }).orders ?? []).map((o) =>
+            o.refNum === "TST-1886" ? found("TST-1886", "Information received") : notFound(o.refNum),
+          ),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: listed3.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: later.f.id } })).status).toBe(
+      "CANCELLED",
+    );
+    expect(
+      await g.db.alert.count({ where: { kind: "eushipments_gone_shipment_live", entityId: later.f.id } }),
+    ).toBe(1);
+  });
+
+  it("a given-up shipment is not taken back while another shipment of the order is active, nor when listed as Deleted", async () => {
+    const { pollEuOrders } = await import("./read");
+    const mkGone = async (n: string) => {
+      const { order } = await euTestOrder(g, { number: `#${n}` });
+      await g.db.order.update({ where: { id: order.id }, data: { status: "BLOCKED" } });
+      await g.db.orderEvent.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          fromStatus: "ACCEPTED",
+          toStatus: "BLOCKED",
+          cause: "vendor",
+          actorType: "system",
+          source: "eushipments.not_found",
+        },
+      });
+      const f = await g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          connectionId: g.connection.id,
+          externalId: `TST-${n}`,
+          status: "CANCELLED",
+          rawStatus: "not found at euShipments",
+        },
+      });
+      return { order, f };
+    };
+    const busy = await mkGone("1888");
+    await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: busy.order.id,
+        connectionId: g.connection.id,
+        externalId: "TST-1888-2",
+        status: "QUEUED",
+      },
+    });
+    const deleted = await mkGone("1889");
+    await g.db.alert.create({
+      data: {
+        accountId: g.accountId,
+        kind: "eushipments_delete_unconfirmed",
+        severity: "CRITICAL",
+        isTask: true,
+        title: "check",
+        entityType: "Fulfillment",
+        entityId: deleted.f.id,
+      },
+    });
+    const v = vendor({
+      "/fulfilment/orders-history": (_p, body) =>
+        json(
+          ((body as { orders: { refNum: string }[] }).orders ?? []).map((o) =>
+            o.refNum === "TST-1888"
+              ? found("TST-1888", "Information received")
+              : o.refNum === "TST-1889"
+                ? found("TST-1889", "Deleted")
+                : notFound(o.refNum),
+          ),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: v.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: busy.f.id } })).status).toBe("CANCELLED");
+    expect(
+      await g.db.alert.count({ where: { kind: "eushipments_gone_shipment_live", entityId: busy.f.id } }),
+    ).toBe(1);
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: deleted.f.id } })).status).toBe(
+      "CANCELLED",
+    );
+    // Proven deleted: its task closed by itself.
+    expect(await g.db.alert.count({ where: { entityId: deleted.f.id, status: { not: "RESOLVED" } } })).toBe(
+      0,
+    );
+    expect(
+      (await g.db.eushipmentsTracking.findUniqueOrThrow({ where: { fulfillmentId: deleted.f.id } }))
+        .stopPolling,
+    ).toBe(true);
+  });
+
+  it("a CRM delete with a lost answer + 'not found' twice = its confirmation; listed live later → a task", async () => {
+    const { order } = await euTestOrder(g, { number: "#1887" });
+    await g.db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+    const f = await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: order.id,
+        connectionId: g.connection.id,
+        externalId: "TST-1887",
+        status: "ACCEPTED",
+        vendorOrderId: "v-1887",
+      },
+    });
+    await g.db.outboundRequest.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        operation: "eushipments.deleteOrder",
+        idempotencyKey: `del-1887-${Date.now()}`,
+        payload: {},
+        status: "UNCERTAIN",
+        fulfillmentId: f.id,
+      },
+    });
+    const { pollEuOrders } = await import("./read");
+    const absent = vendor({});
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: absent.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("ACCEPTED");
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: absent.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("BLOCKED");
+    expect(
+      await g.db.alert.count({
+        where: { kind: "eushipments_delete_unconfirmed", entityId: f.id, status: "OPEN" },
+      }),
+    ).toBe(1);
+    const listed = vendor({
+      "/fulfilment/orders-history": (_p, body) =>
+        json(
+          ((body as { orders: { refNum: string }[] }).orders ?? []).map((o) =>
+            o.refNum === "TST-1887" ? found("TST-1887", "Information received") : notFound(o.refNum),
+          ),
+        ),
+    });
+    await pollEuOrders(g.accountId, g.connection.id, { clientOptions: listed.clientOptions });
+    expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
+    expect(
+      await g.db.alert.count({ where: { kind: "eushipments_gone_shipment_live", entityId: f.id } }),
+    ).toBe(1);
   });
 
   it("a shipment deleted in the euShipments cabinet (no CRM delete) blocks the order with one task", async () => {
@@ -507,7 +817,7 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect((await request(q.requestId)).lastError).toMatch(/recovered by read-back/);
   });
 
-  it("timeout + 'Not found order' (404 item) is the only answer that allows a resend", async () => {
+  it("an unclear send + 'Not found order' is UNCERTAIN, never re-sent (orders-history may not list a new order)", async () => {
     const { order, product } = await euTestOrder(g, { number: "#1003" });
     await mapProduct(product.id, `ref-${product.sku}`);
     const q = await queueEuOrder(g.owner, { orderId: order.id, connectionId: g.connection.id });
@@ -525,10 +835,10 @@ describe("euShipments write side through the outbox (DB)", () => {
         json([notFound((b!.orders as { refNum: string }[])[0]!.refNum)]),
     });
     const now = new Date();
-    expect(await processOutbound(q.requestId, v.resolve, now)).toBe("PENDING");
-    expect(await processOutbound(q.requestId, v.resolve, now)).toBe("skipped"); // backoff
-    expect(await processOutbound(q.requestId, v.resolve, new Date(now.getTime() + 3600_000))).toBe("SENT");
-    expect(v.count("/fulfilment/create-order")).toBe(2);
+    // Owner report 2026-11-12: an order in "Information received" was answered "not found" — so not proof.
+    expect(await processOutbound(q.requestId, v.resolve, now)).toBe("UNCERTAIN");
+    expect(await processOutbound(q.requestId, v.resolve, new Date(now.getTime() + 3600_000))).toBe("skipped");
+    expect(v.count("/fulfilment/create-order")).toBe(1);
 
     // Any other per-item error inside HTTP 200 is NOT "not found": UNCERTAIN, no resend.
     const o2 = await euTestOrder(g, { number: "#1004" });
@@ -974,7 +1284,8 @@ describe("euShipments write side through the outbox (DB)", () => {
       "SUBMIT_FAILED",
     );
 
-    // An unreadable orders-history answer is not "not found": UNCERTAIN, never sent blind.
+    // An unreadable orders-history answer is not "not found": never sent blind; create-order did not go out, so it is
+    // simply tried again later (no read-back, no task for a person).
     const e = await euTestOrder(g, { number: "#1032" });
     await mapProduct(e.product.id, `ref-${e.product.sku}`);
     const qe = await queueEuOrder(g.owner, { orderId: e.order.id, connectionId: g.connection.id });
@@ -984,8 +1295,30 @@ describe("euShipments write side through the outbox (DB)", () => {
       "/fulfilment/orders-history": () =>
         json([{ refNum: "TST-1032", error: "Temporary problem", errorCode: 500, statusesHistory: [] }]),
     });
-    expect(await processOutbound(qe.requestId, ve.resolve)).toBe("UNCERTAIN");
+    expect(await processOutbound(qe.requestId, ve.resolve)).toBe("PENDING");
     expect(ve.count("/fulfilment/create-order")).toBe(0);
+    expect(ve.count("/fulfilment/orders-history")).toBe(1); // no read-back
+    expect(
+      (await g.db.outboundRequest.findUniqueOrThrow({ where: { id: qe.requestId } })).nextAttemptAt,
+    ).not.toBeNull();
+    expect(await g.db.alert.count({ where: { entityId: qe.requestId, kind: "outbox_uncertain" } })).toBe(0);
+    // orders-history down (HTTP 503): the same plain retry; after MAX_ATTEMPTS it fails visibly, never sent.
+    const h = await euTestOrder(g, { number: "#1033" });
+    await mapProduct(h.product.id, `ref-${h.product.sku}`);
+    const qh = await queueEuOrder(g.owner, { orderId: h.order.id, connectionId: g.connection.id });
+    if (qh.status !== "queued") throw new Error("not queued");
+    const vh = vendor({
+      "/fulfilment/create-order": () => json(R.createOrderOk),
+      "/fulfilment/orders-history": () => json({ error: "busy" }, 503),
+    });
+    expect(await processOutbound(qh.requestId, vh.resolve)).toBe("PENDING");
+    await g.db.outboundRequest.update({
+      where: { id: qh.requestId },
+      data: { attempts: 4, nextAttemptAt: null },
+    });
+    expect(await processOutbound(qh.requestId, vh.resolve)).toBe("FAILED");
+    expect(vh.count("/fulfilment/create-order")).toBe(0);
+    expect(await g.db.alert.count({ where: { entityId: qh.requestId, kind: "outbox_uncertain" } })).toBe(0);
   });
 
   it("waybillAvailableDate is moved up to today when a request is sent after the day it was queued", async () => {
@@ -1156,7 +1489,9 @@ describe("EuShipmentsTransport (unit)", () => {
     await expect(transport(() => json([found("TST-DEL", "Deleted")])).readBack(call)).rejects.toThrow(
       /deleted\/cancelled/,
     );
-    expect(await transport(() => json([notFound("TST-DEL")])).readBack(call)).toEqual({ found: false });
+    await expect(transport(() => json([notFound("TST-DEL")])).readBack(call)).rejects.toThrow(
+      /does not list/,
+    );
   });
 
   it("attach-pdf per-file errors are rejections; no read-back exists for attach or booking", async () => {

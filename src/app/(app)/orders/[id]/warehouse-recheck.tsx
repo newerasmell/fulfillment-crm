@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { warehouseRecheckAction } from "@/app/actions/fulfill";
+import { confirmAbsentResendAction, warehouseRecheckAction } from "@/app/actions/fulfill";
 import { buttonCls } from "@/components/ui/form";
 
 /**
@@ -15,12 +15,15 @@ export function WarehouseRecheck({
   refusal,
   canRun,
   lastCheckError,
+  canConfirmAbsent,
 }: {
   requestId: string;
   refusal: string | null;
   canRun: boolean;
   /** What the last "Провери в склада" said when it could not decide. */
   lastCheckError: string | null;
+  /** euShipments: its lookup cannot prove absence, a person confirms from the cabinet. */
+  canConfirmAbsent: boolean;
 }) {
   const t = useTranslations("override.recheck");
   const router = useRouter();
@@ -65,6 +68,29 @@ export function WarehouseRecheck({
         </button>
       ) : (
         <span className="text-xs text-muted">{t("managersOnly")}</span>
+      )}
+      {lastCheckError && canConfirmAbsent && !refusal && canRun && (
+        <button
+          type="button"
+          className={`${buttonCls} self-start bg-block px-3 py-1 text-sm`}
+          disabled={pending}
+          data-testid="warehouse-recheck-absent"
+          onClick={() =>
+            start(async () => {
+              if (!window.confirm(t("absentConfirm"))) return;
+              const r = await confirmAbsentResendAction(requestId);
+              if ("error" in r) {
+                const code = r.error.replace(/^recheck_/, "");
+                setMsg({ ok: false, text: t.has(`why.${code}`) ? t(`why.${code}`) : t("failed") });
+              } else {
+                setMsg({ ok: true, text: t("absentStarted") });
+                setTimeout(() => router.refresh(), 5000);
+              }
+            })
+          }
+        >
+          {t("absentButton")}
+        </button>
       )}
       {msg && <span className={`text-xs ${msg.ok ? "text-ok" : "text-block"}`}>{msg.text}</span>}
     </div>
