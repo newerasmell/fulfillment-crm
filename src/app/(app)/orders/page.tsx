@@ -151,7 +151,12 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                 </thead>
                 <tbody>
                   {result.rows.map((o) => (
-                    <tr key={o.id} className="hover:bg-hover">
+                    <tr
+                      key={o.id}
+                      // Prepaid orders on a pale green background (owner request 2026-11-13).
+                      className={o.paymentMethod === "COD" ? "hover:bg-hover" : "bg-ok-bg/60 hover:bg-hover"}
+                      data-prepaid={o.paymentMethod === "COD" ? undefined : "1"}
+                    >
                       <td className={tdCls}>
                         <RowCheckbox id={o.id} label={o.number} />
                       </td>

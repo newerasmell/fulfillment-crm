@@ -560,6 +560,27 @@
         "invalid": "Invalid data."
       },
       "courier": "Courier: {name} (offices are searched in its list)"
+    },
+    "tasksRecheck": {
+      "button": "Re-check tasks",
+      "checking": "Checking…",
+      "closed": "Tasks closed: {n}",
+      "nothing": "Nothing to close — their causes still hold.",
+      "stays": "Stays: {what}",
+      "manual": "only a person closes this task (Tasks)",
+      "failed": "The check failed.",
+      "why": {
+        "old_shipment_live": "the old shipment is still live at the warehouse",
+        "old_shipment_unproven": "the old shipment was given up only because the warehouse does not list it — check the cabinet",
+        "no_earlier_shipment": "no earlier shipment to check",
+        "old_shipment_cancelled": "the old shipment is cancelled at the warehouse",
+        "writeback_failed_left": "a Shopify write-back failed",
+        "writeback_failed_none": "no failed Shopify write-back",
+        "writeback_uncertain_left": "a Shopify write-back has an unknown result",
+        "writeback_uncertain_none": "no Shopify write-back with an unknown result",
+        "orphan_left": "the Shopify fulfillment is not yet taken over by a live shipment",
+        "orphan_adopted": "the Shopify fulfillment was taken over by the live shipment"
+      }
     }
   },
   "orderStatus": {

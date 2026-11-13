@@ -232,3 +232,23 @@ test("missing items: tabs, expected item, confirm a ready order (tags go to Shop
   await expect(ready.getByTestId("missing-stock-write")).toContainText("Сменя се на Confirmed");
   await page.screenshot({ path: "test-results/missing-stock-ready.png", fullPage: true });
 });
+
+test("order page: product thumbnail, 'Провери задачите' closes a stale task; prepaid rows are green", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94008");
+  const row = page.locator("tr", { has: page.getByRole("link", { name: "#94008" }) });
+  await expect(row).toHaveAttribute("data-prepaid", "1");
+  await row.getByRole("link", { name: "#94008" }).click();
+  await expect(page.getByTestId("line-thumb").first()).toHaveAttribute(
+    "src",
+    "https://cdn.shopify.com/s/files/1/0000/0001/files/p.png",
+  );
+  const stale = page.getByText("складът отказа да откаже пратка");
+  await expect(stale).toBeVisible();
+  await page.getByTestId("tasks-recheck").getByRole("button", { name: "Провери задачите" }).click();
+  await expect(page.getByTestId("tasks-recheck-result")).toContainText("Затворени задачи: 1");
+  await expect(stale).toHaveCount(0);
+});
