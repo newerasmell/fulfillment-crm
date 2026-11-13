@@ -50,6 +50,7 @@ import { uncertainCreatesOf } from "@/server/outbox/recheck";
 import { deliveryOfficeView } from "@/server/eushipments/delivery-office";
 import { DeliveryOffice } from "./delivery-office";
 import { WarehouseRecheck } from "./warehouse-recheck";
+import { TasksRecheck } from "./tasks-recheck";
 import { EditableCard } from "@/components/ui/EditableCard";
 import { Field, fieldGridCls, Fold } from "@/components/ui/Fold";
 import { ChevronDownIcon } from "@/components/ui/icons";
@@ -178,6 +179,27 @@ export async function NewOrderView({
   const when = (d: Date) => format.dateTime(d, { dateStyle: "medium", timeStyle: "short" });
   const msg = (f: Finding) => (locale === "en" ? f.message_en : f.message_bg);
   const payment = order.source === "SHOPIFY" ? shopifyPaymentOf(order.raw) : null;
+  // Only Shopify's own image CDN: a hand-entered URL to another host is never loaded (it could track who looks).
+  const isShopifyImage = (u: string | null | undefined): u is string => {
+    try {
+      return !!u && new URL(u).protocol === "https:" && new URL(u).hostname === "cdn.shopify.com";
+    } catch {
+      return false;
+    }
+  };
+  // Thumbnails (owner request 2026-11-13): the Shopify line's variant image, else the product's own first image.
+  const lineImages = new Map(
+    (
+      ((order.raw as { lineItems?: { nodes?: { id?: string; image?: { url?: string } | null }[] } } | null)
+        ?.lineItems?.nodes ?? []) as { id?: string; image?: { url?: string } | null }[]
+    )
+      .filter((n) => n.id && isShopifyImage(n.image?.url))
+      .map((n) => [n.id!, n.image!.url!]),
+  );
+  const imageOf = (l: { shopifyLineGid: string | null; product: { images: string[] } | null }) =>
+    (l.shopifyLineGid ? lineImages.get(l.shopifyLineGid) : undefined) ??
+    l.product?.images.find(isShopifyImage) ??
+    null;
   const risk = order.risk as { recommendation?: string; levels?: string[] } | null;
 
   // Original (Shopify) values next to the corrected ones, both normalised the same way.
@@ -292,6 +314,9 @@ export async function NewOrderView({
           companies={SHOPIFY_TRACKING_COMPANIES}
           canSet={can(ctx.role, "orders.fulfill")}
         />
+      )}
+      {order.alerts.some((a) => a.status !== "RESOLVED") && can(ctx.role, "orders.review") && (
+        <TasksRecheck orderId={order.id} />
       )}
       {order.alerts
         .filter((a) => a.status !== "RESOLVED" && !(a.kind === CARRIER_TASK && heldCarriers.length > 0))
@@ -429,38 +454,56 @@ export async function NewOrderView({
                   role="row"
                   className="relative flex flex-col gap-2 rounded-lg border border-line-soft p-3 sm:grid sm:gap-0 sm:rounded-none sm:border-0 sm:border-b sm:p-0 sm:[grid-template-columns:var(--cols)]"
                 >
-                  <div role="cell" className="min-w-0 pr-16 sm:px-3 sm:py-3.5 sm:pr-3">
-                    <div className="font-medium">
-                      <CopyValue value={l.title} />
-                    </div>
-                    {l.sku && (
-                      <div className="text-xs text-muted">
-                        <CopyValue value={l.sku} mono className="!text-xs" />
-                      </div>
+                  <div role="cell" className="flex min-w-0 gap-3 pr-16 sm:px-3 sm:py-3.5 sm:pr-3">
+                    {imageOf(l) ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- a Shopify CDN thumbnail, sized by Shopify
+                      <img
+                        src={imageOf(l) ?? undefined}
+                        alt=""
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        className="h-12 w-12 shrink-0 rounded-md border border-line-soft bg-white object-contain"
+                        data-testid="line-thumb"
+                      />
+                    ) : (
+                      <div
+                        aria-hidden
+                        className="h-12 w-12 shrink-0 rounded-md border border-line-soft bg-hover"
+                      />
                     )}
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-label">
-                      {l.product ? (
-                        <>
-                          <span aria-hidden>→</span>
-                          <span className="font-mono" title={l.product.name}>
-                            {l.product.sku}
+                    <div className="min-w-0">
+                      <div className="font-medium">
+                        <CopyValue value={l.title} />
+                      </div>
+                      {l.sku && (
+                        <div className="text-xs text-muted">
+                          <CopyValue value={l.sku} mono className="!text-xs" />
+                        </div>
+                      )}
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11.5px] text-label">
+                        {l.product ? (
+                          <>
+                            <span aria-hidden>→</span>
+                            <span className="font-mono" title={l.product.name}>
+                              {l.product.sku}
+                            </span>
+                          </>
+                        ) : (
+                          <Link href="/products" className="text-warn hover:underline">
+                            {t("unmatched")}
+                          </Link>
+                        )}
+                        {l.productChoice && (
+                          <span
+                            className="rounded-full bg-hover px-1.5"
+                            title={l.productChoice.note ?? undefined}
+                            data-testid={`line-product-chosen-${l.id}`}
+                          >
+                            {r("lineProduct.chosenBadge")}
+                            {l.productChoice.note ? ` · ${l.productChoice.note}` : ""}
                           </span>
-                        </>
-                      ) : (
-                        <Link href="/products" className="text-warn hover:underline">
-                          {t("unmatched")}
-                        </Link>
-                      )}
-                      {l.productChoice && (
-                        <span
-                          className="rounded-full bg-hover px-1.5"
-                          title={l.productChoice.note ?? undefined}
-                          data-testid={`line-product-chosen-${l.id}`}
-                        >
-                          {r("lineProduct.chosenBadge")}
-                          {l.productChoice.note ? ` · ${l.productChoice.note}` : ""}
-                        </span>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex gap-4 text-sm sm:contents">

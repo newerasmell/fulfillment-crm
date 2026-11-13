@@ -221,7 +221,10 @@ export async function warehouseCancelConfirmed(
 export async function warehouseCancelRefused(
   tx: Tx,
   input: { accountId: string; orderId: string; fulfillmentId: string; detail: string; source: string },
+  /** The order row lock: serialises with "Провери задачите" (it must never close the task this refusal joins). */
+  lock?: (table: "Order", id: string) => Promise<void>,
 ) {
+  if (lock) await lock("Order", input.orderId);
   if (await isRerouteOwnedShipment(tx, input.fulfillmentId)) return false;
   const f = await tx.fulfillment.findUnique({
     where: { id: input.fulfillmentId },

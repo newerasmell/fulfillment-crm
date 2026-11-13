@@ -490,6 +490,14 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-13 FHB: "Откажи в склада" / "Пренасочи" of an order a colleague had cancelled by hand in ZOE was refused
   (NOT_EXISTING_ORDER_ERROR — ZOE renames it "{id}#STORNO#…") and the reroute stuck. Now the FHB delete looks the
   order up among rejected orders: cancelled in ZOE = the delete is done (shipment CANCELLED, the reroute completes).
+- 2026-11-13 Order page "Провери задачите": the order's open tasks are checked against what the CRM records now and
+  those whose cause is gone are closed with a note (src/server/order-tasks.ts: "the warehouse refused the cancel"
+  once every shipment a refusal is about (refusal events / refused re-routes) is cancelled by the warehouse's word — not on euShipments "not found"; failed /
+  unclear Shopify write-backs; an orphaned Shopify fulfillment once a live shipment took it over for real).
+  reroute_uncertain, warehouse_cancel_not_blocked and kinds without a rule are closed only by a person. Thumbnails
+  load only from cdn.shopify.com; a removed Shopify image shows until the order is updated again. Orders list: prepaid rows on a pale green
+  background. Order items: a thumbnail (Shopify line's variant image — `image { url(transform) }` now in the order
+  query, so orders imported or updated from now on; else the product's own first image).
 
 ## Open questions
 See SPEC.md §11.

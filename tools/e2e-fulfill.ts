@@ -375,6 +375,17 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       storeId: store.id,
       number: "#94008",
       status: "IMPORTED",
+      // The Shopify line's variant image (order page thumbnail).
+      raw: {
+        lineItems: {
+          nodes: [
+            {
+              id: "gid://shopify/LineItem/94008",
+              image: { url: "https://cdn.shopify.com/s/files/1/0000/0001/files/p.png" },
+            },
+          ],
+        },
+      },
       customerName: "Тест Получател",
       phone: "0888 123 499",
       shippingAddress: {
@@ -393,9 +404,51 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
       placedAt: new Date(),
       lines: {
         create: [
-          { productId: product.id, sku: product.sku, title: "Примерен", quantity: 1, unitPrice: "40.00" },
+          {
+            productId: product.id,
+            sku: product.sku,
+            title: "Примерен",
+            quantity: 1,
+            unitPrice: "40.00",
+            shopifyLineGid: "gid://shopify/LineItem/94008",
+          },
         ],
       },
+    },
+  });
+  // A stale task ("Провери задачите"): the warehouse refused the cancel, then the shipment was cancelled in the
+  // warehouse's own system (rejected).
+  const oldShipment = await db.fulfillment.create({
+    data: {
+      accountId,
+      orderId: officeOrder.id,
+      connectionId: speedyConn.id,
+      externalId: "E2E-94008-OLD",
+      status: "CANCELLED",
+      rawStatus: "rejected",
+      createdAt: new Date(Date.now() - 3_600_000),
+    },
+  });
+  await db.orderEvent.create({
+    data: {
+      accountId,
+      orderId: officeOrder.id,
+      fromStatus: "IMPORTED",
+      toStatus: "IMPORTED",
+      cause: "warehouse_cancel_refused",
+      actorType: "system",
+      meta: { fulfillmentId: oldShipment.id },
+    },
+  });
+  await db.alert.create({
+    data: {
+      accountId,
+      kind: "warehouse_cancel_refused",
+      severity: "WARNING",
+      isTask: true,
+      title: "Поръчка #94008: складът отказа да откаже пратка — тя остава в склада",
+      entityType: "Order",
+      entityId: officeOrder.id,
     },
   });
   // Sent from this warehouse (a person's choice keeps it through every re-check).
