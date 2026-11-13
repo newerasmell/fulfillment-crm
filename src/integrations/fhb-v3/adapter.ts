@@ -190,10 +190,27 @@ export class FhbV3Transport implements OutboundTransport {
           await this.emit({ kind: "order", operation: op, envelope: e, view });
           return { outcome: "accepted", response: { id: view.id, status: view.status } };
         }
-        case "fhb.order.delete":
-          await client.deleteOrder(env.id);
+        case "fhb.order.delete": {
+          try {
+            await client.deleteOrder(env.id);
+          } catch (err) {
+            // Observed in production, not in the reference (owner report 2026-11-13): cancelled by hand in ZOE first,
+            // FHB renamed it "{id}#STORNO#…", so a delete by our id answers NOT_EXISTING_ORDER_ERROR. Found as such
+            // (rejected) = already cancelled there. A lookup that fails keeps the original refusal (pressed again later).
+            let stornoId: string | null = null;
+            if (isNotExistingOrder(err))
+              try {
+                stornoId = await findStornoOrder(client, env.id);
+              } catch (lookupErr) {
+                logger.warn({ id: env.id, err: (lookupErr as Error).message }, "fhb STORNO lookup failed");
+              }
+            if (!stornoId) throw err;
+            await this.emit({ kind: "order_deleted", operation: op, envelope: env });
+            return { outcome: "accepted", response: { id: env.id, deleted: true, cancelledInZoe: stornoId } };
+          }
           await this.emit({ kind: "order_deleted", operation: op, envelope: env });
           return { outcome: "accepted", response: { id: env.id, deleted: true } };
+        }
         case "fhb.product.create": {
           const e = env as FhbEnvelope<"fhb.product.create">;
           const view = await client.createProduct(e.body);
@@ -313,4 +330,29 @@ export class FhbV3Transport implements OutboundTransport {
       }
     }
   }
+}
+
+/** FHB's validation answer for a delete of an id it does not know (any more). */
+function isNotExistingOrder(err: unknown) {
+  return (
+    err instanceof FhbError &&
+    !err.outcomeUnknown &&
+    Object.values(err.violationCodes()).some((codes) => codes.includes("NOT_EXISTING_ORDER_ERROR"))
+  );
+}
+
+/** Rejected orders created in the last 90 days (`from` filters by creation) scanned for "{id}#STORNO#…" (an order cancelled by hand in ZOE). */
+async function findStornoOrder(client: FhbClient, id: string): Promise<string | null> {
+  const from = new Date(Date.now() - 90 * 86_400_000).toISOString();
+  const prefix = `${id}#STORNO#`;
+  let seen = 0;
+  const deadline = Date.now() + 2 * 60_000; // far below the outbox's stale-SENDING limit
+  for (let page = 1; page <= 20 && Date.now() < deadline; page++) {
+    const r = await client.orderHistory({ from, status: "rejected", page });
+    const hit = r.orders.find((o) => typeof o.id === "string" && o.id.startsWith(prefix));
+    if (hit) return String(hit.id);
+    seen += r.orders.length;
+    if (!r.orders.length || seen >= r.total) return null;
+  }
+  return null;
 }

@@ -487,6 +487,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   itself when listed. A failed pre-send orders-history check is a plain retry (create-order never left). Open: ask euShipments why orders-history does not
   list orders in "Information received" — the pre-send check relies on it to prevent duplicates.
 
+- 2026-11-13 FHB: "Откажи в склада" / "Пренасочи" of an order a colleague had cancelled by hand in ZOE was refused
+  (NOT_EXISTING_ORDER_ERROR — ZOE renames it "{id}#STORNO#…") and the reroute stuck. Now the FHB delete looks the
+  order up among rejected orders: cancelled in ZOE = the delete is done (shipment CANCELLED, the reroute completes).
 
 ## Open questions
 See SPEC.md §11.

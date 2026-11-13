@@ -187,6 +187,10 @@ problem that needs an operator, which is BLOCKED plus an operator task.
   it to our shipment by the part before `#STORNO#` (or FHB's `uid`), mark the shipment `CANCELLED`, move the order
   to BLOCKED and open one CRITICAL task (`fhb_order_cancelled_in_zoe`): a person resends (new id `-2`) or cancels in
   Shopify. ZOE sends no notification for a cancel: the CRM learns it at the 30-min FHB sync (or "Пусни" → orders).
+- 2026-11-13: a CRM `DELETE /order?id=` (cancel or reroute) of such an order answers 400 `violations.id:
+  NOT_EXISTING_ORDER_ERROR` (the id was renamed). The adapter then scans `GET /order/history?status=rejected` (90
+  days by creation date, ≤ 20 pages / 2 min) for `{id}#STORNO#…`: found → the delete is done (shipment CANCELLED, a
+  reroute completes); not found, or the lookup fails → the refusal as before (press again later).
 
 ## 3. FHB Joy API (label printing / manual parcels)
 

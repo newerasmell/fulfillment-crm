@@ -49,9 +49,16 @@ function euVendor(o: { del?: () => Response; history?: (refNum: string) => unkno
 
 const ex = examples as unknown as Record<string, Record<string, unknown>>;
 
-function fhbVendor(o: { refuse?: boolean; deleteDropped?: boolean } = {}) {
+function fhbVendor(
+  o: {
+    refuse?: boolean;
+    deleteDropped?: boolean;
+    storno?: "listed" | "absent" | "page2" | "near" | "history_down";
+  } = {},
+) {
   const calls: string[] = [];
   let deleted = false;
+  let lastDelete = "";
   const fetchImpl = async (u: string, init: RequestInit = {}) => {
     const url = new URL(u);
     if (url.pathname === "/v3/login") return jsonRes({ token: "t", expiration: "2099-01-01T00:00:00+0000" });
@@ -59,14 +66,41 @@ function fhbVendor(o: { refuse?: boolean; deleteDropped?: boolean } = {}) {
     const id = url.searchParams.get("id") ?? "";
     calls.push(`${key} ${id}`);
     if (key === "DELETE /order") {
+      lastDelete = id;
       // The request reached FHB and deleted the order, but the answer was lost (network error).
       if (o.deleteDropped) {
         deleted = true;
         throw new TypeError("fetch failed");
       }
       if (o.refuse) return jsonRes({ message: "Order is not in pending state", errors: {} }, 400);
+      if (o.storno)
+        return jsonRes(
+          {
+            message: "Invalid request",
+            violations: { id: [{ code: "NOT_EXISTING_ORDER_ERROR", message: "Order does not exist." }] },
+          },
+          400,
+        );
       return new Response(null, { status: 204 });
     }
+    if (key === "GET /order/history") {
+      const q = url.searchParams;
+      calls[calls.length - 1] = `${key} ${q.get("status")} p${q.get("page")}`;
+      if (o.storno === "history_down") return jsonRes({ message: "Bad request" }, 400);
+      const row = (id: string) => ({ ...ex["POST /order 200 response"], id, status: "rejected" });
+      const page = Number(q.get("page") ?? 1);
+      const pages: Record<string, unknown[][]> = {
+        listed: [[row("OTHER-1#STORNO#AAA111"), row(`${lastDelete}#STORNO#ZYPPNP`)]],
+        page2: [[row("OTHER-1#STORNO#AAA111")], [row(`${lastDelete}#STORNO#QQQ222`)]],
+        // Another order whose id merely starts with ours: never a match.
+        near: [[row(`${lastDelete}2#STORNO#XXX333`), row(`${lastDelete}-2#STORNO#YYY444`)]],
+        absent: [[]],
+      };
+      const all = pages[o.storno!] ?? [[]];
+      const orders = all[page - 1] ?? [];
+      return jsonRes({ page, total: all.flat().length, orders });
+    }
+    if (key === "GET /order" && o.storno) return jsonRes({ message: "Not found" }, 404);
     if (key === "GET /order")
       return deleted
         ? jsonRes({ message: "Not found" }, 404)
@@ -268,6 +302,44 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
       expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
       expect(await status(order.id)).toBe("BLOCKED");
     });
+
+    it("FHB: already cancelled by hand in ZOE ('{id}#STORNO#…') → NOT_EXISTING_ORDER_ERROR is the delete done", async () => {
+      const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+      const r = await cancel(fulfillment.id);
+      const v = fhbVendor({ storno: "listed" });
+      expect(await processOutbound(r.requestId, vendors(euVendor(), v))).toBe("SENT");
+      expect(v.calls).toEqual([`DELETE /order ${fulfillment.externalId}`, "GET /order/history rejected p1"]);
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await status(order.id)).toBe("BLOCKED");
+      const req = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: r.requestId } });
+      expect(req.lastResponse).toMatchObject({ cancelledInZoe: `${fulfillment.externalId}#STORNO#ZYPPNP` });
+      expect(
+        await g.db.orderEvent.count({ where: { orderId: order.id, cause: "warehouse_cancel_refused" } }),
+      ).toBe(0);
+    });
+
+    it("FHB: NOT_EXISTING_ORDER_ERROR + the cancelled order on page 2 of the rejected list → done", async () => {
+      const { fulfillment } = await shipped({ connectionId: fhb.id });
+      const r = await cancel(fulfillment.id);
+      const v = fhbVendor({ storno: "page2" });
+      expect(await processOutbound(r.requestId, vendors(euVendor(), v))).toBe("SENT");
+      expect(v.calls.filter((c) => c.startsWith("GET /order/history"))).toEqual([
+        "GET /order/history rejected p1",
+        "GET /order/history rejected p2",
+      ]);
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+    });
+
+    for (const storno of ["absent", "near", "history_down"] as const)
+      it(`FHB: NOT_EXISTING_ORDER_ERROR and no ZOE cancel of this id (${storno}) stays the refusal, shipment unchanged`, async () => {
+        const { fulfillment } = await shipped({ connectionId: fhb.id });
+        const r = await cancel(fulfillment.id);
+        const v = fhbVendor({ storno });
+        expect(await processOutbound(r.requestId, vendors(euVendor(), v))).toBe("FAILED");
+        expect(await shipStatus(fulfillment.id)).not.toBe("CANCELLED");
+        const req = await g.db.outboundRequest.findUniqueOrThrow({ where: { id: r.requestId } });
+        expect(req.lastError).toContain("NOT_EXISTING_ORDER_ERROR");
+      });
 
     it("euShipments 'Deleted' in orders-history after a CRM delete (answer lost) → BLOCKED, not CANCELLED", async () => {
       const { order, fulfillment } = await shipped();
