@@ -533,6 +533,11 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-18 Cancelled orders stayed under "С грешки": their task "blocked in the CRM but still open in Shopify —
   cancel or refund it in the shop" was never closed after the shop did it. The alerts sweep (every 10 min) and
   "Провери задачите" now close it once Shopify shows the order cancelled, voided or refunded.
+- 2026-11-18 1-HU8485: a „Няма наличност“ cancel was refused (FHB NOT_UPDATABLE_ORDER_ERROR, already in work) and
+  the warehouse shipped the parcel after all; the "складът отказа да откаже" task stayed. It now closes (button and
+  the 10-min alerts sweep) when every refused shipment is cancelled by the warehouse's word or — for a no-stock cancel
+  only — shipped. Any other reason (customer cancelled…) keeps it. CZ4112: the orphaned-fulfillment task closes by
+  itself when the new shipment takes the Shopify fulfillment over.
 
 ## Open questions
 See SPEC.md §11.
