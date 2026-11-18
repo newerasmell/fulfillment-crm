@@ -336,13 +336,18 @@ async function toMissingItems(tx: Tx, a: { accountId: string; orderId: string; u
       status: { in: ["PENDING", "SENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD"] },
     },
   });
+  // The store's confirmation tag ("Confirmed") goes: „Липсващи артикули“ sets it again when the order can ship.
+  const gate = await tx.storeOrderTag.findUnique({
+    where: { accountId_storeId: { accountId: a.accountId, storeId: order.storeId } },
+    select: { tag: true },
+  });
   if (!pending)
     await queueTagChange(tx, {
       accountId: a.accountId,
       storeId: order.storeId,
       orderId: a.orderId,
       add: [OUT_OF_STOCK_TAG],
-      remove: [],
+      remove: gate?.tag ? [gate.tag] : [],
       createdById: a.userId,
     });
   return true;

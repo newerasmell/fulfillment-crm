@@ -305,7 +305,14 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
 
     it("reason „Няма наличност“: once the warehouse confirms, the order goes to „Липсващи артикули“ (out_of_stock tag)", async () => {
       await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "LIVE" } });
+      // "Само поръчки с таг": the order carries the store's tag; it is taken off with the out_of_stock tag.
+      await g.db.storeOrderTag.upsert({
+        where: { accountId_storeId: { accountId: g.accountId, storeId: g.store.id } },
+        create: { accountId: g.accountId, storeId: g.store.id, tag: "Confirmed" },
+        update: { tag: "Confirmed" },
+      });
       const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+      await g.db.order.update({ where: { id: order.id }, data: { tags: ["Confirmed"] } });
       const r = await cancel(fulfillment.id, g.owner, "no_stock");
       // Not before the warehouse answers.
       expect(
@@ -318,10 +325,59 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
         await g.db.shopifyTagWrite.findFirstOrThrow({
           where: { orderId: order.id, add: { has: "out_of_stock" } },
         }),
-      ).toMatchObject({ status: "PENDING", createdById: g.owner.userId });
+      ).toMatchObject({ status: "PENDING", createdById: g.owner.userId, remove: ["Confirmed"] });
+      await g.db.storeOrderTag.deleteMany({ where: { storeId: g.store.id } });
       expect(
         await g.db.orderEvent.count({ where: { orderId: order.id, source: "warehouse_cancel.no_stock" } }),
       ).toBe(1);
+    });
+
+    it("„Изпратена извън CRM“ restarts only when every live Shopify fulfillment is the CRM's own (of a cancelled shipment)", async () => {
+      const ownFulfilled = async (gids: { id: string; status: string }[], writeBack = true) => {
+        const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+        await g.db.fulfillment.update({ where: { id: fulfillment.id }, data: { status: "CANCELLED" } });
+        if (writeBack)
+          await g.db.shopifyWriteBack.create({
+            data: {
+              accountId: g.accountId,
+              storeId: g.store.id,
+              orderId: order.id,
+              fulfillmentId: fulfillment.id,
+              kind: "FULFIL",
+              status: "SENT",
+              shopifyFulfillmentGid: `gid://shopify/Fulfillment/own-${order.id}`,
+            },
+          });
+        await g.db.order.update({
+          where: { id: order.id },
+          data: {
+            status: "FULFILLED_EXTERNALLY",
+            raw: { fulfillments: gids.map((x) => ({ ...x, id: x.id.replace("OWN", `own-${order.id}`) })) },
+          },
+        });
+        return order;
+      };
+      const own = await ownFulfilled([{ id: "gid://shopify/Fulfillment/OWN", status: "SUCCESS" }]);
+      await restartOrder(g.owner, own.id);
+      expect(await status(own.id)).not.toBe("FULFILLED_EXTERNALLY");
+
+      // Also fulfilled outside the CRM: refused.
+      const foreign = await ownFulfilled([
+        { id: "gid://shopify/Fulfillment/OWN", status: "SUCCESS" },
+        { id: "gid://shopify/Fulfillment/someone-else", status: "SUCCESS" },
+      ]);
+      await expect(restartOrder(g.owner, foreign.id)).rejects.toMatchObject({ code: "shipped_outside_crm" });
+      // A cancelled CRM shipment but no Shopify fulfillment written by the CRM: refused.
+      const noWrite = await ownFulfilled([{ id: "gid://shopify/Fulfillment/x", status: "SUCCESS" }], false);
+      await expect(restartOrder(g.owner, noWrite.id)).rejects.toMatchObject({ code: "shipped_outside_crm" });
+      // The stored Shopify order does not list fulfillments yet: refused until Shopify updates it.
+      const old = await ownFulfilled([]);
+      await g.db.order.update({ where: { id: old.id }, data: { raw: {} } });
+      await expect(restartOrder(g.owner, old.id)).rejects.toMatchObject({ code: "shipped_outside_crm" });
+      // Never shipped by the CRM at all.
+      const { order: outside } = await euTestOrder(g, { number: `#${++n}` });
+      await g.db.order.update({ where: { id: outside.id }, data: { status: "FULFILLED_EXTERNALLY" } });
+      await expect(restartOrder(g.owner, outside.id)).rejects.toMatchObject({ code: "shipped_outside_crm" });
     });
 
     it("„Няма наличност“ but the order cannot move on by itself (store not writing to Shopify, store-tag guard): BLOCKED + a task", async () => {

@@ -448,5 +448,55 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       }
     }
   }
+  resolved += await resolveClosedInShopify(now);
   return { created, resolved };
+}
+
+/** Task "blocked in the CRM but still open in Shopify" (review/service.ts BLOCKED_TASK_KIND). */
+const OPEN_IN_SHOPIFY_TASK = "blocked_in_crm_open_in_shopify";
+/** Shopify financial states that mean the shop side was handled (no money left to take or give back). */
+export const SHOPIFY_CLOSED_FINANCIAL = ["VOIDED", "REFUNDED"];
+
+/**
+ * "Blocked in the CRM but still open in Shopify — cancel or refund it in the shop": done once Shopify shows the order
+ * cancelled, voided or refunded (owner report 2026-11-18: such orders stayed under "С грешки" for good).
+ */
+async function resolveClosedInShopify(now: Date) {
+  const db = systemDb();
+  const open = await db.alert.findMany({
+    where: { kind: OPEN_IN_SHOPIFY_TASK, entityType: "Order", ...OPEN },
+    select: { id: true, accountId: true, entityId: true },
+    take: 1000,
+  });
+  if (!open.length) return 0;
+  const closed = new Set(
+    (
+      await db.order.findMany({
+        where: {
+          id: { in: open.map((a) => a.entityId!).filter(Boolean) },
+          OR: [{ cancelledAt: { not: null } }, { shopifyFinancialStatus: { in: SHOPIFY_CLOSED_FINANCIAL } }],
+        },
+        select: { id: true },
+      })
+    ).map((o) => o.id),
+  );
+  let resolved = 0;
+  for (const a of open) {
+    if (!a.entityId || !closed.has(a.entityId)) continue;
+    const res = await db.alert.updateMany({
+      where: { id: a.id, accountId: a.accountId, status: { not: "RESOLVED" } },
+      data: { status: "RESOLVED", resolvedAt: now },
+    });
+    if (res.count !== 1) continue;
+    await db.alertNote.create({
+      data: {
+        accountId: a.accountId,
+        alertId: a.id,
+        action: "auto_resolve",
+        note: "cancelled / refunded in Shopify",
+      },
+    });
+    resolved++;
+  }
+  return resolved;
 }

@@ -24,6 +24,7 @@ import {
 import { matchBySku } from "./products";
 import { checkStockGuard } from "@/server/stock/guard-check";
 import { syncStockWait } from "@/server/stock/waiting";
+import { foreignShopifyFulfillments } from "@/lib/shopify-fulfillments";
 import { hasStoreTag } from "./order-tag-match";
 import { PRE_APPROVAL } from "./statuses";
 
@@ -134,6 +135,23 @@ export async function importShopifyOrder(
           codOverride: { select: { paymentMethod: true, codAmount: true } },
         },
       });
+      // Fulfilled in Shopify by the CRM itself (a shipment the warehouse later cancelled — "Няма наличност"): not
+      // "shipped outside the CRM". Only a live Shopify fulfillment the CRM did not write is (owner report 2026-11-18,
+      // LT2552); without the fulfillments list it stays "outside" as before.
+      const ourGids = existing
+        ? new Set(
+            (
+              await tx.shopifyWriteBack.findMany({
+                where: { accountId, orderId: existing.id, kind: "FULFIL", status: "SENT" },
+                select: { shopifyFulfillmentGid: true },
+              })
+            )
+              .map((w) => w.shopifyFulfillmentGid)
+              .filter((g): g is string => !!g),
+          )
+        : new Set<string>();
+      const foreign = ourGids.size ? foreignShopifyFulfillments(o, ourGids) : null;
+      const externallyFulfilled = shopifyFulfilled(o) && (foreign === null || foreign.length > 0);
       if (existing?.shopifyUpdatedAt && existing.shopifyUpdatedAt >= updatedAt) {
         return { orderId: existing.id, outcome: "stale" as const };
       }
@@ -352,7 +370,7 @@ export async function importShopifyOrder(
       } else {
         await tx.order.update({ where: { id: existing.id }, data });
         // Still before approval here (PRE_APPROVAL): Shopify's cancel / fulfil applies directly.
-        if (o.cancelledAt || shopifyFulfilled(o)) {
+        if (o.cancelledAt || externallyFulfilled) {
           await transition(tx, {
             orderId: existing.id,
             ...(o.cancelledAt
@@ -363,7 +381,7 @@ export async function importShopifyOrder(
           });
         }
         // Held for its quantity and now paid in full: released like a person's approval (it starts over).
-        if (existing.status === "QTY_HOLD" && paidUp && !o.cancelledAt && !shopifyFulfilled(o)) {
+        if (existing.status === "QTY_HOLD" && paidUp && !o.cancelledAt && !externallyFulfilled) {
           await transition(tx, {
             orderId: existing.id,
             to: tagged ? "IMPORTED" : "AWAITING_TAG",
@@ -377,8 +395,18 @@ export async function importShopifyOrder(
         orderId = existing.id;
         outcome = "updated";
       }
-      // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it.)
-      if (codGateway && !cod && !o.cancelledAt && tagged) {
+      // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it. Not for an
+      // order Shopify already shows fulfilled — e.g. an old order first seen when its customer reopened its status page:
+      // there is nothing left to ship, owner report 2026-11-18, PL4563.)
+      if (
+        codGateway &&
+        !cod &&
+        !o.cancelledAt &&
+        tagged &&
+        !shopifyFulfilled(o) &&
+        // Cancelled in the CRM or shipped outside it: nothing left to check (never reopened on a later update).
+        !["CANCELLED", "FULFILLED_EXTERNALLY"].includes(existing?.status ?? "")
+      ) {
         await openTask(
           tx,
           accountId,
@@ -391,7 +419,7 @@ export async function importShopifyOrder(
       // The data a check validated changed (address, phone, COD, lines…): a check or review of the old data
       // must not authorise it. The order starts over at IMPORTED and the check sweep validates it again
       // (the approve guard also compares the check's fingerprint, for a check still running right now).
-      if (existing && !o.cancelledAt && !shopifyFulfilled(o)) {
+      if (existing && !o.cancelledAt && !externallyFulfilled) {
         const after = await currentOrderFingerprint(tx, orderId);
         if (after !== orderFingerprint(existing)) {
           await transition(tx, {

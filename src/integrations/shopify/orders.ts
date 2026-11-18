@@ -12,6 +12,8 @@ const MONEY = `shopMoney { amount currencyCode } presentmentMoney { amount curre
  */
 export const ORDERS_PAGE_SIZE = 10;
 export const ORDER_LINES_FIRST = 5;
+/** Fulfillments read per order (a full page means "maybe more": treated as unknown, see lib/shopify-fulfillments). */
+export const ORDER_FULFILLMENTS_FIRST = 10;
 export const ORDER_LINES_PAGE_SIZE = 100;
 
 const LINE_FIELDS = `
@@ -42,6 +44,7 @@ export const ORDER_FIELDS = /* GraphQL */ `
     presentmentCurrencyCode
     displayFinancialStatus
     displayFulfillmentStatus
+    fulfillments(first: ${ORDER_FULFILLMENTS_FIRST}) { id status }
     paymentGatewayNames
     subtotalPriceSet { ${MONEY} }
     totalPriceSet { ${MONEY} }
@@ -148,6 +151,8 @@ export const ShopifyOrder = z.object({
   presentmentCurrencyCode: z.string().nullish(),
   displayFinancialStatus: z.string().nullish(),
   displayFulfillmentStatus: z.string(),
+  /** The order's Shopify fulfillments (status SUCCESS / CANCELLED / ERROR / FAILURE; unknown values kept raw). */
+  fulfillments: z.array(z.object({ id: z.string(), status: z.string() })).nullish(),
   paymentGatewayNames: z.array(z.string()),
   subtotalPriceSet: Money.nullish(),
   totalPriceSet: Money,

@@ -185,7 +185,14 @@ export const RULES: readonly TransitionRule[] = [
     actors: ["user"],
   },
   { cause: "release", from: ["ON_HOLD"], to: ["IMPORTED"], actors: ["user"] },
-  { cause: "restart", from: ["BLOCKED", "EXCEPTION", "UNKNOWN"], to: ["IMPORTED"], actors: ["user"] },
+  // FULFILLED_EXTERNALLY only for an order the CRM itself shipped and the warehouse cancelled (review/service.ts):
+  // older code took the CRM's own Shopify fulfillment for one made outside it (owner report 2026-11-18).
+  {
+    cause: "restart",
+    from: ["BLOCKED", "EXCEPTION", "UNKNOWN", "FULFILLED_EXTERNALLY"],
+    to: ["IMPORTED"],
+    actors: ["user"],
+  },
   // Also "Откажи поръчката" for an order the warehouse blocked / cancelled (BLOCKED, EXCEPTION, UNKNOWN): guarded in
   // transition.ts — no active shipment and no vendor write of the order still on its way or uncertain.
   {

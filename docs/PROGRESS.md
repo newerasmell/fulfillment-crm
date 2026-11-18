@@ -515,6 +515,24 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   person who asked, "follow" mode — never rolls the cancel back) and queues the out_of_stock tag, so it lands in
   „Липсващи артикули“; when that cannot happen (store not LIVE to Shopify, the store-tag guard) the order stays
   BLOCKED with a task to do it by hand.
+- 2026-11-18 LT2552: after a "Няма наличност" cancel the order started over, but the next Shopify import saw the
+  Shopify fulfillment the CRM itself had written (for the cancelled shipment) and moved it to "Изпратена извън CRM";
+  the store's "Confirmed" tag stayed. Now the order query reads `fulfillments { id status }`, and only a live Shopify
+  fulfillment the CRM did not write (gid not on a SENT FULFIL write-back) means "shipped outside the CRM" (without
+  the list: outside, as before). The move to „Липсващи артикули“ also removes the store's confirmation tag (the flow
+  sets it again when the order can ship). "Започни отначало" works from "Изпратена извън CRM" only when the CRM wrote
+  a Shopify fulfillment for a shipment cancelled at the warehouse AND every live Shopify fulfillment of the order is
+  the CRM's own (the stored order must list them), and follows an out_of_stock tag at once. The Shopify fulfillment
+  itself stays (never cancelled by the CRM): a later shipment of the same lines takes it over, or a person cancels
+  it in Shopify.
+- 2026-11-18 PL4563: an old order (14.10, fulfilled and paid, archived) appeared because its customer reopened the
+  expired order-status page — Shopify records that as an update, the webhook imported the order for the first time
+  as "Изпратена извън CRM" (correct) and raised "cash on delivery but nothing outstanding". That task is no longer
+  opened for an order Shopify already shows fulfilled, and "Провери задачите" closes it once the order is shipped
+  or cancelled.
+- 2026-11-18 Cancelled orders stayed under "С грешки": their task "blocked in the CRM but still open in Shopify —
+  cancel or refund it in the shop" was never closed after the shop did it. The alerts sweep (every 10 min) and
+  "Провери задачите" now close it once Shopify shows the order cancelled, voided or refunded.
 
 ## Open questions
 See SPEC.md §11.

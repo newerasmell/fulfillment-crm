@@ -579,7 +579,11 @@
         "writeback_uncertain_left": "a Shopify write-back has an unknown result",
         "writeback_uncertain_none": "no Shopify write-back with an unknown result",
         "orphan_left": "the Shopify fulfillment is not yet taken over by a live shipment",
-        "orphan_adopted": "the Shopify fulfillment was taken over by the live shipment"
+        "orphan_adopted": "the Shopify fulfillment was taken over by the live shipment",
+        "order_done_shipping": "the order is already shipped or cancelled — nothing to check before shipping",
+        "order_not_shipped": "the order is not shipped yet — check the payment before shipping",
+        "shopify_closed": "the order is cancelled / refunded in Shopify",
+        "shopify_still_open": "the order is still open in Shopify — cancel or refund it there"
       }
     },
     "phoneWaiver": {

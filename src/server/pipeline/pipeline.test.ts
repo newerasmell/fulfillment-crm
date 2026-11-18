@@ -144,6 +144,9 @@ describe("rule table (pure)", () => {
       expect(ALL_STATUSES).toContain(t.from);
       expect(ALL_STATUSES).toContain(t.to);
       expect(t.from).not.toBe(t.to);
+      // The one exit from a terminal state: "Започни отначало" of an order the CRM itself shipped and the warehouse
+      // cancelled, which older code took for "shipped outside the CRM" (guarded in review/service.ts restartOrder).
+      if (t.cause === "restart" && t.from === "FULFILLED_EXTERNALLY") continue;
       expect(TERMINAL.has(t.from), `${t.cause}: ${t.from} → ${t.to}`).toBe(false);
     }
   });
@@ -183,7 +186,15 @@ describe("rule table (pure)", () => {
       for (const to of ALL_STATUSES)
         for (const cause of CAUSES)
           for (const a of ["user", "system", "ai"] as const)
-            expect(isAllowed(cause, from, to, a)).toBe(false);
+            if (!(
+              cause === "restart" &&
+              from === "FULFILLED_EXTERNALLY" &&
+              to === "IMPORTED" &&
+              a === "user"
+            ))
+              expect(isAllowed(cause, from, to, a)).toBe(false);
+    expect(isAllowed("restart", "FULFILLED_EXTERNALLY", "IMPORTED", "system")).toBe(false);
+    expect(isAllowed("restart", "FULFILLED_EXTERNALLY", "IMPORTED", "ai")).toBe(false);
   });
 
   it("every cause is in CAUSES, and every combination outside the table is refused", () => {
