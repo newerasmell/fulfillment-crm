@@ -297,6 +297,22 @@ describe("re-check an order's tasks", () => {
       return { order, t };
     };
     const noStock = await make("#TK12", "no_stock");
+    // A customer's cancel refused first, then a "no stock" one: the parcel went out against the customer — stays.
+    const mixed = await make("#TK14", "no_stock");
+    const mf = await db().fulfillment.findFirstOrThrow({ where: { orderId: mixed.order.id } });
+    await db().outboundRequest.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        operation: "eushipments.deleteOrder",
+        idempotencyKey: `del-mixed-${Date.now()}`,
+        payload: {
+          ctx: { warehouseCancel: "1", reasonCode: "customer_cancelled", referenceNumber: mf.externalId },
+        },
+        status: "FAILED",
+        fulfillmentId: mf.id,
+      },
+    });
     const customer = await make("#TK13", "customer_cancelled");
     const r = await recheckOrderTasks(g.owner, { orderId: customer.order.id });
     expect(r.kept.find((k) => k.id === customer.t.id)?.why).toBe("old_shipment_live");
@@ -304,6 +320,7 @@ describe("re-check an order's tasks", () => {
     expect(s.resolved).toBeGreaterThanOrEqual(1);
     expect(await statusOf(noStock.t.id)).toBe("RESOLVED");
     expect(await statusOf(customer.t.id)).not.toBe("RESOLVED");
+    expect(await statusOf(mixed.t.id)).not.toBe("RESOLVED");
   });
 
   it("needs orders.review, the order's company and the account; another account's tasks are untouched", async () => {

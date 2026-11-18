@@ -108,21 +108,22 @@ async function verdictFor(
     if (!before.length) return { close: false, why: "no_earlier_shipment" };
     // The cancel was asked for "Няма наличност" and the warehouse shipped it anyway: it had the unit after all —
     // nothing left to do (owner report 2026-11-18, 1-HU8485). Any other reason (the customer cancelled…) stays.
+    // Every cancel / re-route asked for this shipment must have been for "Няма наличност" (a customer's cancel among
+    // them means the parcel went out against their wish: that stays).
     const shippedDespiteNoStock = async (fulfillmentId: string) => {
       if (alert.kind === "reroute_refused") {
-        const r = await tx.orderReroute.findFirst({
+        const rs = await tx.orderReroute.findMany({
           where: { accountId, orderId, fromFulfillmentId: fulfillmentId, status: "REFUSED" },
-          orderBy: { createdAt: "desc" },
           select: { reasonCode: true },
         });
-        return r?.reasonCode === "no_stock";
+        return rs.length > 0 && rs.every((r) => r.reasonCode === "no_stock");
       }
-      const req = await tx.outboundRequest.findFirst({
+      const reqs = await tx.outboundRequest.findMany({
         where: { accountId, fulfillmentId, operation: { in: [...CANCEL_OPERATIONS] } },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         select: { payload: true },
       });
-      return warehouseCancelMeta(req?.payload)?.reasonCode === "no_stock";
+      const reasons = reqs.map((r) => warehouseCancelMeta(r.payload)).filter((m) => m !== null);
+      return reasons.length > 0 && reasons.every((m) => m!.reasonCode === "no_stock");
     };
     let shipped = 0;
     for (const f of before) {
