@@ -3,7 +3,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { sweepOrderAlerts } from "@/server/alerts/alerts";
-import { recheckOrderTasks } from "./order-tasks";
+import { recheckOrderTasks, sweepSettledOrderTasks } from "./order-tasks";
 
 // "Провери задачите" (owner request 2026-11-13). Synthetic data only.
 describe("re-check an order's tasks", () => {
@@ -274,6 +274,53 @@ describe("re-check an order's tasks", () => {
     const t2 = await task(o2.id, "blocked_in_crm_open_in_shopify");
     await sweepOrderAlerts();
     expect(await statusOf(t2.id)).toBe("RESOLVED");
+  });
+
+  it("a refused „Няма наличност“ cancel whose parcel then shipped closes (also by the sweep); another reason stays", async () => {
+    const make = async (number: string, reasonCode: string) => {
+      const { order } = await euTestOrder(g, { number });
+      const f = await shipment(order.id, "ACCEPTED", ago(60_000));
+      await db().outboundRequest.create({
+        data: {
+          accountId: g.accountId,
+          connectionId: g.connection.id,
+          operation: "eushipments.deleteOrder",
+          idempotencyKey: `del-${number}-${Date.now()}`,
+          payload: { ctx: { warehouseCancel: "1", reasonCode, referenceNumber: f.externalId } },
+          status: "FAILED",
+          fulfillmentId: f.id,
+        },
+      });
+      await refusedCancel(order.id, f.id);
+      const t = await task(order.id, "warehouse_cancel_refused");
+      await db().fulfillment.update({ where: { id: f.id }, data: { status: "SHIPPED" } });
+      return { order, t };
+    };
+    const noStock = await make("#TK12", "no_stock");
+    // A customer's cancel refused first, then a "no stock" one: the parcel went out against the customer — stays.
+    const mixed = await make("#TK14", "no_stock");
+    const mf = await db().fulfillment.findFirstOrThrow({ where: { orderId: mixed.order.id } });
+    await db().outboundRequest.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        operation: "eushipments.deleteOrder",
+        idempotencyKey: `del-mixed-${Date.now()}`,
+        payload: {
+          ctx: { warehouseCancel: "1", reasonCode: "customer_cancelled", referenceNumber: mf.externalId },
+        },
+        status: "FAILED",
+        fulfillmentId: mf.id,
+      },
+    });
+    const customer = await make("#TK13", "customer_cancelled");
+    const r = await recheckOrderTasks(g.owner, { orderId: customer.order.id });
+    expect(r.kept.find((k) => k.id === customer.t.id)?.why).toBe("old_shipment_live");
+    const s = await sweepSettledOrderTasks();
+    expect(s.resolved).toBeGreaterThanOrEqual(1);
+    expect(await statusOf(noStock.t.id)).toBe("RESOLVED");
+    expect(await statusOf(customer.t.id)).not.toBe("RESOLVED");
+    expect(await statusOf(mixed.t.id)).not.toBe("RESOLVED");
   });
 
   it("needs orders.review, the order's company and the account; another account's tasks are untouched", async () => {

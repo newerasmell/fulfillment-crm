@@ -583,7 +583,8 @@
         "order_done_shipping": "the order is already shipped or cancelled — nothing to check before shipping",
         "order_not_shipped": "the order is not shipped yet — check the payment before shipping",
         "shopify_closed": "the order is cancelled / refunded in Shopify",
-        "shopify_still_open": "the order is still open in Shopify — cancel or refund it there"
+        "shopify_still_open": "the order is still open in Shopify — cancel or refund it there",
+        "shipped_after_all": "a \"no stock\" cancel was refused and the warehouse shipped the parcel after all — nothing to do"
       }
     },
     "phoneWaiver": {

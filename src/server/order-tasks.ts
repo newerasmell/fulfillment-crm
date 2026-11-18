@@ -3,8 +3,9 @@ import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb, withAccountTransaction } from "@/server/db/client";
+import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
+import { CANCEL_OPERATIONS, warehouseCancelMeta } from "@/server/override/cancel-effects";
 
 /**
  * "Провери задачите" on the order page (owner request 2026-11-13): the order's open tasks are checked against what
@@ -29,6 +30,8 @@ import type { ScopedActor } from "@/server/stores";
 const GONE_NOT_FOUND = "not found at euShipments";
 const ORPHANED = "shipment_cancelled_after_fulfil";
 const REFUSED_CANCEL = new Set(["warehouse_cancel_refused", "reroute_refused"]);
+/** A shipment that left the warehouse for the customer. */
+const SHIPPED_ON = new Set(["SHIPPED", "DELIVERED", "COD_PAID"]);
 /**
  * Order states in which nothing will be shipped from the CRM ("check before shipping" no longer applies). Not SHIPPED
  * and later: a shipment that left unchecked is exactly what the task warns about.
@@ -67,7 +70,8 @@ export type TaskWhy =
   | "order_done_shipping"
   | "order_not_shipped"
   | "shopify_closed"
-  | "shopify_still_open";
+  | "shopify_still_open"
+  | "shipped_after_all";
 
 type Verdict = { close: boolean; why: TaskWhy };
 
@@ -98,12 +102,39 @@ async function verdictFor(
     const before = ids.length
       ? await tx.fulfillment.findMany({
           where: { accountId, orderId, id: { in: [...new Set(ids)] } },
-          select: { status: true, rawStatus: true },
+          select: { id: true, status: true, rawStatus: true },
         })
       : [];
     if (!before.length) return { close: false, why: "no_earlier_shipment" };
-    if (before.some((f) => f.status !== "CANCELLED" && f.status !== "SUBMIT_FAILED"))
+    // The cancel was asked for "Няма наличност" and the warehouse shipped it anyway: it had the unit after all —
+    // nothing left to do (owner report 2026-11-18, 1-HU8485). Any other reason (the customer cancelled…) stays.
+    // Every cancel / re-route asked for this shipment must have been for "Няма наличност" (a customer's cancel among
+    // them means the parcel went out against their wish: that stays).
+    const shippedDespiteNoStock = async (fulfillmentId: string) => {
+      if (alert.kind === "reroute_refused") {
+        const rs = await tx.orderReroute.findMany({
+          where: { accountId, orderId, fromFulfillmentId: fulfillmentId, status: "REFUSED" },
+          select: { reasonCode: true },
+        });
+        return rs.length > 0 && rs.every((r) => r.reasonCode === "no_stock");
+      }
+      const reqs = await tx.outboundRequest.findMany({
+        where: { accountId, fulfillmentId, operation: { in: [...CANCEL_OPERATIONS] } },
+        select: { payload: true },
+      });
+      const reasons = reqs.map((r) => warehouseCancelMeta(r.payload)).filter((m) => m !== null);
+      return reasons.length > 0 && reasons.every((m) => m!.reasonCode === "no_stock");
+    };
+    let shipped = 0;
+    for (const f of before) {
+      if (f.status === "CANCELLED" || f.status === "SUBMIT_FAILED") continue;
+      if (SHIPPED_ON.has(f.status) && (await shippedDespiteNoStock(f.id))) {
+        shipped++;
+        continue;
+      }
       return { close: false, why: "old_shipment_live" };
+    }
+    if (shipped === before.length) return { close: true, why: "shipped_after_all" };
     if (before.some((f) => f.status === "CANCELLED" && f.rawStatus === GONE_NOT_FOUND))
       return { close: false, why: "old_shipment_unproven" };
     return { close: true, why: "old_shipment_cancelled" };
@@ -247,4 +278,40 @@ export async function recheckOrderTasks(actor: ScopedActor, raw: z.input<typeof 
     closed.push({ id: a.id, title: a.title, why: v.why });
   }
   return { closed, kept };
+}
+
+/** Task kinds the alerts sweep also re-checks on its own (the same rules as the button; never the person-only ones). */
+const SWEPT_KINDS = ["warehouse_cancel_refused", "reroute_refused"];
+
+/**
+ * Every 10 min (alerts sweep): the open refused-cancel tasks are checked like "Провери задачите" does and closed when
+ * their cause is gone (e.g. shipped after a "Няма наличност" cancel the warehouse refused).
+ */
+export async function sweepSettledOrderTasks(take = 500) {
+  const open = await systemDb().alert.findMany({
+    where: { kind: { in: SWEPT_KINDS }, entityType: "Order", status: { not: "RESOLVED" } },
+    select: { id: true, accountId: true, kind: true, entityId: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+    take,
+  });
+  let resolved = 0;
+  for (const a of open) {
+    if (!a.entityId) continue;
+    const done = await withAccountTransaction(a.accountId, async (tx, { lockForUpdate }) => {
+      await lockForUpdate("Order", a.entityId!);
+      const v = await verdictFor(tx, a.accountId, a.entityId!, a);
+      if (!v?.close) return false;
+      const r = await tx.alert.updateMany({
+        where: { id: a.id, accountId: a.accountId, status: { not: "RESOLVED" } },
+        data: { status: "RESOLVED", resolvedAt: new Date() },
+      });
+      if (!r.count) return false;
+      await tx.alertNote.create({
+        data: { accountId: a.accountId, alertId: a.id, action: "auto_resolve", note: `sweep: ${v.why}` },
+      });
+      return true;
+    });
+    if (done) resolved++;
+  }
+  return { resolved };
 }

@@ -1196,6 +1196,12 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
       shopifyFulfillmentGid: FUL_GID,
       trackingNumber: null,
     });
+    // Taken over: the order's "Shopify fulfillment of a cancelled shipment" task closes by itself.
+    expect(
+      await db().alert.count({
+        where: { entityId: order.id, kind: "shopify_writeback_orphaned", status: { not: "RESOLVED" } },
+      }),
+    ).toBe(0);
     await sweepWriteBacks();
     expect(await processWriteBack((await row(again.id, "TRACKING", "TRK-AGAIN")).id, shop.clients)).toBe(
       "SENT",

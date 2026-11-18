@@ -1129,6 +1129,9 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
         adoptedFulfillment: adopted.gid,
         fromFulfillmentId: adopted.fromFulfillmentId,
       });
+    // Taken over for real: the order's "Shopify fulfillment of a cancelled shipment" task is done when no other
+    // orphaned one is left (owner report 2026-11-18, CZ4112).
+    if (status === "SENT") await resolveAdoptedOrphans(row.accountId, row.orderId);
     return final(status);
   }
 
@@ -1221,6 +1224,50 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
   };
 }
 const FAILED = new Set(["ERROR", "FAILURE"]);
+
+/** Closes the order's orphaned-fulfillment task once every orphaned Shopify fulfillment is held by a live shipment. */
+async function resolveAdoptedOrphans(accountId: string, orderId: string) {
+  const db = systemDb();
+  const orphaned = await db.shopifyWriteBack.findMany({
+    where: { accountId, orderId, kind: "FULFIL", lastError: ORPHANED },
+    select: { shopifyFulfillmentGid: true },
+  });
+  if (!orphaned.length || orphaned.some((o) => !o.shopifyFulfillmentGid)) return;
+  const held = await db.shopifyWriteBack.findMany({
+    where: {
+      accountId,
+      orderId,
+      kind: "FULFIL",
+      status: "SENT",
+      shopifyFulfillmentGid: { in: orphaned.map((o) => o.shopifyFulfillmentGid!) },
+      NOT: { lastError: ORPHANED },
+      fulfillment: { NOT: goneShipment },
+    },
+    select: { shopifyFulfillmentGid: true },
+  });
+  const heldSet = new Set(held.map((h) => h.shopifyFulfillmentGid));
+  if (orphaned.some((o) => !heldSet.has(o.shopifyFulfillmentGid))) return;
+  const open = await db.alert.findMany({
+    where: {
+      accountId,
+      kind: "shopify_writeback_orphaned",
+      entityType: "Order",
+      entityId: orderId,
+      status: { not: "RESOLVED" },
+    },
+    select: { id: true },
+  });
+  for (const a of open) {
+    const r = await db.alert.updateMany({
+      where: { id: a.id, accountId, status: { not: "RESOLVED" } },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    if (r.count)
+      await db.alertNote.create({
+        data: { accountId, alertId: a.id, action: "auto_resolve", note: "taken over by the new shipment" },
+      });
+  }
+}
 
 /**
  * The Shopify fulfillment of a cancelled / re-routed shipment of the same order with exactly our lines, still
