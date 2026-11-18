@@ -525,6 +525,11 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the CRM's own (the stored order must list them), and follows an out_of_stock tag at once. The Shopify fulfillment
   itself stays (never cancelled by the CRM): a later shipment of the same lines takes it over, or a person cancels
   it in Shopify.
+- 2026-11-18 PL4563: an old order (14.10, fulfilled and paid, archived) appeared because its customer reopened the
+  expired order-status page — Shopify records that as an update, the webhook imported the order for the first time
+  as "Изпратена извън CRM" (correct) and raised "cash on delivery but nothing outstanding". That task is no longer
+  opened for an order Shopify already shows fulfilled, and "Провери задачите" closes it once the order is shipped
+  or cancelled.
 
 ## Open questions
 See SPEC.md §11.

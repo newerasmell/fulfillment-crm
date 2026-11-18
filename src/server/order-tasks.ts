@@ -29,6 +29,16 @@ import type { ScopedActor } from "@/server/stores";
 const GONE_NOT_FOUND = "not found at euShipments";
 const ORPHANED = "shipment_cancelled_after_fulfil";
 const REFUSED_CANCEL = new Set(["warehouse_cancel_refused", "reroute_refused"]);
+/** Order states in which nothing is left to ship from the CRM ("check before shipping" no longer applies). */
+const DONE_SHIPPING = new Set([
+  "FULFILLED_EXTERNALLY",
+  "CANCELLED",
+  "SHIPPED",
+  "DELIVERED",
+  "COD_PAID",
+  "RETURNING",
+  "RETURN_RECEIVED",
+]);
 /** A shipment that will not ship: cancelled / never accepted, or re-routed away. */
 const goneShipment = {
   OR: [
@@ -58,7 +68,9 @@ export type TaskWhy =
   | "writeback_uncertain_left"
   | "writeback_uncertain_none"
   | "orphan_left"
-  | "orphan_adopted";
+  | "orphan_adopted"
+  | "order_done_shipping"
+  | "order_not_shipped";
 
 type Verdict = { close: boolean; why: TaskWhy };
 
@@ -98,6 +110,12 @@ async function verdictFor(
     if (before.some((f) => f.status === "CANCELLED" && f.rawStatus === GONE_NOT_FOUND))
       return { close: false, why: "old_shipment_unproven" };
     return { close: true, why: "old_shipment_cancelled" };
+  }
+  if (alert.kind === "cod_nothing_outstanding") {
+    const o = await tx.order.findFirst({ where: { accountId, id: orderId }, select: { status: true } });
+    return o && DONE_SHIPPING.has(o.status)
+      ? { close: true, why: "order_done_shipping" }
+      : { close: false, why: "order_not_shipped" };
   }
   if (alert.kind === "shopify_writeback_failed") {
     const failed = await tx.shopifyWriteBack.count({

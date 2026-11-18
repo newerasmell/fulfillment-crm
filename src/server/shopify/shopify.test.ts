@@ -669,6 +669,21 @@ describe("Shopify import (DB)", () => {
     expect((await db.alert.findMany({ where: { entityId: paid.orderId } })).map((a) => a.kind)).toEqual([
       "cod_nothing_outstanding",
     ]);
+    // An old order Shopify already shows fulfilled (first seen when the customer reopened its status page): no task.
+    const old = await importShopifyOrder(
+      accountId,
+      s,
+      order({
+        id: "gid://shopify/Order/6009",
+        name: "#6009",
+        paymentGatewayNames: ["Cash on Delivery (COD)"],
+        totalOutstandingSet: money("0.00"),
+        displayFulfillmentStatus: "FULFILLED",
+      }),
+    );
+    expect(await db.alert.count({ where: { entityId: old.orderId, kind: "cod_nothing_outstanding" } })).toBe(
+      0,
+    );
     const partly = await importShopifyOrder(
       accountId,
       s,

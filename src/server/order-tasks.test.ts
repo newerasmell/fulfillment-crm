@@ -247,6 +247,17 @@ describe("re-check an order's tasks", () => {
     expect(r.kept.find((k) => k.id === unclear2.id)?.why).toBe("writeback_uncertain_left");
   });
 
+  it("'cash on delivery but nothing outstanding' closes once the order is shipped (or cancelled), not before", async () => {
+    const { order } = await euTestOrder(g, { number: "#TK9" });
+    await db().order.update({ where: { id: order.id }, data: { status: "READY" } });
+    const t = await task(order.id, "cod_nothing_outstanding");
+    let r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.kept.find((k) => k.id === t.id)?.why).toBe("order_not_shipped");
+    await db().order.update({ where: { id: order.id }, data: { status: "FULFILLED_EXTERNALLY" } });
+    r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.closed.map((c) => c.id)).toEqual([t.id]);
+  });
+
   it("needs orders.review, the order's company and the account; another account's tasks are untouched", async () => {
     const { order } = await euTestOrder(g, { number: "#TK3" });
     await expect(

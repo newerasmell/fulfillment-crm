@@ -395,8 +395,10 @@ export async function importShopifyOrder(
         orderId = existing.id;
         outcome = "updated";
       }
-      // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it.)
-      if (codGateway && !cod && !o.cancelledAt && tagged) {
+      // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it. Not for an
+      // order Shopify already shows fulfilled — e.g. an old order first seen when its customer reopened its status page:
+      // there is nothing left to ship, owner report 2026-11-18, PL4563.)
+      if (codGateway && !cod && !o.cancelledAt && tagged && !shopifyFulfilled(o)) {
         await openTask(
           tx,
           accountId,
