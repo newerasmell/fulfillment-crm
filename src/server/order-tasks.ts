@@ -70,7 +70,9 @@ export type TaskWhy =
   | "orphan_left"
   | "orphan_adopted"
   | "order_done_shipping"
-  | "order_not_shipped";
+  | "order_not_shipped"
+  | "shopify_closed"
+  | "shopify_still_open";
 
 type Verdict = { close: boolean; why: TaskWhy };
 
@@ -110,6 +112,14 @@ async function verdictFor(
     if (before.some((f) => f.status === "CANCELLED" && f.rawStatus === GONE_NOT_FOUND))
       return { close: false, why: "old_shipment_unproven" };
     return { close: true, why: "old_shipment_cancelled" };
+  }
+  if (alert.kind === "blocked_in_crm_open_in_shopify") {
+    const o = await tx.order.findFirst({
+      where: { accountId, id: orderId },
+      select: { cancelledAt: true, shopifyFinancialStatus: true },
+    });
+    const done = !!o?.cancelledAt || ["VOIDED", "REFUNDED"].includes(o?.shopifyFinancialStatus ?? "");
+    return { close: done, why: done ? "shopify_closed" : "shopify_still_open" };
   }
   if (alert.kind === "cod_nothing_outstanding") {
     const o = await tx.order.findFirst({ where: { accountId, id: orderId }, select: { status: true } });

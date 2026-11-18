@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
+import { sweepOrderAlerts } from "@/server/alerts/alerts";
 import { recheckOrderTasks } from "./order-tasks";
 
 // "Провери задачите" (owner request 2026-11-13). Synthetic data only.
@@ -256,6 +257,23 @@ describe("re-check an order's tasks", () => {
     await db().order.update({ where: { id: order.id }, data: { status: "FULFILLED_EXTERNALLY" } });
     r = await recheckOrderTasks(g.owner, { orderId: order.id });
     expect(r.closed.map((c) => c.id)).toEqual([t.id]);
+  });
+
+  it("'blocked in the CRM but open in Shopify' closes once Shopify shows it cancelled / voided / refunded (also by the sweep)", async () => {
+    const { order } = await euTestOrder(g, { number: "#TK10" });
+    await db().order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+    const t = await task(order.id, "blocked_in_crm_open_in_shopify");
+    let r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.kept.find((k) => k.id === t.id)?.why).toBe("shopify_still_open");
+    await db().order.update({ where: { id: order.id }, data: { shopifyFinancialStatus: "VOIDED" } });
+    r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.closed.map((c) => c.id)).toEqual([t.id]);
+
+    const { order: o2 } = await euTestOrder(g, { number: "#TK11" });
+    await db().order.update({ where: { id: o2.id }, data: { status: "CANCELLED", cancelledAt: new Date() } });
+    const t2 = await task(o2.id, "blocked_in_crm_open_in_shopify");
+    await sweepOrderAlerts();
+    expect(await statusOf(t2.id)).toBe("RESOLVED");
   });
 
   it("needs orders.review, the order's company and the account; another account's tasks are untouched", async () => {

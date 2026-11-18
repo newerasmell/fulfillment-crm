@@ -530,6 +530,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   as "Изпратена извън CRM" (correct) and raised "cash on delivery but nothing outstanding". That task is no longer
   opened for an order Shopify already shows fulfilled, and "Провери задачите" closes it once the order is shipped
   or cancelled.
+- 2026-11-18 Cancelled orders stayed under "С грешки": their task "blocked in the CRM but still open in Shopify —
+  cancel or refund it in the shop" was never closed after the shop did it. The alerts sweep (every 10 min) and
+  "Провери задачите" now close it once Shopify shows the order cancelled, voided or refunded.
 
 ## Open questions
 See SPEC.md §11.
