@@ -1,3 +1,5 @@
+import { syncStockWait } from "@/server/stock/waiting";
+import { foreignShopifyFulfillments } from "@/lib/shopify-fulfillments";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { z } from "zod";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
@@ -439,13 +441,41 @@ export async function releaseOrder(actor: ScopedActor, orderId: string) {
 }
 
 /** Statuses a person may restart from (the warehouse blocked or cancelled the order). */
-export const RESTARTABLE_STATUSES = ["BLOCKED", "EXCEPTION", "UNKNOWN"] as const;
+export const RESTARTABLE_STATUSES = ["BLOCKED", "EXCEPTION", "UNKNOWN", "FULFILLED_EXTERNALLY"] as const;
 
 /**
  * "Изпрати отново": an order the warehouse blocked or cancelled (e.g. cancelled by hand in ZOE) starts over
  * (IMPORTED) and is checked again; the operator then approves and Fulfill sends it with a NEW warehouse id
  * (-2, -3 …). Refused while any shipment of the order is still active at a warehouse (never two shipments).
  */
+/**
+ * "Изпратена извън CRM" that is really the CRM's own Shopify fulfillment: the order has a SENT FULFIL write-back of a
+ * shipment cancelled at the warehouse, and every live Shopify fulfillment of the order is one the CRM wrote (the
+ * stored Shopify order must list them — an order imported before that field is refused until Shopify updates it).
+ */
+export async function ownFulfilmentOnly(tx: Tx, accountId: string, orderId: string, raw: unknown) {
+  const ours = await tx.shopifyWriteBack.findMany({
+    where: { accountId, orderId, kind: "FULFIL", status: "SENT", fulfillment: { status: "CANCELLED" } },
+    select: { shopifyFulfillmentGid: true },
+  });
+  const gids = new Set(ours.map((w) => w.shopifyFulfillmentGid).filter((g): g is string => !!g));
+  if (!gids.size) return false;
+  const all = await tx.shopifyWriteBack.findMany({
+    where: { accountId, orderId, kind: "FULFIL", status: "SENT" },
+    select: { shopifyFulfillmentGid: true },
+  });
+  const foreign = foreignShopifyFulfillments(
+    raw,
+    new Set(all.map((w) => w.shopifyFulfillmentGid).filter((g): g is string => !!g)),
+  );
+  return foreign !== null && foreign.length === 0;
+}
+
+/** For the order page: whether "Започни отначало" is offered on an order in "Изпратена извън CRM". */
+export function canRestartShippedOutside(accountId: string, orderId: string, raw: unknown) {
+  return withAccountTransaction(accountId, (tx) => ownFulfilmentOnly(tx, accountId, orderId, raw));
+}
+
 export async function restartOrder(actor: ScopedActor, orderId: string) {
   assertCan(actor.role, "orders.review");
   await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
@@ -456,6 +486,17 @@ export async function restartOrder(actor: ScopedActor, orderId: string) {
       select: { id: true },
     });
     if (active) throw new DomainError("shipment_active");
+    // "Изпратена извън CRM" restarts only when the CRM had a shipment of it (cancelled at the warehouse): an order
+    // really shipped outside the CRM must never be sent again from here.
+    const cur = await tx.order.findFirstOrThrow({
+      where: { id: orderId, accountId: actor.accountId },
+      select: { status: true, raw: true },
+    });
+    if (
+      cur.status === "FULFILLED_EXTERNALLY" &&
+      !(await ownFulfilmentOnly(tx, actor.accountId, orderId, cur.raw))
+    )
+      throw new DomainError("shipped_outside_crm");
     await transition(tx, {
       orderId,
       to: "IMPORTED",
@@ -464,6 +505,8 @@ export async function restartOrder(actor: ScopedActor, orderId: string) {
       source: "review",
       mode: "strict",
     });
+    // An order already tagged out_of_stock / waiting_for_stock in Shopify is followed in „Липсващи артикули“ at once.
+    await syncStockWait(tx, actor.accountId, orderId);
   });
   return checkOrder(actor.accountId, orderId, { actor: { kind: "user", userId: actor.userId } });
 }

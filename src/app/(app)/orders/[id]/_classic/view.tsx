@@ -19,6 +19,7 @@ import {
   isEditableField,
   PAYLOAD_PREVIEW_STATUSES,
   RESTARTABLE_STATUSES,
+  canRestartShippedOutside,
   type TimelineEntry,
 } from "@/server/review";
 import { normaliseAddress, shopifyPhone } from "@/server/shopify/orders";
@@ -887,9 +888,12 @@ export async function ClassicOrderView({
           canRelease={order.status === "ON_HOLD" && !order.tags.includes(SHOPIFY_TEST_TAG)}
           canRestart={
             (RESTARTABLE_STATUSES as readonly string[]).includes(order.status) &&
-            data.fulfillments.every((f) => f.status === "CANCELLED" || f.status === "SUBMIT_FAILED")
+            data.fulfillments.every((f) => f.status === "CANCELLED" || f.status === "SUBMIT_FAILED") &&
+            // "Изпратена извън CRM": only the CRM's own Shopify fulfillment of a cancelled shipment.
+            (order.status !== "FULFILLED_EXTERNALLY" ||
+              (await canRestartShippedOutside(ctx.accountId, order.id, order.raw)))
           }
-          afterWarehouse={(RESTARTABLE_STATUSES as readonly string[]).includes(order.status)}
+          afterWarehouse={["BLOCKED", "EXCEPTION", "UNKNOWN"].includes(order.status)}
           statusLabel={statusLabel}
         />
       )}

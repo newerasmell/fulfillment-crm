@@ -557,6 +557,83 @@ describe("Shopify import (DB)", () => {
     );
   });
 
+  it("a Shopify fulfillment the CRM itself wrote (shipment later cancelled at the warehouse) is not 'shipped outside the CRM'", async () => {
+    const s = await store();
+    const db = accountDb(accountId);
+    const p = order({ id: "gid://shopify/Order/9602", name: "#9602" });
+    const { orderId } = await importShopifyOrder(accountId, s, p);
+    const company = await systemDb().company.findFirstOrThrow({ where: { accountId } });
+    const conn = await db.fulfillmentConnection.create({
+      data: { accountId, companyId: company.id, type: "EUSHIPMENTS", name: "W" },
+    });
+    const f = await db.fulfillment.create({
+      data: { accountId, orderId, connectionId: conn.id, externalId: "X-9602", status: "CANCELLED" },
+    });
+    await db.shopifyWriteBack.create({
+      data: {
+        accountId,
+        storeId: s.id,
+        orderId,
+        fulfillmentId: f.id,
+        kind: "FULFIL",
+        status: "SENT",
+        shopifyFulfillmentGid: "gid://shopify/Fulfillment/1",
+      },
+    });
+    await importShopifyOrder(accountId, s, {
+      ...p,
+      updatedAt: "2026-11-01T12:00:00Z",
+      displayFulfillmentStatus: "FULFILLED",
+      fulfillments: [{ id: "gid://shopify/Fulfillment/1", status: "SUCCESS" }],
+    });
+    const statusOf = async () => (await db.order.findUniqueOrThrow({ where: { id: orderId } })).status;
+    expect(await statusOf()).not.toBe("FULFILLED_EXTERNALLY");
+    // Someone then fulfilled (part of) it outside the CRM: another live Shopify fulfillment → outside.
+    await importShopifyOrder(accountId, s, {
+      ...p,
+      updatedAt: "2026-11-01T13:00:00Z",
+      displayFulfillmentStatus: "FULFILLED",
+      fulfillments: [
+        { id: "gid://shopify/Fulfillment/1", status: "CANCELLED" },
+        { id: "gid://shopify/Fulfillment/2", status: "SUCCESS" },
+      ],
+    });
+    expect(await statusOf()).toBe("FULFILLED_EXTERNALLY");
+  });
+
+  it("without the fulfillments list a fulfilled order with a CRM write-back stays 'outside' (safe side)", async () => {
+    const s = await store();
+    const db = accountDb(accountId);
+    const p = order({ id: "gid://shopify/Order/9603", name: "#9603" });
+    const { orderId } = await importShopifyOrder(accountId, s, p);
+    const company = await systemDb().company.findFirstOrThrow({ where: { accountId } });
+    const conn = await db.fulfillmentConnection.create({
+      data: { accountId, companyId: company.id, type: "EUSHIPMENTS", name: "W2" },
+    });
+    const f = await db.fulfillment.create({
+      data: { accountId, orderId, connectionId: conn.id, externalId: "X-9603", status: "CANCELLED" },
+    });
+    await db.shopifyWriteBack.create({
+      data: {
+        accountId,
+        storeId: s.id,
+        orderId,
+        fulfillmentId: f.id,
+        kind: "FULFIL",
+        status: "SENT",
+        shopifyFulfillmentGid: "gid://shopify/Fulfillment/3",
+      },
+    });
+    await importShopifyOrder(accountId, s, {
+      ...p,
+      updatedAt: "2026-11-01T12:00:00Z",
+      displayFulfillmentStatus: "FULFILLED",
+    });
+    expect((await db.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(
+      "FULFILLED_EXTERNALLY",
+    );
+  });
+
   it("webhook URLs must be public https hosts on our path", () => {
     const prod = { NODE_ENV: "production" } as NodeJS.ProcessEnv;
     expect(validCallbackUrl("https://crm.example.com/api/webhooks/shopify", prod)).toBe(
