@@ -398,7 +398,15 @@ export async function importShopifyOrder(
       // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it. Not for an
       // order Shopify already shows fulfilled — e.g. an old order first seen when its customer reopened its status page:
       // there is nothing left to ship, owner report 2026-11-18, PL4563.)
-      if (codGateway && !cod && !o.cancelledAt && tagged && !shopifyFulfilled(o)) {
+      if (
+        codGateway &&
+        !cod &&
+        !o.cancelledAt &&
+        tagged &&
+        !shopifyFulfilled(o) &&
+        // Cancelled in the CRM or shipped outside it: nothing left to check (never reopened on a later update).
+        !["CANCELLED", "FULFILLED_EXTERNALLY"].includes(existing?.status ?? "")
+      ) {
         await openTask(
           tx,
           accountId,

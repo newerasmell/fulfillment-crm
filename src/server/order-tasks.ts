@@ -29,16 +29,11 @@ import type { ScopedActor } from "@/server/stores";
 const GONE_NOT_FOUND = "not found at euShipments";
 const ORPHANED = "shipment_cancelled_after_fulfil";
 const REFUSED_CANCEL = new Set(["warehouse_cancel_refused", "reroute_refused"]);
-/** Order states in which nothing is left to ship from the CRM ("check before shipping" no longer applies). */
-const DONE_SHIPPING = new Set([
-  "FULFILLED_EXTERNALLY",
-  "CANCELLED",
-  "SHIPPED",
-  "DELIVERED",
-  "COD_PAID",
-  "RETURNING",
-  "RETURN_RECEIVED",
-]);
+/**
+ * Order states in which nothing will be shipped from the CRM ("check before shipping" no longer applies). Not SHIPPED
+ * and later: a shipment that left unchecked is exactly what the task warns about.
+ */
+const DONE_SHIPPING = new Set(["FULFILLED_EXTERNALLY", "CANCELLED"]);
 /** A shipment that will not ship: cancelled / never accepted, or re-routed away. */
 const goneShipment = {
   OR: [
