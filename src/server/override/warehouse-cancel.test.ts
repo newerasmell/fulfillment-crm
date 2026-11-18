@@ -303,6 +303,81 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
       expect(await status(order.id)).toBe("BLOCKED");
     });
 
+    it("reason „Няма наличност“: once the warehouse confirms, the order goes to „Липсващи артикули“ (out_of_stock tag)", async () => {
+      await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "LIVE" } });
+      const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+      const r = await cancel(fulfillment.id, g.owner, "no_stock");
+      // Not before the warehouse answers.
+      expect(
+        await g.db.shopifyTagWrite.count({ where: { orderId: order.id, add: { has: "out_of_stock" } } }),
+      ).toBe(0);
+      expect(await processOutbound(r.requestId, vendors(euVendor(), fhbVendor()))).toBe("SENT");
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await status(order.id)).toBe("IMPORTED");
+      expect(
+        await g.db.shopifyTagWrite.findFirstOrThrow({
+          where: { orderId: order.id, add: { has: "out_of_stock" } },
+        }),
+      ).toMatchObject({ status: "PENDING", createdById: g.owner.userId });
+      expect(
+        await g.db.orderEvent.count({ where: { orderId: order.id, source: "warehouse_cancel.no_stock" } }),
+      ).toBe(1);
+    });
+
+    it("„Няма наличност“ but the order cannot move on by itself (store not writing to Shopify, store-tag guard): BLOCKED + a task", async () => {
+      const task = (orderId: string) =>
+        g.db.alert.count({ where: { entityId: orderId, kind: "warehouse_cancel_no_stock_by_hand" } });
+      // Store in READ_ONLY: the tag would never reach Shopify.
+      await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "READ_ONLY" } });
+      const a = await shipped({ connectionId: fhb.id });
+      const ra = await cancel(a.fulfillment.id, g.owner, "no_stock");
+      expect(await processOutbound(ra.requestId, vendors(euVendor(), fhbVendor()))).toBe("SENT");
+      expect(await shipStatus(a.fulfillment.id)).toBe("CANCELLED"); // the warehouse's cancel stays recorded
+      expect(await status(a.order.id)).toBe("BLOCKED");
+      expect(await task(a.order.id)).toBe(1);
+      expect(await g.db.shopifyTagWrite.count({ where: { orderId: a.order.id } })).toBe(0);
+
+      // "Само поръчки с таг" and the order has none: the restart guard refuses — never rolls the cancel back.
+      await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "LIVE" } });
+      await g.db.storeOrderTag.upsert({
+        where: { accountId_storeId: { accountId: g.accountId, storeId: g.store.id } },
+        create: { accountId: g.accountId, storeId: g.store.id, tag: "Confirmed" },
+        update: { tag: "Confirmed" },
+      });
+      const b = await shipped({ connectionId: fhb.id });
+      const rb = await cancel(b.fulfillment.id, g.owner, "no_stock");
+      expect(await processOutbound(rb.requestId, vendors(euVendor(), fhbVendor()))).toBe("SENT");
+      expect(await shipStatus(b.fulfillment.id)).toBe("CANCELLED");
+      expect(await status(b.order.id)).toBe("BLOCKED");
+      expect(await task(b.order.id)).toBe(1);
+      await g.db.storeOrderTag.deleteMany({ where: { storeId: g.store.id } });
+    });
+
+    it('„Няма наличност“ on euShipments "not found" (a lost delete\'s answer, no proof): stays BLOCKED, no tag', async () => {
+      await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "LIVE" } });
+      const { order, fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id, g.owner, "no_stock");
+      await g.db.outboundRequest.update({
+        where: { id: r.requestId },
+        data: { status: "UNCERTAIN", lockedAt: new Date(Date.now() - 3_600_000) },
+      });
+      expect(await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date())).toBe(true);
+      expect(await status(order.id)).toBe("BLOCKED");
+      expect(await g.db.shopifyTagWrite.count({ where: { orderId: order.id } })).toBe(0);
+    });
+
+    it("the warehouse refuses a „Няма наличност“ cancel: nothing moves, no tag", async () => {
+      const { order, fulfillment } = await shipped({ connectionId: fhb.id });
+      const r = await cancel(fulfillment.id, g.owner, "no_stock");
+      expect(await processOutbound(r.requestId, vendors(euVendor(), fhbVendor({ refuse: true })))).toBe(
+        "FAILED",
+      );
+      expect(await status(order.id)).not.toBe("IMPORTED");
+      expect(
+        await g.db.shopifyTagWrite.count({ where: { orderId: order.id, add: { has: "out_of_stock" } } }),
+      ).toBe(0);
+    });
+
     it("FHB: already cancelled by hand in ZOE ('{id}#STORNO#…') → NOT_EXISTING_ORDER_ERROR is the delete done", async () => {
       const { order, fulfillment } = await shipped({ connectionId: fhb.id });
       const r = await cancel(fulfillment.id);

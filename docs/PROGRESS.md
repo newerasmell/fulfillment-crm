@@ -502,6 +502,19 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   additive migration): on a phone block (order / euShipments / FHB), anyone who reviews orders can allow the order's
   phone as written with a reason; the dialog shows exactly what goes to the warehouse. Only numbers with a country
   code; bound to the exact phone; audited; a "Разрешено" warning replaces the block and can be taken back.
+- 2026-11-18 Shipments the warehouse cannot fill (src/server/stock/stuck-shipments.ts, with the stock alerts every
+  30 min): an FHB shipment "Приета от склада" 6+ hours after the send, with no status news for an hour, whose
+  warehouse's fresh snapshot shows not one unit of an item it carries (its own FulfillmentLines; physical 0, free 0)
+  gets one CRITICAL task per order — "пренасочете към X" when another (not READ_ONLY) warehouse of the line has the
+  whole order, else "откажете в склада с причина „Няма наличност“"; it closes by itself when the shipment moves on or
+  the units are back. euShipments: its one available number already leaves out accepted orders (owner: both
+  warehouses hold the units), so 0 alone proves nothing — there the task opens only after a day without a new status
+  and says "проверете в кабинета". Movement = the shipment's latest status event. Nothing is cancelled
+  automatically: a person checks and cancels with „Няма наличност“. A warehouse cancel with the reason „Няма наличност“, once the
+  warehouse itself confirms it (never on euShipments "not found"), restarts the order (BLOCKED → IMPORTED as the
+  person who asked, "follow" mode — never rolls the cancel back) and queues the out_of_stock tag, so it lands in
+  „Липсващи артикули“; when that cannot happen (store not LIVE to Shopify, the store-tag guard) the order stays
+  BLOCKED with a task to do it by hand.
 
 ## Open questions
 See SPEC.md §11.
