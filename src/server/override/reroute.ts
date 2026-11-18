@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { recordSkuIncident } from "@/server/warehouse-cases/sku";
 import type { ConnectionType, LiveMode, OutboundStatus, Prisma } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
 import { isFhbOrderEditable } from "@/integrations/fhb-v3/status-map";
@@ -487,6 +488,9 @@ async function complete(r: RerouteRow, confirmation: unknown, now: Date) {
         },
       });
     }
+    // Re-routed away because the old warehouse had no stock: its unit is kept out of sale there.
+    if (r.reasonCode === "no_stock")
+      await recordSkuIncident(tx, { accountId: r.accountId, fulfillmentId: f.id });
     const choice = {
       connectionId: r.toConnectionId,
       via: "reroute",

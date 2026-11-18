@@ -41,7 +41,9 @@
     "toWarehouse": "Create in warehouse",
     "trackingLinks": "Tracking links",
     "stockSync": "Stock sync",
-    "missingStock": "Missing items"
+    "missingStock": "Missing items",
+    "stuckAtWarehouse": "Stuck at warehouse",
+    "warehouseEmails": "Warehouse emails"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -3913,6 +3915,156 @@
       "title": "Automatic out_of_stock tag ({n} stores)",
       "hint": "For the ticked stores: a new order (from the moment it is switched on) that no warehouse of its line can fill gets the out_of_stock tag by itself and appears here. Orders with unknown products are not tagged.",
       "readOnly": "Shopify writing is read only — the tag will not reach Shopify"
+    }
+  },
+  "warehouseCases": {
+    "title": "Stuck at warehouse",
+    "intro": "Shipments the warehouse accepted but has not handed to the courier. One case per company and warehouse, with the emails ready to copy into the company's Gmail. Goal: every order shipped or cancelled within 2–3 days.",
+    "tab": {
+      "cases": "Cases",
+      "sku": "SKUs on watch"
+    },
+    "empty": "No stuck shipments. The list is refreshed every 30 minutes.",
+    "notConfigured": "Warehouse email addresses are missing for some companies.",
+    "settingsLink": "Warehouse emails →",
+    "refresh": "Refresh now",
+    "refreshed": "Refreshed.",
+    "closed": "Closed: every shipment left or was cancelled",
+    "summary": "{count, plural, one {# stuck shipment} other {# stuck shipments}}, the oldest {hours} h",
+    "lastSent": "last email {level} on {when}",
+    "replied": "the warehouse replied",
+    "level": {
+      "0": "On watch",
+      "1": "Email the warehouse",
+      "2": "Reminder",
+      "3": "Decision"
+    },
+    "next": {
+      "1": "Time for the first email to the warehouse: copy it into Gmail, send it and press \"Sent\".",
+      "2": "No movement: send a reminder (second notice).",
+      "3": "Final notice: send it with the escalation addresses and decide for every order."
+    },
+    "nextWait": "The email for this level was sent. If the warehouse does not reply, the next level follows.",
+    "decide": "Decision: shipped within 24 h — otherwise \"Re-route\" or \"Cancel at warehouse\" with \"No stock\" on the order, and an email to the customer.",
+    "col": {
+      "order": "Order",
+      "ref": "Warehouse ref",
+      "status": "Warehouse status",
+      "since": "Waiting",
+      "items": "Items",
+      "state": "State"
+    },
+    "hours": "{hours} h",
+    "deleteUntil": "cancel at euShipments until {date}",
+    "zeroStock": "Warehouse shows 0: {skus}",
+    "held": "Item on watch at this warehouse",
+    "heldFrozen": "Item frozen at this warehouse",
+    "outcome": {
+      "shipped": "Shipped",
+      "cancelled": "Cancelled",
+      "other": "Left the case"
+    },
+    "cancelInFlight": "Cancel / re-route in progress",
+    "confirmed": "Warehouse confirmed stock",
+    "customerEmailed": "Customer written to",
+    "customerEmail": "Email the customer",
+    "warehouseEmail": "Email the warehouse",
+    "addReply": "Add the warehouse's reply",
+    "emailLevel": {
+      "1": "1 · First email",
+      "2": "2 · Reminder",
+      "3": "3 · Final notice"
+    },
+    "sendFrom": "Send it from {email}.",
+    "noSender": "The company's Gmail is not set (Settings → Warehouse emails).",
+    "noRecipients": "No warehouse addresses yet — fill them in under Settings → Warehouse emails.",
+    "to": "To",
+    "cc": "Cc",
+    "subject": "Subject",
+    "body": "Body",
+    "copy": "Copy",
+    "copyBody": "Copy body",
+    "copied": "Copied",
+    "markSent": "Sent",
+    "sentOk": "Recorded as sent.",
+    "replyText": "The warehouse's reply (paste the email text)",
+    "replyConfirms": "Orders the warehouse says it has the goods for and will ship:",
+    "replyHint": "Ticked orders are marked \"Warehouse confirmed stock\" and their items are unlocked at this warehouse if they were on watch.",
+    "saveReply": "Save reply",
+    "replyOk": "Reply saved.",
+    "codeLabel": "Code for {percent}% off (create it in Shopify and paste it here)",
+    "codeLabelNoPercent": "Discount code (optional)",
+    "codePlaceholder": "e.g. SORRY15",
+    "history": "{count, plural, one {# email} other {# emails}} in this case",
+    "kind": {
+      "warehouse": "Email {level} to the warehouse",
+      "reply": "Warehouse reply",
+      "customer": "Email to the customer"
+    },
+    "error": {
+      "forbidden": "You are not allowed to do this.",
+      "not_found": "The case no longer exists — refresh the page.",
+      "invalid": "Invalid data.",
+      "case_closed": "The case is closed."
+    },
+    "sku": {
+      "intro": "Units a warehouse could not give (a stuck order cancelled or re-routed with \"No stock\"). The warehouse puts them back as available, but they are not there — the CRM does not sell them. Two cases within 14 days freeze the item at that warehouse (0 in Shopify). Unlock once the warehouse confirms in writing or after a count.",
+      "empty": "No items on watch.",
+      "product": "Item",
+      "warehouse": "Warehouse",
+      "state": "State",
+      "last": "Last case",
+      "frozen": "Frozen",
+      "watch": "On watch: −{units}",
+      "incidents": "{count, plural, one {# case} other {# cases}}",
+      "unlock": "Unlock",
+      "notePlaceholder": "Reason, e.g. the warehouse confirmed stock",
+      "unlocked": "Unlocked."
+    },
+    "banner": "Stuck at {warehouse}: {hours} h without courier handover",
+    "bannerLink": "Open the case →"
+  },
+  "warehouseEmails": {
+    "title": "Warehouse emails",
+    "intro": "Per company: which warehouse addresses we write to about stuck shipments, from which Gmail, when each email is due and what we write to the customer.",
+    "field": {
+      "senderEmail": "Company Gmail",
+      "warehouseTo": "To (warehouse)",
+      "warehouseCc": "Cc",
+      "escalationTo": "Escalation (added to the third email)",
+      "flagHours": "On watch after (h)",
+      "firstEmailHours": "First email after (h)",
+      "reminderHours": "Reminder after (h)",
+      "decisionHours": "Decision after (h)",
+      "workDaysOnly": "Count working days only (no Saturday and Sunday)",
+      "discountPercent": "Customer discount (%)",
+      "customerSubject": "Customer email subject",
+      "customerBody": "Customer email text"
+    },
+    "placeholder": {
+      "senderEmail": "company@gmail.com",
+      "warehouseTo": "support@warehouse.com, manager@warehouse.com",
+      "warehouseCc": "",
+      "escalationTo": "director@warehouse.com"
+    },
+    "hint": {
+      "senderEmail": "The colleague sends the emails from it. The CRM sends nothing by itself.",
+      "warehouseTo": "Several addresses — separated by commas.",
+      "warehouseCc": "Optional.",
+      "escalationTo": "Added in copy to the final notice.",
+      "customerBody": "Empty = the standard English text. Placeholders: {placeholders}. The code line is left out when there is no code."
+    },
+    "hoursTitle": "When (hours since sent to the warehouse)",
+    "customerTitle": "Customer email",
+    "save": "Save",
+    "saved": "Saved.",
+    "error": {
+      "invalid_email": "Invalid email address.",
+      "too_many_emails": "Too many addresses (up to 20).",
+      "hours_order": "Hours must rise: on watch ≤ first email < reminder < decision.",
+      "forbidden": "Only an owner or admin can change this.",
+      "not_found": "Company not found.",
+      "invalid": "Invalid data."
     }
   }
 }

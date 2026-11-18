@@ -1,4 +1,5 @@
 import type { CrmOrderStatus } from "@/generated/prisma/client";
+import { heldUnits, holdKey, skuHolds } from "@/server/warehouse-cases/sku";
 import type { Role } from "@/generated/prisma/client";
 import { lineConnectionsWhere } from "@/server/lines/lines";
 import { assertCan, can } from "@/server/auth/rbac";
@@ -184,11 +185,17 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
   };
 
   // Stock: line × warehouse (the first non-archived vendor product per product and connection, as routing does).
+  // Units a warehouse could not give (warehouse-cases/sku.ts) are not shown as sellable there, as routing does.
+  const holds = productIds.length ? await skuHolds(actor.accountId, productIds) : new Map();
   const stock = new Map<string, Map<string, StockCell | null>>();
   for (const vp of vendorProducts) {
     if (!vp.productId) continue;
     const row = stock.get(vp.productId) ?? new Map<string, StockCell | null>();
-    if (!row.has(vp.connectionId)) row.set(vp.connectionId, vp.stockLevel ?? null);
+    const h = holds.get(holdKey(vp.connectionId, vp.productId));
+    const level = vp.stockLevel
+      ? { ...vp.stockLevel, sellable: Math.max(0, vp.stockLevel.sellable - (h ? heldUnits(h) : 0)) }
+      : null;
+    if (!row.has(vp.connectionId)) row.set(vp.connectionId, level);
     stock.set(vp.productId, row);
   }
 

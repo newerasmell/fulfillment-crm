@@ -1,6 +1,7 @@
 import { Prisma, type ConnectionType } from "@/generated/prisma/client";
 import type { CompanyScope } from "@/server/companies";
 import { companyFilter } from "@/server/companies";
+import { FROZEN_UNITS } from "@/server/warehouse-cases/sku";
 import { accountDb, withSystemTransaction } from "@/server/db/client";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
 import { lineProductWhere } from "@/server/lines/lines";
@@ -223,7 +224,8 @@ export function buildRow(
       vendorCode: vp.vendorCode,
       physical: level?.physical ?? 0,
       free: level?.free ?? 0,
-      reserved,
+      // A frozen product (warehouse-cases/sku.ts) counts as all of it reserved: shown as the physical number.
+      reserved: reserved >= FROZEN_UNITS ? Math.max(0, level?.physical ?? 0) : reserved,
       sellable: level ? sellableOf(level, reserved) : 0,
       snapshotAt: level?.snapshotAt ?? null,
       source: level?.source ?? null,

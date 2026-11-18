@@ -472,6 +472,8 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
         "CANCELLED",
       );
+      // Re-routed away for „Няма наличност“ from euShipments: its unit is kept out of sale there.
+      expect(await g.db.skuIncident.count({ where: { fulfillmentId: fulfillment.id } })).toBeGreaterThan(0);
       const o = await g.db.order.findUniqueOrThrow({ where: { id: order.id }, include: { check: true } });
       expect(o.status).toBe("APPROVED");
       expect(o.check!.connectionId).toBe(connB.id);

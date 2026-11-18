@@ -378,6 +378,13 @@ below (full list with "final" flags in `eushipments.md`); any unmapped text → 
 - `AVAIL_QTY` (get-prod-avails): per the owner (2026-11-18) accepted, not-yet-shipped orders already hold their units,
   so 0 does not prove a unit is missing. The "shipment without stock" check (src/server/stock/stuck-shipments.ts)
   therefore asks a person to check the cabinet only after a day with no new status of the shipment.
+- "Awaiting pickup" (21) has no definition in the spec. The delete rule groups it with New / Information received as
+  orders "not processed yet", so the CRM reads it as "not picked / handed over", not "packed, waiting for the courier".
+  Delete is possible only in those statuses and only for 14 days: „Блокирани в склад“
+  (src/server/warehouse-cases/) shows that date per shipment and escalates within 72 h.
+- After a delete the spec says nothing about stock. Assumed (owner's real cases): the unit returns to `AVAIL_QTY`
+  whether or not it is on the shelf, so a no-stock cancel records a SkuIncident that keeps it out of sale.
+- No support / ticket API: warehouse contact is by email from the company's Gmail (stage 1: copy / paste).
 
 ### 4.6 Inbound (booking requests) and transfers
 - `POST /fulfilment/create-request {testMode, companyId, warehouseId, courierInc?, trackNumb?,

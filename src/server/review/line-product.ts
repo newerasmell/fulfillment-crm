@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { heldUnits, holdKey, skuHolds } from "@/server/warehouse-cases/sku";
 import { logger } from "@/lib/logger";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
@@ -199,12 +200,24 @@ export async function searchLineProducts(actor: ScopedActor, orderId: string, ra
       take: LINE_PRODUCT_SEARCH_LIMIT,
     }),
   ]);
+  const holds = products.length
+    ? await skuHolds(
+        actor.accountId,
+        products.map((p) => p.id),
+      )
+    : new Map();
   return {
     connections,
     products: products.map((p) => {
       const stock: Record<string, number | null> = {};
-      for (const vp of p.vendorProducts)
-        if (!(vp.connectionId in stock)) stock[vp.connectionId] = vp.stockLevel?.sellable ?? null;
+      for (const vp of p.vendorProducts) {
+        if (vp.connectionId in stock) continue;
+        // Units a warehouse could not give are not offered (as in routing).
+        const h = holds.get(holdKey(vp.connectionId, p.id));
+        stock[vp.connectionId] = vp.stockLevel
+          ? Math.max(0, vp.stockLevel.sellable - (h ? heldUnits(h) : 0))
+          : null;
+      }
       return { id: p.id, sku: p.sku, name: p.name, isTester: p.isTester, stock };
     }),
   };

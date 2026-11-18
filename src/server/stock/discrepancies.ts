@@ -38,7 +38,12 @@ interface Finding {
 export async function stockFindings(accountId: string, now: Date = new Date()): Promise<Finding[]> {
   const db = systemDb();
   const settings = await getStockSettings(accountId);
-  const reservations = await crmReservations(accountId);
+  // Sellable counts the units a warehouse could not give (SkuIncident); the "more reserved than on stock" alert
+  // looks at the orders' own reservations only (a hold is deliberate, not a promise to a customer).
+  const [reservations, orderOnly] = await Promise.all([
+    crmReservations(accountId),
+    crmReservations(accountId, undefined, { holds: false }),
+  ]);
   const out: Finding[] = [];
   const connections = await db.fulfillmentConnection.findMany({
     where: { accountId, enabled: true, type: { in: [...STOCK_CONNECTION_TYPES] } },
@@ -67,14 +72,15 @@ export async function stockFindings(accountId: string, now: Date = new Date()): 
     if (sellable.has(k) || !vp.stockLevel) continue;
     const reserved = reservations.get(k) ?? 0;
     sellable.set(k, sellableOf(vp.stockLevel, reserved));
-    if (vp.stockLevel.physical - reserved < 0)
+    const promised = orderOnly.get(k) ?? 0;
+    if (vp.stockLevel.physical - promised < 0)
       out.push({
         kind: "stock_negative_sellable",
         entityType: "VendorProduct",
         entityId: vp.id,
         severity: "WARNING",
         title: `More reserved than on stock: ${vp.vendorId}`,
-        body: `physical=${vp.stockLevel.physical} reserved=${reserved}`,
+        body: `physical=${vp.stockLevel.physical} reserved=${promised}`,
       });
   }
   for (const c of connections) {

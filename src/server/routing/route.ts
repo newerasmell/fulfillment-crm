@@ -1,4 +1,5 @@
 import { DomainError } from "@/server/accounts";
+import { heldUnits, holdKey, skuHolds } from "@/server/warehouse-cases/sku";
 import { accountDb } from "@/server/db/client";
 import {
   checkStock,
@@ -67,13 +68,16 @@ export async function stockByConnection(
         orderBy: { id: "asc" },
       })
     : [];
+  // Units a warehouse could not give (a cancelled stuck order's unit, or a frozen product) are not offered.
+  const holds = productIds.length ? await skuHolds(accountId, productIds) : new Map();
   const out = new Map<string, StockCheck>();
   for (const c of targets) {
     const available = new Map<string, number>();
     for (const vp of vps) {
       if (vp.connectionId !== c.id || !vp.productId || available.has(vp.productId) || !vp.stockLevel)
         continue;
-      available.set(vp.productId, vp.stockLevel.sellable);
+      const h = holds.get(holdKey(c.id, vp.productId));
+      available.set(vp.productId, Math.max(0, vp.stockLevel.sellable - (h ? heldUnits(h) : 0)));
     }
     out.set(c.id, checkStock(lines, available));
   }

@@ -1,4 +1,5 @@
 import { collectableCod, WHOLE_UNIT_COD_CURRENCIES } from "@/lib/cod-rounding";
+import { holdKey, skuHolds } from "@/server/warehouse-cases/sku";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { paymentUnclear } from "@/server/checks/order-checks";
 import { shopifyPaymentOf } from "@/server/shopify/payment-facts";
@@ -281,9 +282,19 @@ async function stockFindings(
   if (need.size === 0) return [];
   const levels = await accountDb(accountId).stockLevel.findMany({
     where: { vendorProductId: { in: [...need.keys()] } },
-    select: { vendorProductId: true, free: true, reserved: true, snapshotAt: true },
+    select: {
+      vendorProductId: true,
+      free: true,
+      reserved: true,
+      snapshotAt: true,
+      vendorProduct: { select: { connectionId: true, productId: true } },
+    },
   });
   const byVp = new Map(levels.map((l) => [l.vendorProductId, l]));
+  // Units this warehouse could not give before (a no-stock cancel, or a frozen product) are not there to send.
+  const holds = await skuHolds(accountId, [
+    ...new Set(levels.map((l) => l.vendorProduct.productId).filter((p): p is string => !!p)),
+  ]);
   const out: Finding[] = [];
   let oldest: Date | null = null;
   for (const [vpId, n] of need) {
@@ -300,7 +311,20 @@ async function stockFindings(
       );
       continue;
     }
-    const available = level.free - level.reserved;
+    const vpOf = level.vendorProduct;
+    const hold = vpOf.productId ? holds.get(holdKey(vpOf.connectionId, vpOf.productId)) : undefined;
+    if (hold?.frozen) {
+      out.push(
+        block(
+          "stock_frozen",
+          field,
+          `„${n.title}“ е замразен в този склад (два пъти не можа да го даде) — вижте „Блокирани в склад“ → SKU под наблюдение.`,
+          `"${n.title}" is frozen at this warehouse (it could not give it twice) — see "Stuck at warehouse" → SKUs on watch.`,
+        ),
+      );
+      continue;
+    }
+    const available = level.free - level.reserved - (hold?.units ?? 0);
     if (n.qty > available)
       out.push(
         block(

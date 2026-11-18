@@ -250,6 +250,11 @@ model Account {
   carrierTrackingLinks      CarrierTrackingLink[]
   lineStockGuards           LineStockGuard[]
   stockSyncCursor           StockSyncCursor?
+  companyEscalationSettings CompanyEscalationSettings[]
+  warehouseCases            WarehouseCase[]
+  warehouseCaseOrders       WarehouseCaseOrder[]
+  warehouseCaseMessages     WarehouseCaseMessage[]
+  skuIncidents              SkuIncident[]
 }
 
 model User {
@@ -305,6 +310,9 @@ model Company {
   orders      Order[]
   memberScope MembershipCompany[]
   inviteScope InvitationCompany[]
+
+  escalation     CompanyEscalationSettings?
+  warehouseCases WarehouseCase[]
 
   @@unique([accountId, id])
   @@unique([accountId, name])
@@ -532,6 +540,9 @@ model FulfillmentConnection {
   labelPrintJobs             LabelPrintJob[]
   shippingQuotes             ShippingQuote[]
 
+  warehouseCases WarehouseCase[]
+  skuIncidents   SkuIncident[]
+
   @@unique([accountId, id])
   @@index([accountId])
 }
@@ -613,6 +624,8 @@ model Product {
   lineChoices    OrderLineProductChoice[]
   inboundLines   InboundLine[]
   weightWrites   ShopifyWeightWrite[]
+
+  skuIncidents SkuIncident[]
 
   @@unique([accountId, id])
   @@unique([accountId, sku])
@@ -830,6 +843,8 @@ model Order {
   manualShipment    ManualShipment?
   aiSuggestions     AiSuggestion[]
 
+  warehouseCaseOrders WarehouseCaseOrder[]
+
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
   @@index([accountId, status, placedAt])
@@ -903,6 +918,8 @@ model Fulfillment {
   manualShipment    ManualShipment?
   labels            ShipmentLabel[]
   fhbTicket         FhbTicket?
+
+  warehouseCaseOrders WarehouseCaseOrder[]
 
   @@unique([accountId, id])
   @@unique([connectionId, externalId])
@@ -2920,4 +2937,137 @@ model OrderPhoneWaiver {
 
   @@unique([accountId, id])
   @@unique([accountId, orderId])
+}
+
+/// Блокирани в склад (owner request 2026-11-18): per company, who the warehouse emails go to and when they are due.
+/// The emails are assembled by the CRM and sent by a person from the company's own Gmail (copy / paste, stage 1).
+model CompanyEscalationSettings {
+  id              String   @id @default(cuid())
+  accountId       String
+  companyId       String
+  /// The company's own Gmail the emails are sent from (shown so the right mailbox is used; nothing is sent from here).
+  senderEmail     String?
+  warehouseTo     String[]
+  warehouseCc     String[]
+  /// Added to the third (escalation) email.
+  escalationTo    String[]
+  /// Hours a shipment may wait at the warehouse unprocessed, counted from when the CRM sent it.
+  flagHours       Int      @default(12)
+  firstEmailHours Int      @default(24)
+  reminderHours   Int      @default(48)
+  decisionHours   Int      @default(72)
+  /// Saturdays and Sundays do not count.
+  workDaysOnly    Boolean  @default(true)
+  /// Discount offered to the customer of a stuck order (the code itself is created in Shopify by a person).
+  discountPercent Int?
+  customerSubject String?
+  customerBody    String?
+  updatedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, companyId])
+}
+
+/// One open case per company and warehouse: the shipments stuck there, the emails about them and the replies.
+model WarehouseCase {
+  id           String    @id @default(cuid())
+  accountId    String
+  companyId    String
+  connectionId String
+  /// `${companyId}:${connectionId}` while the case is open, null once closed (one open case per pair).
+  openKey      String?
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  account    Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  company    Company                @relation(fields: [accountId, companyId], references: [accountId, id], onDelete: Cascade)
+  connection FulfillmentConnection  @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  orders     WarehouseCaseOrder[]
+  messages   WarehouseCaseMessage[]
+
+  @@unique([accountId, id])
+  @@unique([accountId, openKey])
+  @@index([accountId, closedAt])
+}
+
+model WarehouseCaseOrder {
+  id                   String    @id @default(cuid())
+  accountId            String
+  caseId               String
+  orderId              String
+  fulfillmentId        String
+  /// When the CRM sent the shipment to the warehouse (the clock of the case).
+  since                DateTime
+  addedAt              DateTime  @default(now())
+  resolvedAt           DateTime?
+  /// shipped | cancelled | other (set when the shipment stops being stuck).
+  outcome              String?
+  /// The warehouse wrote that it has the goods and the parcel will leave.
+  warehouseConfirmedAt DateTime?
+  customerEmailedAt    DateTime?
+
+  account     Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  case        WarehouseCase @relation(fields: [accountId, caseId], references: [accountId, id], onDelete: Cascade)
+  order       Order         @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+  fulfillment Fulfillment   @relation(fields: [accountId, fulfillmentId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([caseId, fulfillmentId])
+  @@index([accountId, orderId])
+}
+
+/// An email of a case: sent by a person (marked as sent) or a reply pasted in.
+model WarehouseCaseMessage {
+  id           String   @id @default(cuid())
+  accountId    String
+  caseId       String
+  /// OUT | IN
+  direction    String
+  /// warehouse_1 | warehouse_2 | warehouse_3 | reply | customer
+  kind         String
+  orderId      String?
+  recipients   String[]
+  subject      String
+  body         String
+  /// Orders the email was about (their numbers).
+  orderNumbers String[]
+  createdById  String?
+  createdAt    DateTime @default(now())
+
+  account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  case    WarehouseCase @relation(fields: [accountId, caseId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, caseId, createdAt])
+}
+
+/// A unit the warehouse could not give (a stuck order cancelled or re-routed with „Няма наличност“). Its number goes
+/// back to "available" at the warehouse although the unit is not there: the CRM keeps it out of what it sells.
+/// Two within 14 days → the product is frozen at that warehouse (0) until a person unlocks it.
+model SkuIncident {
+  id            String    @id @default(cuid())
+  accountId     String
+  connectionId  String
+  productId     String
+  fulfillmentId String
+  quantity      Int
+  createdAt     DateTime  @default(now())
+  clearedAt     DateTime?
+  clearedById   String?
+  clearNote     String?
+
+  account    Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  connection FulfillmentConnection @relation(fields: [accountId, connectionId], references: [accountId, id], onDelete: Cascade)
+  product    Product               @relation(fields: [accountId, productId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([fulfillmentId, productId])
+  @@index([accountId, connectionId, productId, clearedAt])
 }
