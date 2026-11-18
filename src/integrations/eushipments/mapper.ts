@@ -1,3 +1,4 @@
+import { waivedPhone } from "@/lib/phone-waiver";
 import { normalisePhone, type PhoneResult, type PhoneRule } from "./phone";
 import type { CreateOrderBody, CreateProductBody, CreateRequestBody, CreateTransferBody } from "./schemas";
 
@@ -84,6 +85,8 @@ export interface BuildOrderInput {
   phone?: string | null;
   /** The group's own phone rule for the destination (only for a country without a built-in rule). */
   phoneRule?: PhoneRule | null;
+  /** A person allowed this order's phone as written ("Позволи за тази поръчка"): sent in this form. */
+  phoneWaiver?: { phoneKey: string; sentPhone: string } | null;
   email?: string | null;
   /** PUDO: office id from offices-by-courier (INTEGRATION_NOTES §4.3 — never the streetName keyword). */
   officeId?: number | null;
@@ -116,7 +119,11 @@ const clean = (v: string | null | undefined) => {
 export function buildCreateOrder(input: BuildOrderInput): BuiltOrder {
   const a = input.address;
   const country = clean(a.countryCode)?.toUpperCase() ?? null;
-  const phone = normalisePhone(a.phone ?? input.phone, country, input.phoneRule);
+  const rawPhone = a.phone ?? input.phone;
+  const waived = waivedPhone(input.phoneWaiver, rawPhone);
+  const phone: PhoneResult = waived
+    ? { ok: true, value: waived, original: rawPhone ?? "", changed: waived !== (rawPhone ?? "").trim() }
+    : normalisePhone(rawPhone, country, input.phoneRule);
   const cod = input.codLocal == null ? 0 : Number(input.codLocal);
 
   let products: CreateOrderBody["products"] = input.lines.map((l) => ({

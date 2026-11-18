@@ -608,6 +608,10 @@ async function euOrderPreflight(
     address: (order.shippingAddress ?? {}) as Record<string, string | null>,
     phone: order.phone,
     phoneRule: customPhoneRule(countrySetting?.phoneRules),
+    phoneWaiver: await db.orderPhoneWaiver.findUnique({
+      where: { accountId_orderId: { accountId, orderId: order.id } },
+      select: { phoneKey: true, sentPhone: true },
+    }),
     email: order.email,
     codLocal: local ? local.amount : null,
     lines: lines.map((l) => ({

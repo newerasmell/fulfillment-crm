@@ -498,6 +498,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   load only from cdn.shopify.com; a removed Shopify image shows until the order is updated again. Orders list: prepaid rows on a pale green
   background. Order items: a thumbnail (Shopify line's variant image — `image { url(transform) }` now in the order
   query, so orders imported or updated from now on; else the product's own first image).
+- 2026-11-18 "Позволи за тази поръчка" for a phone (src/server/review/phone-waiver.ts, OrderPhoneWaiver — new table,
+  additive migration): on a phone block (order / euShipments / FHB), anyone who reviews orders can allow the order's
+  phone as written with a reason; the dialog shows exactly what goes to the warehouse. Only numbers with a country
+  code; bound to the exact phone; audited; a "Разрешено" warning replaces the block and can be taken back.
 
 ## Open questions
 See SPEC.md §11.

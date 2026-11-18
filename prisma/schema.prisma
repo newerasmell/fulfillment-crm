@@ -221,6 +221,7 @@ model Account {
   fulfillBatches            FulfillBatch[]
   shopifyWriteBacks         ShopifyWriteBack[]
   orderStockWaits           OrderStockWait[]
+  orderPhoneWaivers         OrderPhoneWaiver[]
   shopifyTagWrites          ShopifyTagWrite[]
   alertNotes                AlertNote[]
   alertNotifications        AlertNotification[]
@@ -821,6 +822,7 @@ model Order {
   fulfillBatchItems FulfillBatchItem[]
   shopifyWriteBacks ShopifyWriteBack[]
   stockWait         OrderStockWait?
+  phoneWaiver       OrderPhoneWaiver?
   tagWrites         ShopifyTagWrite[]
   warehouseChoice   OrderWarehouseChoice?
   codOverride       OrderCodOverride?
@@ -2896,4 +2898,26 @@ model ShopifyTagWrite {
   @@unique([accountId, id])
   @@index([accountId, orderId])
   @@index([status, nextAttemptAt])
+}
+
+/// "Позволи за тази поръчка" (owner request 2026-11-18): a person allowed this order's phone although it does not fit
+/// the destination country's rule (e.g. a Finnish number for an Estonian address, confirmed with the customer). Bound
+/// to the exact phone: when the order's phone changes, it no longer applies and the check blocks again.
+model OrderPhoneWaiver {
+  id          String   @id @default(cuid())
+  accountId   String
+  orderId     String
+  /// The phone as the order carries it, compacted (digits, a leading "+"): the waiver applies only to this phone.
+  phoneKey    String
+  /// Exactly what goes to the warehouse: "+" and digits (international form).
+  sentPhone   String
+  reason      String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, orderId])
 }

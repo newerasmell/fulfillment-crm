@@ -51,6 +51,8 @@ import { deliveryOfficeView } from "@/server/eushipments/delivery-office";
 import { DeliveryOffice } from "./delivery-office";
 import { WarehouseRecheck } from "./warehouse-recheck";
 import { TasksRecheck } from "./tasks-recheck";
+import { PhoneWaiverButton, PhoneWaiverRevoke } from "./phone-waiver";
+import { internationalPhone, orderPhoneOf, WAIVABLE_PHONE_CODES } from "@/lib/phone-waiver";
 import { EditableCard } from "@/components/ui/EditableCard";
 import { Field, fieldGridCls, Fold } from "@/components/ui/Fold";
 import { ChevronDownIcon } from "@/components/ui/icons";
@@ -174,6 +176,11 @@ export async function NewOrderView({
   const wt = await getTranslations("weights");
   // The phone rule form is offered once, on the first phone finding.
   const phoneFixAt = (check?.findings ?? []).findIndex((f) => PHONE_FINDING_CODES.has(f.code));
+  // "Позволи за тази поръчка" (owner request 2026-11-18): on the first phone block, with what would be sent.
+  const waiverAt = (check?.findings ?? []).findIndex(
+    (f) => f.severity === "hard" && (WAIVABLE_PHONE_CODES as readonly string[]).includes(f.code),
+  );
+  const orderPhoneRaw = orderPhoneOf(order) ?? "";
   const tw = await getTranslations("fulfill.writeBack");
   const money = (v: unknown) => format.number(Number(v), { style: "currency", currency: order.currency });
   const when = (d: Date) => format.dateTime(d, { dateStyle: "medium", timeStyle: "short" });
@@ -634,6 +641,21 @@ export async function NewOrderView({
                               <MarkGatewaysCodButton orderId={order.id} gateways={payment.gateways} />
                             </div>
                           )}
+                        {i === waiverAt && data.editable && data.canReview && (
+                          <PhoneWaiverButton
+                            orderId={order.id}
+                            phone={orderPhoneRaw}
+                            sentPhone={internationalPhone(orderPhoneRaw)}
+                            warehouse={check.routing.connectionName ?? null}
+                          />
+                        )}
+                        {f.code === "order.phone_waived" && data.editable && data.canReview && (
+                          <PhoneWaiverRevoke
+                            orderId={order.id}
+                            reason={order.phoneWaiver?.reason ?? null}
+                            at={order.phoneWaiver ? when(order.phoneWaiver.createdAt) : null}
+                          />
+                        )}
                         {fixes.phone && i === phoneFixAt && (
                           <details className="mt-2" data-testid="phone-rule-fix">
                             <summary className="cursor-pointer text-sm font-semibold text-accent">

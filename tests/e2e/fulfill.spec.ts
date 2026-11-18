@@ -252,3 +252,29 @@ test("order page: product thumbnail, 'Провери задачите' closes a 
   await expect(page.getByTestId("tasks-recheck-result")).toContainText("Затворени задачи: 1");
   await expect(stale).toHaveCount(0);
 });
+
+test("a foreign phone is allowed for one order: what is sent, a reason, then the block is gone (and can be taken back)", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94009");
+  await page.getByRole("link", { name: "#94009" }).click();
+  const findings = page.getByTestId("findings");
+  await expect(findings).toContainText("eushipments.phone_invalid");
+  const box = page.getByTestId("phone-waiver");
+  await box.getByRole("button", { name: "Позволи за тази поръчка" }).click();
+  await expect(box.getByTestId("phone-waiver-sent")).toHaveText("+358406613033");
+  await expect(box.getByTestId("phone-waiver-confirm")).toBeDisabled();
+  await box.getByTestId("phone-waiver-reason").fill("клиентът потвърди номера");
+  await box.screenshot({ path: "test-results/phone-waiver.png" });
+  await box.getByTestId("phone-waiver-confirm").click();
+  await expect(findings).toContainText("order.phone_waived");
+  await expect(findings).not.toContainText("eushipments.phone_invalid");
+  await expect(findings).toContainText("+358406613033");
+  await expect(page.getByTestId("phone-waiver-reason-shown")).toContainText("клиентът потвърди номера");
+  page.once("dialog", (d) => d.accept());
+  await page.getByTestId("phone-waiver-revoke").click();
+  await expect(findings).toContainText("eushipments.phone_invalid");
+  await expect(findings).not.toContainText("order.phone_waived");
+});

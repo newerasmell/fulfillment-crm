@@ -465,6 +465,50 @@ export async function seedFulfill(owner: { userId: string; accountId: string }, 
   // On hold (still editable): it stays out of the review counts other specs assert.
   await db.order.update({ where: { id: officeOrder.id }, data: { status: "ON_HOLD" } });
 
+  // A foreign phone (Finnish) for a BG address: blocked by the country rule; "Позволи за тази поръчка".
+  const foreignPhone = await db.order.create({
+    data: {
+      accountId,
+      companyId,
+      source: "SHOPIFY",
+      storeId: store.id,
+      number: "#94009",
+      status: "IMPORTED",
+      customerName: "Тест Получател",
+      phone: "+358 40 6613033",
+      shippingAddress: {
+        name: "Тест Получател",
+        address1: "ул. Примерна 1",
+        city: "София",
+        zip: "1000",
+        countryCode: "BG",
+        phone: "+358 40 6613033",
+      },
+      currency: "EUR",
+      subtotal: "40.00",
+      total: "40.00",
+      paymentMethod: "PREPAID",
+      countryCode: "BG",
+      placedAt: new Date(),
+      lines: {
+        create: [
+          { productId: product.id, sku: product.sku, title: "Примерен", quantity: 1, unitPrice: "40.00" },
+        ],
+      },
+    },
+  });
+  await db.orderWarehouseChoice.create({
+    data: {
+      accountId,
+      orderId: foreignPhone.id,
+      connectionId: speedyConn.id,
+      reasonCode: "other",
+      reasonText: "e2e",
+    },
+  });
+  await checkOrder(accountId, foreignPhone.id, { actor: { kind: "system" } });
+  await db.order.update({ where: { id: foreignPhone.id }, data: { status: "ON_HOLD" } });
+
   // A create-order cut off by a worker restart (unknown result): "Провери в склада" on its order.
   const cut = await db.order.create({
     data: {

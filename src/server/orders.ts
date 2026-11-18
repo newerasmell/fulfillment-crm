@@ -183,6 +183,7 @@ export async function getOrder(actor: Actor & { companyScope: CompanyScope }, id
         orderBy: { title: "asc" },
       },
       codOverride: { select: { note: true, createdAt: true, previous: true } },
+      phoneWaiver: { select: { sentPhone: true, reason: true, createdById: true, createdAt: true } },
     },
   });
   if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? ""))) {

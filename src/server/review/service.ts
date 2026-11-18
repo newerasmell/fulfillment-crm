@@ -241,6 +241,10 @@ export async function previewAddress(actor: ScopedActor, orderId: string, values
     {
       localCurrency: localCurrencyFor(setting, country),
       phoneRule: customPhoneRule(setting?.phoneRules),
+      phoneWaiver: await db.orderPhoneWaiver.findUnique({
+        where: { accountId_orderId: { accountId: actor.accountId, orderId } },
+        select: { phoneKey: true, sentPhone: true },
+      }),
       routing: routing ?? {
         connectionId: "preview",
         connectionName: null,

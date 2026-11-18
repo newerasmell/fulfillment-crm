@@ -328,6 +328,11 @@ contracts. Separate base URL, separate auth call, camelCase.
 | SK | `+421` / `00421` + 9 digits |
 | HR | `+385` / `00385` + 9 digits |
 Never send two prefixes. Store the original phone; send the normalised one; show both in the UI.
+A person may allow ONE order's phone as written ("Позволи за тази поръчка", 2026-11-18, e.g. a Finnish mobile for an
+Estonian address): only a number with its country code, sent as "+" and digits (E.164); bound to that exact phone
+(OrderPhoneWaiver.phoneKey; the dialog sends the number it showed — a phone changed meanwhile is refused) — a
+changed phone blocks again. euShipments only: FHB already takes any number with its country code (E.164). Our decision, not vendor documentation: the warehouse
+may still refuse it (then a normal submit failure).
 
 **Countries the guideline does not document** (e.g. CY): the CRM refuses the phone (`no_rule`) until the group
 saves its OWN rule in Настройки → Държави (CountrySetting.phoneRules `{style, cc, trunk, lengths[]}`, OWNER/ADMIN,
