@@ -1,5 +1,6 @@
 import type { StockSource } from "@/generated/prisma/client";
 import { accountDb } from "@/server/db/client";
+import { heldUnits, skuHolds, type SkuHold } from "@/server/warehouse-cases/sku";
 
 /**
  * Stock arithmetic shared by the stock board, the discrepancy sweep and the Shopify inventory push (P5-01, P5-03,
@@ -48,8 +49,30 @@ export function isStale(snapshotAt: Date, staleHours: number, now: Date) {
   return now.getTime() - snapshotAt.getTime() > staleHours * 3_600_000;
 }
 
-/** Units reserved by the CRM per (connection, product). */
+/**
+ * Units reserved by the CRM per (connection, product), plus the units a warehouse could not give (SkuIncident,
+ * warehouse-cases/sku.ts): a cancelled stuck order's unit is back in the warehouse's "available" number although it
+ * is not on the shelf, so it is counted as reserved (a frozen product: all of it).
+ */
 export async function crmReservations(
+  accountId: string,
+  onlyProductIds?: string[],
+  /** holds: false = the orders' reservations only (the "more reserved than on stock" alert). */
+  opts: { excludeOrderIds?: string[]; holds?: boolean } = {},
+): Promise<Map<string, number>> {
+  const [out, holds] = await Promise.all([
+    orderReservations(accountId, onlyProductIds, opts),
+    opts.holds === false ? new Map<string, SkuHold>() : skuHolds(accountId, onlyProductIds),
+  ]);
+  for (const h of holds.values()) {
+    const k = reservationKey(h.connectionId, h.productId);
+    out.set(k, (out.get(k) ?? 0) + heldUnits(h));
+  }
+  return out;
+}
+
+/** Units reserved by the CRM's own orders per (connection, product). */
+async function orderReservations(
   accountId: string,
   /** Only these products (the fast sync and a fast push's re-plan): the same numbers, a much smaller read. */
   onlyProductIds?: string[],

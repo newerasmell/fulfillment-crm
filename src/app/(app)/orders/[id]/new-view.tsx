@@ -51,6 +51,7 @@ import { uncertainCreatesOf } from "@/server/outbox/recheck";
 import { deliveryOfficeView } from "@/server/eushipments/delivery-office";
 import { DeliveryOffice } from "./delivery-office";
 import { WarehouseRecheck } from "./warehouse-recheck";
+import { StuckCaseBanner } from "./stuck-banner";
 import { TasksRecheck } from "./tasks-recheck";
 import { PhoneWaiverButton, PhoneWaiverRevoke } from "./phone-waiver";
 import { internationalPhone, orderPhoneOf, WAIVABLE_PHONE_CODES } from "@/lib/phone-waiver";
@@ -323,6 +324,7 @@ export async function NewOrderView({
           canSet={can(ctx.role, "orders.fulfill")}
         />
       )}
+      <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
       {order.alerts.some((a) => a.status !== "RESOLVED") && can(ctx.role, "orders.review") && (
         <TasksRecheck orderId={order.id} />
       )}

@@ -538,6 +538,21 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the 10-min alerts sweep) when every refused shipment is cancelled by the warehouse's word or — for a no-stock cancel
   only — shipped. Any other reason (customer cancelled…) keeps it. CZ4112: the orphaned-fulfillment task closes by
   itself when the new shipment takes the Shopify fulfillment over.
+- 2026-11-18 „Блокирани в склад“ (owner request; real case: euShipments orders in "Awaiting pickup" for days, emails
+  unanswered). src/server/warehouse-cases/: a shipment the warehouse accepted but has not handed to the courier
+  (euShipments ACCEPTED; FHB ACCEPTED/PROCESSING) is stuck from `flagHours` after the CRM sent it (Sat/Sun not counted
+  by default). One case per company × warehouse; levels 12 h watch / 24 h first email / 48 h reminder / 72 h final
+  notice + decision (owner: shipped or cancelled within 2–3 days), per company in Настройки → Мейли към склада
+  (CompanyEscalationSettings: company Gmail, To/Cc/escalation addresses, hours, discount %, customer template).
+  Stage 1 = copy / paste: the CRM assembles English plain-text emails (src/lib/warehouse-case-emails.ts), a person
+  sends them from the company's Gmail and presses „Изпратено“, pastes replies, and writes to the customer
+  (replacement / refund / discount code typed in). One task per warehouse while an email is due (CRITICAL at the
+  decision level); the case closes when every shipment moved. Order page banner. Nothing is cancelled or sent by the
+  CRM. SkuIncident: a no-stock cancel / re-route of an euShipments shipment keeps its unit out of sale there (counted
+  as reserved in crmReservations → push, missing-items, board; subtracted in routing); two within 14 days freeze the
+  product at that warehouse; unlocked by a reply "we have it" (ticked order) or by hand with a note. FHB physical is
+  honest, so no incident there. Migration 20261118200000_warehouse_cases: five new tables only. Next (owner): Gmail
+  API sending after approval, then reading replies; daily report.
 
 ## Open questions
 See SPEC.md §11.

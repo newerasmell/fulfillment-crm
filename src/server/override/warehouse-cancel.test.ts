@@ -330,6 +330,18 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
       expect(
         await g.db.orderEvent.count({ where: { orderId: order.id, source: "warehouse_cancel.no_stock" } }),
       ).toBe(1);
+      // FHB's physical number is honest: a cancel there holds no unit back.
+      expect(await g.db.skuIncident.count({ where: { fulfillmentId: fulfillment.id } })).toBe(0);
+    });
+
+    it("„Няма наличност“ at euShipments: once confirmed, the unit is kept out of sale there (SkuIncident)", async () => {
+      await g.db.store.update({ where: { id: g.store.id }, data: { writeBackMode: "LIVE" } });
+      const { fulfillment } = await shipped();
+      const r = await cancel(fulfillment.id, g.owner, "no_stock");
+      expect(await g.db.skuIncident.count({ where: { fulfillmentId: fulfillment.id } })).toBe(0);
+      expect(await processOutbound(r.requestId, vendors(euVendor(), fhbVendor()))).toBe("SENT");
+      expect(await shipStatus(fulfillment.id)).toBe("CANCELLED");
+      expect(await g.db.skuIncident.count({ where: { fulfillmentId: fulfillment.id } })).toBeGreaterThan(0);
     });
 
     it("„Изпратена извън CRM“ restarts only when every live Shopify fulfillment is the CRM's own (of a cancelled shipment)", async () => {
@@ -420,6 +432,7 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
       expect(await confirmDeleteByNotFound(g.accountId, fulfillment.id, new Date())).toBe(true);
       expect(await status(order.id)).toBe("BLOCKED");
       expect(await g.db.shopifyTagWrite.count({ where: { orderId: order.id } })).toBe(0);
+      expect(await g.db.skuIncident.count({ where: { fulfillmentId: fulfillment.id } })).toBe(0);
     });
 
     it("the warehouse refuses a „Няма наличност“ cancel: nothing moves, no tag", async () => {

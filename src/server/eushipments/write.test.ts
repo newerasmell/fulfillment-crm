@@ -1216,6 +1216,29 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect(await g.db.outboundRequest.count({ where: { idempotencyKey: "order:TST-1012" } })).toBe(1);
   });
 
+  it("stock pre-flight: units the warehouse could not give are not there to send; a frozen product is blocked", async () => {
+    const held = await euTestOrder(g, { number: "#1030" }); // 2 pcs ordered
+    await mapProduct(held.product.id, `ref-${held.product.sku}`, { free: 2, reserved: 0 });
+    const incident = (fulfillmentId: string) =>
+      systemDb().skuIncident.create({
+        data: {
+          accountId: g.accountId,
+          connectionId: g.connection.id,
+          productId: held.product.id,
+          fulfillmentId,
+          quantity: 1,
+        },
+      });
+    await incident("synthetic-shipment-1");
+    const r1 = await queueEuOrder(g.owner, { orderId: held.order.id, connectionId: g.connection.id });
+    expect(r1.status).toBe("blocked");
+    expect(r1.findings.map((f) => f.code)).toContain("insufficient_stock");
+    await incident("synthetic-shipment-2");
+    const r2 = await queueEuOrder(g.owner, { orderId: held.order.id, connectionId: g.connection.id });
+    expect(r2.findings.map((f) => f.code)).toContain("stock_frozen");
+    await systemDb().skuIncident.deleteMany({ where: { productId: held.product.id } });
+  });
+
   it("stock pre-flight: blocks above free minus reserved and without a snapshot; warns on an old snapshot", async () => {
     const short = await euTestOrder(g, { number: "#1020" }); // 2 pcs ordered
     await mapProduct(short.product.id, `ref-${short.product.sku}`, { free: 3, reserved: 2 });

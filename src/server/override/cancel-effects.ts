@@ -2,6 +2,7 @@ import type { OutboundStatus, Prisma } from "@/generated/prisma/client";
 import { scrubText } from "@/lib/scrub";
 import { isRerouteOwnedShipment, transition } from "@/server/pipeline";
 import { queueTagChange } from "@/server/shopify/tag-queue";
+import { recordSkuIncident } from "@/server/warehouse-cases/sku";
 
 /**
  * What a vendor answer to a CRM "cancel at warehouse" means for the ORDER (owner request 2026-11-03). Kept free of
@@ -201,12 +202,15 @@ export async function warehouseCancelConfirmed(
       });
     // Cancelled because the warehouse has no stock: on to „Липсващи артикули“ (owner request 2026-11-18).
     // Only on the warehouse's own word: never on euShipments "not found" taken as a lost delete's answer (no proof).
-    if (meta?.reasonCode === "no_stock" && meta.requestedById && input.source !== "eushipments.not_found")
+    if (meta?.reasonCode === "no_stock" && meta.requestedById && input.source !== "eushipments.not_found") {
+      // Its unit is back in the warehouse's "available" number although it is not there: kept out of sale.
+      await recordSkuIncident(tx, { accountId: input.accountId, fulfillmentId: input.fulfillmentId });
       await toMissingItems(tx, {
         accountId: input.accountId,
         orderId: input.orderId,
         userId: meta.requestedById,
       });
+    }
     return t.changed;
   }
   // The shipment is gone at the warehouse but the order could not follow (e.g. a person moved it meanwhile).

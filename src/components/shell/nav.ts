@@ -22,6 +22,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/orders", key: "orders", icon: "orders" },
       { href: "/orders/missing-stock", key: "missingStock", icon: "box" },
+      { href: "/orders/stuck", key: "stuckAtWarehouse", icon: "warehouse" },
       { href: "/shipments", key: "shipments", icon: "truck" },
       { href: "/returns", key: "returns", icon: "returns" },
       { href: "/tickets", key: "tickets", icon: "ticket" },
@@ -58,6 +59,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/routing", key: "routing", icon: "route" },
       { href: "/settings/countries", key: "countries", icon: "pin" },
       { href: "/settings/tracking-links", key: "trackingLinks", icon: "truck" },
+      { href: "/settings/warehouse-emails", key: "warehouseEmails", icon: "bell" },
       { href: "/settings/stock-sync", key: "stockSync", icon: "box", permission: "inventory.push" },
       { href: "/ai", key: "ai", icon: "sparkle", permission: "ai.read" },
       { href: "/directory", key: "directory", icon: "pin" },

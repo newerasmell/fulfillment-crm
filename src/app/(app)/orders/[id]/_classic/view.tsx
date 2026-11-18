@@ -1,4 +1,5 @@
 import { collectableCod } from "@/lib/cod-rounding";
+import { StuckCaseBanner } from "../stuck-banner";
 import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../../order-nav";
 import { QtyHoldBanner } from "../qty-hold";
@@ -272,6 +273,7 @@ export async function ClassicOrderView({
           canSet={can(ctx.role, "orders.fulfill")}
         />
       )}
+      <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
       {order.alerts
         .filter((a) => a.status !== "RESOLVED" && !(a.kind === CARRIER_TASK && heldCarriers.length > 0))
         .map((a) => (
