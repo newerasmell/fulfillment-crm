@@ -213,6 +213,7 @@ export async function validateOrder(
       },
       company: { select: { lineId: true } },
       codOverride: { select: { id: true } },
+      phoneWaiver: { select: { phoneKey: true, sentPhone: true } },
       // "Изпрати от" (P4-09): a person's warehouse choice replaces the routing decision until it is cleared.
       warehouseChoice: true,
     },
@@ -332,6 +333,7 @@ export async function validateOrder(
     {
       localCurrency: localCurrencyFor(setting, country),
       phoneRule: customPhoneRule(setting?.phoneRules),
+      phoneWaiver: order.phoneWaiver,
       routing,
       stock,
       duplicates,

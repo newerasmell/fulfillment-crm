@@ -1,3 +1,4 @@
+import { waivedPhone } from "@/lib/phone-waiver";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 import { SHOPIFY_TEST_TAG } from "@/server/pipeline";
 import type { RoutingDecision, StockCheck } from "@/server/routing";
@@ -75,6 +76,8 @@ export interface OrderCheckContext {
   /** The group's own phone rule for the destination (CountrySetting.phoneRules); only used by the E.164
    *  conversion for a country the built-in calling-code table lacks. */
   phoneRule?: { cc: string; trunk: string } | null;
+  /** "Позволи за тази поръчка": this order's phone allowed as written by a person (see review/phone-waiver.ts). */
+  phoneWaiver?: { phoneKey: string; sentPhone: string } | null;
   routing: RoutingDecision;
   /** Stock at the connection that will ship (the routed one, or the operator's choice). */
   stock: StockCheck | null;
@@ -201,7 +204,18 @@ export function orderLevelFindings(o: CheckOrder, ctx: OrderCheckContext): Order
 
   // Phone: must be convertible to E.164 for the destination (vendors get the normalised form).
   const rawPhone = o.phone ?? addr.phone ?? null;
-  const phone = normalisePhoneE164(rawPhone, country, ctx.phoneRule);
+  const waived = waivedPhone(ctx.phoneWaiver, rawPhone);
+  const phone = waived ?? normalisePhoneE164(rawPhone, country, ctx.phoneRule);
+  if (waived && ctx.phoneWaiver)
+    out.push(
+      f(
+        "order.phone_waived",
+        "soft",
+        "phone",
+        `Разрешено за тази поръчка: телефонът се изпраща като ${waived}.`,
+        `Allowed for this order: the phone is sent as ${waived}.`,
+      ),
+    );
   if (blank(rawPhone))
     out.push(
       f(

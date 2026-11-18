@@ -130,7 +130,7 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
     async orderDeleteRejected(ctx, error) {
       const fulfillmentId = s(ctx.fulfillmentId);
       if (!fulfillmentId) return;
-      await tx(async (db) => {
+      await tx(async (db, { lockForUpdate }) => {
         const f = await db.fulfillment.findUnique({ where: { id: fulfillmentId } });
         if (!f || f.status === "CANCELLED") return;
         await db.fulfillmentEvent.create({
@@ -144,13 +144,17 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
             payload: { event: "delete_refused", error: scrubText(error, 300) },
           },
         });
-        await warehouseCancelRefused(db, {
-          accountId: f.accountId,
-          orderId: f.orderId,
-          fulfillmentId,
-          detail: scrubText(error, 500),
-          source: "eushipments.delete",
-        });
+        await warehouseCancelRefused(
+          db,
+          {
+            accountId: f.accountId,
+            orderId: f.orderId,
+            fulfillmentId,
+            detail: scrubText(error, 500),
+            source: "eushipments.delete",
+          },
+          lockForUpdate,
+        );
       });
     },
 

@@ -342,7 +342,7 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
           where: { connectionId_externalId: { connectionId, externalId: e.envelope.id } },
         });
         if (!f) return;
-        await withAccountTransaction(accountId, async (tx) => {
+        await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
           if (e.operation === "fhb.order.create") {
             await tx.fulfillment.update({ where: { id: f.id }, data: { status: "SUBMIT_FAILED" } });
             await transition(tx, {
@@ -366,13 +366,17 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
             },
           });
           if (e.operation === "fhb.order.delete")
-            await warehouseCancelRefused(tx, {
-              accountId,
-              orderId: f.orderId,
-              fulfillmentId: f.id,
-              detail: message.slice(0, 500),
-              source: "fhb:fhb.order.delete",
-            });
+            await warehouseCancelRefused(
+              tx,
+              {
+                accountId,
+                orderId: f.orderId,
+                fulfillmentId: f.id,
+                detail: message.slice(0, 500),
+                source: "fhb:fhb.order.delete",
+              },
+              lockForUpdate,
+            );
         });
         // A vendor 400 means a pre-flight rule is missing (CLAUDE.md): make it visible.
         await raiseAlertOnce(accountId, {

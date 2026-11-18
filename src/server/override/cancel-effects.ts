@@ -1,6 +1,7 @@
 import type { OutboundStatus, Prisma } from "@/generated/prisma/client";
 import { scrubText } from "@/lib/scrub";
 import { isRerouteOwnedShipment, transition } from "@/server/pipeline";
+import { queueTagChange } from "@/server/shopify/tag-queue";
 
 /**
  * What a vendor answer to a CRM "cancel at warehouse" means for the ORDER (owner request 2026-11-03). Kept free of
@@ -198,6 +199,14 @@ export async function warehouseCancelConfirmed(
           }),
         },
       });
+    // Cancelled because the warehouse has no stock: on to „Липсващи артикули“ (owner request 2026-11-18).
+    // Only on the warehouse's own word: never on euShipments "not found" taken as a lost delete's answer (no proof).
+    if (meta?.reasonCode === "no_stock" && meta.requestedById && input.source !== "eushipments.not_found")
+      await toMissingItems(tx, {
+        accountId: input.accountId,
+        orderId: input.orderId,
+        userId: meta.requestedById,
+      });
     return t.changed;
   }
   // The shipment is gone at the warehouse but the order could not follow (e.g. a person moved it meanwhile).
@@ -221,7 +230,10 @@ export async function warehouseCancelConfirmed(
 export async function warehouseCancelRefused(
   tx: Tx,
   input: { accountId: string; orderId: string; fulfillmentId: string; detail: string; source: string },
+  /** The order row lock: serialises with "Провери задачите" (it must never close the task this refusal joins). */
+  lock?: (table: "Order", id: string) => Promise<void>,
 ) {
+  if (lock) await lock("Order", input.orderId);
   if (await isRerouteOwnedShipment(tx, input.fulfillmentId)) return false;
   const f = await tx.fulfillment.findUnique({
     where: { id: input.fulfillmentId },
@@ -251,5 +263,87 @@ export async function warehouseCancelRefused(
       meta: json({ fulfillmentId: input.fulfillmentId }),
     },
   });
+  return true;
+}
+
+/** Shopify tag that puts an order in „Липсващи артикули“ (src/server/stock/waiting.ts OUT_OF_STOCK_TAG). */
+const OUT_OF_STOCK_TAG = "out_of_stock";
+
+/**
+ * A warehouse cancel requested with the reason „Няма наличност“ and confirmed by the warehouse: the order starts over
+ * (BLOCKED → IMPORTED, as the person who asked for the cancel — "Започни отначало") and gets the out_of_stock tag in
+ * Shopify, so it is followed in „Липсващи артикули“ (an expected inbound is shown there). Only a Shopify order of a
+ * store that writes to Shopify (LIVE), with no shipment left at any warehouse. Runs inside the transaction that
+ * records the warehouse's cancel, so it never throws: whatever stops it leaves the order BLOCKED with a task.
+ */
+async function toMissingItems(tx: Tx, a: { accountId: string; orderId: string; userId: string }) {
+  const order = await tx.order.findFirst({
+    where: { id: a.orderId, accountId: a.accountId },
+    select: {
+      status: true,
+      source: true,
+      storeId: true,
+      number: true,
+      store: { select: { writeBackMode: true } },
+    },
+  });
+  if (!order || order.status !== "BLOCKED") return false;
+  const byHand = (why: string) =>
+    openOrderTask(tx, {
+      accountId: a.accountId,
+      orderId: a.orderId,
+      kind: "warehouse_cancel_no_stock_by_hand",
+      severity: "WARNING",
+      title: `Поръчка ${order.number}: отказана в склада (няма наличност) — сложете таг out_of_stock в Shopify и „Започни отначало“`,
+      body: `The warehouse confirmed the cancel (no stock), but the order could not be moved to „Липсващи артикули“ automatically (${why}).`,
+    });
+  if (order.source !== "SHOPIFY" || !order.storeId) {
+    await byHand("not a Shopify order");
+    return false;
+  }
+  const active = await tx.fulfillment.count({
+    where: { accountId: a.accountId, orderId: a.orderId, status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+  });
+  if (active) {
+    await byHand("another shipment of the order is still at a warehouse");
+    return false;
+  }
+  // A store that does not write to Shopify would never get the tag: the order would only start over.
+  if (order.store?.writeBackMode !== "LIVE") {
+    await byHand(`store write-back ${order.store?.writeBackMode ?? "?"}`);
+    return false;
+  }
+  const moved = await transition(tx, {
+    orderId: a.orderId,
+    to: "IMPORTED",
+    cause: "restart",
+    actor: { kind: "user", userId: a.userId },
+    source: "warehouse_cancel.no_stock",
+    reason: "Няма наличност в склада — към „Липсващи артикули“",
+    // Never throws (a store-tag guard, a race): the warehouse's cancel must stay recorded.
+    mode: "follow",
+  });
+  if (!moved.changed) {
+    await byHand(`${moved.reason ?? "refused"}${moved.guard ? `: ${moved.guard}` : ""}`);
+    return false;
+  }
+  // Adding a tag Shopify already has changes nothing there; the sender then starts following the order.
+  const pending = await tx.shopifyTagWrite.count({
+    where: {
+      accountId: a.accountId,
+      orderId: a.orderId,
+      add: { has: OUT_OF_STOCK_TAG },
+      status: { in: ["PENDING", "SENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD"] },
+    },
+  });
+  if (!pending)
+    await queueTagChange(tx, {
+      accountId: a.accountId,
+      storeId: order.storeId,
+      orderId: a.orderId,
+      add: [OUT_OF_STOCK_TAG],
+      remove: [],
+      createdById: a.userId,
+    });
   return true;
 }

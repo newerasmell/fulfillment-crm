@@ -8,6 +8,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { checkOrderAs, type Finding } from "@/server/checks";
 import { markOrderGatewayCod } from "@/server/shopify/payment";
+import { allowOrderPhone, revokeOrderPhone } from "@/server/review/phone-waiver";
 import {
   clearOrderCod,
   setOrderCod,
@@ -313,6 +314,33 @@ export async function setOutOfStockAutoTagAction(input: {
     const r = await setOutOfStockAutoTag(actorFrom(ctx), input);
     revalidatePath("/orders/missing-stock");
     return { ok: true, ...r };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Позволи за тази поръчка": this order's phone is sent as written (international form). */
+export async function allowOrderPhoneAction(input: {
+  orderId: string;
+  reason: string;
+  phoneKey: string;
+}): Promise<ReviewActionResult & { sentPhone?: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await allowOrderPhone(actorFrom(ctx), input);
+    revalidatePath(orderPath(input.orderId));
+    return { ok: true, sentPhone: r.sentPhone };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+export async function revokeOrderPhoneAction(orderId: string): Promise<ReviewActionResult> {
+  const ctx = await requireAccountContext();
+  try {
+    await revokeOrderPhone(actorFrom(ctx), orderId);
+    revalidatePath(orderPath(orderId));
+    return { ok: true };
   } catch (err) {
     return toError(err);
   }

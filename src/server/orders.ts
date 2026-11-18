@@ -177,12 +177,13 @@ export async function getOrder(actor: Actor & { companyScope: CompanyScope }, id
       company: { select: { name: true } },
       lines: {
         include: {
-          product: { select: { id: true, sku: true, name: true } },
+          product: { select: { id: true, sku: true, name: true, images: true } },
           productChoice: { select: { userId: true, note: true, createdAt: true } },
         },
         orderBy: { title: "asc" },
       },
       codOverride: { select: { note: true, createdAt: true, previous: true } },
+      phoneWaiver: { select: { sentPhone: true, reason: true, createdById: true, createdAt: true } },
     },
   });
   if (!order || (actor.companyScope && !actor.companyScope.includes(order.companyId ?? ""))) {

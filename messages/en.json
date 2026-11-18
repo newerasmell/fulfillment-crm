@@ -560,6 +560,52 @@
         "invalid": "Invalid data."
       },
       "courier": "Courier: {name} (offices are searched in its list)"
+    },
+    "tasksRecheck": {
+      "button": "Re-check tasks",
+      "checking": "Checking…",
+      "closed": "Tasks closed: {n}",
+      "nothing": "Nothing to close — their causes still hold.",
+      "stays": "Stays: {what}",
+      "manual": "only a person closes this task (Tasks)",
+      "failed": "The check failed.",
+      "why": {
+        "old_shipment_live": "the old shipment is still live at the warehouse",
+        "old_shipment_unproven": "the old shipment was given up only because the warehouse does not list it — check the cabinet",
+        "no_earlier_shipment": "no earlier shipment to check",
+        "old_shipment_cancelled": "the old shipment is cancelled at the warehouse",
+        "writeback_failed_left": "a Shopify write-back failed",
+        "writeback_failed_none": "no failed Shopify write-back",
+        "writeback_uncertain_left": "a Shopify write-back has an unknown result",
+        "writeback_uncertain_none": "no Shopify write-back with an unknown result",
+        "orphan_left": "the Shopify fulfillment is not yet taken over by a live shipment",
+        "orphan_adopted": "the Shopify fulfillment was taken over by the live shipment"
+      }
+    },
+    "phoneWaiver": {
+      "button": "Allow for this order",
+      "title": "Allow the phone for this order",
+      "check": "Check",
+      "checkValue": "The phone does not fit the country's rule",
+      "orderPhone": "Phone on the order",
+      "sent": "Sent to the warehouse exactly as",
+      "warehouse": "Warehouse",
+      "reason": "Reason (required)",
+      "reasonPlaceholder": "e.g. the customer confirmed the number by phone",
+      "warning": "The warehouse or courier may still refuse the number. The permission covers only this number on this order — if the phone changes, the check blocks again.",
+      "confirm": "Allow",
+      "cancel": "Cancel",
+      "revoke": "Take the permission back",
+      "revokeConfirm": "The phone will be checked by the country's rule again. Continue?",
+      "notInternational": "The number has no country code — it cannot be allowed as written. Fix it under “Shipping address” with the code (e.g. +358…).",
+      "errors": {
+        "phone_not_international": "The number has no country code — fix it with the code (e.g. +358…).",
+        "not_editable": "The order can no longer be changed.",
+        "forbidden": "You may not do this.",
+        "failed": "It did not work — try again.",
+        "phone_changed": "The order's phone changed — reopen and check it."
+      },
+      "given": "Reason: “{reason}” · {at}"
     }
   },
   "orderStatus": {

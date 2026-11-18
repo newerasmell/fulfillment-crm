@@ -1,5 +1,6 @@
 import { runFastStockSync } from "./fast-sync";
 import { runStockWaitEvaluation } from "./waiting";
+import { sweepShipmentsWithoutStock } from "./stuck-shipments";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { ShopifyError } from "@/integrations/shopify/errors";
@@ -38,6 +39,9 @@ export async function registerStockWorkers(boss: PgBoss, opts: { pollingInterval
   await boss.work(QUEUES.stockDiscrepancies.name, opts, async () => {
     const r = await sweepStockAlerts();
     if (r.created || r.resolved) logger.info(r, "stock discrepancy alerts");
+    // Accepted shipments whose warehouse has none of an item (owner request 2026-11-18): a task per order.
+    const n = await sweepShipmentsWithoutStock();
+    if (n.opened || n.resolved) logger.info(n, "shipments without stock");
   });
 
   await boss.work(QUEUES.stockInboundSweep.name, opts, async () => {

@@ -232,3 +232,49 @@ test("missing items: tabs, expected item, confirm a ready order (tags go to Shop
   await expect(ready.getByTestId("missing-stock-write")).toContainText("Сменя се на Confirmed");
   await page.screenshot({ path: "test-results/missing-stock-ready.png", fullPage: true });
 });
+
+test("order page: product thumbnail, 'Провери задачите' closes a stale task; prepaid rows are green", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94008");
+  const row = page.locator("tr", { has: page.getByRole("link", { name: "#94008" }) });
+  await expect(row).toHaveAttribute("data-prepaid", "1");
+  await row.getByRole("link", { name: "#94008" }).click();
+  await expect(page.getByTestId("line-thumb").first()).toHaveAttribute(
+    "src",
+    "https://cdn.shopify.com/s/files/1/0000/0001/files/p.png",
+  );
+  const stale = page.getByText("складът отказа да откаже пратка");
+  await expect(stale).toBeVisible();
+  await page.getByTestId("tasks-recheck").getByRole("button", { name: "Провери задачите" }).click();
+  await expect(page.getByTestId("tasks-recheck-result")).toContainText("Затворени задачи: 1");
+  await expect(stale).toHaveCount(0);
+});
+
+test("a foreign phone is allowed for one order: what is sent, a reason, then the block is gone (and can be taken back)", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await login(page);
+  await page.goto("/orders?tab=all&q=94009");
+  await page.getByRole("link", { name: "#94009" }).click();
+  const findings = page.getByTestId("findings");
+  await expect(findings).toContainText("eushipments.phone_invalid");
+  const box = page.getByTestId("phone-waiver");
+  await box.getByRole("button", { name: "Позволи за тази поръчка" }).click();
+  await expect(box.getByTestId("phone-waiver-sent")).toHaveText("+358406613033");
+  await expect(box.getByTestId("phone-waiver-confirm")).toBeDisabled();
+  await box.getByTestId("phone-waiver-reason").fill("клиентът потвърди номера");
+  await box.screenshot({ path: "test-results/phone-waiver.png" });
+  await box.getByTestId("phone-waiver-confirm").click();
+  await expect(findings).toContainText("order.phone_waived");
+  await expect(findings).not.toContainText("eushipments.phone_invalid");
+  await expect(findings).toContainText("+358406613033");
+  await expect(page.getByTestId("phone-waiver-reason-shown")).toContainText("клиентът потвърди номера");
+  page.once("dialog", (d) => d.accept());
+  await page.getByTestId("phone-waiver-revoke").click();
+  await expect(findings).toContainText("eushipments.phone_invalid");
+  await expect(findings).not.toContainText("order.phone_waived");
+});

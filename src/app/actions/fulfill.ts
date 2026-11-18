@@ -18,6 +18,7 @@ import {
   type CanaryView,
 } from "@/server/fulfill";
 import { webBoss } from "@/server/jobs/boss";
+import { recheckOrderTasks } from "@/server/order-tasks";
 import { confirmAbsentAndResend, requestWarehouseRecheck } from "@/server/outbox/recheck";
 import { QUEUES } from "@/server/jobs/queues";
 
@@ -192,6 +193,20 @@ export async function setShipmentCarrierAction(input: {
     });
     revalidatePath(`/orders/${orderId}`);
     return { ok: true, released: r.released };
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** "Провери задачите": the order's open tasks are checked again; those whose cause is gone are closed. */
+export async function recheckOrderTasksAction(
+  orderId: string,
+): Promise<{ closed: number; kept: { title: string; why: string | null }[] } | Fail> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await recheckOrderTasks(actorFrom(ctx), { orderId });
+    revalidatePath(`/orders/${orderId}`);
+    return { closed: r.closed.length, kept: r.kept.map((k) => ({ title: k.title, why: k.why })) };
   } catch (err) {
     return toError(err);
   }

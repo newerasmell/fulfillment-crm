@@ -328,6 +328,11 @@ contracts. Separate base URL, separate auth call, camelCase.
 | SK | `+421` / `00421` + 9 digits |
 | HR | `+385` / `00385` + 9 digits |
 Never send two prefixes. Store the original phone; send the normalised one; show both in the UI.
+A person may allow ONE order's phone as written ("Позволи за тази поръчка", 2026-11-18, e.g. a Finnish mobile for an
+Estonian address): only a number with its country code, sent as "+" and digits (E.164); bound to that exact phone
+(OrderPhoneWaiver.phoneKey; the dialog sends the number it showed — a phone changed meanwhile is refused) — a
+changed phone blocks again. euShipments only: FHB already takes any number with its country code (E.164). Our decision, not vendor documentation: the warehouse
+may still refuse it (then a normal submit failure).
 
 **Countries the guideline does not document** (e.g. CY): the CRM refuses the phone (`no_rule`) until the group
 saves its OWN rule in Настройки → Държави (CountrySetting.phoneRules `{style, cc, trunk, lengths[]}`, OWNER/ADMIN,
@@ -369,6 +374,10 @@ below (full list with "final" flags in `eushipments.md`); any unmapped text → 
 | Cancel (38) — spec marks it **not final** | CANCEL_PENDING (keep polling) | |
 | Lost shipment (13), Damaged shipment (27), Destroyed (29), Rejected by courier (35), Claim opened (25), Compensation paid (24), COD Blocked by Authorities (54), Under investigation (67), Underaudit (53), Search cancelled (52) | EXCEPTION | yes |
 | anything else | UNKNOWN | yes |
+
+- `AVAIL_QTY` (get-prod-avails): per the owner (2026-11-18) accepted, not-yet-shipped orders already hold their units,
+  so 0 does not prove a unit is missing. The "shipment without stock" check (src/server/stock/stuck-shipments.ts)
+  therefore asks a person to check the cabinet only after a day with no new status of the shipment.
 
 ### 4.6 Inbound (booking requests) and transfers
 - `POST /fulfilment/create-request {testMode, companyId, warehouseId, courierInc?, trackNumb?,

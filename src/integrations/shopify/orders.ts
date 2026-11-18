@@ -22,6 +22,7 @@ const LINE_FIELDS = `
         currentQuantity
         variant { id }
         product { id }
+        image { url(transform: { maxWidth: 120, maxHeight: 120 }) }
         discountedUnitPriceAfterAllDiscountsSet { ${MONEY} }`;
 
 export const ORDER_FIELDS = /* GraphQL */ `
@@ -115,7 +116,7 @@ const Address = z
   })
   .nullish();
 
-const LineItem = z.object({
+export const ShopifyOrderLineItem = z.object({
   id: z.string(),
   name: z.string(),
   sku: z.string().nullish(),
@@ -123,10 +124,13 @@ const LineItem = z.object({
   currentQuantity: z.number().int(),
   variant: z.object({ id: z.string() }).nullish(),
   product: z.object({ id: z.string() }).nullish(),
+  /** The variant's image (thumbnail on the order page); null when the variant has none. */
+  // Cosmetic: a malformed image never fails the order's import.
+  image: z.object({ url: z.string().url() }).nullish().catch(null),
   discountedUnitPriceAfterAllDiscountsSet: Money,
 });
 /** pageInfo is optional so fully-fetched orders (lines merged) and fixtures validate too. */
-const LineItems = z.object({ nodes: z.array(LineItem), pageInfo: PageInfo.nullish() });
+const LineItems = z.object({ nodes: z.array(ShopifyOrderLineItem), pageInfo: PageInfo.nullish() });
 
 export const ShopifyOrder = z.object({
   id: z.string(),
@@ -177,6 +181,9 @@ export const OrderById = z.object({ order: ShopifyOrder.nullable() });
 
 export const OrderLines = z.object({
   order: z
-    .object({ updatedAt: z.string(), lineItems: z.object({ nodes: z.array(LineItem), pageInfo: PageInfo }) })
+    .object({
+      updatedAt: z.string(),
+      lineItems: z.object({ nodes: z.array(ShopifyOrderLineItem), pageInfo: PageInfo }),
+    })
     .nullable(),
 });
