@@ -119,10 +119,10 @@ export const UnlockSkuInput = z.object({
 });
 
 /** A person unlocks a product at a warehouse: every open incident of it is cleared. */
-export async function unlockSku(actor: ScopedActor, raw: z.input<typeof UnlockSkuInput>, tx?: Tx) {
+export async function unlockSku(actor: ScopedActor, raw: z.input<typeof UnlockSkuInput>) {
   assertCan(actor.role, "orders.review");
   const input = UnlockSkuInput.parse(raw);
-  const db = tx ?? accountDb(actor.accountId);
+  const db = accountDb(actor.accountId);
   // Only at a warehouse of the actor's companies.
   const conn = await db.fulfillmentConnection.findFirst({
     where: { id: input.connectionId, accountId: actor.accountId },
