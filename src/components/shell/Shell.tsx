@@ -131,7 +131,10 @@ export async function Shell({ ctx, children }: { ctx: AccountContext; children: 
         <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-7 py-3">
           <SearchBox />
           <ScopeControl scope={scope} />
-          <CreateMenu />
+          <CreateMenu
+            manualShipment={can(ctx.role, "orders.fulfill")}
+            stockReceipt={can(ctx.role, "inbound.manage")}
+          />
           <Link
             href="/alerts"
             aria-label={th("notifications")}

@@ -102,14 +102,18 @@ describe("warehouse cases", () => {
     );
     expect(await orderCaseInfo(g.accountId, a.order.id, now)).toMatchObject([{ hours: 30, level: 1 }]);
 
-    await markWarehouseEmailSent(g.owner, {
-      caseId: c!.id,
-      level: 1,
-      recipients: c!.emails[1].to,
-      subject: c!.emails[1].subject,
-      body: c!.emails[1].body,
-      orderNumbers: [a.order.number],
-    });
+    await markWarehouseEmailSent(
+      g.owner,
+      {
+        caseId: c!.id,
+        level: 1,
+        recipients: c!.emails[1].to,
+        subject: c!.emails[1].subject,
+        body: c!.emails[1].body,
+        orderNumbers: [a.order.number],
+      },
+      now,
+    );
     expect(await tasks()).toHaveLength(0);
 
     // A second, older shipment (since Sunday: Monday 00:00 → 63 working hours) joins the same case: level 2 is due.

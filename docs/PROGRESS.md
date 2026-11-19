@@ -553,6 +553,12 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   product at that warehouse; unlocked by a reply "we have it" (ticked order) or by hand with a note. FHB physical is
   honest, so no incident there. Migration 20261118200000_warehouse_cases: five new tables only. Next (owner): Gmail
   API sending after approval, then reading replies; daily report.
+- 2026-11-19 „Изпрати замяна“ (owner request: a free new parcel when one arrived broken / incomplete / wrong / was
+  lost). Built on Ръчни пратки (a MANUAL order M…, same checks / approval / Fulfill): the order page button opens
+  „Нова пратка“ filled from the order (company, recipient, products at price 0, no COD; all editable), a reason is
+  required (damaged / missing item / wrong item / lost / other + text). Stored in ManualShipment.params.replacement
+  (no migration); the order gets the tag `replacement`; both orders show the link (src/server/labels/replacement.ts).
+  The header „Създай“ menu now opens Ръчна пратка and Приемане на стока (it said „скоро“).
 
 ## Open questions
 See SPEC.md §11.

@@ -12,7 +12,14 @@ import {
 } from "@/app/actions/labels";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
 import type { Finding } from "@/server/checks/findings";
-import type { ManualPreview, ManualShipmentInput } from "@/server/labels";
+import type {
+  ManualPreview,
+  ManualShipmentInput,
+  ReplacementDraft,
+  ReplacementReason,
+} from "@/server/labels";
+
+const REASONS: ReplacementReason[] = ["damaged", "missing_item", "wrong_item", "lost", "other"];
 
 /**
  * Ръчна пратка (P7-03). The form never decides what may be sent: "Провери" runs the server-side validators
@@ -69,30 +76,37 @@ export function ManualForm(props: {
   connections: Conn[];
   couriers: Record<string, Courier[]>;
   products: { id: string; sku: string; name: string }[];
+  /** „Изпрати замяна“: the form starts from this order (free: price 0, no COD), every field still editable. */
+  replacement?: ReplacementDraft | null;
 }) {
+  const draft = props.replacement ?? null;
   const t = useTranslations("manual");
   const tm = useTranslations("mode");
   const locale = useLocale();
   const router = useRouter();
-  const [kind, setKind] = useState<Kind>("JOY_LABEL");
-  const [companyId, setCompanyId] = useState(props.defaultCompanyId);
+  const [kind, setKind] = useState<Kind>(draft ? "WAREHOUSE" : "JOY_LABEL");
+  const [companyId, setCompanyId] = useState(draft?.companyId ?? props.defaultCompanyId);
+  const [reason, setReason] = useState<ReplacementReason | "">("");
+  const [reasonText, setReasonText] = useState("");
   const options = props.connections.filter((c) => TYPES[kind].includes(c.type));
   const [connectionId, setConnectionId] = useState(options[0]?.id ?? "");
   const conn = options.find((c) => c.id === connectionId) ?? options[0] ?? null;
-  const [r, setR] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    address1: "",
-    buildingNumber: "",
-    address2: "",
-    city: "",
-    zip: "",
-    region: "",
-    countryCode: "BG",
-  });
+  const [r, setR] = useState(
+    draft?.recipient ?? {
+      name: "",
+      email: "",
+      phone: "",
+      address1: "",
+      buildingNumber: "",
+      address2: "",
+      city: "",
+      zip: "",
+      region: "",
+      countryCode: "BG",
+    },
+  );
   const [cod, setCod] = useState("");
-  const [currency, setCurrency] = useState("EUR");
+  const [currency, setCurrency] = useState(draft?.currency ?? "EUR");
   const [parcels, setParcels] = useState("1");
   const [weight, setWeight] = useState("1");
   const [parcelService, setParcelService] = useState("");
@@ -105,9 +119,11 @@ export function ManualForm(props: {
   const [contents, setContents] = useState("");
   const [note, setNote] = useState("");
   const [declared, setDeclared] = useState("");
-  const [lines, setLines] = useState<{ productId: string; quantity: string; unitPrice: string }[]>([
-    { productId: "", quantity: "1", unitPrice: "" },
-  ]);
+  const [lines, setLines] = useState<{ productId: string; quantity: string; unitPrice: string }[]>(
+    draft?.lines.length
+      ? draft.lines.map((l) => ({ productId: l.productId, quantity: String(l.quantity), unitPrice: "0" }))
+      : [{ productId: "", quantity: "1", unitPrice: "" }],
+  );
   const [preview, setPreview] = useState<ManualPreview | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -158,9 +174,15 @@ export function ManualForm(props: {
                 unitPrice: num(l.unitPrice),
               }))
           : [],
+      replacement:
+        draft && reason
+          ? { sourceOrderId: draft.sourceOrderId, reason, reasonText: reasonText.trim() || null }
+          : null,
       clientRequestId: requestId,
     };
   })();
+  // A replacement needs its reason before it can be checked or created.
+  const reasonMissing = !!draft && (!reason || (reason === "other" && !reasonText.trim()));
 
   const msg = (f: Finding) => (locale === "en" ? f.message_en : f.message_bg);
   const errText = (code: string) => (t.has(`errors.${code}`) ? t(`errors.${code}`) : t("errors.generic"));
@@ -187,6 +209,7 @@ export function ManualForm(props: {
   const create = () =>
     start(async () => {
       setError(null);
+      if (reasonMissing) return setError(t("replacement.reasonRequired"));
       const soft = findings.filter((f) => f.severity === "soft").map((f) => f.code);
       const res = await createManualAction({ ...input, acknowledgedCodes: soft });
       if ("error" in res) {
@@ -244,9 +267,53 @@ export function ManualForm(props: {
         aria-label={t("form.title")}
         onSubmit={(e) => {
           e.preventDefault();
+          if (reasonMissing) return setError(t("replacement.reasonRequired"));
           check();
         }}
       >
+        {draft && (
+          <div
+            className="flex flex-col gap-2 rounded-[10px] border border-accent bg-accent-soft p-3 text-sm"
+            data-testid="replacement-banner"
+          >
+            <strong>{t("replacement.title", { number: draft.sourceNumber })}</strong>
+            <span className="text-muted">{t("replacement.hint")}</span>
+            {draft.unmatched.length > 0 && (
+              <span className="text-warn">
+                {t("replacement.unmatched", { items: draft.unmatched.join(", ") })}
+              </span>
+            )}
+            <label className={labelCls}>
+              <span>{t("replacement.reason")}</span>
+              <select
+                className={inputCls}
+                value={reason}
+                data-testid="replacement-reason"
+                onChange={(e) => {
+                  setReason(e.target.value as ReplacementReason | "");
+                  invalidate();
+                }}
+              >
+                <option value="">{t("replacement.pick")}</option>
+                {REASONS.map((x) => (
+                  <option key={x} value={x}>
+                    {t(`replacement.reasons.${x}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {reason === "other" && (
+              <input
+                className={inputCls}
+                value={reasonText}
+                maxLength={300}
+                placeholder={t("replacement.reasonText")}
+                data-testid="replacement-reason-text"
+                onChange={(e) => setReasonText(e.target.value)}
+              />
+            )}
+          </div>
+        )}
         <fieldset className="m-0 flex flex-wrap gap-2 border-0 p-0">
           <legend className="mb-2 text-[13px] font-semibold">{t("form.kind")}</legend>
           {KINDS.map((k) => (

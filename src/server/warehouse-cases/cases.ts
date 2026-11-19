@@ -732,7 +732,11 @@ export const SentInput = z.object({
 });
 
 /** A person sent a warehouse email from the company's Gmail: recorded (the next step is offered from it). */
-export async function markWarehouseEmailSent(actor: ScopedActor, raw: z.input<typeof SentInput>) {
+export async function markWarehouseEmailSent(
+  actor: ScopedActor,
+  raw: z.input<typeof SentInput>,
+  now: Date = new Date(),
+) {
   assertCan(actor.role, "orders.review");
   const v = SentInput.parse(raw);
   await loadCase(actor, v.caseId);
@@ -754,9 +758,10 @@ export async function markWarehouseEmailSent(actor: ScopedActor, raw: z.input<ty
         body: v.body,
         orderNumbers: v.orderNumbers,
         createdById: actor.userId,
+        createdAt: now,
       },
     });
-    await syncCaseTasks(tx, actor.accountId, settings, new Date());
+    await syncCaseTasks(tx, actor.accountId, settings, now);
   });
   await recordAudit({
     accountId: actor.accountId,

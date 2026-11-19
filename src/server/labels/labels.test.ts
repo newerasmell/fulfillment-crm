@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import examples from "@/integrations/fhb-joy/__fixtures__/openapi-examples.json";
 import { checkOrder } from "@/server/checks";
-import { euTestGroup } from "@/server/eushipments/test-fixtures";
+import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { queueEuOrder } from "@/server/eushipments/write";
 import { fulfillOrder } from "@/server/fulfill/fulfill";
 import { processOutbound } from "@/server/outbox/outbox";
@@ -21,6 +21,7 @@ import {
   type ManualShipmentInput,
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
+import { replacementDraft, replacementLinks } from "./replacement";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
 import {
@@ -678,6 +679,95 @@ describe("manual shipments and labels (P7)", () => {
     expect(await g.db.outboundRequest.count({ where: { fulfillment: { orderId: r.orderId } } })).toBe(0);
   });
 
+  it("Изпрати замяна: the form starts from the order (free, no COD); the two orders are linked both ways", async () => {
+    const { order: src, product } = await euTestOrder(g, { number: `#RPL${Date.now() % 100000}` });
+    const draft = await replacementDraft(owner, src.id);
+    expect(draft).toMatchObject({ sourceNumber: src.number, companyId: src.companyId });
+    expect(draft.recipient.name).toBe("Test Buyer");
+    expect(draft.lines).toEqual([expect.objectContaining({ productId: product.id })]);
+    const base = awbInput({
+      kind: "WAREHOUSE",
+      lines: draft.lines.map((l) => ({ ...l, unitPrice: 0 })),
+      cod: null,
+    });
+    const repl = (reason: "damaged" | "other" = "damaged") => ({ sourceOrderId: src.id, reason });
+    // "Друго" needs its text.
+    expect(ManualShipmentSchema.safeParse({ ...base, replacement: repl("other") }).success).toBe(false);
+
+    // Not shipped yet, and later: already replaced — warnings shown in „Провери“, to be acknowledged.
+    const p = await previewManualShipment(owner, { ...base, replacement: repl() });
+    expect(p.findings.find((f) => f.code === "manual.replacement_source_not_shipped")?.severity).toBe("soft");
+    await expect(
+      createManualShipment(owner, { ...base, clientRequestId: randomUUID(), replacement: repl() }),
+    ).rejects.toMatchObject({ code: "manual_preflight_needs_ack" });
+    await g.db.order.update({ where: { id: src.id }, data: { status: "DELIVERED" } });
+    const r = await createManualShipment(owner, {
+      ...base,
+      clientRequestId: randomUUID(),
+      replacement: repl(),
+    });
+    const created = await g.db.order.findUniqueOrThrow({
+      where: { id: r.orderId },
+      include: { lines: true },
+    });
+    expect(created).toMatchObject({ source: "MANUAL", paymentMethod: "PREPAID", codAmount: null });
+    expect(created.tags).toEqual(["manual", "replacement"]);
+    expect(Number(created.lines[0]!.unitPrice)).toBe(0);
+    const again = await previewManualShipment(owner, { ...base, replacement: repl() });
+    expect(again.findings.find((f) => f.code === "manual.replacement_exists")?.message_bg).toContain(
+      r.number,
+    );
+    const audit = await g.db.auditLog.findFirstOrThrow({
+      where: { action: "manual_shipment.create", entityId: r.orderId },
+    });
+    expect(audit.after).toMatchObject({ replacement: { sourceOrderId: src.id, reason: "damaged" } });
+
+    const fromSource = await replacementLinks(owner, src.id);
+    expect(fromSource.replacements).toEqual([
+      expect.objectContaining({ id: r.orderId, number: r.number, reason: "damaged" }),
+    ]);
+    expect((await replacementLinks(owner, r.orderId)).replacementOf).toMatchObject({
+      id: src.id,
+      number: src.number,
+      reason: "damaged",
+    });
+
+    // Company scope: an operator of another company reaches exactly the source check, and sees no links.
+    const other = await g.db.company.create({
+      data: { accountId: g.accountId, name: `Other ${Date.now()}` },
+    });
+    const otherWh = await g.db.fulfillmentConnection.create({
+      data: {
+        accountId: g.accountId,
+        companyId: other.id,
+        type: "FHB_V3",
+        name: "Other WH",
+        liveMode: "LIVE",
+      },
+    });
+    const outsider = { ...owner, role: "OPERATOR" as const, companyScope: [other.id] };
+    await expect(
+      previewManualShipment(outsider, {
+        ...base,
+        companyId: other.id,
+        connectionId: otherWh.id,
+        replacement: repl(),
+      }),
+    ).rejects.toMatchObject({ code: "replacement_source_not_found" });
+    await expect(
+      previewManualShipment(owner, { ...base, companyId: other.id, replacement: repl() }),
+    ).rejects.toMatchObject({ code: "replacement_other_company" });
+    await expect(
+      previewManualShipment(owner, {
+        ...base,
+        replacement: { sourceOrderId: "no-such-order", reason: "lost" },
+      }),
+    ).rejects.toMatchObject({ code: "replacement_source_not_found" });
+    expect(await replacementLinks(outsider, src.id)).toEqual({ replacements: [], replacementOf: null });
+    // Another group cannot start from this order.
+    const stranger = await euTestGroup("labels-replacement-other");
+    await expect(replacementDraft(stranger.owner, src.id)).rejects.toMatchObject({ code: "not_found" });
+  });
   it("detail and isolation: another group cannot read a manual shipment", async () => {
     const r = await createManualShipment(owner, joyInput());
     const d = await getManualShipment(owner, r.manualShipmentId);

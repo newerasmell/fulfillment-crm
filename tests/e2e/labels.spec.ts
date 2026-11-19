@@ -157,9 +157,42 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
     timeout: 60_000,
   });
 
-  // The list shows all four.
+  // „Изпрати замяна“ from this order: the form starts from it — free (price 0, no COD), a reason is required —
+  // and the two orders are linked both ways.
+  const sourceHeading = (await page.getByRole("heading", { level: 1 }).textContent()) ?? "";
+  const sourceNumber = sourceHeading.replace("Поръчка ", "").trim();
+  const sourceUrl = page.url();
+  await page.getByTestId("replacement-send").click();
+  await expect(page.getByTestId("replacement-banner")).toContainText(`Замяна на поръчка ${sourceNumber}`, {
+    timeout: 60_000,
+  });
+  await page.waitForLoadState("networkidle");
+  form = page.getByRole("form", { name: "Нова ръчна пратка" });
+  await expect(form.getByLabel("Име", { exact: true })).toHaveValue("Stock Buyer");
+  await expect(form.getByLabel("Ед. цена")).toHaveValue("0");
+  await form.getByRole("button", { name: "Провери" }).click();
+  await expect(form).toContainText("Изберете причина за замяната.");
+  await page.getByTestId("replacement-reason").selectOption({ label: "Счупена / повредена пратка" });
+  await form.getByRole("button", { name: "Провери" }).click();
+  await expect(checks).toContainText("Маршрут и какво ще се изпрати", { timeout: 30_000 });
+  // The original has not shipped yet: a warning to acknowledge (creating it acknowledges what was shown).
+  await expect(checks).toContainText(`Поръчка ${sourceNumber} още не е изпратена`);
+  await form.getByRole("button", { name: "Създай поръчката" }).click();
+  await expect(page.getByTestId("replacement-of")).toContainText(
+    `Замяна на ${sourceNumber} · Счупена / повредена пратка`,
+    { timeout: 60_000 },
+  );
+  await page.goto(sourceUrl);
+  await expect(page.getByTestId("replacements")).toContainText("Изпратени замени:");
+
+  // „Създай → Ръчна пратка“ opens the form (it said „скоро“ before).
+  await page.getByRole("button", { name: "Създай" }).click();
+  await page.getByRole("menuitem", { name: "Ръчна пратка" }).click();
+  await expect(page).toHaveURL(/\/manual-shipments\/new$/, { timeout: 30_000 });
+
+  // The list shows all four (and the replacement).
   await page.goto("/manual-shipments?tab=all");
-  await expect(page.getByRole("row")).toHaveCount(5, { timeout: 30_000 });
+  await expect(page.getByRole("row")).toHaveCount(6, { timeout: 30_000 });
   await page.goto("/manual-shipments?tab=warehouse");
-  await expect(page.getByRole("row").filter({ hasText: "От склад" })).toHaveCount(1);
+  await expect(page.getByRole("row").filter({ hasText: "От склад" })).toHaveCount(2);
 });
