@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { logoutAction, setLocaleAction, setScopeAction } from "@/app/actions/session";
@@ -62,11 +63,22 @@ function useDismiss(open: boolean, close: () => void) {
   return ref;
 }
 
-export function CreateMenu() {
+/** „Създай“: the create screens that exist, for who may use them; the rest still says „скоро“. */
+export function CreateMenu({
+  manualShipment,
+  stockReceipt,
+}: {
+  manualShipment: boolean;
+  stockReceipt: boolean;
+}) {
   const t = useTranslations("header");
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
-  const items = [t("createManualShipment"), t("createStockReceipt"), t("createProduct")];
+  const items: { label: string; href: string | null }[] = [
+    { label: t("createManualShipment"), href: manualShipment ? "/manual-shipments/new" : null },
+    { label: t("createStockReceipt"), href: stockReceipt ? "/inbound/new" : null },
+    { label: t("createProduct"), href: null },
+  ];
   return (
     <div ref={ref} className="relative">
       <button
@@ -85,18 +97,30 @@ export function CreateMenu() {
           role="menu"
           className="absolute right-0 z-20 mt-1 w-60 rounded-xl border border-line bg-surface p-1 shadow-lg"
         >
-          {items.map((label) => (
-            <button
-              key={label}
-              type="button"
-              role="menuitem"
-              disabled
-              className="flex min-h-10 w-full items-center justify-between rounded-lg px-3 text-left text-muted"
-            >
-              {label}
-              <span className="text-[11px] uppercase">{t("comingSoon")}</span>
-            </button>
-          ))}
+          {items.map((i) =>
+            i.href ? (
+              <Link
+                key={i.label}
+                href={i.href}
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className="flex min-h-10 w-full items-center rounded-lg px-3 text-left hover:bg-hover"
+              >
+                {i.label}
+              </Link>
+            ) : (
+              <button
+                key={i.label}
+                type="button"
+                role="menuitem"
+                disabled
+                className="flex min-h-10 w-full items-center justify-between rounded-lg px-3 text-left text-muted"
+              >
+                {i.label}
+                <span className="text-[11px] uppercase">{t("comingSoon")}</span>
+              </button>
+            ),
+          )}
         </div>
       )}
     </div>

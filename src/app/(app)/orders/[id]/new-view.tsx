@@ -1,4 +1,5 @@
 import { collectableCod } from "@/lib/cod-rounding";
+import { ReplacementBlock } from "./replacement-block";
 import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../order-nav";
 import { QtyHoldBanner } from "./qty-hold";
@@ -325,6 +326,7 @@ export async function NewOrderView({
         />
       )}
       <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
+      <ReplacementBlock actor={actorFrom(ctx)} orderId={order.id} canSend={can(ctx.role, "orders.fulfill")} />
       {order.alerts.some((a) => a.status !== "RESOLVED") && can(ctx.role, "orders.review") && (
         <TasksRecheck orderId={order.id} />
       )}

@@ -2785,7 +2785,29 @@
       "no_credentials": "The connection has no credentials.",
       "connection_other_company": "The connection belongs to another company — the label would be billed and the COD collected in its account. Choose a connection of this company.",
       "client_request_id_required": "The form has no submission id — reload the page and try again.",
-      "label_only_order": "This is a label-only shipment — it is never sent to a warehouse."
+      "label_only_order": "This is a label-only shipment — it is never sent to a warehouse.",
+      "replacement_source_not_found": "The order this replaces was not found.",
+      "replacement_other_company": "The replacement must be for the same company as the order."
+    },
+    "replacement": {
+      "title": "Replacement for order {number}",
+      "hint": "A free parcel: items at price 0 and no cash on delivery. You can change anything — e.g. keep only the broken item or choose another warehouse.",
+      "unmatched": "No CRM product (cannot ship from stock): {items}",
+      "reason": "Reason",
+      "pick": "— choose —",
+      "reasonText": "Describe the reason",
+      "reasonRequired": "Choose the reason for the replacement.",
+      "reasons": {
+        "damaged": "Broken / damaged parcel",
+        "missing_item": "Missing item",
+        "wrong_item": "Wrong item",
+        "lost": "Lost parcel",
+        "other": "Other"
+      },
+      "isReplacementOf": "Replacement for",
+      "sentReplacements": "Replacements sent:",
+      "send": "Send a replacement",
+      "notFound": "The order to start the replacement from was not found — fill in the parcel by hand."
     }
   },
   "ai": {

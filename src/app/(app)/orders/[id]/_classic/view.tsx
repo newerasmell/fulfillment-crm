@@ -1,4 +1,5 @@
 import { collectableCod } from "@/lib/cod-rounding";
+import { ReplacementBlock } from "../replacement-block";
 import { StuckCaseBanner } from "../stuck-banner";
 import { orderNeighbours, orderListQuery, parseOrderListContext } from "@/server/orders";
 import { OrderNav } from "../../order-nav";
@@ -274,6 +275,7 @@ export async function ClassicOrderView({
         />
       )}
       <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
+      <ReplacementBlock actor={actorFrom(ctx)} orderId={order.id} canSend={can(ctx.role, "orders.fulfill")} />
       {order.alerts
         .filter((a) => a.status !== "RESOLVED" && !(a.kind === CARRIER_TASK && heldCarriers.length > 0))
         .map((a) => (

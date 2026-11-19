@@ -5,3 +5,4 @@ export * from "./manual";
 export * from "./requests";
 export * from "./storage";
 export * from "./views";
+export * from "./replacement";
