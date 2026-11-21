@@ -22,6 +22,7 @@ import {
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
 import { replacementDraft, replacementLinks } from "./replacement";
+import { listOrders } from "@/server/orders";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
 import {
@@ -763,11 +764,40 @@ describe("manual shipments and labels (P7)", () => {
         replacement: { sourceOrderId: "no-such-order", reason: "lost" },
       }),
     ).rejects.toMatchObject({ code: "replacement_source_not_found" });
-    expect(await replacementLinks(outsider, src.id)).toEqual({ replacements: [], replacementOf: null });
+    expect(await replacementLinks(outsider, src.id)).toMatchObject({ replacements: [], replacementOf: null });
     // Another group cannot start from this order.
     const stranger = await euTestGroup("labels-replacement-other");
     await expect(replacementDraft(stranger.owner, src.id)).rejects.toMatchObject({ code: "not_found" });
   });
+  it("a manual order keeps the Shopify number typed for it: tagged, found by search, linked to that order", async () => {
+    const { order: shop } = await euTestOrder(g, { number: `#SR${Date.now() % 100000}` });
+    const typed = ` ${shop.number.toLowerCase()} `;
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SKU-SR-${Date.now()}`, name: "Sample" },
+    });
+    const r = await createManualShipment(owner, {
+      ...awbInput({ kind: "WAREHOUSE", lines: [{ productId: product.id, quantity: 1, unitPrice: 0 }] }),
+      shopifyOrderNumber: typed,
+      clientRequestId: randomUUID(),
+    });
+    const ref = shop.number.replace("#", "").toUpperCase();
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: r.orderId } })).tags).toContain(
+      `shopify:${ref}`,
+    );
+    expect((await replacementLinks(owner, r.orderId)).shopifyRef).toEqual({
+      number: ref,
+      order: { id: shop.id, number: shop.number },
+    });
+    const found = await listOrders(
+      { accountId: g.accountId, companyScope: null, activeCompanyId: null },
+      { tab: "all", q: shop.number },
+    );
+    expect(found.rows.map((o) => o.id)).toEqual(expect.arrayContaining([shop.id, r.orderId]));
+    expect(ManualShipmentSchema.safeParse({ ...awbInput(), shopifyOrderNumber: "bad number!" }).success).toBe(
+      false,
+    );
+  });
+
   it("detail and isolation: another group cannot read a manual shipment", async () => {
     const r = await createManualShipment(owner, joyInput());
     const d = await getManualShipment(owner, r.manualShipmentId);

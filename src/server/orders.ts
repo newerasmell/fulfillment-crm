@@ -1,4 +1,5 @@
 import type { CrmOrderStatus, Prisma } from "@/generated/prisma/client";
+import { shopifyRefTag } from "@/lib/shopify-ref";
 import { DomainError, type Actor } from "@/server/accounts";
 import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
@@ -48,6 +49,8 @@ function baseWhere(ctx: Ctx, f: Omit<OrderFilters, "tab" | "page">): Prisma.Orde
       ? {
           OR: [
             { number: { contains: q, mode: "insensitive" } },
+            // A manual order carries the Shopify number it was typed for (tag shopify:…).
+            { tags: { has: shopifyRefTag(q) } },
             { customerName: { contains: q, mode: "insensitive" } },
             { email: { contains: q, mode: "insensitive" } },
             { phone: { contains: q.replace(/\s+/g, "") } },

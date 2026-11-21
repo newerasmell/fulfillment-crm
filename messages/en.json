@@ -2709,7 +2709,10 @@
         "insufficient": "insufficient",
         "unknown": "unknown"
       },
-      "payload": "Exactly what will be sent"
+      "payload": "Exactly what will be sent",
+      "shopifyOrderNumber": "Shopify order number (optional)",
+      "shopifyOrderNumberPlaceholder": "e.g. #CZ6330",
+      "shopifyOrderNumberHint": "Which shop order the parcel is for. Search finds the manual order by it."
     },
     "detail": {
       "title": "Manual shipment",
@@ -2807,7 +2810,8 @@
       "isReplacementOf": "Replacement for",
       "sentReplacements": "Replacements sent:",
       "send": "Send a replacement",
-      "notFound": "The order to start the replacement from was not found — fill in the parcel by hand."
+      "notFound": "The order to start the replacement from was not found — fill in the parcel by hand.",
+      "shopifyRef": "Shopify order:"
     }
   },
   "ai": {

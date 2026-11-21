@@ -559,6 +559,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   required (damaged / missing item / wrong item / lost / other + text). Stored in ManualShipment.params.replacement
   (no migration); the order gets the tag `replacement`; both orders show the link (src/server/labels/replacement.ts).
   The header „Създай“ menu now opens Ръчна пратка and Приемане на стока (it said „скоро“).
+- 2026-11-21 A manual order without a template takes the Shopify order number it is for (optional, "#" dropped):
+  kept as the tag `shopify:<NUMBER>` (no migration), found by the order list search and the global search, shown on
+  the order page with a link to that CRM order when it exists (src/lib/shopify-ref.ts).
 
 ## Open questions
 See SPEC.md §11.

@@ -148,6 +148,7 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
     .getByRole("combobox", { name: "Продукт", exact: true })
     .selectOption({ label: "SYN-LBL-EDP-50 · Синтетичен парфюм етикети 50 мл" });
   await form.getByLabel("Ед. цена").fill("25");
+  await page.getByTestId("manual-shopify-number").fill("#sr-7001");
   await form.getByRole("button", { name: "Провери" }).click();
   await expect(checks).toContainText("Маршрут и какво ще се изпрати", { timeout: 30_000 });
   await expect(checks).toContainText("Наличност: достатъчна");
@@ -156,6 +157,9 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
   await expect(page.getByRole("heading", { name: /^Поръчка M\d+$/, level: 1 })).toBeVisible({
     timeout: 60_000,
   });
+
+  // The Shopify number typed for it is on the order page and finds it in the order list.
+  await expect(page.getByTestId("shopify-ref")).toContainText("Поръчка в Shopify: #SR-7001");
 
   // „Изпрати замяна“ from this order: the form starts from it — free (price 0, no COD), a reason is required —
   // and the two orders are linked both ways.

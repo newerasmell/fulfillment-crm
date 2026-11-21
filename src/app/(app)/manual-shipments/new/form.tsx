@@ -87,6 +87,7 @@ export function ManualForm(props: {
   const [kind, setKind] = useState<Kind>(draft ? "WAREHOUSE" : "JOY_LABEL");
   const [companyId, setCompanyId] = useState(draft?.companyId ?? props.defaultCompanyId);
   const [reason, setReason] = useState<ReplacementReason | "">("");
+  const [shopifyRef, setShopifyRef] = useState("");
   const [reasonText, setReasonText] = useState("");
   const options = props.connections.filter((c) => TYPES[kind].includes(c.type));
   const [connectionId, setConnectionId] = useState(options[0]?.id ?? "");
@@ -174,6 +175,7 @@ export function ManualForm(props: {
                 unitPrice: num(l.unitPrice),
               }))
           : [],
+      shopifyOrderNumber: draft ? null : shopifyRef.trim() || null,
       replacement:
         draft && reason
           ? { sourceOrderId: draft.sourceOrderId, reason, reasonText: reasonText.trim() || null }
@@ -271,6 +273,20 @@ export function ManualForm(props: {
           check();
         }}
       >
+        {!draft && (
+          <label className={labelCls}>
+            <span>{t("form.shopifyOrderNumber")}</span>
+            <input
+              className={inputCls}
+              value={shopifyRef}
+              maxLength={40}
+              placeholder={t("form.shopifyOrderNumberPlaceholder")}
+              data-testid="manual-shopify-number"
+              onChange={(e) => setShopifyRef(e.target.value)}
+            />
+            <span className="text-xs font-normal text-muted">{t("form.shopifyOrderNumberHint")}</span>
+          </label>
+        )}
         {draft && (
           <div
             className="flex flex-col gap-2 rounded-[10px] border border-accent bg-accent-soft p-3 text-sm"

@@ -18,12 +18,24 @@ export async function ReplacementBlock({
   canSend: boolean;
 }) {
   const t = await getTranslations("manual.replacement");
-  const { replacements, replacementOf } = await replacementLinks(actor, orderId);
+  const { replacements, replacementOf, shopifyRef } = await replacementLinks(actor, orderId);
   const why = (r: { reason: string; reasonText: string | null }) =>
     r.reason === "other" && r.reasonText ? r.reasonText : t(`reasons.${r.reason}`);
-  if (!canSend && !replacements.length && !replacementOf) return null;
+  if (!canSend && !replacements.length && !replacementOf && !shopifyRef) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm" data-testid="replacement-block">
+      {shopifyRef && (
+        <span className="rounded-lg bg-accent-soft px-3 py-1.5" data-testid="shopify-ref">
+          {t("shopifyRef")}{" "}
+          {shopifyRef.order ? (
+            <Link className="font-semibold underline" href={`/orders/${shopifyRef.order.id}`}>
+              {shopifyRef.order.number}
+            </Link>
+          ) : (
+            <strong>#{shopifyRef.number}</strong>
+          )}
+        </span>
+      )}
       {replacementOf && (
         <span className="rounded-lg bg-accent-soft px-3 py-1.5" data-testid="replacement-of">
           {t("isReplacementOf")}{" "}
