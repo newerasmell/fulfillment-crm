@@ -562,6 +562,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-21 A manual order without a template takes the Shopify order number it is for (optional, "#" dropped):
   kept as the tag `shopify:<NUMBER>` (no migration), found by the order list search and the global search, shown on
   the order page with a link to that CRM order when it exists (src/lib/shopify-ref.ts).
+- 2026-11-23 Quick stock check in „Нова ръчна пратка“: under each product line, its units in every warehouse of the
+  member's companies (physical, and free = the number „Провери“ checks: stored sellable minus SkuIncident holds),
+  plus the totals (src/server/labels/stock-view.ts). A Shopify number shared by two stores of one company is shown
+  without a link.
 
 ## Open questions
 See SPEC.md §11.

@@ -22,6 +22,7 @@ import {
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
 import { replacementDraft, replacementLinks } from "./replacement";
+import { stockPerWarehouse } from "./stock-view";
 import { listOrders } from "@/server/orders";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
@@ -764,7 +765,11 @@ describe("manual shipments and labels (P7)", () => {
         replacement: { sourceOrderId: "no-such-order", reason: "lost" },
       }),
     ).rejects.toMatchObject({ code: "replacement_source_not_found" });
-    expect(await replacementLinks(outsider, src.id)).toMatchObject({ replacements: [], replacementOf: null });
+    expect(await replacementLinks(outsider, src.id)).toEqual({
+      replacements: [],
+      replacementOf: null,
+      shopifyRef: null,
+    });
     // Another group cannot start from this order.
     const stranger = await euTestGroup("labels-replacement-other");
     await expect(replacementDraft(stranger.owner, src.id)).rejects.toMatchObject({ code: "not_found" });
@@ -796,6 +801,83 @@ describe("manual shipments and labels (P7)", () => {
     expect(ManualShipmentSchema.safeParse({ ...awbInput(), shopifyOrderNumber: "bad number!" }).success).toBe(
       false,
     );
+  });
+
+  it("quick stock check: the units of a product in every warehouse and in total, free = minus held orders", async () => {
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SKU-QS-${Date.now()}`, name: "Sample" },
+    });
+    const fhbWh = await g.db.fulfillmentConnection.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        type: "FHB_V3",
+        name: "QS FHB",
+        liveMode: "LIVE",
+      },
+    });
+    for (const [connectionId, physical] of [
+      [g.connection.id, 4],
+      [fhbWh.id, 6],
+    ] as const) {
+      const vp = await g.db.vendorProduct.create({
+        data: {
+          accountId: g.accountId,
+          connectionId,
+          productId: product.id,
+          vendorId: `qs-${connectionId}`,
+          raw: {},
+        },
+      });
+      await g.db.stockLevel.create({
+        data: {
+          accountId: g.accountId,
+          vendorProductId: vp.id,
+          physical,
+          free: physical,
+          sellable: physical,
+          snapshotAt: new Date(),
+          source: "POLL",
+        },
+      });
+    }
+    const [s] = await stockPerWarehouse(owner, [product.id]);
+    expect(s?.totalPhysical).toBe(10);
+    expect(s?.warehouses.map((w) => (w.carried ? [w.name, w.physical] : null))).toEqual(
+      expect.arrayContaining([
+        ["QS FHB", 6],
+        [g.connection.name, 4],
+      ]),
+    );
+    expect(s?.totalSellable).toBe(10);
+    // A unit FHB could not give (SkuIncident) is not free there — the same number „Провери“ checks.
+    await g.db.skuIncident.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: fhbWh.id,
+        productId: product.id,
+        fulfillmentId: `qs-${Date.now()}`,
+        quantity: 1,
+      },
+    });
+    const [held] = await stockPerWarehouse(owner, [product.id]);
+    expect(held?.warehouses.find((w) => w.connectionId === fhbWh.id)).toMatchObject({
+      physical: 6,
+      sellable: 5,
+    });
+    expect(held?.totalSellable).toBe(9);
+    // A member of another company sees none of these warehouses; another group sees nothing of the product.
+    const otherCo = await g.db.company.create({
+      data: { accountId: g.accountId, name: `QS other ${Date.now()}` },
+    });
+    const [scoped] = await stockPerWarehouse({ ...owner, role: "OPERATOR", companyScope: [otherCo.id] }, [
+      product.id,
+    ]);
+    expect(scoped?.warehouses).toEqual([]);
+    const stranger = await euTestGroup("labels-stock-other");
+    const [foreign] = await stockPerWarehouse(stranger.owner, [product.id]);
+    expect(foreign?.totalPhysical).toBe(0);
+    await expect(stockPerWarehouse({ ...owner, role: "VIEWER" }, [product.id])).rejects.toThrow();
   });
 
   it("detail and isolation: another group cannot read a manual shipment", async () => {

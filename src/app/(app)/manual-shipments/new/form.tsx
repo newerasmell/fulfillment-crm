@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   createManualAction,
+  manualStockAction,
   officesAction,
   previewManualAction,
   quoteAction,
@@ -18,6 +19,7 @@ import type {
   ReplacementDraft,
   ReplacementReason,
 } from "@/server/labels";
+import type { ProductStock } from "@/server/labels/stock-view";
 
 const REASONS: ReplacementReason[] = ["damaged", "missing_item", "wrong_item", "lost", "other"];
 
@@ -88,6 +90,7 @@ export function ManualForm(props: {
   const [companyId, setCompanyId] = useState(draft?.companyId ?? props.defaultCompanyId);
   const [reason, setReason] = useState<ReplacementReason | "">("");
   const [shopifyRef, setShopifyRef] = useState("");
+  const [stock, setStock] = useState<Record<string, ProductStock>>({});
   const [reasonText, setReasonText] = useState("");
   const options = props.connections.filter((c) => TYPES[kind].includes(c.type));
   const [connectionId, setConnectionId] = useState(options[0]?.id ?? "");
@@ -125,6 +128,19 @@ export function ManualForm(props: {
       ? draft.lines.map((l) => ({ productId: l.productId, quantity: String(l.quantity), unitPrice: "0" }))
       : [{ productId: "", quantity: "1", unitPrice: "" }],
   );
+  // Stock per warehouse of the chosen products (quick check while filling the form).
+  const productKey = [...new Set(lines.map((l) => l.productId).filter(Boolean))].sort().join(",");
+  useEffect(() => {
+    if (kind !== "WAREHOUSE" || !productKey) return;
+    let live = true;
+    void manualStockAction(productKey.split(",")).then((res) => {
+      if (!live || "error" in res) return;
+      setStock((prev) => ({ ...prev, ...Object.fromEntries(res.map((p) => [p.productId, p])) }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [kind, productKey]);
   const [preview, setPreview] = useState<ManualPreview | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -719,6 +735,7 @@ export function ManualForm(props: {
                     {t("form.removeLine")}
                   </button>
                 )}
+                {l.productId && stock[l.productId] && <StockPerWarehouse s={stock[l.productId]!} />}
               </div>
             ))}
             <button
@@ -819,6 +836,37 @@ export function ManualForm(props: {
           </section>
         )}
       </aside>
+    </div>
+  );
+}
+
+/** The chosen product's units in every warehouse and in total (quick check, owner request 2026-11-23). */
+function StockPerWarehouse({ s }: { s: ProductStock }) {
+  const t = useTranslations("manual.stock");
+  return (
+    <div className="flex w-full flex-wrap items-center gap-1.5 text-xs" data-testid="manual-stock">
+      {s.warehouses.length === 0 ? (
+        <span className="text-warn">{t("none")}</span>
+      ) : (
+        <>
+          {s.warehouses.map((w) =>
+            w.carried ? (
+              <span
+                key={w.connectionId}
+                title={t("hint")}
+                className={`rounded-full px-2 py-0.5 ${w.sellable > 0 ? "bg-ok-bg text-ok" : w.physical > 0 ? "bg-warn-bg text-warn" : "bg-block-bg text-block"}`}
+              >
+                {w.name}: <strong>{w.physical}</strong> {t("units")}
+                {w.sellable !== w.physical && ` (${t("free", { n: w.sellable })})`}
+                {w.stale && ` · ${t("stale")}`}
+              </span>
+            ) : null,
+          )}
+          <span className="font-semibold" data-testid="manual-stock-total">
+            {t("total", { n: s.totalPhysical, free: s.totalSellable })}
+          </span>
+        </>
+      )}
     </div>
   );
 }

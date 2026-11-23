@@ -2812,6 +2812,14 @@
       "send": "Send a replacement",
       "notFound": "The order to start the replacement from was not found — fill in the parcel by hand.",
       "shopifyRef": "Shopify order:"
+    },
+    "stock": {
+      "none": "Not carried by any warehouse.",
+      "units": "pcs",
+      "free": "{n} free",
+      "stale": "old number",
+      "total": "Total: {n} pcs ({free} free)",
+      "hint": "Units in the warehouse by its last number; free = without units held for orders and units on watch."
     }
   },
   "ai": {

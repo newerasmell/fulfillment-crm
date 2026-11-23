@@ -97,10 +97,14 @@ export async function replacementLinks(
     ? await db.order.findFirst({ where: { id: srcId, ...visible }, select: { id: true, number: true } })
     : null;
   // The Shopify number typed on a manual order, with the CRM order of that number when the viewer may see it.
-  const self = await db.order.findUnique({ where: { id: orderId }, select: { tags: true, companyId: true } });
+  const self = await db.order.findFirst({
+    where: { id: orderId, ...visible },
+    select: { tags: true, companyId: true },
+  });
   const ref = self ? shopifyRefOf(self.tags) : null;
-  const refOrder = ref
-    ? await db.order.findFirst({
+  // Two stores of one company can share a number: a link only when exactly one order has it.
+  const refOrders = ref
+    ? await db.order.findMany({
         where: {
           ...visible,
           id: { not: orderId },
@@ -109,8 +113,10 @@ export async function replacementLinks(
           number: { in: [ref, `#${ref}`], mode: "insensitive" },
         },
         select: { id: true, number: true },
+        take: 2,
       })
-    : null;
+    : [];
+  const refOrder = refOrders.length === 1 ? refOrders[0]! : null;
   return {
     replacements: sent.map((m) => ({ ...m.order, ...reasonOf(m.params) })),
     replacementOf: source ? { ...source, ...reasonOf(own?.params) } : null,

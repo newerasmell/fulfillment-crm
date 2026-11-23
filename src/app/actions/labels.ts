@@ -30,6 +30,7 @@ import {
   type ManualShipmentInput,
 } from "@/server/labels";
 import { enqueueLabelRead, type LabelReadJob } from "@/server/labels/jobs";
+import { stockPerWarehouse, type ProductStock } from "@/server/labels/stock-view";
 import { setConnectionMode } from "@/server/outbox/outbox";
 
 /**
@@ -276,4 +277,14 @@ export async function testJoyAction(connectionId: string): Promise<Result> {
     return toError(err);
   }
   return { ok: true };
+}
+
+/** „Нова ръчна пратка“: the units of the chosen products in every warehouse, and in total. Reads only. */
+export async function manualStockAction(productIds: string[]): Promise<ProductStock[] | Fail> {
+  const ctx = await requireAccountContext();
+  try {
+    return await stockPerWarehouse(actorFrom(ctx), z.array(Id).max(100).parse(productIds));
+  } catch (err) {
+    return toError(err);
+  }
 }

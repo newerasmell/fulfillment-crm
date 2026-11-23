@@ -147,6 +147,8 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
   await form
     .getByRole("combobox", { name: "Продукт", exact: true })
     .selectOption({ label: "SYN-LBL-EDP-50 · Синтетичен парфюм етикети 50 мл" });
+  // Quick check: the product's units in every warehouse and in total.
+  await expect(form.getByTestId("manual-stock-total")).toContainText("Общо:", { timeout: 30_000 });
   await form.getByLabel("Ед. цена").fill("25");
   await page.getByTestId("manual-shopify-number").fill("#sr-7001");
   await form.getByRole("button", { name: "Провери" }).click();
