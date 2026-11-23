@@ -620,7 +620,8 @@
     "courier": {
       "label": "Latest from the carrier:",
       "returning": "returning to the sender"
-    }
+    },
+    "issueStuck": "Too long in „{status}“ (task since {since})"
   },
   "orderStatus": {
     "IMPORTED": "Imported",
@@ -2273,6 +2274,19 @@
         "button": "Refresh the warehouse's products",
         "queued": "Started. Search for the product again in 1–2 minutes.",
         "failed": "Failed — try again shortly."
+      },
+      "unlinked": {
+        "title": "Warehouse products without a master product",
+        "hint": "Created in the warehouse itself and without a master product yet — add them in one click (the same SKU in the line is linked, not duplicated).",
+        "adopt": "Add as master product",
+        "errors": {
+          "no_line": "This warehouse's company has no product line.",
+          "sku_conflict": "This SKU is already used in another line — link it by hand in „Master products“.",
+          "unlinked_by_person": "This link was removed by a person — link it by hand.",
+          "forbidden": "You may not add master products.",
+          "not_found": "The product is no longer at the warehouse.",
+          "other": "Failed — try again."
+        }
       }
     },
     "push": {

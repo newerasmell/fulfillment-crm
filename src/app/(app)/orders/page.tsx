@@ -25,6 +25,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const ctx = await requireAccountContext();
   const t = await getTranslations("orders");
   const tl = await getTranslations("lines");
+  const tStatus = await getTranslations("orderStatus");
   const format = await getFormatter();
   const tabParam = one(sp.tab);
   const tab: OrderTab = isOrderTab(tabParam) ? tabParam : "review";
@@ -222,6 +223,26 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                       <td className={tdCls}>{o.paymentMethod === "COD" ? t("cod") : t("prepaid")}</td>
                       <td className={tdCls}>
                         <StatusChip status={o.status} />
+                        {o.tasks.length > 0 && (
+                          <ul
+                            className="m-0 mt-1 flex max-w-[280px] list-none flex-col gap-0.5 p-0 text-xs text-warn"
+                            data-testid="order-issue-reasons"
+                          >
+                            {o.tasks.slice(0, 3).map((task, i) => (
+                              <li key={i}>
+                                {task.stuckIn && task.stuckIn !== "SHIPPED"
+                                  ? t("issueStuck", {
+                                      status: tStatus.has(task.stuckIn)
+                                        ? tStatus(task.stuckIn)
+                                        : task.stuckIn,
+                                      since: format.dateTime(task.since, { dateStyle: "short" }),
+                                    })
+                                  : task.title}
+                              </li>
+                            ))}
+                            {o.tasks.length > 3 && <li>+{o.tasks.length - 3}</li>}
+                          </ul>
+                        )}
                       </td>
                     </tr>
                   ))}

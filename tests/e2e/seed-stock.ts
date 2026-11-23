@@ -71,6 +71,33 @@ export async function seedStock() {
         },
       },
     });
+  // A second company in a product line, whose euShipments warehouse has a product created in the cabinet itself
+  // (no master yet): „Добави като основен продукт“ in a new inbound.
+  const line = await sys.productLine.create({ data: { accountId, name: "Линия Л" } });
+  const lined = await sys.company.create({ data: { accountId, name: "Фирма Л", lineId: line.id } });
+  const euLined = await sys.fulfillmentConnection.create({
+    data: {
+      accountId,
+      companyId: lined.id,
+      type: "EUSHIPMENTS",
+      name: "euShipments Склад Л",
+      liveMode: "DRY_RUN",
+      vendorIds: { companyId: 334 },
+    },
+  });
+  await sys.eushipmentsWarehouse.create({
+    data: { accountId, connectionId: euLined.id, warehouseId: 8, name: "Склад Пловдив", syncedAt: now },
+  });
+  await sys.vendorProduct.create({
+    data: {
+      accountId,
+      connectionId: euLined.id,
+      vendorId: "STK-NEWCAB-1",
+      vendorCode: "90001",
+      lastSyncAt: now,
+      raw: { name: "Синтетичен нов продукт от кабинета" },
+    },
+  });
   const vOrig = await vp(fhb.id, orig.id, "RSK-STK-ORIG", 12, 10);
   await vp(eu.id, orig.id, "EU-STK-ORIG", 5, 5);
   await vp(fhb.id, tester.id, "RSK-STK-TEST", 2, 2);

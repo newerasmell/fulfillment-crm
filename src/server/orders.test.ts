@@ -101,6 +101,24 @@ describe("orders read model", () => {
     const counts = await orderTabCounts(all, {});
     expect(counts.issues).toBe(1);
     expect((await listOrders(all, { tab: "issues" })).rows.map((o) => o.id)).toEqual([ready.id]);
+    // Each order says why it is there: its open tasks (a stuck one with the status it is stuck in).
+    await accountDb(accountId).alert.create({
+      data: {
+        accountId,
+        kind: "order_stuck",
+        isTask: true,
+        severity: "WARNING",
+        title: "Order stuck in ACCEPTED for over 48 h: X",
+        body: "status=ACCEPTED",
+        entityType: "Order",
+        entityId: ready.id,
+      },
+    });
+    expect((await listOrders(all, { tab: "issues" })).rows[0]!.tasks).toEqual([
+      expect.objectContaining({ kind: "shopify_writeback_failed", title: "x", stuckIn: null }),
+      expect.objectContaining({ kind: "order_stuck", stuckIn: "ACCEPTED" }),
+    ]);
+    expect((await listOrders(all, { tab: "all" })).rows.every((o) => o.tasks.length === 0)).toBe(true);
     expect((await dashboardSummary(all)).attention.errors).toBe(counts.issues);
     // Not in another company's view.
     expect((await orderTabCounts({ ...all, activeCompanyId: b }, {})).issues).toBe(0);

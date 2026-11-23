@@ -8,6 +8,8 @@ import {
   searchInboundProductsAction,
   type UploadResult,
   refreshWarehouseProductsAction,
+  searchUnlinkedInboundProductsAction,
+  adoptWarehouseProductAction,
 } from "@/app/actions/stock";
 import { StockError } from "@/app/(app)/products/stock/forms";
 import { buttonCls, ghostButtonCls, inputCls, labelCls, tdCls, thCls } from "@/components/ui/form";
@@ -52,6 +54,11 @@ export function NewInboundForm({
   const [results, setResults] = useState<
     { id: string; sku: string; name: string; vendorId: string | null }[]
   >([]);
+  const [unlinked, setUnlinked] = useState<
+    { vendorProductId: string; vendorId: string; name: string | null }[]
+  >([]);
+  const [adopting, startAdopt] = useTransition();
+  const [adoptError, setAdoptError] = useState<string | null>(null);
   const [, startSearch] = useTransition();
   const [upload, setUpload] = useState<UploadResult | null>(null);
   const [uploading, startUpload] = useTransition();
@@ -62,7 +69,12 @@ export function NewInboundForm({
     const id = setTimeout(
       () =>
         startSearch(async () => {
-          setResults(await searchInboundProductsAction(connectionId, query));
+          const [found, notYet] = await Promise.all([
+            searchInboundProductsAction(connectionId, query),
+            searchUnlinkedInboundProductsAction(connectionId, query),
+          ]);
+          setResults(found);
+          setUnlinked(notYet);
         }),
       250,
     );
@@ -217,6 +229,53 @@ export function NewInboundForm({
               </li>
             ))}
           </ul>
+          {query.trim().length >= 2 && unlinked.length > 0 && (
+            <div className="flex flex-col gap-1 border-t border-line pt-2" data-testid="inbound-unlinked">
+              <p className="m-0 text-xs text-muted">{t("unlinked.hint")}</p>
+              <ul className="m-0 flex list-none flex-col gap-1 p-0" aria-label={t("unlinked.title")}>
+                {unlinked.map((u) => (
+                  <li key={u.vendorProductId} className="flex items-center justify-between gap-2 text-sm">
+                    <span>
+                      <span className="font-mono">{u.vendorId}</span>
+                      {u.name ? ` · ${u.name}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className={ghostButtonCls}
+                      disabled={adopting}
+                      onClick={() =>
+                        startAdopt(async () => {
+                          setAdoptError(null);
+                          const r = await adoptWarehouseProductAction(connectionId, u.vendorProductId);
+                          if ("error" in r) {
+                            setAdoptError(r.error);
+                            return;
+                          }
+                          setUnlinked((prev) => prev.filter((x) => x.vendorProductId !== u.vendorProductId));
+                          add({
+                            productId: r.product.id,
+                            sku: r.product.sku,
+                            name: r.product.name,
+                            vendorId: r.product.vendorId,
+                            quantity: 1,
+                          });
+                        })
+                      }
+                    >
+                      {t("unlinked.adopt")}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {adoptError && (
+                <p className="m-0 text-xs text-block" role="alert">
+                  {t.has(`unlinked.errors.${adoptError}`)
+                    ? t(`unlinked.errors.${adoptError}`)
+                    : t("unlinked.errors.other")}
+                </p>
+              )}
+            </div>
+          )}
         </section>
         <section className="flex flex-col gap-2 rounded-[10px] border border-line p-3">
           <h2 className="m-0 text-sm font-semibold">{t("uploadTitle")}</h2>

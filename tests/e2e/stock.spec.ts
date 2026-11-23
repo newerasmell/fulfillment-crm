@@ -115,6 +115,22 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await page.goto("/inbound?tab=all");
   await expect(page.locator("tbody tr")).toHaveCount(2);
 
+  // A product created in the warehouse's own cabinet (no master yet) is found and added as a master in one click.
+  await page.goto("/inbound/new");
+  await page.waitForLoadState("networkidle");
+  await form
+    .getByRole("combobox", { name: "Склад", exact: true })
+    .selectOption({ label: "euShipments Склад Л · euShipments · DRY_RUN" });
+  await form.getByLabel("Добави продукт").fill("NEWCAB");
+  const notYet = form.getByRole("list", { name: "Продукти в склада без основен продукт" });
+  await expect(notYet).toContainText("Синтетичен нов продукт от кабинета");
+  await notYet.getByRole("button", { name: "Добави като основен продукт" }).click();
+  await expect(form.getByTestId("inbound-unlinked")).toBeHidden();
+  await expect(form).toContainText("STK-NEWCAB-1");
+  // Now a master product: found as one.
+  await form.getByLabel("Добави продукт").fill("STK-NEWCAB");
+  await expect(form.getByRole("list", { name: "Намерени продукти" })).toContainText("Синтетичен нов продукт");
+
   // Магазин → Наличности към Shopify: location mapping, preview (sellable − buffer), dry-run push queued.
   await page.goto("/stores");
   await page.getByRole("link", { name: "Магазин С" }).first().click();

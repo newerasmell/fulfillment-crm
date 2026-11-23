@@ -5,7 +5,8 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { SpreadsheetError, readTable } from "@/lib/xlsx";
 import { DomainError } from "@/server/accounts";
-import { assertCan, ForbiddenError } from "@/server/auth/rbac";
+import { assertCan, can, ForbiddenError } from "@/server/auth/rbac";
+import { adoptWarehouseProduct } from "@/server/lines/catalogue";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { FhbPreflightError } from "@/server/fhb/orders";
 import { webBoss } from "@/server/jobs/boss";
@@ -17,6 +18,7 @@ import {
   MAX_INBOUND_FILE_BYTES,
   parseInboundTable,
   pickProducts,
+  pickUnlinkedWarehouseProducts,
   resolveInboundLines,
   type ResolvedLine,
 } from "@/server/stock/inbound";
@@ -87,6 +89,46 @@ export async function searchInboundProductsAction(connectionId: string, q: strin
     }));
   } catch (err) {
     if (err instanceof DomainError || err instanceof z.ZodError) return [];
+    throw err;
+  }
+}
+
+/** The warehouse's products without a master yet (created in the warehouse itself), for „Добави като основен продукт“. */
+export async function searchUnlinkedInboundProductsAction(connectionId: string, q: string) {
+  const ctx = await stockCtx();
+  try {
+    if (!can(ctx.role, "lines.catalogue") || !can(ctx.role, "inbound.manage")) return [];
+    return await pickUnlinkedWarehouseProducts(
+      ctx,
+      z.string().min(1).max(64).parse(connectionId),
+      String(q).slice(0, 100),
+    );
+  } catch (err) {
+    if (err instanceof DomainError || err instanceof z.ZodError) return [];
+    throw err;
+  }
+}
+
+/** „Добави като основен продукт“: the warehouse product becomes (or is linked to) a master of the line, then a line. */
+export async function adoptWarehouseProductAction(
+  connectionId: string,
+  vendorProductId: string,
+): Promise<
+  { ok: true; product: { id: string; sku: string; name: string; vendorId: string } } | { error: string }
+> {
+  const ctx = await requireAccountContext();
+  try {
+    const id = z.string().min(1).max(64);
+    const product = await adoptWarehouseProduct(actorFrom(ctx), {
+      connectionId: id.parse(connectionId),
+      vendorProductId: id.parse(vendorProductId),
+    });
+    revalidatePath("/products/stock");
+    return { ok: true, product };
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError) return { error: err.code };
+    if (err instanceof z.ZodError) return { error: "invalid" };
     throw err;
   }
 }

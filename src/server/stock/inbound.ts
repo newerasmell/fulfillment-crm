@@ -244,6 +244,53 @@ export async function pickProducts(ctx: StockCtx, connectionId: string, q: strin
   });
 }
 
+/**
+ * The warehouse's products without a master product yet (created in the warehouse itself, owner report 2026-11-23),
+ * found by the warehouse code or its name, so a new inbound can add them at once („Добави като основен продукт“).
+ */
+export async function pickUnlinkedWarehouseProducts(
+  ctx: StockCtx,
+  connectionId: string,
+  q: string,
+  take = 10,
+) {
+  await connectionInScope(ctx, connectionId);
+  const query = q.trim();
+  if (query.length < 2) return [];
+  const contains = { contains: query, mode: "insensitive" as const };
+  const rows = await accountDb(ctx.accountId).vendorProduct.findMany({
+    where: {
+      connectionId,
+      archived: false,
+      productId: null,
+      unlinkedAt: null,
+      OR: [
+        { vendorId: contains },
+        { vendorCode: contains },
+        // A JSON text match is case-sensitive: as typed, lower case and capitalised.
+        ...[
+          ...new Set([
+            query,
+            query.toLowerCase(),
+            query.charAt(0).toUpperCase() + query.slice(1).toLowerCase(),
+          ]),
+        ].map((v) => ({ raw: { path: ["name"], string_contains: v } })),
+      ],
+    },
+    select: { id: true, vendorId: true, raw: true },
+    orderBy: { vendorId: "asc" },
+    take,
+  });
+  return rows.map((r) => {
+    const n = r.raw && typeof r.raw === "object" ? (r.raw as { name?: unknown }).name : null;
+    return {
+      vendorProductId: r.id,
+      vendorId: r.vendorId,
+      name: typeof n === "string" ? n.slice(0, 200) : null,
+    };
+  });
+}
+
 // ───────────── creation ─────────────
 
 const RequestToken = z

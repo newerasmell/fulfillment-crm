@@ -131,6 +131,20 @@ export async function seedStuck() {
         actor: { kind: "system" },
         source: "e2e.seed",
       });
+      // The stuck-order task the alert sweep would raise (shown as the reason in „С грешки“).
+      if (!cancelled && hours > 48)
+        await tx.alert.create({
+          data: {
+            accountId,
+            kind: "order_stuck",
+            isTask: true,
+            severity: "WARNING",
+            title: `Order stuck in ACCEPTED for over 48 h: ${number}`,
+            body: "status=ACCEPTED",
+            entityType: "Order",
+            entityId: o.id,
+          },
+        });
       const f = await tx.fulfillment.create({
         data: {
           accountId,
