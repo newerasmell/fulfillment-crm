@@ -9,6 +9,9 @@ import { assertCan, ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { FhbPreflightError } from "@/server/fhb/orders";
 import { webBoss } from "@/server/jobs/boss";
+import { accountDb } from "@/server/db/client";
+import { enqueueFhb } from "@/server/fhb/jobs";
+import { enqueueManualSync } from "@/server/eushipments/jobs";
 import {
   createInbound,
   MAX_INBOUND_FILE_BYTES,
@@ -245,4 +248,38 @@ export async function saveLineGuardAction(input: {
     if (err instanceof DomainError) return { error: err.code };
     throw err;
   }
+}
+
+/**
+ * „Обнови продуктите от склада“ in a new inbound (owner request 2026-11-23): one read of the warehouse's product
+ * catalogue now, instead of waiting for the next sync; products created there become master products of the line.
+ * One run per warehouse at a time (the queue keeps a single job per warehouse and resource).
+ */
+export async function refreshWarehouseProductsAction(
+  connectionId: string,
+): Promise<{ ok: true } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    assertCan(ctx.role, "inbound.manage");
+    const conn = await accountDb(ctx.accountId).fulfillmentConnection.findFirst({
+      where: {
+        id: z.string().min(1).max(64).parse(connectionId),
+        enabled: true,
+        ...(ctx.companyScope ? { companyId: { in: ctx.companyScope } } : {}),
+      },
+      select: { id: true, type: true },
+    });
+    if (!conn) throw new DomainError("not_found");
+    const boss = await webBoss();
+    const data = { accountId: ctx.accountId, connectionId: conn.id };
+    if (conn.type === "FHB_V3") await enqueueFhb.sync(boss, { ...data, resource: "products", force: true });
+    else if (conn.type === "EUSHIPMENTS") await enqueueManualSync(boss, "products", data);
+    else throw new DomainError("not_found");
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError) return { error: err.code };
+    if (err instanceof z.ZodError) return { error: "invalid" };
+    throw err;
+  }
+  return { ok: true };
 }

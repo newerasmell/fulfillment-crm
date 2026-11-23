@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { adoptNewWarehouseProductsSafe } from "@/server/lines/catalogue";
 import { COURIER_SOURCE, courierEvents } from "./courier";
 import { FhbError, type FhbClient, type FhbClientOptions } from "@/integrations/fhb-v3/client";
 import { mapFhbProductView } from "@/integrations/fhb-v3/mapper";
@@ -215,7 +216,12 @@ export async function syncFhbProducts(ctx: SyncContext) {
     { vendors: { connectionId: ctx.connectionId } },
     "fhb_products",
   );
-  return { count };
+  // Products created directly in ZOE become master products of the line (when its catalogue is the source).
+  const adopted = await adoptNewWarehouseProductsSafe(ctx.accountId, ctx.connectionId);
+  return {
+    count,
+    ...(adopted.adopted ? { createdMasters: adopted.created, linkedMasters: adopted.linked } : {}),
+  };
 }
 
 /** GET /stock/all: physical quantity only (`free` stays what the product list said). */

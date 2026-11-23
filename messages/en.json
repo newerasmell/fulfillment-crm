@@ -2268,7 +2268,12 @@
       "requests": "Requests to the warehouse",
       "requestsNote": "Every request goes through the outbox and the warehouse's mode.",
       "tasks": "Tasks",
-      "toAlerts": "To alerts and tasks →"
+      "toAlerts": "To alerts and tasks →",
+      "refresh": {
+        "button": "Refresh the warehouse's products",
+        "queued": "Started. Search for the product again in 1–2 minutes.",
+        "failed": "Failed — try again shortly."
+      }
     },
     "push": {
       "title": "Stock to Shopify",
