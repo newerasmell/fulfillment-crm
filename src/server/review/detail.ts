@@ -83,7 +83,8 @@ export async function getOrderReview(actor: ScopedActor, orderId: string) {
         orderBy: { createdAt: "asc" },
         include: {
           connection: { select: { name: true, type: true } },
-          events: { orderBy: { occurredAt: "asc" }, take: 200 },
+          // The carrier's own scans are not the shipment's status history (shown separately, "Последно от куриера").
+          events: { where: { source: { not: "fhb:courier" } }, orderBy: { occurredAt: "asc" }, take: 200 },
         },
       }),
       db.review.findMany({

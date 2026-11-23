@@ -22,6 +22,8 @@ import {
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
 import { replacementDraft, replacementLinks } from "./replacement";
+import { searchManualProducts, stockPerWarehouse } from "./stock-view";
+import { listOrders } from "@/server/orders";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
 import {
@@ -763,11 +765,154 @@ describe("manual shipments and labels (P7)", () => {
         replacement: { sourceOrderId: "no-such-order", reason: "lost" },
       }),
     ).rejects.toMatchObject({ code: "replacement_source_not_found" });
-    expect(await replacementLinks(outsider, src.id)).toEqual({ replacements: [], replacementOf: null });
+    expect(await replacementLinks(outsider, src.id)).toEqual({
+      replacements: [],
+      replacementOf: null,
+      shopifyRef: null,
+    });
     // Another group cannot start from this order.
     const stranger = await euTestGroup("labels-replacement-other");
     await expect(replacementDraft(stranger.owner, src.id)).rejects.toMatchObject({ code: "not_found" });
   });
+  it("a manual order keeps the Shopify number typed for it: tagged, found by search, linked to that order", async () => {
+    const { order: shop } = await euTestOrder(g, { number: `#SR${Date.now() % 100000}` });
+    const typed = ` ${shop.number.toLowerCase()} `;
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SKU-SR-${Date.now()}`, name: "Sample" },
+    });
+    const r = await createManualShipment(owner, {
+      ...awbInput({ kind: "WAREHOUSE", lines: [{ productId: product.id, quantity: 1, unitPrice: 0 }] }),
+      shopifyOrderNumber: typed,
+      clientRequestId: randomUUID(),
+    });
+    const ref = shop.number.replace("#", "").toUpperCase();
+    expect((await g.db.order.findUniqueOrThrow({ where: { id: r.orderId } })).tags).toContain(
+      `shopify:${ref}`,
+    );
+    expect((await replacementLinks(owner, r.orderId)).shopifyRef).toEqual({
+      number: ref,
+      order: { id: shop.id, number: shop.number },
+    });
+    const found = await listOrders(
+      { accountId: g.accountId, companyScope: null, activeCompanyId: null },
+      { tab: "all", q: shop.number },
+    );
+    expect(found.rows.map((o) => o.id)).toEqual(expect.arrayContaining([shop.id, r.orderId]));
+    expect(ManualShipmentSchema.safeParse({ ...awbInput(), shopifyOrderNumber: "bad number!" }).success).toBe(
+      false,
+    );
+  });
+
+  it("quick stock check: the units of a product in every warehouse and in total, free = minus held orders", async () => {
+    const product = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SKU-QS-${Date.now()}`, name: "Sample" },
+    });
+    const fhbWh = await g.db.fulfillmentConnection.create({
+      data: {
+        accountId: g.accountId,
+        companyId: g.company.id,
+        type: "FHB_V3",
+        name: "QS FHB",
+        liveMode: "LIVE",
+      },
+    });
+    for (const [connectionId, physical] of [
+      [g.connection.id, 4],
+      [fhbWh.id, 6],
+    ] as const) {
+      const vp = await g.db.vendorProduct.create({
+        data: {
+          accountId: g.accountId,
+          connectionId,
+          productId: product.id,
+          vendorId: `qs-${connectionId}`,
+          raw: {},
+        },
+      });
+      await g.db.stockLevel.create({
+        data: {
+          accountId: g.accountId,
+          vendorProductId: vp.id,
+          physical,
+          free: physical,
+          sellable: physical,
+          snapshotAt: new Date(),
+          source: "POLL",
+        },
+      });
+    }
+    const [s] = await stockPerWarehouse(owner, [product.id]);
+    expect(s?.totalPhysical).toBe(10);
+    expect(s?.warehouses.map((w) => (w.carried ? [w.name, w.physical] : null))).toEqual(
+      expect.arrayContaining([
+        ["QS FHB", 6],
+        [g.connection.name, 4],
+      ]),
+    );
+    expect(s?.totalSellable).toBe(10);
+    // A unit FHB could not give (SkuIncident) is not free there — the same number „Провери“ checks.
+    await g.db.skuIncident.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: fhbWh.id,
+        productId: product.id,
+        fulfillmentId: `qs-${Date.now()}`,
+        quantity: 1,
+      },
+    });
+    const [held] = await stockPerWarehouse(owner, [product.id]);
+    expect(held?.warehouses.find((w) => w.connectionId === fhbWh.id)).toMatchObject({
+      physical: 6,
+      sellable: 5,
+    });
+    expect(held?.totalSellable).toBe(9);
+    // A member of another company sees none of these warehouses; another group sees nothing of the product.
+    const otherCo = await g.db.company.create({
+      data: { accountId: g.accountId, name: `QS other ${Date.now()}` },
+    });
+    const [scoped] = await stockPerWarehouse({ ...owner, role: "OPERATOR", companyScope: [otherCo.id] }, [
+      product.id,
+    ]);
+    expect(scoped?.warehouses).toEqual([]);
+    const stranger = await euTestGroup("labels-stock-other");
+    const [foreign] = await stockPerWarehouse(stranger.owner, [product.id]);
+    expect(foreign?.totalPhysical).toBe(0);
+    await expect(stockPerWarehouse({ ...owner, role: "VIEWER" }, [product.id])).rejects.toThrow();
+  });
+
+  it("product search: by SKU, name or warehouse code, every word; archived left out; this group only", async () => {
+    const stamp = Date.now();
+    const p = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SRCH-${stamp}`, name: "Synthetic Rose Parfum 50 ml" },
+    });
+    await g.db.vendorProduct.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        productId: p.id,
+        vendorId: `WH${stamp}`,
+        raw: {},
+      },
+    });
+    const gone = await g.db.product.create({
+      data: {
+        accountId: g.accountId,
+        sku: `SRCH-OLD-${stamp}`,
+        name: "Synthetic Rose Parfum old",
+        archived: true,
+      },
+    });
+    const ids = async (q: string, who = owner) => (await searchManualProducts(who, q)).map((x) => x.id);
+    expect(await ids("rose 50")).toContain(p.id);
+    expect(await ids(`srch-${stamp}`)).toContain(p.id);
+    expect(await ids(`WH${stamp}`)).toContain(p.id);
+    expect(await ids("rose parfum")).not.toContain(gone.id);
+    expect(await ids("rose 75")).not.toContain(p.id);
+    const stranger = await euTestGroup("labels-search-other");
+    expect(await ids(`SRCH-${stamp}`, stranger.owner)).toEqual([]);
+    await expect(searchManualProducts({ ...owner, role: "VIEWER" }, "rose")).rejects.toThrow();
+  });
+
   it("detail and isolation: another group cannot read a manual shipment", async () => {
     const r = await createManualShipment(owner, joyInput());
     const d = await getManualShipment(owner, r.manualShipmentId);

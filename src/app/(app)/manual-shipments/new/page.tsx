@@ -31,15 +31,13 @@ export default async function NewManualShipmentPage({
   const [companies, connections, products] = await Promise.all([
     listCompanies(actorFrom(ctx)),
     manualConnections(actor),
-    accountDb(ctx.accountId).product.findMany({
-      // The original order's products are always in the list (the list is capped).
-      where: replacement?.lines.length
-        ? { OR: [{ archived: false }, { id: { in: replacement.lines.map((l) => l.productId) } }] }
-        : undefined,
-      select: { id: true, sku: true, name: true },
-      orderBy: { sku: "asc" },
-      take: 2000,
-    }),
+    // Only the products the form starts with (a replacement's lines); everything else comes from the search.
+    replacement?.lines.length
+      ? accountDb(ctx.accountId).product.findMany({
+          where: { id: { in: replacement.lines.map((l) => l.productId) } },
+          select: { id: true, sku: true, name: true },
+        })
+      : Promise.resolve([]),
   ]);
   const couriers: Record<
     string,

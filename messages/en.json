@@ -586,7 +586,10 @@
         "order_not_shipped": "the order is not shipped yet — check the payment before shipping",
         "shopify_closed": "the order is cancelled / refunded in Shopify",
         "shopify_still_open": "the order is still open in Shopify — cancel or refund it there",
-        "shipped_after_all": "a \"no stock\" cancel was refused and the warehouse shipped the parcel after all — nothing to do"
+        "shipped_after_all": "a \"no stock\" cancel was refused and the warehouse shipped the parcel after all — nothing to do",
+        "parcel_moved_on": "the parcel is no longer shipped (returning, returned, delivered or cancelled)",
+        "parcel_still_shipped": "the carrier is returning the parcel while the warehouse still has it as sent — contact the customer or send a replacement",
+        "replacement_sent": "a replacement was sent for the order"
       }
     },
     "phoneWaiver": {
@@ -613,6 +616,10 @@
         "phone_changed": "The order's phone changed — reopen and check it."
       },
       "given": "Reason: “{reason}” · {at}"
+    },
+    "courier": {
+      "label": "Latest from the carrier:",
+      "returning": "returning to the sender"
     }
   },
   "orderStatus": {
@@ -2379,6 +2386,15 @@
         "would_set": "the push would set {target}, but it is stopped (see above)"
       },
       "perLocation": "{name}: Shopify {shopify}, warehouse {sellable}"
+    },
+    "totals": {
+      "title": "Total in the warehouses",
+      "all": "All: {units} pcs ({free} free)",
+      "hint": "Sum of the warehouses' last numbers for all products of the selected line (archived ones left out). Free = without what the CRM holds for orders.",
+      "units": "pcs",
+      "free": "{n} free",
+      "products": "{n, plural, one {# product} other {# products}}",
+      "stale": "old number"
     }
   },
   "returns": {
@@ -2709,7 +2725,10 @@
         "insufficient": "insufficient",
         "unknown": "unknown"
       },
-      "payload": "Exactly what will be sent"
+      "payload": "Exactly what will be sent",
+      "shopifyOrderNumber": "Shopify order number (optional)",
+      "shopifyOrderNumberPlaceholder": "e.g. #1001",
+      "shopifyOrderNumberHint": "Which shop order the parcel is for. Search finds the manual order by it."
     },
     "detail": {
       "title": "Manual shipment",
@@ -2807,7 +2826,22 @@
       "isReplacementOf": "Replacement for",
       "sentReplacements": "Replacements sent:",
       "send": "Send a replacement",
-      "notFound": "The order to start the replacement from was not found — fill in the parcel by hand."
+      "notFound": "The order to start the replacement from was not found — fill in the parcel by hand.",
+      "shopifyRef": "Shopify order:"
+    },
+    "stock": {
+      "none": "Not carried by any warehouse.",
+      "units": "pcs",
+      "free": "{n} free",
+      "stale": "old number",
+      "total": "Total: {n} pcs ({free} free)",
+      "hint": "Units in the warehouse by its last number; free = without units held for orders and units on watch."
+    },
+    "picker": {
+      "placeholder": "Type a SKU, name or warehouse code…",
+      "searching": "Searching…",
+      "none": "No such product.",
+      "failed": "The search failed — try again."
     }
   },
   "ai": {

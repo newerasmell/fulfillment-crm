@@ -515,7 +515,7 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   person who asked, "follow" mode — never rolls the cancel back) and queues the out_of_stock tag, so it lands in
   „Липсващи артикули“; when that cannot happen (store not LIVE to Shopify, the store-tag guard) the order stays
   BLOCKED with a task to do it by hand.
-- 2026-11-18 LT2552: after a "Няма наличност" cancel the order started over, but the next Shopify import saw the
+- 2026-11-18 (owner report): after a "Няма наличност" cancel the order started over, but the next Shopify import saw the
   Shopify fulfillment the CRM itself had written (for the cancelled shipment) and moved it to "Изпратена извън CRM";
   the store's "Confirmed" tag stayed. Now the order query reads `fulfillments { id status }`, and only a live Shopify
   fulfillment the CRM did not write (gid not on a SENT FULFIL write-back) means "shipped outside the CRM" (without
@@ -525,7 +525,7 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the CRM's own (the stored order must list them), and follows an out_of_stock tag at once. The Shopify fulfillment
   itself stays (never cancelled by the CRM): a later shipment of the same lines takes it over, or a person cancels
   it in Shopify.
-- 2026-11-18 PL4563: an old order (14.10, fulfilled and paid, archived) appeared because its customer reopened the
+- 2026-11-18 (owner report): an old order (14.10, fulfilled and paid, archived) appeared because its customer reopened the
   expired order-status page — Shopify records that as an update, the webhook imported the order for the first time
   as "Изпратена извън CRM" (correct) and raised "cash on delivery but nothing outstanding". That task is no longer
   opened for an order Shopify already shows fulfilled, and "Провери задачите" closes it once the order is shipped
@@ -533,10 +533,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-18 Cancelled orders stayed under "С грешки": their task "blocked in the CRM but still open in Shopify —
   cancel or refund it in the shop" was never closed after the shop did it. The alerts sweep (every 10 min) and
   "Провери задачите" now close it once Shopify shows the order cancelled, voided or refunded.
-- 2026-11-18 1-HU8485: a „Няма наличност“ cancel was refused (FHB NOT_UPDATABLE_ORDER_ERROR, already in work) and
+- 2026-11-18 (owner report): a „Няма наличност“ cancel was refused (FHB NOT_UPDATABLE_ORDER_ERROR, already in work) and
   the warehouse shipped the parcel after all; the "складът отказа да откаже" task stayed. It now closes (button and
   the 10-min alerts sweep) when every refused shipment is cancelled by the warehouse's word or — for a no-stock cancel
-  only — shipped. Any other reason (customer cancelled…) keeps it. CZ4112: the orphaned-fulfillment task closes by
+  only — shipped. Any other reason (customer cancelled…) keeps it. Also: the orphaned-fulfillment task closes by
   itself when the new shipment takes the Shopify fulfillment over.
 - 2026-11-18 „Блокирани в склад“ (owner request; real case: euShipments orders in "Awaiting pickup" for days, emails
   unanswered). src/server/warehouse-cases/: a shipment the warehouse accepted but has not handed to the courier
@@ -559,6 +559,27 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   required (damaged / missing item / wrong item / lost / other + text). Stored in ManualShipment.params.replacement
   (no migration); the order gets the tag `replacement`; both orders show the link (src/server/labels/replacement.ts).
   The header „Създай“ menu now opens Ръчна пратка and Приемане на стока (it said „скоро“).
+- 2026-11-21 A manual order without a template takes the Shopify order number it is for (optional, "#" dropped):
+  kept as the tag `shopify:<NUMBER>` (no migration), found by the order list search and the global search, shown on
+  the order page with a link to that CRM order when it exists (src/lib/shopify-ref.ts).
+- 2026-11-23 Quick stock check in „Нова ръчна пратка“: under each product line, its units in every warehouse of the
+  member's companies (physical, and free = the number „Провери“ checks: stored sellable minus SkuIncident holds),
+  plus the totals (src/server/labels/stock-view.ts). A Shopify number shared by two stores of one company is shown
+  without a link.
+- 2026-11-23 „Общо в складовете“ on Продукти → Наличност: units per warehouse and per company at a glance (physical,
+  free as on the board, products with stock), over the board's products (line filter, archived products out, first
+  link per product and warehouse); flat reads (bind-parameter limit) and a failure never takes the board down
+  (src/server/stock/totals.ts). Real order numbers / company names removed from comments, tests and docs (public repo);
+  one remains in an applied migration's comment, which cannot change without breaking its checksum.
+- 2026-11-23 FHB carrier events (owner report: FHB keeps orders "sent" while DPD already returns them). Each
+  `tracking_events` entry is stored once (FulfillmentEvent source `fhb:courier`, keyed by date|code|carrier code|text;
+  the sync re-applies an order when a key is new). The order page shows the latest carrier status (FHB, or the
+  carrier text euShipments sends). A recent (≤14 days) return to the sender on a parcel FHB still calls sent opens one
+  task `parcel_returning` (decided from what is stored, in the same transaction; a closed task stays closed); it closes
+  when the order leaves SHIPPED or a replacement is sent. The CRM status is unchanged (FHB's own return decides).
+  Carrier events are not warehouse movement for the no-stock check. src/server/fhb/courier.ts.
+- 2026-11-23 Нова ръчна пратка: the product list became a search (SKU, name or warehouse code, the whole catalogue,
+  archived left out); lines carry their own id so a removed line never hands its picker to the next.
 
 ## Open questions
 See SPEC.md §11.

@@ -1,4 +1,5 @@
 import { collectableCod } from "@/lib/cod-rounding";
+import { shopifyRefTag } from "@/lib/shopify-ref";
 import { localCurrencyFor } from "@/server/countries/currency";
 import { z } from "zod";
 import { Prisma, type ConnectionType } from "@/generated/prisma/client";
@@ -57,6 +58,7 @@ export const MANUAL_KINDS = ["WAREHOUSE", ...LABEL_KINDS] as const;
 /** Why an order is sent again (owner request 2026-11-19). */
 export const REPLACEMENT_REASONS = ["damaged", "missing_item", "wrong_item", "lost", "other"] as const;
 export const REPLACEMENT_TAG = "replacement";
+
 export type ManualKind = (typeof MANUAL_KINDS)[number];
 
 const CONNECTION_FOR: Record<ManualKind, readonly ConnectionType[]> = {
@@ -137,6 +139,15 @@ export const ManualShipmentInput = z
       )
       .max(100)
       .default([]),
+    /** The Shopify order this parcel belongs to (typed by hand, e.g. an order not in the CRM); "#" dropped. */
+    shopifyOrderNumber: z
+      .string()
+      .trim()
+      .max(40)
+      .optional()
+      .nullable()
+      .transform((v) => (v ? v.replace(/^#+/, "").trim() : null))
+      .refine((v) => v === null || /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v), "order number"),
     /** A free resend of an existing order (broken / missing / wrong / lost): linked both ways. */
     replacement: z
       .object({
@@ -830,7 +841,11 @@ async function createOrderRow(
       total,
       paymentMethod: isCod ? "COD" : "PREPAID",
       codAmount: isCod ? round2(v.cod!) : null,
-      tags: v.replacement ? [MANUAL_TAG, REPLACEMENT_TAG] : [MANUAL_TAG],
+      tags: [
+        MANUAL_TAG,
+        ...(v.replacement ? [REPLACEMENT_TAG] : []),
+        ...(v.shopifyOrderNumber ? [shopifyRefTag(v.shopifyOrderNumber)] : []),
+      ],
       note: v.note,
       placedAt: now,
       countryCode: v.recipient.countryCode,

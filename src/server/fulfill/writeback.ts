@@ -1130,7 +1130,7 @@ async function prepareFulfil(ctx: KindContext): Promise<Prepared> {
         fromFulfillmentId: adopted.fromFulfillmentId,
       });
     // Taken over for real: the order's "Shopify fulfillment of a cancelled shipment" task is done when no other
-    // orphaned one is left (owner report 2026-11-18, CZ4112).
+    // orphaned one is left (owner report 2026-11-18).
     if (status === "SENT") await resolveAdoptedOrphans(row.accountId, row.orderId);
     return final(status);
   }

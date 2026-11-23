@@ -131,6 +131,10 @@ status list "current as of July 2026".
   fractional HUF that still reaches a validator was not rounded and is a soft finding (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked
   unless a local-currency amount is stored on the order.
 
+- `tracking_events` (order reads: date, message, event_code, carrier_event_code; the codes are not documented) are
+  stored as carrier events (src/server/fhb/courier.ts). FHB's status stays `sent` while the carrier returns a parcel:
+  a return to the sender is recognised from the carrier's text (several languages, tested) and only opens a task.
+
 ### 2.4 Status mapping (documented vs observed — handle both)
 Documented: `pending, confirmed, sent, delivered, rejected` (+ `returned` accepted as history filter).
 Seen in responses/other endpoints: `imported, new, b2b_new, packed`.
@@ -183,7 +187,7 @@ problem that needs an operator, which is BLOCKED plus an operator task.
 - `GET /stock/movements` sends `page` as a **string**; `page`/`total` are coerced to numbers on every list.
 
 - 2026-11-03: an order **cancelled by hand in ZOE** comes back (order list / history) with its `id` renamed to
-  `{our id}#STORNO#{6 random chars}` and status `rejected` (e.g. `1-EUR2849#STORNO#TJX6KD`). Not documented. We match
+  `{our id}#STORNO#{6 random chars}` and status `rejected` (e.g. `1-TST2849#STORNO#TJX6KD`). Not documented. We match
   it to our shipment by the part before `#STORNO#` (or FHB's `uid`), mark the shipment `CANCELLED`, move the order
   to BLOCKED and open one CRITICAL task (`fhb_order_cancelled_in_zoe`): a person resends (new id `-2`) or cancels in
   Shopify. ZOE sends no notification for a cancel: the CRM learns it at the 30-min FHB sync (or "Пусни" → orders).

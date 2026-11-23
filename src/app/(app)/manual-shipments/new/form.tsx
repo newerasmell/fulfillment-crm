@@ -2,9 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
-import { useState, useTransition } from "react";
+import { useEffect, useId, useState, useTransition } from "react";
 import {
   createManualAction,
+  manualStockAction,
+  searchManualProductsAction,
   officesAction,
   previewManualAction,
   quoteAction,
@@ -18,6 +20,7 @@ import type {
   ReplacementDraft,
   ReplacementReason,
 } from "@/server/labels";
+import type { ProductStock } from "@/server/labels/stock-view";
 
 const REASONS: ReplacementReason[] = ["damaged", "missing_item", "wrong_item", "lost", "other"];
 
@@ -87,6 +90,8 @@ export function ManualForm(props: {
   const [kind, setKind] = useState<Kind>(draft ? "WAREHOUSE" : "JOY_LABEL");
   const [companyId, setCompanyId] = useState(draft?.companyId ?? props.defaultCompanyId);
   const [reason, setReason] = useState<ReplacementReason | "">("");
+  const [shopifyRef, setShopifyRef] = useState("");
+  const [stock, setStock] = useState<Record<string, ProductStock>>({});
   const [reasonText, setReasonText] = useState("");
   const options = props.connections.filter((c) => TYPES[kind].includes(c.type));
   const [connectionId, setConnectionId] = useState(options[0]?.id ?? "");
@@ -119,11 +124,36 @@ export function ManualForm(props: {
   const [contents, setContents] = useState("");
   const [note, setNote] = useState("");
   const [declared, setDeclared] = useState("");
-  const [lines, setLines] = useState<{ productId: string; quantity: string; unitPrice: string }[]>(
+  // Each line has its own id: removing one never hands its picker to the next line.
+  const [lines, setLines] = useState<
+    { uid: string; productId: string; quantity: string; unitPrice: string }[]
+  >(() =>
     draft?.lines.length
-      ? draft.lines.map((l) => ({ productId: l.productId, quantity: String(l.quantity), unitPrice: "0" }))
-      : [{ productId: "", quantity: "1", unitPrice: "" }],
+      ? draft.lines.map((l) => ({
+          uid: uuid(),
+          productId: l.productId,
+          quantity: String(l.quantity),
+          unitPrice: "0",
+        }))
+      : [{ uid: uuid(), productId: "", quantity: "1", unitPrice: "" }],
   );
+  // The label of every product chosen so far (the picker always shows the line's own product).
+  const [labels, setLabels] = useState<Record<string, Pick>>(() =>
+    Object.fromEntries(props.products.map((p) => [p.id, p])),
+  );
+  // Stock per warehouse of the chosen products (quick check while filling the form).
+  const productKey = [...new Set(lines.map((l) => l.productId).filter(Boolean))].sort().join(",");
+  useEffect(() => {
+    if (kind !== "WAREHOUSE" || !productKey) return;
+    let live = true;
+    void manualStockAction(productKey.split(",")).then((res) => {
+      if (!live || "error" in res) return;
+      setStock((prev) => ({ ...prev, ...Object.fromEntries(res.map((p) => [p.productId, p])) }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [kind, productKey]);
   const [preview, setPreview] = useState<ManualPreview | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +204,7 @@ export function ManualForm(props: {
                 unitPrice: num(l.unitPrice),
               }))
           : [],
+      shopifyOrderNumber: draft ? null : shopifyRef.trim() || null,
       replacement:
         draft && reason
           ? { sourceOrderId: draft.sourceOrderId, reason, reasonText: reasonText.trim() || null }
@@ -271,6 +302,20 @@ export function ManualForm(props: {
           check();
         }}
       >
+        {!draft && (
+          <label className={labelCls}>
+            <span>{t("form.shopifyOrderNumber")}</span>
+            <input
+              className={inputCls}
+              value={shopifyRef}
+              maxLength={40}
+              placeholder={t("form.shopifyOrderNumberPlaceholder")}
+              data-testid="manual-shopify-number"
+              onChange={(e) => setShopifyRef(e.target.value)}
+            />
+            <span className="text-xs font-normal text-muted">{t("form.shopifyOrderNumberHint")}</span>
+          </label>
+        )}
         {draft && (
           <div
             className="flex flex-col gap-2 rounded-[10px] border border-accent bg-accent-soft p-3 text-sm"
@@ -650,33 +695,26 @@ export function ManualForm(props: {
         {kind === "WAREHOUSE" && (
           <fieldset className="m-0 flex flex-col gap-2 border-0 p-0">
             <legend className="mb-2 text-[13px] font-semibold">{t("form.products")}</legend>
-            {lines.map((l, i) => (
-              <div key={i} className="flex flex-wrap items-end gap-2">
-                <label className={`${labelCls} min-w-64 flex-1`}>
-                  {t("form.product")}
-                  <select
-                    value={l.productId}
-                    onChange={(e) => (
-                      setLines((ls) => ls.map((x, j) => (j === i ? { ...x, productId: e.target.value } : x))),
-                      invalidate()
-                    )}
-                    className={inputCls}
-                  >
-                    <option value="">—</option>
-                    {props.products.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.sku} · {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+            {lines.map((l) => (
+              <div key={l.uid} className="flex flex-wrap items-end gap-2">
+                <ProductPicker
+                  label={t("form.product")}
+                  selected={l.productId ? (labels[l.productId] ?? null) : null}
+                  onPick={(p) => (
+                    setLabels((x) => ({ ...x, [p.id]: p })),
+                    setLines((ls) => ls.map((x) => (x.uid === l.uid ? { ...x, productId: p.id } : x))),
+                    invalidate()
+                  )}
+                />
                 <label className={labelCls}>
                   {t("form.qty")}
                   <input
                     value={l.quantity}
                     inputMode="numeric"
                     onChange={(e) => (
-                      setLines((ls) => ls.map((x, j) => (j === i ? { ...x, quantity: e.target.value } : x))),
+                      setLines((ls) =>
+                        ls.map((x) => (x.uid === l.uid ? { ...x, quantity: e.target.value } : x)),
+                      ),
                       invalidate()
                     )}
                     className={`${inputCls} w-20 font-mono`}
@@ -688,7 +726,9 @@ export function ManualForm(props: {
                     value={l.unitPrice}
                     inputMode="decimal"
                     onChange={(e) => (
-                      setLines((ls) => ls.map((x, j) => (j === i ? { ...x, unitPrice: e.target.value } : x))),
+                      setLines((ls) =>
+                        ls.map((x) => (x.uid === l.uid ? { ...x, unitPrice: e.target.value } : x)),
+                      ),
                       invalidate()
                     )}
                     className={`${inputCls} w-28 font-mono`}
@@ -698,17 +738,20 @@ export function ManualForm(props: {
                   <button
                     type="button"
                     className={ghostButtonCls}
-                    onClick={() => (setLines((ls) => ls.filter((_, j) => j !== i)), invalidate())}
+                    onClick={() => (setLines((ls) => ls.filter((x) => x.uid !== l.uid)), invalidate())}
                   >
                     {t("form.removeLine")}
                   </button>
                 )}
+                {l.productId && stock[l.productId] && <StockPerWarehouse s={stock[l.productId]!} />}
               </div>
             ))}
             <button
               type="button"
               className={`${ghostButtonCls} self-start`}
-              onClick={() => setLines((ls) => [...ls, { productId: "", quantity: "1", unitPrice: "" }])}
+              onClick={() =>
+                setLines((ls) => [...ls, { uid: uuid(), productId: "", quantity: "1", unitPrice: "" }])
+              }
             >
               {t("form.addLine")}
             </button>
@@ -803,6 +846,162 @@ export function ManualForm(props: {
           </section>
         )}
       </aside>
+    </div>
+  );
+}
+
+/** The chosen product's units in every warehouse and in total (quick check, owner request 2026-11-23). */
+function StockPerWarehouse({ s }: { s: ProductStock }) {
+  const t = useTranslations("manual.stock");
+  return (
+    <div className="flex w-full flex-wrap items-center gap-1.5 text-xs" data-testid="manual-stock">
+      {s.warehouses.length === 0 ? (
+        <span className="text-warn">{t("none")}</span>
+      ) : (
+        <>
+          {s.warehouses.map((w) =>
+            w.carried ? (
+              <span
+                key={w.connectionId}
+                title={t("hint")}
+                className={`rounded-full px-2 py-0.5 ${w.sellable > 0 ? "bg-ok-bg text-ok" : w.physical > 0 ? "bg-warn-bg text-warn" : "bg-block-bg text-block"}`}
+              >
+                {w.name}: <strong>{w.physical}</strong> {t("units")}
+                {w.sellable !== w.physical && ` (${t("free", { n: w.sellable })})`}
+                {w.stale && ` · ${t("stale")}`}
+              </span>
+            ) : null,
+          )}
+          <span className="font-semibold" data-testid="manual-stock-total">
+            {t("total", { n: s.totalPhysical, free: s.totalSellable })}
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+type Pick = { id: string; sku: string; name: string };
+
+/**
+ * Product search (owner request 2026-11-23): type a SKU, part of the name or the warehouse's code; the matches of the
+ * whole catalogue appear below. Replaces a list of thousands to scroll through.
+ */
+function ProductPicker({
+  label,
+  selected,
+  onPick,
+}: {
+  label: string;
+  /** The line's product (owned by the form, so what is shown is always what is sent). */
+  selected: Pick | null;
+  onPick: (p: Pick) => void;
+}) {
+  const t = useTranslations("manual.picker");
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<{ term: string; hits: Pick[]; failed: boolean }>({
+    term: "",
+    hits: [],
+    failed: false,
+  });
+  const [active, setActive] = useState(0);
+  const listId = useId();
+  const term = q.trim();
+  const searching = open && term.length >= 2;
+  // Only the answer for what is typed now is shown; anything else is still on its way.
+  const answered = searching && result.term === term;
+  const hits = answered ? result.hits : [];
+  useEffect(() => {
+    if (!searching) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      void searchManualProductsAction(term)
+        .then((res) => {
+          if (!live) return;
+          setResult({ term, hits: "error" in res ? [] : res, failed: "error" in res });
+          setActive(0);
+        })
+        .catch(() => {
+          if (live) setResult({ term, hits: [], failed: true });
+        });
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [searching, term]);
+  const choose = (p: Pick) => {
+    setQ("");
+    setOpen(false);
+    onPick(p);
+  };
+  const optionId = (idx: number) => `${listId}-${idx}`;
+  return (
+    <div className="relative flex min-w-64 flex-1 flex-col gap-1 text-[13px] font-medium">
+      <span>{label}</span>
+      <input
+        role="combobox"
+        aria-label={label}
+        aria-expanded={searching}
+        aria-autocomplete="list"
+        aria-controls={listId}
+        aria-activedescendant={hits[active] ? optionId(active) : undefined}
+        className={inputCls}
+        value={open ? q : selected ? `${selected.sku} · ${selected.name}` : ""}
+        placeholder={t("placeholder")}
+        data-testid="product-picker"
+        onFocus={() => {
+          setOpen(true);
+          setQ("");
+        }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => {
+          setOpen(true);
+          setQ(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.max(0, Math.min(a + 1, hits.length - 1)));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, 0));
+          } else if (e.key === "Enter" && hits[active]) {
+            e.preventDefault();
+            choose(hits[active]!);
+          } else if (e.key === "Escape") setOpen(false);
+        }}
+      />
+      <ul
+        id={listId}
+        role="listbox"
+        aria-label={label}
+        hidden={!searching}
+        className="absolute top-full z-20 mt-1 max-h-72 w-full overflow-auto rounded-[10px] border border-line bg-surface p-1 shadow-lg"
+      >
+        {hits.map((p, idx) => (
+          <li
+            key={p.id}
+            id={optionId(idx)}
+            role="option"
+            aria-selected={idx === active}
+            className={`cursor-pointer rounded-lg px-3 py-2 font-normal ${idx === active ? "bg-accent-soft" : "hover:bg-hover"}`}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              choose(p);
+            }}
+          >
+            <span className="font-mono text-[12px]">{p.sku}</span> · {p.name}
+          </li>
+        ))}
+      </ul>
+      {searching && hits.length === 0 && (
+        <span role="status" aria-live="polite" className="text-xs font-normal text-muted">
+          {!answered ? t("searching") : result.failed ? t("failed") : t("none")}
+        </span>
+      )}
     </div>
   );
 }

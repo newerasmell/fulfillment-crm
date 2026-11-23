@@ -1,4 +1,5 @@
 import { assertCan } from "@/server/auth/rbac";
+import { shopifyRefTag } from "@/lib/shopify-ref";
 import { companyFilter } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import type { BoardCtx } from "@/server/returns/board";
@@ -27,6 +28,8 @@ export async function globalSearch(ctx: BoardCtx, raw: string, take = 6) {
           {
             OR: [
               { number: { contains: q, mode: "insensitive" } },
+              // A manual order carries the Shopify number it was typed for (tag shopify:…).
+              { tags: { has: shopifyRefTag(q) } },
               { customerName: { contains: q, mode: "insensitive" } },
               { email: { equals: q, mode: "insensitive" } },
               ...(/^\d{5,}$/.test(phone) ? [{ phone: { contains: phone } }] : []),

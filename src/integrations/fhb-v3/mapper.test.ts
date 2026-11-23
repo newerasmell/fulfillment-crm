@@ -35,8 +35,8 @@ describe("FHB ids", () => {
     expect(fhbOrderExternalId("tst", "#1001")).toBe("TST-1001");
     expect(fhbOrderExternalId("TST", "#1001", 2)).toBe("TST-1001-2");
     // No prefix (owner request 2026-11-03): the Shopify order number as it is.
-    expect(fhbOrderExternalId("", "#1-EUR2848")).toBe("1-EUR2848");
-    expect(fhbOrderExternalId("", "1-EUR2848", 2)).toBe("1-EUR2848-2");
+    expect(fhbOrderExternalId("", "#1-TST2848")).toBe("1-TST2848");
+    expect(fhbOrderExternalId("", "1-TST2848", 2)).toBe("1-TST2848-2");
     expect(() => fhbOrderExternalId("", "#")).toThrow();
   });
   it("product id = connection prefix + SKU", () => {

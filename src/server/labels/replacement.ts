@@ -1,3 +1,4 @@
+import { shopifyRefOf } from "@/lib/shopify-ref";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
@@ -95,8 +96,30 @@ export async function replacementLinks(
   const source = srcId
     ? await db.order.findFirst({ where: { id: srcId, ...visible }, select: { id: true, number: true } })
     : null;
+  // The Shopify number typed on a manual order, with the CRM order of that number when the viewer may see it.
+  const self = await db.order.findFirst({
+    where: { id: orderId, ...visible },
+    select: { tags: true, companyId: true },
+  });
+  const ref = self ? shopifyRefOf(self.tags) : null;
+  // Two stores of one company can share a number: a link only when exactly one order has it.
+  const refOrders = ref
+    ? await db.order.findMany({
+        where: {
+          ...visible,
+          id: { not: orderId },
+          source: "SHOPIFY",
+          companyId: self?.companyId ?? undefined,
+          number: { in: [ref, `#${ref}`], mode: "insensitive" },
+        },
+        select: { id: true, number: true },
+        take: 2,
+      })
+    : [];
+  const refOrder = refOrders.length === 1 ? refOrders[0]! : null;
   return {
     replacements: sent.map((m) => ({ ...m.order, ...reasonOf(m.params) })),
     replacementOf: source ? { ...source, ...reasonOf(own?.params) } : null,
+    shopifyRef: ref ? { number: ref, order: refOrder } : null,
   };
 }

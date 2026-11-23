@@ -42,7 +42,7 @@ const SHORTEST = {
 const PAGE = 1000;
 /** Movement = a status from the warehouse itself (not a Shopify write-back, a label or a COD event). */
 const WAREHOUSE_STATUS = {
-  OR: [{ source: "eushipments" }, { source: { startsWith: "fhb:" } }],
+  OR: [{ source: "eushipments" }, { source: { startsWith: "fhb:", not: "fhb:courier" } }],
 } satisfies Prisma.FulfillmentEventWhereInput;
 
 export interface NoStockFinding {

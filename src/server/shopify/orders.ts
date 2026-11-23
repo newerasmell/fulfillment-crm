@@ -136,8 +136,8 @@ export async function importShopifyOrder(
         },
       });
       // Fulfilled in Shopify by the CRM itself (a shipment the warehouse later cancelled — "Няма наличност"): not
-      // "shipped outside the CRM". Only a live Shopify fulfillment the CRM did not write is (owner report 2026-11-18,
-      // LT2552); without the fulfillments list it stays "outside" as before.
+      // "shipped outside the CRM". Only a live Shopify fulfillment the CRM did not write is (owner report 2026-11-18);
+      // without the fulfillments list it stays "outside" as before.
       const ourGids = existing
         ? new Set(
             (
@@ -397,7 +397,7 @@ export async function importShopifyOrder(
       }
       // (Not while it waits for the store's tag: it is not work yet; the next import after tagging opens it. Not for an
       // order Shopify already shows fulfilled — e.g. an old order first seen when its customer reopened its status page:
-      // there is nothing left to ship, owner report 2026-11-18, PL4563.)
+      // there is nothing left to ship, owner report 2026-11-18.)
       if (
         codGateway &&
         !cod &&
