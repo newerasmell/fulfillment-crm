@@ -69,7 +69,12 @@ export function warehouseCancelRefusal(f: CancelShipmentLike, now: Date = new Da
 
 /** The outbox write that cancels one shipment, marked as a warehouse cancel (CRM-only context, never sent). */
 function cancelWrite(
-  f: { id: string; externalId: string; vendorOrderId?: string | null },
+  f: {
+    id: string;
+    externalId: string;
+    vendorOrderId?: string | null;
+    manualShipment?: { id: string } | null;
+  },
   type: ConnectionType,
   ctx: { requestedById: string; reasonCode: string; reasonText: string | null },
 ) {
@@ -93,7 +98,7 @@ function cancelWrite(
       ctx: {
         fulfillmentId: f.id,
         referenceNumber: f.externalId,
-        ...(f.vendorOrderId ? { vendorOrderId: f.vendorOrderId } : {}),
+        ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
         ...mark,
       },
     },

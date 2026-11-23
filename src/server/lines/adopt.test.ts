@@ -63,6 +63,16 @@ describe("new warehouse products adopted after a sync", () => {
     );
     expect((await db().vendorProduct.findUniqueOrThrow({ where: { id: removed.id } })).productId).toBeNull();
     expect(await db().product.count({ where: { accountId: g.accountId, sku: "CUT-1" } })).toBe(0);
+    // Rows that stay unlinked (a SKU another line uses) never hide a new one behind them.
+    const other = await db().productLine.create({ data: { accountId: g.accountId, name: "Other line" } });
+    for (let i = 0; i < 60; i++)
+      await db().product.create({
+        data: { accountId: g.accountId, sku: `TAKEN-${i}`, name: "Taken", lineId: other.id },
+      });
+    for (let i = 0; i < 60; i++) await vp(`RTAKEN-${i}`);
+    const late = await vp("RZZZ-LATE-1");
+    await adoptNewWarehouseProducts(g.accountId, g.connection.id);
+    expect((await db().vendorProduct.findUniqueOrThrow({ where: { id: late.id } })).productId).not.toBeNull();
     // Again: nothing new.
     const before = await db().product.count({ where: { accountId: g.accountId } });
     await adoptNewWarehouseProducts(g.accountId, g.connection.id);

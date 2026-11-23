@@ -110,6 +110,7 @@ export function NewInboundForm({
         name="lines"
         value={JSON.stringify(lines.map((l) => ({ productId: l.productId, quantity: l.quantity })))}
       />
+      <RefreshProducts connectionId={connectionId} />
       <div className="grid gap-3 md:grid-cols-3">
         <label className={labelCls}>
           {t("warehouse")}
@@ -129,7 +130,6 @@ export function NewInboundForm({
               </option>
             ))}
           </select>
-          <RefreshProducts connectionId={connectionId} />
         </label>
         <label className={labelCls}>
           {t("name")}

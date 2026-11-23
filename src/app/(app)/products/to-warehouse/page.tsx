@@ -6,6 +6,8 @@ import { ghostButtonCls, inputCls, buttonCls } from "@/components/ui/form";
 import { can } from "@/server/auth/rbac";
 import { requireAccountContext } from "@/server/auth/session";
 import { productsMissingAt, warehouseCreateTargets } from "@/server/products/to-warehouse";
+import { IMPORT_COLUMNS } from "@/server/products/import";
+import { ProductImport } from "./import";
 import { ToWarehousePicker } from "./picker";
 
 /**
@@ -58,6 +60,14 @@ export default async function ToWarehousePage({
           <p className="mt-0 text-sm" data-testid="to-warehouse-mode">
             {t(`mode.${conn.liveMode}`)}
           </p>
+          {can(ctx.role, "vendorProducts.write") && can(ctx.role, "connections.manage") && (
+            <ProductImport
+              key={conn.id}
+              connectionId={conn.id}
+              type={conn.type as "FHB_V3" | "EUSHIPMENTS"}
+              columns={IMPORT_COLUMNS[conn.type as "FHB_V3" | "EUSHIPMENTS"]}
+            />
+          )}
           <form className="mb-3 flex flex-wrap items-center gap-2" action="/products/to-warehouse">
             <input type="hidden" name="c" value={conn.id} />
             <input

@@ -418,6 +418,8 @@ export async function listCatalogueRuns(
 
 /** Warehouse products adopted per run at most (the next sync takes the rest). */
 export const ADOPT_MAX = 200;
+/** Unlinked warehouse rows looked at per run at most (a big catalogue with many conflicts stays cheap). */
+export const ADOPT_SCAN_MAX = 5000;
 
 /**
  * New products created directly in a warehouse (FHB ZOE, the euShipments cabinet) become master products of the
@@ -440,12 +442,6 @@ export async function adoptNewWarehouseProducts(accountId: string, connectionId:
     select: { id: true },
   });
   if (!source) return { adopted: false as const, reason: "no_catalogue" as const };
-  const rows = await db.vendorProduct.findMany({
-    where: { connectionId, archived: false, productId: null, unlinkedAt: null },
-    select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
-    orderBy: { id: "asc" },
-    take: ADOPT_MAX,
-  });
   const c: Counters = {
     processed: 0,
     created: 0,
@@ -456,12 +452,33 @@ export async function adoptNewWarehouseProducts(accountId: string, connectionId:
     samples: [],
   };
   const prefix = connectionPrefix(conn.skuPrefixRule);
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const batch = rows.slice(i, i + BATCH);
+  // Every unlinked row is looked at (page by page, so rows that stay unlinked — a SKU another line uses — never
+  // hide a new one behind them); at most ADOPT_MAX are linked per run, the next sync takes the rest.
+  let cursor: string | undefined;
+  for (let scanned = 0; scanned < ADOPT_SCAN_MAX && c.created + c.linked < ADOPT_MAX;) {
+    const rows = await db.vendorProduct.findMany({
+      // id > cursor (not Prisma's cursor): the last row may have just been linked and left the filter.
+      where: {
+        connectionId,
+        archived: false,
+        productId: null,
+        unlinkedAt: null,
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      },
+      select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
+      orderBy: { id: "asc" },
+      take: BATCH,
+    });
+    if (!rows.length) break;
+    scanned += rows.length;
+    cursor = rows.at(-1)!.id;
     await withAccountTransaction(accountId, (tx, helpers) =>
-      mastersBatch(tx, helpers, accountId, lineId, prefix, batch, c),
+      mastersBatch(tx, helpers, accountId, lineId, prefix, rows, c),
     );
+    if (rows.length < BATCH) break;
   }
+  // The new masters' Shopify variants and other warehouses' products by SKU, as the catalogue run does.
+  if (c.created || c.linked) await autoLinkLine(accountId, lineId);
   if (c.created || c.linked) logger.info({ accountId, connectionId, ...c }, "new warehouse products adopted");
   return {
     adopted: true as const,

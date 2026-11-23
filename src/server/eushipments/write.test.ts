@@ -1139,6 +1139,49 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).status).toBe("CANCELLED");
   });
 
+  it("delete: by euShipments' own order id when known; never a label shipment's AWB (by reference there)", async () => {
+    const make = async (n: string, vendorOrderId: string) => {
+      const { order } = await euTestOrder(g, { number: `#${n}` });
+      return g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          connectionId: g.connection.id,
+          externalId: `TST-${n}`,
+          status: "ACCEPTED",
+          rawStatus: "Awaiting pickup",
+          submittedAt: new Date(),
+          vendorOrderId,
+        },
+      });
+    };
+    const ctxOf = async (requestId: string) =>
+      (
+        (await g.db.outboundRequest.findUniqueOrThrow({ where: { id: requestId } })).payload as {
+          ctx: Record<string, unknown>;
+        }
+      ).ctx;
+    const order = await make("1410", "745777");
+    expect(await ctxOf((await queueEuOrderDeletion(g.owner, order.id)).request.id)).toMatchObject({
+      vendorOrderId: "745777",
+    });
+    const label = await make("1411", "6100000099");
+    await g.db.manualShipment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: label.orderId,
+        kind: "AWB",
+        connectionId: g.connection.id,
+        fulfillmentId: label.id,
+      },
+    });
+    const d = await queueEuOrderDeletion(g.owner, label.id);
+    expect(await ctxOf(d.request.id)).not.toHaveProperty("vendorOrderId");
+    const v = vendor({ "/orders-delete/": () => json({ error: false, message: "deleted", code: 200 }) });
+    await processOutbound(d.request.id, v.resolve);
+    expect(v.calls[0]!.path).toBe("/orders-delete/TST-1411");
+  });
+
   it("company-restricted members cannot write for another company's connection", async () => {
     const restricted = { ...g.owner, role: "OPERATOR" as const, companyScope: ["some-other-company"] };
     const { order } = await euTestOrder(g, { number: "#1500" });

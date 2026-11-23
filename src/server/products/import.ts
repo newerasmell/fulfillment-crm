@@ -1,8 +1,12 @@
 import { z } from "zod";
+import { logger } from "@/lib/logger";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb, withAccountTransaction } from "@/server/db/client";
+import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
+import { fhbProductId } from "@/integrations/fhb-v3/mapper";
+import { vendorRefNumber } from "@/integrations/eushipments/mapper";
+import { autoLinkLine } from "@/server/lines/catalogue";
 import type { ScopedActor } from "@/server/stores";
 import { queueProductsToWarehouse, TO_WAREHOUSE_MAX, TO_WAREHOUSE_TYPES } from "./to-warehouse";
 
@@ -21,7 +25,8 @@ import { queueProductsToWarehouse, TO_WAREHOUSE_MAX, TO_WAREHOUSE_TYPES } from "
 export type ImportType = (typeof TO_WAREHOUSE_TYPES)[number];
 export const IMPORT_MAX_ROWS = TO_WAREHOUSE_MAX;
 
-type Field = "sku" | "name" | "ean" | "photo" | "hsCode" | "country" | "weight" | "length" | "width" | "height";
+type Field =
+  "sku" | "name" | "ean" | "photo" | "hsCode" | "country" | "weight" | "length" | "width" | "height";
 export interface ColumnSpec {
   field: Field;
   header: string;
@@ -114,7 +119,8 @@ export interface ParsedImportRow {
   errors: string[];
 }
 
-const int = (v: string) => (/^\d+([.,]0+)?$/.test(v) ? Number.parseInt(v, 10) : Number.NaN);
+// Whole numbers only: "1.000" or "1,000" is refused, never read as 1.
+const int = (v: string) => (/^\d+$/.test(v) ? Number.parseInt(v, 10) : Number.NaN);
 
 /** Pure: the rows of a sheet, each checked against what the warehouse requires. */
 export function parseImportTable(type: ImportType, table: string[][]) {
@@ -123,7 +129,8 @@ export function parseImportTable(type: ImportType, table: string[][]) {
   const head = rows[0]!.r.map((h) => ALIASES[norm(h)] ?? null);
   const col = (f: Field) => head.indexOf(f);
   const missingCols = IMPORT_COLUMNS[type].filter((c) => c.required && col(c.field) < 0).map((c) => c.header);
-  if (missingCols.length) return { rows: [] as ParsedImportRow[], fileErrors: ["missing_columns"], missingCols };
+  if (missingCols.length)
+    return { rows: [] as ParsedImportRow[], fileErrors: ["missing_columns"], missingCols };
   const data = rows.slice(1);
   const fileErrors: string[] = [];
   if (data.length > IMPORT_MAX_ROWS) fileErrors.push("too_many_rows");
@@ -135,7 +142,7 @@ export function parseImportTable(type: ImportType, table: string[][]) {
     const name = get("name").replace(/\s+/g, " ");
     const ean = get("ean").replace(/\s/g, "") || null;
     const photo = get("photo") || null;
-    const hsCode = get("hsCode").replace(/\s/g, "") || null;
+    const hsCode = get("hsCode") || null;
     const country = get("country").toUpperCase() || null;
     const num = (f: Field): number | null => (get(f) ? int(get(f).replace(/\s/g, "")) : null);
     const weightGrams = num("weight");
@@ -151,9 +158,12 @@ export function parseImportTable(type: ImportType, table: string[][]) {
     }
     if (!name) errors.push("name_missing");
     else if (name.length > (type === "FHB_V3" ? 150 : 200)) errors.push("name_too_long");
-    if (ean && !/^\d{8,14}$/.test(ean)) errors.push("ean_invalid");
+    // FHB: an EAN (digits); euShipments: its own barcode, up to 50 characters (e.g. "bb-test-54202").
+    if (ean && (type === "FHB_V3" ? !/^\d{8,14}$/.test(ean) : !/^\S{1,50}$/.test(ean)))
+      errors.push("ean_invalid");
     if (photo && (!/^https:\/\/\S+$/.test(photo) || photo.length > 255)) errors.push("photo_invalid");
-    if (hsCode && !/^\d{4,10}$/.test(hsCode)) errors.push("hs_invalid");
+    // Both warehouses take the HS code as text (euShipments' own example: "640399.30.00").
+    if (hsCode && !/^[0-9][0-9. ]{1,49}$/.test(hsCode)) errors.push("hs_invalid");
     if (country && !/^[A-Z]{2}$/.test(country)) errors.push("country_invalid");
     if (type === "EUSHIPMENTS") {
       if (!ean) errors.push("ean_missing");
@@ -192,10 +202,15 @@ async function target(actor: ScopedActor, connectionId: string) {
       enabled: true,
       ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
     },
-    select: { id: true, type: true, company: { select: { lineId: true } } },
+    select: { id: true, type: true, skuPrefixRule: true, company: { select: { lineId: true } } },
   });
   if (!conn) throw new DomainError("not_found");
-  return { id: conn.id, type: conn.type as ImportType, lineId: conn.company?.lineId ?? null };
+  return {
+    id: conn.id,
+    type: conn.type as ImportType,
+    lineId: conn.company?.lineId ?? null,
+    skuPrefixRule: conn.skuPrefixRule,
+  };
 }
 
 /** What each row would do: a new product, an existing one (its empty fields filled), one the warehouse has already. */
@@ -212,22 +227,54 @@ export async function planImport(actor: ScopedActor, connectionId: string, parse
           sku: true,
           lineId: true,
           archived: true,
+          eans: { select: { ean: true } },
           vendorProducts: { where: { connectionId: conn.id, archived: false }, select: { id: true } },
         },
       })
     : [];
+  // What the warehouse already has under the id it would get (prefix + SKU), linked or not.
+  const vendorIdOf = (sku: string) =>
+    conn.type === "FHB_V3" ? fhbProductId(sku, conn.skuPrefixRule) : vendorRefNumber(sku, conn.skuPrefixRule);
+  const atWarehouse = skus.length
+    ? await db.vendorProduct.findMany({
+        where: {
+          connectionId: conn.id,
+          archived: false,
+          OR: skus.map((x) => ({ vendorId: { equals: vendorIdOf(x), mode: "insensitive" as const } })),
+        },
+        select: { vendorId: true, productId: true },
+      })
+    : [];
+  const atWarehouseBy = new Map(atWarehouse.map((v) => [v.vendorId.toUpperCase(), v]));
   const bySku = new Map<string, typeof masters>();
   for (const m of masters) bySku.set(m.sku.toUpperCase(), [...(bySku.get(m.sku.toUpperCase()) ?? []), m]);
   const rows: PlannedRow[] = parsed.map((p) => {
     if (p.errors.length) return { ...p, action: "error", productId: null };
-    const found = (bySku.get(p.values.sku.toUpperCase()) ?? []).filter((m) => !m.archived);
+    const all = bySku.get(p.values.sku.toUpperCase()) ?? [];
+    // An archived product keeps its SKU: a person decides (restore it, or use another SKU).
+    if (all.some((m) => m.archived))
+      return { ...p, errors: ["sku_archived"], action: "error", productId: null };
+    const found = all;
     // A master of this line (or of no line yet); a SKU another line uses is for a person to sort out.
     const mine = found.filter((m) => m.lineId === conn.lineId || m.lineId === null);
-    if (found.length && !mine.length) return { ...p, errors: ["sku_other_line"], action: "error", productId: null };
+    if (found.length && !mine.length)
+      return { ...p, errors: ["sku_other_line"], action: "error", productId: null };
     if (mine.length > 1) return { ...p, errors: ["sku_ambiguous"], action: "error", productId: null };
     const m = mine[0];
+    const there = atWarehouseBy.get(vendorIdOf(p.values.sku).toUpperCase());
+    // The warehouse has it already but not linked to this product: never sent again (it would overwrite it there).
+    if (there && (!m || there.productId !== m.id))
+      return { ...p, errors: ["at_warehouse_unlinked"], action: "error", productId: null };
     if (!m) return { ...p, action: "create", productId: null };
     if (m.vendorProducts.length) return { ...p, action: "already", productId: m.id };
+    // euShipments is sent the product's own barcode: a different one in the file is for a person to sort out.
+    if (
+      conn.type === "EUSHIPMENTS" &&
+      p.values.ean &&
+      m.eans.length &&
+      !m.eans.some((e) => e.ean === p.values.ean)
+    )
+      return { ...p, errors: ["barcode_differs"], action: "error", productId: null };
     return { ...p, action: "update", productId: m.id };
   });
   return { connection: conn, rows };
@@ -238,7 +285,7 @@ const RowValues = z.object({
   name: z.string().min(1).max(200),
   ean: z.string().max(50).nullable(),
   photo: z.string().max(255).nullable(),
-  hsCode: z.string().max(10).nullable(),
+  hsCode: z.string().max(50).nullable(),
   country: z.string().max(2).nullable(),
   weightGrams: z.number().int().nullable(),
   lengthMm: z.number().int().nullable(),
@@ -247,7 +294,10 @@ const RowValues = z.object({
 });
 export const ApplyImportInput = z.object({
   connectionId: z.string().min(1).max(64),
-  rows: z.array(z.object({ row: z.number().int(), values: RowValues })).min(1).max(IMPORT_MAX_ROWS),
+  rows: z
+    .array(z.object({ row: z.number().int(), values: RowValues }))
+    .min(1)
+    .max(IMPORT_MAX_ROWS),
 });
 
 /**
@@ -285,7 +335,13 @@ export async function applyImport(actor: ScopedActor, raw: z.input<typeof ApplyI
     conn.id,
     recheck.rows.map((r, i) => ({ ...r, row: input.rows[i]!.row })),
   );
-  const result = { created: 0, updated: 0, already: 0, queued: 0, failed: [] as { row: number; code: string }[] };
+  const result = {
+    created: 0,
+    updated: 0,
+    already: 0,
+    queued: 0,
+    failed: [] as { row: number; code: string }[],
+  };
   const toQueue: { row: number; productId: string }[] = [];
   for (const p of plan.rows) {
     if (p.action === "error") {
@@ -297,74 +353,98 @@ export async function applyImport(actor: ScopedActor, raw: z.input<typeof ApplyI
       continue;
     }
     const v = p.values;
-    const productId = await withAccountTransaction(actor.accountId, async (tx) => {
-      if (p.action === "create") {
-        const created = await tx.product.create({
-          data: {
-            accountId: actor.accountId,
-            sku: v.sku,
-            name: v.name,
-            lineId: conn.lineId,
-            weightGrams: v.weightGrams,
-            weightSource: v.weightGrams ? "manual" : null,
-            weightSetAt: v.weightGrams ? new Date() : null,
-            weightSetById: v.weightGrams ? actor.userId : null,
-            lengthMm: v.lengthMm,
-            widthMm: v.widthMm,
-            heightMm: v.heightMm,
-            hsCode: v.hsCode,
-            countryOfOrigin: v.country,
-            images: v.photo ? [v.photo] : [],
-          },
-          select: { id: true },
-        });
-        if (v.ean)
-          await tx.productEan.create({
-            data: { accountId: actor.accountId, productId: created.id, ean: v.ean, source: "import" },
+    let productId: string;
+    try {
+      productId = await withAccountTransaction(actor.accountId, async (tx) => {
+        if (p.action === "create") {
+          const created = await tx.product.create({
+            data: {
+              accountId: actor.accountId,
+              sku: v.sku,
+              name: v.name,
+              lineId: conn.lineId,
+              weightGrams: v.weightGrams,
+              weightSource: v.weightGrams ? "manual" : null,
+              weightSetAt: v.weightGrams ? new Date() : null,
+              weightSetById: v.weightGrams ? actor.userId : null,
+              lengthMm: v.lengthMm,
+              widthMm: v.widthMm,
+              heightMm: v.heightMm,
+              hsCode: v.hsCode,
+              countryOfOrigin: v.country,
+              images: v.photo ? [v.photo] : [],
+            },
+            select: { id: true },
           });
-        result.created++;
-        return created.id;
-      }
-      // An existing master: only its empty fields are filled (what a person set is never overwritten).
-      const m = await tx.product.findUniqueOrThrow({
-        where: { id: p.productId! },
-        select: {
-          id: true,
-          weightGrams: true,
-          lengthMm: true,
-          widthMm: true,
-          heightMm: true,
-          hsCode: true,
-          countryOfOrigin: true,
-          images: true,
-          lineId: true,
-          eans: { select: { ean: true } },
-        },
-      });
-      await tx.product.update({
-        where: { id: m.id },
-        data: {
-          ...(m.lineId === null && conn.lineId ? { lineId: conn.lineId } : {}),
-          ...(m.weightGrams === null && v.weightGrams
-            ? { weightGrams: v.weightGrams, weightSource: "manual", weightSetAt: new Date(), weightSetById: actor.userId }
-            : {}),
-          ...(m.lengthMm === null && v.lengthMm ? { lengthMm: v.lengthMm } : {}),
-          ...(m.widthMm === null && v.widthMm ? { widthMm: v.widthMm } : {}),
-          ...(m.heightMm === null && v.heightMm ? { heightMm: v.heightMm } : {}),
-          ...(!m.hsCode && v.hsCode ? { hsCode: v.hsCode } : {}),
-          ...(!m.countryOfOrigin && v.country ? { countryOfOrigin: v.country } : {}),
-          ...(!m.images.length && v.photo ? { images: [v.photo] } : {}),
-        },
-      });
-      if (v.ean && !m.eans.length)
-        await tx.productEan.create({
-          data: { accountId: actor.accountId, productId: m.id, ean: v.ean, source: "import" },
+          if (v.ean)
+            await tx.productEan.create({
+              data: { accountId: actor.accountId, productId: created.id, ean: v.ean, source: "import" },
+            });
+          result.created++;
+          return created.id;
+        }
+        // An existing master: only its empty fields are filled (what a person set is never overwritten).
+        const m = await tx.product.findUniqueOrThrow({
+          where: { id: p.productId! },
+          select: {
+            id: true,
+            weightGrams: true,
+            lengthMm: true,
+            widthMm: true,
+            heightMm: true,
+            hsCode: true,
+            countryOfOrigin: true,
+            images: true,
+            lineId: true,
+            eans: { select: { ean: true } },
+          },
         });
-      result.updated++;
-      return m.id;
-    });
+        await tx.product.update({
+          where: { id: m.id },
+          data: {
+            ...(m.lineId === null && conn.lineId ? { lineId: conn.lineId } : {}),
+            ...(m.weightGrams === null && v.weightGrams
+              ? {
+                  weightGrams: v.weightGrams,
+                  weightSource: "manual",
+                  weightSetAt: new Date(),
+                  weightSetById: actor.userId,
+                }
+              : {}),
+            ...(m.lengthMm === null && v.lengthMm ? { lengthMm: v.lengthMm } : {}),
+            ...(m.widthMm === null && v.widthMm ? { widthMm: v.widthMm } : {}),
+            ...(m.heightMm === null && v.heightMm ? { heightMm: v.heightMm } : {}),
+            ...(!m.hsCode && v.hsCode ? { hsCode: v.hsCode } : {}),
+            ...(!m.countryOfOrigin && v.country ? { countryOfOrigin: v.country } : {}),
+            ...(!m.images.length && v.photo ? { images: [v.photo] } : {}),
+          },
+        });
+        if (v.ean && !m.eans.length)
+          await tx.productEan.create({
+            data: { accountId: actor.accountId, productId: m.id, ean: v.ean, source: "import" },
+          });
+        result.updated++;
+        return m.id;
+      });
+    } catch (err) {
+      // Another person or a sync created this SKU meanwhile: this row is reported, the others go on.
+      if (isUniqueViolation(err)) {
+        result.failed.push({ row: p.row, code: "sku_exists" });
+        continue;
+      }
+      throw err;
+    }
     toQueue.push({ row: p.row, productId });
   }
+  // The new products' Shopify variants and other warehouses' products by SKU (as the catalogue run does).
+  if (result.created && conn.lineId)
+    await autoLinkLine(actor.accountId, conn.lineId).catch((err: unknown) => {
+      logger.warn(
+        { accountId: actor.accountId, lineId: conn.lineId, err: String(err) },
+        "import: auto-link failed",
+      );
+      return 0;
+    });
   if (toQueue.length) {
     const q = await queueProductsToWarehouse(actor, {
       connectionId: conn.id,
@@ -381,7 +461,12 @@ export async function applyImport(actor: ScopedActor, raw: z.input<typeof ApplyI
     action: "products.import",
     entityType: "FulfillmentConnection",
     entityId: conn.id,
-    after: { rows: input.rows.length, created: result.created, updated: result.updated, queued: result.queued },
+    after: {
+      rows: input.rows.length,
+      created: result.created,
+      updated: result.updated,
+      queued: result.queued,
+    },
     ip: actor.ip,
     userAgent: actor.userAgent,
   });

@@ -892,7 +892,10 @@ export async function queueEuOrderDeletion(
 ) {
   assertCan(actor.role, "orders.fulfill");
   const db = accountDb(actor.accountId);
-  const f = await db.fulfillment.findUnique({ where: { id: fulfillmentId }, include: { order: true } });
+  const f = await db.fulfillment.findUnique({
+    where: { id: fulfillmentId },
+    include: { order: true, manualShipment: { select: { id: true } } },
+  });
   if (!f || (actor.companyScope && (!f.order.companyId || !actor.companyScope.includes(f.order.companyId))))
     throw new DomainError("not_found");
   await euConnectionFor(actor, f.connectionId);
@@ -907,7 +910,8 @@ export async function queueEuOrderDeletion(
       ctx: {
         fulfillmentId: f.id,
         referenceNumber: f.externalId,
-        ...(f.vendorOrderId ? { vendorOrderId: f.vendorOrderId } : {}),
+        // A label shipment's vendorOrderId is the courier AWB, not an euShipments order id.
+        ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
       },
     }),
     fulfillmentId: f.id,
