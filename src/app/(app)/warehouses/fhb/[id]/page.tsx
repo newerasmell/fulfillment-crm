@@ -617,15 +617,18 @@ export default async function FhbConnectionPage({
               </tr>
             </thead>
             <tbody>
-              {c.fhbSyncStates.map((s) => (
-                <tr key={s.id}>
-                  <td className={tdCls}>{t(`sync.resources.${s.resource}`)}</td>
-                  <td className={tdCls}>
-                    <Freshness state={s} />
-                  </td>
-                  <td className={`${tdCls} ${monoCls} text-right`}>{s.lastCount}</td>
-                </tr>
-              ))}
+              {/* The adoption watermark (adopt:<line>) is a date, not a sync that refreshes. */}
+              {c.fhbSyncStates
+                .filter((s) => !s.resource.startsWith("adopt"))
+                .map((s) => (
+                  <tr key={s.id}>
+                    <td className={tdCls}>{t(`sync.resources.${s.resource}`)}</td>
+                    <td className={tdCls}>
+                      <Freshness state={s} />
+                    </td>
+                    <td className={`${tdCls} ${monoCls} text-right`}>{s.lastCount}</td>
+                  </tr>
+                ))}
             </tbody>
           </table>
           {sync && (

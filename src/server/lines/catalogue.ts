@@ -5,7 +5,12 @@ import { logger } from "@/lib/logger";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
-import { accountDb, withAccountTransaction, type AccountTxHelpers } from "@/server/db/client";
+import {
+  accountDb,
+  isUniqueViolation,
+  withAccountTransaction,
+  type AccountTxHelpers,
+} from "@/server/db/client";
 import type { CompanyScope } from "@/server/companies";
 import { PRE_APPROVAL } from "@/server/shopify/statuses";
 import { UNLINKED_BY_PERSON } from "@/server/shopify/products";
@@ -421,27 +426,117 @@ export const ADOPT_MAX = 200;
 /** Unlinked warehouse rows looked at per run at most (a big catalogue with many conflicts stays cheap). */
 export const ADOPT_SCAN_MAX = 5000;
 
+/** Prefix of the sync-state row (`adopt:<lineId>`) that remembers since when a warehouse's new products are adopted. */
+export const ADOPT_STATE = "adopt";
+
+/**
+ * Since when new products of a warehouse that is not the line's source are adopted: the first time this ran for it —
+ * always at the end of a COMPLETED product sync, so the warehouse's whole catalogue up to then is "old". Stored once
+ * per warehouse in its sync-state table (no migration); later calls read it.
+ */
+async function adoptWatermark(
+  accountId: string,
+  connection: { id: string; type: string },
+  lineId: string,
+  now: Date,
+) {
+  const db = accountDb(accountId);
+  // Per line: a warehouse whose company moves to another line starts again there.
+  const key = `${ADOPT_STATE}:${lineId}`;
+  const read = async () =>
+    connection.type === "FHB_V3"
+      ? ((
+          await db.fhbSyncState.findUnique({
+            where: { connectionId_resource: { connectionId: connection.id, resource: key } },
+            select: { lastOkAt: true },
+          })
+        )?.lastOkAt ?? null)
+      : ((
+          await db.eushipmentsSync.findUnique({
+            where: { connectionId_kind: { connectionId: connection.id, kind: key } },
+            select: { lastOkAt: true },
+          })
+        )?.lastOkAt ?? null);
+  const stored = await read();
+  if (stored) return stored;
+  try {
+    if (connection.type === "FHB_V3")
+      await db.fhbSyncState.create({
+        data: {
+          accountId,
+          connectionId: connection.id,
+          resource: key,
+          lastRunAt: now,
+          lastOkAt: now,
+        },
+      });
+    else
+      await db.eushipmentsSync.create({
+        data: {
+          accountId,
+          connectionId: connection.id,
+          kind: key,
+          lastStartedAt: now,
+          lastOkAt: now,
+        },
+      });
+  } catch (err) {
+    // Two syncs at once: the other one stored it first.
+    if (!isUniqueViolation(err)) throw err;
+  }
+  return (await read()) ?? now;
+}
+
+/** Pure: when a row was created, from its id (Prisma's cuid: "c" + the creation time in ms, base 36, 8 chars). */
+export function cuidTime(id: string): Date | null {
+  if (!/^c[0-9a-z]{8}/.test(id)) return null;
+  const ms = parseInt(id.slice(1, 9), 36);
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
+/** Pure: the smallest id created at or after `at` (ids compare as text in time order). */
+export function cuidFloor(at: Date): string {
+  return `c${Math.max(0, at.getTime()).toString(36).padStart(8, "0")}`;
+}
+
 /**
  * New products created directly in a warehouse (FHB ZOE, the euShipments cabinet) become master products of the
  * line by themselves (owner report 2026-11-23: an inbound could not find them, however long one waited). Runs after
- * every product sync of the warehouse, only for a warehouse whose catalogue is already the line's source (a finished
- * „Каталог“ run for this line and warehouse) — the same rules as that run: SKU = warehouse id without the prefix, an
- * existing master of the line is linked, a SKU another line uses is left for a person, a link a person removed is
- * never redone. Database only, at most ADOPT_MAX rows, small transactions.
+ * every product sync of the warehouse, once the line has a finished „Каталог“ run — the same rules as that run: SKU =
+ * warehouse id without the prefix, an existing master of the line is linked, a SKU another line uses is left for a
+ * person, a link a person removed is never redone.
+ *  - the warehouse whose catalogue was the source: every unlinked product;
+ *  - any other warehouse of the line (owner 2026-11-23: one warehouse is the source, the others are matched to
+ *    it): only products that appeared there AFTER the line's catalogue run and after the first completed product
+ *    sync that ran this (adoptWatermark) — the old products the matching left unlinked stay as they are; one of
+ *    them is added by a person („Добави като основен продукт“).
+ * Database only, at most ADOPT_MAX rows, small transactions.
  */
-export async function adoptNewWarehouseProducts(accountId: string, connectionId: string) {
+export async function adoptNewWarehouseProducts(
+  accountId: string,
+  connectionId: string,
+  now: Date = new Date(),
+) {
   const db = accountDb(accountId);
   const conn = await db.fulfillmentConnection.findUnique({
     where: { id: connectionId },
-    select: { skuPrefixRule: true, company: { select: { lineId: true } } },
+    select: { id: true, type: true, skuPrefixRule: true, company: { select: { lineId: true } } },
   });
   const lineId = conn?.company?.lineId;
   if (!conn || !lineId) return { adopted: false as const, reason: "no_line" as const };
-  const source = await db.masterCatalogueRun.findFirst({
-    where: { lineId, connectionId, status: "DONE" },
-    select: { id: true },
+  const runs = await db.masterCatalogueRun.findMany({
+    where: { lineId, status: "DONE" },
+    select: { connectionId: true, createdAt: true, finishedAt: true },
+    orderBy: { createdAt: "asc" },
   });
-  if (!source) return { adopted: false as const, reason: "no_catalogue" as const };
+  if (!runs.length) return { adopted: false as const, reason: "no_catalogue" as const };
+  // Not the source: only rows created after the line's first catalogue run and after this warehouse's watermark.
+  let since: Date | null = null;
+  if (!runs.some((r) => r.connectionId === connectionId)) {
+    const lineRun = runs[0]!.finishedAt ?? runs[0]!.createdAt;
+    const from = await adoptWatermark(accountId, conn, lineId, now);
+    since = new Date(Math.max(lineRun.getTime(), from.getTime()));
+  }
   const c: Counters = {
     processed: 0,
     created: 0,
@@ -454,7 +549,8 @@ export async function adoptNewWarehouseProducts(accountId: string, connectionId:
   const prefix = connectionPrefix(conn.skuPrefixRule);
   // Every unlinked row is looked at (page by page, so rows that stay unlinked — a SKU another line uses — never
   // hide a new one behind them); at most ADOPT_MAX are linked per run, the next sync takes the rest.
-  let cursor: string | undefined;
+  // Ids grow with time, so "created after" is "id above the floor" (the scan starts there).
+  let cursor: string | undefined = since ? cuidFloor(since) : undefined;
   for (let scanned = 0; scanned < ADOPT_SCAN_MAX && c.created + c.linked < ADOPT_MAX;) {
     const rows = await db.vendorProduct.findMany({
       // id > cursor (not Prisma's cursor): the last row may have just been linked and left the filter.
@@ -497,4 +593,79 @@ export async function adoptNewWarehouseProductsSafe(accountId: string, connectio
     logger.warn({ accountId, connectionId, err: String(err) }, "adopting new warehouse products failed");
     return { adopted: false as const, reason: "failed" as const };
   }
+}
+
+/**
+ * „Добави като основен продукт“ in a new inbound (owner request 2026-11-23): one product of the warehouse that has no
+ * master yet becomes one — by a person, one at a time, with the same rules as the „Каталог“ run (SKU = warehouse id
+ * without the prefix; an existing master of the line with that SKU is linked, not duplicated; a SKU another line
+ * uses, or a link a person removed, is refused). Returns the master.
+ */
+export async function adoptWarehouseProduct(
+  actor: ScopedActor,
+  input: { connectionId: string; vendorProductId: string },
+) {
+  assertCan(actor.role, "inbound.manage");
+  assertCan(actor.role, "lines.catalogue");
+  const db = accountDb(actor.accountId);
+  const conn = await db.fulfillmentConnection.findFirst({
+    where: {
+      id: input.connectionId,
+      type: { in: ["FHB_V3", "EUSHIPMENTS"] },
+      ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
+    },
+    select: { id: true, skuPrefixRule: true, company: { select: { lineId: true } } },
+  });
+  if (!conn) throw new DomainError("not_found");
+  const lineId = conn.company?.lineId;
+  if (!lineId) throw new DomainError("no_line");
+  const row = await db.vendorProduct.findFirst({
+    where: { id: input.vendorProductId, connectionId: conn.id, archived: false },
+    select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
+  });
+  if (!row) throw new DomainError("not_found");
+  if (row.unlinkedAt) throw new DomainError("unlinked_by_person");
+  const c: Counters = {
+    processed: 0,
+    created: 0,
+    linked: 0,
+    adopted: 0,
+    alreadyLinked: 0,
+    conflicts: 0,
+    samples: [],
+  };
+  const product = await withAccountTransaction(actor.accountId, async (tx, helpers) => {
+    // Under the line's lock; the link is conditional and read back (a sync or a colleague may have linked it meanwhile).
+    await mastersBatch(tx, helpers, actor.accountId, lineId, connectionPrefix(conn.skuPrefixRule), [row], c);
+    const linked = await tx.vendorProduct.findFirstOrThrow({
+      where: { accountId: actor.accountId, id: row.id },
+      select: { product: { select: { id: true, sku: true, name: true, lineId: true } } },
+    });
+    // Not linked to a master of this line: the SKU belongs to another line (or two masters differ only by case).
+    if (!linked.product || linked.product.lineId !== lineId) throw new DomainError("sku_conflict");
+    return { ...linked.product, changed: c.linked === 1 || c.adopted > 0 };
+  });
+  // After the commit (the audit log is written on its own connection), only when something changed; then, as the
+  // „Каталог“ run, the line's Shopify variants and other warehouses' products with that SKU are linked too.
+  if (product.changed) {
+    await recordAudit({
+      accountId: actor.accountId,
+      userId: actor.userId,
+      action: "lines.adoptWarehouseProduct",
+      entityType: "VendorProduct",
+      entityId: row.id,
+      after: {
+        productId: product.id,
+        sku: product.sku,
+        createdMaster: c.created > 0,
+        adoptedIntoLine: c.adopted > 0,
+      },
+      ip: actor.ip ?? null,
+      userAgent: actor.userAgent ?? null,
+    });
+    await autoLinkLine(actor.accountId, lineId).catch((err: unknown) =>
+      logger.warn({ err: String(err) }, "auto-link after adopting a warehouse product failed"),
+    );
+  }
+  return { id: product.id, sku: product.sku, name: product.name, vendorId: row.vendorId };
 }

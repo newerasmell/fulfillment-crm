@@ -83,4 +83,10 @@ test("Блокирани в склад: emails to copy, sent / reply / customer 
   await form.getByTestId("esc-warehouseTo").fill("warehouse-support@example.com, second@example.com");
   await form.getByTestId("esc-save").click();
   await expect(form).toContainText("Запазено.");
+
+  // „С грешки“ says why an order is there.
+  await page.goto("/orders?tab=issues");
+  await expect(page.getByTestId("order-issue-reasons").first()).toContainText(
+    "Стои в „Приета от склада“ твърде дълго",
+  );
 });

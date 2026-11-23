@@ -147,7 +147,37 @@ export async function listOrders(ctx: Ctx, f: OrderFilters) {
         : null,
     };
   });
-  return { rows: withWarehouse, total, page, pages: Math.max(1, Math.ceil(total / ORDERS_PAGE_SIZE)) };
+  // „С грешки“: why each order is there (owner 2026-11-23: the list did not say which task kept an order in it).
+  const tasks =
+    f.tab === "issues" && rows.length
+      ? await db.alert.findMany({
+          where: {
+            isTask: true,
+            status: { not: "RESOLVED" },
+            entityType: "Order",
+            entityId: { in: rows.map((r) => r.id) },
+          },
+          select: { entityId: true, kind: true, title: true, body: true, createdAt: true },
+          orderBy: { createdAt: "asc" },
+        })
+      : [];
+  const tasksOf = new Map<string, { kind: string; title: string; stuckIn: string | null; since: Date }[]>();
+  for (const a of tasks) {
+    const list = tasksOf.get(a.entityId!) ?? [];
+    list.push({
+      kind: a.kind,
+      title: a.title.slice(0, 200),
+      stuckIn: a.kind === "order_stuck" ? (a.body?.match(/^status=([A-Z_]+)$/)?.[1] ?? null) : null,
+      since: a.createdAt,
+    });
+    tasksOf.set(a.entityId!, list);
+  }
+  return {
+    rows: withWarehouse.map((r) => ({ ...r, tasks: tasksOf.get(r.id) ?? [] })),
+    total,
+    page,
+    pages: Math.max(1, Math.ceil(total / ORDERS_PAGE_SIZE)),
+  };
 }
 
 /** Counts per tab for the same filters (each tab number links to its list). */

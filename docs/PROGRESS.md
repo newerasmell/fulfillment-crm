@@ -597,6 +597,21 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   every row checked before anything is written (limits from the vendor references), then each row becomes / completes
   a master of the line and is created in the warehouse through the existing writers (outbox, live mode). Max 200
   rows, 2 MB. src/server/products/import.ts.
+- 2026-11-23 New warehouse products of a warehouse that is NOT the line's catalogue source (owner: one warehouse is
+  the source, the others are matched to it): after a product sync, only rows created after the line's first finished
+  „Каталог“ run AND after the first completed product sync that ran the adoption for that warehouse (a watermark
+  stored once per line as a sync-state row, resource/kind "adopt:<lineId>", hidden on the FHB page) become masters;
+  its older unmatched products stay as they are. The creation time comes from the row id (Prisma cuid v1: "c" + ms in
+  base 36). No migration. "New" = first returned by the vendor after the watermark: if a vendor list starts returning
+  older products it used to omit, those count as new. Products created between the line's run and the first sync
+  after this deploy are not adopted automatically — „Добави като основен продукт“ covers them.
+- 2026-11-23 „Нова доставка“ also finds the warehouse's products without a master (by code or name) with „Добави като
+  основен продукт“: one row through the same rules as the „Каталог“ run (an existing master of the line with that SKU
+  is linked, never renamed; another line's SKU or a person's removed link is refused). inbound.manage + lines.catalogue.
+- 2026-11-23 „С грешки“ shows each order's open tasks (why it is there; a stuck order with the status it is stuck in).
+- 2026-11-23 Production: the web service (Starter, 512 MB) ran out of memory once at 18:29 and restarted by itself.
+  Memory sat ~65–70 % for days and ~90 % on a busy Monday; no single heavy read found in the new code (the catalogue
+  is small). Recommended to the owner: Standard instance for the web service.
 
 ## Open questions
 See SPEC.md §11.
