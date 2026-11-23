@@ -115,6 +115,13 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await page.goto("/inbound?tab=all");
   await expect(page.locator("tbody tr")).toHaveCount(2);
 
+  // „Поръчки“: pull the stores' orders now (the scheduled read-only pull; this group's store has no credentials).
+  await page.goto("/orders");
+  await page.getByRole("button", { name: "Изтегли поръчките сега" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Няма свързани магазини за изтегляне." }),
+  ).toBeVisible();
+
   // A product created in the warehouse's own cabinet (no master yet) is found and added as a master in one click.
   await page.goto("/inbound/new");
   await page.waitForLoadState("networkidle");

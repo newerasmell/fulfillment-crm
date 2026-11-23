@@ -612,6 +612,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   line) in the web request. Now up to 200 rows per click („Добави всички (N)“, chunks of 50, a failed chunk is
   reported and the rest go on, one audit entry) and the line's auto-link runs in the worker (queue lines.autoLink,
   stately per line; an enqueue failure only logs).
+- 2026-11-23 „Изтегли поръчките сега“ in „Поръчки“ (stores.sync): queues the scheduled read-only order pull
+  (reconcile) for every connected store the member sees; one waiting pull per store (stately, the same key as the
+  schedule), so repeated clicks add nothing. Shows the oldest last pull of those stores; the list refreshes itself.
 - 2026-11-23 „С грешки“ shows each order's open tasks (why it is there; a stuck order with the status it is stuck in).
 - 2026-11-23 Production: the web service (Starter, 512 MB) ran out of memory once at 18:29 and restarted by itself.
   Memory sat ~65–70 % for days and ~90 % on a busy Monday; no single heavy read found in the new code (the catalogue
