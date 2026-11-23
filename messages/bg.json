@@ -2379,6 +2379,15 @@
         "would_set": "изпращането би задало {target}, но е спряно (виж горе)"
       },
       "perLocation": "{name}: Shopify {shopify}, в склада {sellable}"
+    },
+    "totals": {
+      "title": "Общо в складовете",
+      "all": "Всичко: {units} бр. ({free} свободни)",
+      "hint": "Сбор от последните числа на складовете за всички продукти от избраната линия (без архивираните). „Свободни“ = без заделените за поръчки в CRM.",
+      "units": "бр.",
+      "free": "свободни {n}",
+      "products": "{n, plural, one {# артикул} other {# артикула}}",
+      "stale": "старо число"
     }
   },
   "returns": {
@@ -2711,7 +2720,7 @@
       },
       "payload": "Точно какво ще се изпрати",
       "shopifyOrderNumber": "Номер на поръчката в Shopify (по желание)",
-      "shopifyOrderNumberPlaceholder": "напр. #CZ6330",
+      "shopifyOrderNumberPlaceholder": "напр. #1001",
       "shopifyOrderNumberHint": "За коя поръчка от магазина е пратката. По него ръчната поръчка се намира в търсенето."
     },
     "detail": {

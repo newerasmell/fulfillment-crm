@@ -2379,6 +2379,15 @@
         "would_set": "the push would set {target}, but it is stopped (see above)"
       },
       "perLocation": "{name}: Shopify {shopify}, warehouse {sellable}"
+    },
+    "totals": {
+      "title": "Total in the warehouses",
+      "all": "All: {units} pcs ({free} free)",
+      "hint": "Sum of the warehouses' last numbers for all products of the selected line (archived ones left out). Free = without what the CRM holds for orders.",
+      "units": "pcs",
+      "free": "{n} free",
+      "products": "{n, plural, one {# product} other {# products}}",
+      "stale": "old number"
     }
   },
   "returns": {
@@ -2711,7 +2720,7 @@
       },
       "payload": "Exactly what will be sent",
       "shopifyOrderNumber": "Shopify order number (optional)",
-      "shopifyOrderNumberPlaceholder": "e.g. #CZ6330",
+      "shopifyOrderNumberPlaceholder": "e.g. #1001",
       "shopifyOrderNumberHint": "Which shop order the parcel is for. Search finds the manual order by it."
     },
     "detail": {

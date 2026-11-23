@@ -1193,7 +1193,7 @@ describe("status apply", () => {
       request.id,
       fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
     );
-    expect(fhbStornoBase("1-EUR2849#STORNO#TJX6KD")).toBe("1-EUR2849");
+    expect(fhbStornoBase("1-TST2849#STORNO#TJX6KD")).toBe("1-TST2849");
     expect(fhbStornoBase("TST-1001")).toBeNull();
     const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
     for (let i = 0; i < 2; i++)

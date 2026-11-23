@@ -22,6 +22,8 @@ import {
 import { STOCK_ALERT_KINDS } from "@/server/stock/discrepancies";
 import { INBOUND_ALERT_KINDS } from "@/server/stock/inbound";
 import { getStockSettings } from "@/server/stock/settings";
+import { warehouseTotals } from "@/server/stock/totals";
+import { logger } from "@/lib/logger";
 import { StockSettingsForm } from "./forms";
 import { ConnectionChip, monoCls, TesterBadge } from "./ui";
 
@@ -93,6 +95,7 @@ export default async function StockPage({ searchParams }: { searchParams: Promis
           </div>
         }
       />
+      {view === "stock" && <WarehouseTotalsCard ctx={ctx} />}
       {view === "movements" ? (
         <Movements ctx={ctx} tabs={tabs} q={q} page={page} />
       ) : view === "notices" ? (
@@ -114,6 +117,60 @@ export default async function StockPage({ searchParams }: { searchParams: Promis
 }
 
 type Ctx = Awaited<ReturnType<typeof requireAccountContext>>;
+
+/** „Общо в складовете“: units per warehouse and per company at a glance (owner request 2026-11-23). */
+async function WarehouseTotalsCard({ ctx }: { ctx: Ctx }) {
+  const t = await getTranslations("stock.totals");
+  const format = await getFormatter();
+  // A failure here never takes the board down with it.
+  const totals = await warehouseTotals(ctx).catch((err: unknown) => {
+    logger.warn({ err: String(err) }, "warehouse totals failed");
+    return null;
+  });
+  if (!totals) return null;
+  if (!totals.companies.length) return null;
+  const n = (v: number) => format.number(v);
+  return (
+    <Card>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="m-0 text-base font-bold">{t("title")}</h2>
+        <span className="text-sm" data-testid="stock-totals-all">
+          {t("all", { units: n(totals.units), free: n(totals.free) })}
+        </span>
+      </div>
+      <p className="m-0 mb-3 text-xs text-muted">{t("hint")}</p>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {totals.companies.map((co) => (
+          <div key={co.id} className="rounded-lg border border-line p-3" data-testid="stock-totals-company">
+            <div className="flex items-baseline justify-between gap-2">
+              <strong>{co.name}</strong>
+              <span className="font-mono text-lg font-bold">
+                {n(co.units)} {t("units")}
+              </span>
+            </div>
+            <ul className="m-0 mt-2 flex list-none flex-col gap-1 p-0 text-sm">
+              {co.warehouses.map((w) => (
+                <li key={w.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span>
+                    <ConnectionChip type={w.type} /> {w.name}
+                  </span>
+                  <span className="text-right">
+                    <strong className="font-mono">{n(w.units)}</strong> {t("units")}
+                    <span className="text-muted">
+                      {" "}
+                      · {t("free", { n: n(w.free) })} · {t("products", { n: w.products })}
+                    </span>
+                    {w.stale && <span className="text-warn"> · {t("stale")}</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
 
 function SearchForm({
   q,

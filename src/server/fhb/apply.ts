@@ -53,7 +53,7 @@ export async function raiseAlertOnce(
   return created.id;
 }
 
-/** "1-EUR2849#STORNO#TJX6KD" → "1-EUR2849" (an order cancelled by hand in ZOE); null for any other id. */
+/** "1-TST2849#STORNO#TJX6KD" → "1-TST2849" (an order cancelled by hand in ZOE); null for any other id. */
 export function fhbStornoBase(externalId: string): string | null {
   const i = externalId.indexOf("#STORNO#");
   return i > 0 ? externalId.slice(0, i) : null;

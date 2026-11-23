@@ -107,7 +107,7 @@ async function verdictFor(
       : [];
     if (!before.length) return { close: false, why: "no_earlier_shipment" };
     // The cancel was asked for "Няма наличност" and the warehouse shipped it anyway: it had the unit after all —
-    // nothing left to do (owner report 2026-11-18, 1-HU8485). Any other reason (the customer cancelled…) stays.
+    // nothing left to do (owner report 2026-11-18). Any other reason (the customer cancelled…) stays.
     // Every cancel / re-route asked for this shipment must have been for "Няма наличност" (a customer's cancel among
     // them means the parcel went out against their wish: that stays).
     const shippedDespiteNoStock = async (fulfillmentId: string) => {

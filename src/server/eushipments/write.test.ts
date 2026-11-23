@@ -103,7 +103,7 @@ describe("euShipments write side through the outbox (DB)", () => {
 
   it("reference is {STORECODE}-{number}", () => {
     expect(referenceFor({ number: "#1001" }, { vendorIdPrefix: "TST" })).toBe("TST-1001");
-    expect(referenceFor({ number: "#1-EUR2848" }, { vendorIdPrefix: null })).toBe("1-EUR2848");
+    expect(referenceFor({ number: "#1-TST2848" }, { vendorIdPrefix: null })).toBe("1-TST2848");
     expect(referenceFor({ number: "1001" }, { vendorIdPrefix: "  " })).toBe("1001");
     expect(referenceFor({ number: "77" }, null)).toBe("M-77");
   });
@@ -256,32 +256,32 @@ describe("euShipments write side through the outbox (DB)", () => {
     const db = (rows: { externalId: string; status: string }[]) => ({
       fulfillment: { findMany: async () => rows },
     });
-    expect(await reshipReference(db([]), "c", "o", "1-EUR2849")).toBe("1-EUR2849");
+    expect(await reshipReference(db([]), "c", "o", "1-TST2849")).toBe("1-TST2849");
     expect(
       await reshipReference(
-        db([{ externalId: "1-EUR2849", status: "SUBMIT_FAILED" }]),
+        db([{ externalId: "1-TST2849", status: "SUBMIT_FAILED" }]),
         "c",
         "o",
-        "1-EUR2849",
+        "1-TST2849",
       ),
-    ).toBe("1-EUR2849");
+    ).toBe("1-TST2849");
     expect(
-      await reshipReference(db([{ externalId: "1-EUR2849", status: "ACCEPTED" }]), "c", "o", "1-EUR2849"),
-    ).toBe("1-EUR2849");
+      await reshipReference(db([{ externalId: "1-TST2849", status: "ACCEPTED" }]), "c", "o", "1-TST2849"),
+    ).toBe("1-TST2849");
     expect(
-      await reshipReference(db([{ externalId: "1-EUR2849", status: "CANCELLED" }]), "c", "o", "1-EUR2849"),
-    ).toBe("1-EUR2849-2");
+      await reshipReference(db([{ externalId: "1-TST2849", status: "CANCELLED" }]), "c", "o", "1-TST2849"),
+    ).toBe("1-TST2849-2");
     expect(
       await reshipReference(
         db([
-          { externalId: "1-EUR2849", status: "CANCELLED" },
-          { externalId: "1-EUR2849-2", status: "CANCELLED" },
+          { externalId: "1-TST2849", status: "CANCELLED" },
+          { externalId: "1-TST2849-2", status: "CANCELLED" },
         ]),
         "c",
         "o",
-        "1-EUR2849",
+        "1-TST2849",
       ),
-    ).toBe("1-EUR2849-3");
+    ).toBe("1-TST2849-3");
   });
 
   it("'not found' (even twice, for a shipment that existed) never cancels: a task for a person", async () => {

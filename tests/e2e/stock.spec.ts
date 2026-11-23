@@ -22,6 +22,10 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   const table = page.getByRole("table", { name: "Наличности по продукт" });
   await expect(table.getByRole("columnheader", { name: /FHB Склад С/ })).toBeVisible();
   await expect(table.getByRole("columnheader", { name: /euShipments Склад С/ })).toBeVisible();
+  // „Общо в складовете“: units per company and warehouse at a glance.
+  await expect(page.getByText("Общо в складовете")).toBeVisible();
+  await expect(page.getByTestId("stock-totals-all")).toContainText(/Всичко: [\d\s ]+ бр\./);
+  await expect(page.getByTestId("stock-totals-company").first()).toContainText("бр.");
   await expect(table.getByRole("columnheader", { name: "Shopify · SC" })).toBeVisible();
   // Testers under the original.
   const skus = await table
