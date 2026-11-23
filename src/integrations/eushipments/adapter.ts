@@ -255,7 +255,12 @@ export class EuShipmentsTransport implements OutboundTransport {
         }
         case EU_OPS.deleteOrder: {
           const ref = String(ctx.referenceNumber ?? "");
-          const res = await client.deleteOrderByRef(ref);
+          // By euShipments' own id when we have it (exact); by our reference otherwise (it may not be unique there).
+          const vendorId =
+            typeof ctx.vendorOrderId === "string" && /^\d+$/.test(ctx.vendorOrderId)
+              ? ctx.vendorOrderId
+              : null;
+          const res = vendorId ? await client.deleteOrderById(vendorId) : await client.deleteOrderByRef(ref);
           if (!res.ok) {
             // 401: the vendor never evaluated the delete (our token) — not a warehouse refusal, no refusal task;
             // the outbox row is FAILED with "unauthenticated" and the card says the cancel was not sent.

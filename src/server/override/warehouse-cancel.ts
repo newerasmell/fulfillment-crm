@@ -69,7 +69,7 @@ export function warehouseCancelRefusal(f: CancelShipmentLike, now: Date = new Da
 
 /** The outbox write that cancels one shipment, marked as a warehouse cancel (CRM-only context, never sent). */
 function cancelWrite(
-  f: { id: string; externalId: string },
+  f: { id: string; externalId: string; vendorOrderId?: string | null },
   type: ConnectionType,
   ctx: { requestedById: string; reasonCode: string; reasonText: string | null },
 ) {
@@ -88,7 +88,15 @@ function cancelWrite(
   return {
     operation: EU_OPS.deleteOrder,
     idempotencyKey: `delete:${f.externalId}`,
-    payload: { body: {}, ctx: { fulfillmentId: f.id, referenceNumber: f.externalId, ...mark } },
+    payload: {
+      body: {},
+      ctx: {
+        fulfillmentId: f.id,
+        referenceNumber: f.externalId,
+        ...(f.vendorOrderId ? { vendorOrderId: f.vendorOrderId } : {}),
+        ...mark,
+      },
+    },
   };
 }
 

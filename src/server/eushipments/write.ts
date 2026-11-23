@@ -902,7 +902,14 @@ export async function queueEuOrderDeletion(
     connectionId: f.connectionId,
     operation: EU_OPS.deleteOrder,
     idempotencyKey: `delete:${f.externalId}`,
-    payload: json({ body: {}, ctx: { fulfillmentId: f.id, referenceNumber: f.externalId } }),
+    payload: json({
+      body: {},
+      ctx: {
+        fulfillmentId: f.id,
+        referenceNumber: f.externalId,
+        ...(f.vendorOrderId ? { vendorOrderId: f.vendorOrderId } : {}),
+      },
+    }),
     fulfillmentId: f.id,
     createdById: actor.userId,
   });

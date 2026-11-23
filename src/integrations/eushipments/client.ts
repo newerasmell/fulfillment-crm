@@ -295,6 +295,16 @@ export class EuShipmentsClient {
     );
   }
 
+  /**
+   * DELETE /orders/{id} — by euShipments' own order id (returned by order creation). Exact where a reference
+   * number is not: euShipments does not enforce unique references, so two orders can share one (owner case
+   * 2026-11-23: the delete by reference was refused while our order sat in Awaiting pickup).
+   */
+  async deleteOrderById(orderId: string) {
+    if (!/^\d+$/.test(orderId)) throw new Error("orderId must be numeric");
+    return this.write("orders-delete", "DELETE", `/orders/${orderId}`, undefined, DeleteOrderResponse);
+  }
+
   // ───────────── reads ─────────────
 
   /** One call for 1–100 references. Inspect every item: "not found" and other errors come inside HTTP 200. */

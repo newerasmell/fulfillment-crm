@@ -59,6 +59,8 @@ function euVendor(
     /** What orders-history shows for a deleted reference (default "Deleted"); "down" throws. */
     afterDelete?: string;
     history?: "down";
+    /** euShipments order id → our reference, for DELETE /orders/{id}. */
+    idToRef?: Record<string, string>;
   } = {},
 ) {
   const deleted = new Set<string>();
@@ -70,6 +72,14 @@ function euVendor(
       if (o.del) return o.del();
       deleted.add(decodeURIComponent(path.slice("/orders-delete/".length)));
       return jsonRes({ error: null, message: "deleted" });
+    }
+    // By euShipments' own order id (the CRM sends it when the create returned one).
+    const byId = /^\/orders\/(\d+)$/.exec(path);
+    if (byId && init?.method === "DELETE") {
+      if (o.del) return o.del();
+      const ref = o.idToRef?.[byId[1]!];
+      if (ref) deleted.add(ref);
+      return jsonRes({ error: false, message: "The order was deleted successfully.", code: 200 });
     }
     if (path.startsWith("/fulfilment/orders-history")) {
       if (o.history === "down") throw new Error("down");
@@ -499,6 +509,16 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
         "CANCELLED",
       );
       expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("QUEUED");
+    });
+
+    it("a shipment with euShipments' own order id is cancelled by that id (a reference may not be unique there)", async () => {
+      const { order, fulfillment } = await sentAtA();
+      await g.db.fulfillment.update({ where: { id: fulfillment.id }, data: { vendorOrderId: "745001" } });
+      const req = await reroute(order.id, admin);
+      const eu = euVendor({ idToRef: { "745001": fulfillment.externalId } });
+      expect(await processOutbound(req.requestId, vendors(eu))).toBe("SENT");
+      expect(eu.calls).toEqual(["/orders/745001"]);
+      expect(await processReroute(g.accountId, req.rerouteId, vendors(eu))).toBe("DONE");
     });
 
     it("races: two reroute requests → one; two confirmations → one switch", async () => {

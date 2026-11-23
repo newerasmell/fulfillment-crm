@@ -81,7 +81,11 @@ export function cancelRefusal(f: ShipmentLike, type: ConnectionType, now: Date):
 }
 
 /** The outbox write that cancels one shipment — the same keys the existing "cancel at warehouse" actions use. */
-function cancelWrite(f: { id: string; externalId: string }, type: ConnectionType, rerouteId: string) {
+function cancelWrite(
+  f: { id: string; externalId: string; vendorOrderId?: string | null },
+  type: ConnectionType,
+  rerouteId: string,
+) {
   if (type === "FHB_V3")
     return {
       operation: "fhb.order.delete",
@@ -91,7 +95,15 @@ function cancelWrite(f: { id: string; externalId: string }, type: ConnectionType
   return {
     operation: EU_OPS.deleteOrder,
     idempotencyKey: `delete:${f.externalId}`,
-    payload: { body: {}, ctx: { fulfillmentId: f.id, referenceNumber: f.externalId, rerouteId } },
+    payload: {
+      body: {},
+      ctx: {
+        fulfillmentId: f.id,
+        referenceNumber: f.externalId,
+        ...(f.vendorOrderId ? { vendorOrderId: f.vendorOrderId } : {}),
+        rerouteId,
+      },
+    },
   };
 }
 
