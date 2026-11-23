@@ -3,9 +3,11 @@ import { systemDb } from "@/server/db/client";
 import { euTestGroup } from "@/server/eushipments/test-fixtures";
 import { pickUnlinkedWarehouseProducts } from "@/server/stock/inbound";
 import {
+  ADOPT_MANY_MAX,
   ADOPT_STATE,
   adoptNewWarehouseProducts,
   adoptWarehouseProduct,
+  adoptWarehouseProducts,
   cuidFloor,
   cuidTime,
 } from "./catalogue";
@@ -290,18 +292,19 @@ describe("one warehouse product added as a master by a person", () => {
     expect(await db().product.count({ where: { accountId: g.accountId, sku: "SYN-NEW-1" } })).toBe(1);
     expect((await db().product.findUniqueOrThrow({ where: { id: a.id } })).lineId).toBe(lineId);
     expect(await pickUnlinkedWarehouseProducts(ctx, g.connection.id, "syn-new")).toEqual([]);
-    const audits = await db().auditLog.findMany({
-      where: { accountId: g.accountId, action: "lines.adoptWarehouseProduct", entityId: fresh.id },
+    const audits = () =>
+      db().auditLog.findMany({
+        where: { accountId: g.accountId, action: "lines.adoptWarehouseProduct", entityId: g.connection.id },
+      });
+    expect(await audits()).toHaveLength(1);
+    expect((await audits())[0]!.after).toMatchObject({
+      linked: 1,
+      createdMasters: 1,
+      products: [a.id],
     });
-    expect(audits).toHaveLength(1);
-    expect(audits[0]!.after).toMatchObject({ productId: a.id, sku: "SYN-NEW-1", createdMaster: true });
     // Again later: the same master, no new audit entry.
     expect((await adoptWarehouseProduct(g.owner, args(fresh.id))).id).toBe(a.id);
-    expect(
-      await db().auditLog.count({
-        where: { accountId: g.accountId, action: "lines.adoptWarehouseProduct", entityId: fresh.id },
-      }),
-    ).toBe(1);
+    expect(await audits()).toHaveLength(1);
 
     const linked = await adoptWarehouseProduct(g.owner, args(toExisting.id));
     expect(linked.id).toBe(linkedBefore.id);
@@ -340,5 +343,98 @@ describe("one warehouse product added as a master by a person", () => {
 
     await db().company.update({ where: { id: g.company.id }, data: { lineId: null } });
     await expect(adoptWarehouseProduct(g.owner, args(taken.id))).rejects.toMatchObject({ code: "no_line" });
+  });
+});
+
+describe("many warehouse products added at once („Добави всички“)", () => {
+  const db = () => systemDb();
+
+  it("adds every usable row in one call, reports the others, writes one audit entry", async () => {
+    const g = await euTestGroup("adopt-many");
+    const lineId = (
+      await db().productLine.create({ data: { accountId: g.accountId, name: "Synthetic line" } })
+    ).id;
+    await db().company.update({ where: { id: g.company.id }, data: { lineId } });
+    const otherLine = await db().productLine.create({ data: { accountId: g.accountId, name: "Other" } });
+    await db().product.create({
+      data: { accountId: g.accountId, sku: "MANY-TAKEN", name: "Taken", lineId: otherLine.id },
+    });
+    const vp = (vendorId: string, over: { unlinkedAt?: Date } = {}) =>
+      db().vendorProduct.create({
+        data: {
+          accountId: g.accountId,
+          connectionId: g.connection.id,
+          vendorId,
+          raw: { name: `Synthetic ${vendorId}` },
+          ...over,
+        },
+      });
+    const sizes = [];
+    for (let i = 0; i < 60; i++) sizes.push(await vp(`MANY-${String(i).padStart(2, "0")}`));
+    const taken = await vp("MANY-TAKEN");
+    const cut = await vp("MANY-CUT", { unlinkedAt: new Date() });
+
+    const r = await adoptWarehouseProducts(g.owner, {
+      connectionId: g.connection.id,
+      vendorProductIds: [...sizes.map((x) => x.id), taken.id, cut.id, "missing-id"],
+    });
+    expect(r.added).toHaveLength(60);
+    expect(r.changed).toBe(true);
+    expect(r.lineId).toBe(lineId);
+    expect(r.failed.map((f) => f.code).sort()).toEqual(["not_found", "sku_conflict", "unlinked_by_person"]);
+    expect(
+      await db().product.count({ where: { accountId: g.accountId, lineId, sku: { startsWith: "MANY-" } } }),
+    ).toBe(60);
+    expect(
+      await db().auditLog.count({
+        where: { accountId: g.accountId, action: "lines.adoptWarehouseProduct", entityId: g.connection.id },
+      }),
+    ).toBe(1);
+    // Again: nothing changes, nothing new is written.
+    const again = await adoptWarehouseProducts(g.owner, {
+      connectionId: g.connection.id,
+      vendorProductIds: sizes.map((x) => x.id),
+    });
+    expect(again).toMatchObject({ changed: false });
+    expect(again.added).toHaveLength(60);
+    expect(
+      await db().product.count({ where: { accountId: g.accountId, sku: { startsWith: "MANY-" } } }),
+    ).toBe(61);
+  });
+
+  it("two „Добави всички“ at once give one master per SKU; more than the cap is refused", async () => {
+    const g = await euTestGroup("adopt-many-race");
+    const lineId = (
+      await db().productLine.create({ data: { accountId: g.accountId, name: "Synthetic line" } })
+    ).id;
+    await db().company.update({ where: { id: g.company.id }, data: { lineId } });
+    const rows = [];
+    for (let i = 0; i < 12; i++)
+      rows.push(
+        await db().vendorProduct.create({
+          data: {
+            accountId: g.accountId,
+            connectionId: g.connection.id,
+            vendorId: `RACE-${i}`,
+            raw: { name: "R" },
+          },
+        }),
+      );
+    const args = { connectionId: g.connection.id, vendorProductIds: rows.map((r) => r.id) };
+    const [a, b] = await Promise.all([
+      adoptWarehouseProducts(g.owner, args),
+      adoptWarehouseProducts(g.owner, args),
+    ]);
+    expect(a.added).toHaveLength(12);
+    expect(b.added.map((x) => x.id).sort()).toEqual(a.added.map((x) => x.id).sort());
+    expect(
+      await db().product.count({ where: { accountId: g.accountId, sku: { startsWith: "RACE-" } } }),
+    ).toBe(12);
+    await expect(
+      adoptWarehouseProducts(g.owner, {
+        connectionId: g.connection.id,
+        vendorProductIds: Array.from({ length: ADOPT_MANY_MAX + 1 }, (_, i) => `id-${i}`),
+      }),
+    ).rejects.toMatchObject({ code: "invalid" });
   });
 });

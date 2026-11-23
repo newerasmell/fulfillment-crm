@@ -608,6 +608,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-23 „Нова доставка“ also finds the warehouse's products without a master (by code or name) with „Добави като
   основен продукт“: one row through the same rules as the „Каталог“ run (an existing master of the line with that SKU
   is linked, never renamed; another line's SKU or a person's removed link is refused). inbound.manage + lines.catalogue.
+- 2026-11-23 „Добави като основен продукт“ took ~1 min per click in production: it ran autoLinkLine (the whole
+  line) in the web request. Now up to 200 rows per click („Добави всички (N)“, chunks of 50, a failed chunk is
+  reported and the rest go on, one audit entry) and the line's auto-link runs in the worker (queue lines.autoLink,
+  stately per line; an enqueue failure only logs).
 - 2026-11-23 „С грешки“ shows each order's open tasks (why it is there; a stuck order with the status it is stuck in).
 - 2026-11-23 Production: the web service (Starter, 512 MB) ran out of memory once at 18:29 and restarted by itself.
   Memory sat ~65–70 % for days and ~90 % on a busy Monday; no single heavy read found in the new code (the catalogue

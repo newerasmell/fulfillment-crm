@@ -2286,7 +2286,9 @@
           "forbidden": "You may not add master products.",
           "not_found": "The product is no longer at the warehouse.",
           "other": "Failed — try again."
-        }
+        },
+        "adoptAll": "Add all ({n})",
+        "working": "Adding…"
       }
     },
     "push": {

@@ -9,7 +9,7 @@ import {
   type UploadResult,
   refreshWarehouseProductsAction,
   searchUnlinkedInboundProductsAction,
-  adoptWarehouseProductAction,
+  adoptWarehouseProductsAction,
 } from "@/app/actions/stock";
 import { StockError } from "@/app/(app)/products/stock/forms";
 import { buttonCls, ghostButtonCls, inputCls, labelCls, tdCls, thCls } from "@/components/ui/form";
@@ -88,6 +88,32 @@ export function NewInboundForm({
       const next = [...prev];
       next[i] = { ...next[i]!, quantity: next[i]!.quantity + l.quantity };
       return next;
+    });
+
+  const adoptMany = (ids: string[]) =>
+    startAdopt(async () => {
+      setAdoptError(null);
+      const r = await adoptWarehouseProductsAction(connectionId, ids);
+      if ("error" in r) {
+        setAdoptError(
+          t.has(`unlinked.errors.${r.error}`) ? t(`unlinked.errors.${r.error}`) : t("unlinked.errors.other"),
+        );
+        return;
+      }
+      const done = new Set(ids.filter((id) => !r.failed.some((f) => f.vendorProductId === id)));
+      setUnlinked((prev) => prev.filter((x) => !done.has(x.vendorProductId)));
+      for (const p of r.added)
+        add({ productId: p.id, sku: p.sku, name: p.name, vendorId: p.vendorId, quantity: 1 });
+      if (r.failed.length)
+        setAdoptError(
+          r.failed
+            .slice(0, 5)
+            .map(
+              (f) =>
+                `${f.vendorId ? `${f.vendorId}: ` : ""}${t.has(`unlinked.errors.${f.code}`) ? t(`unlinked.errors.${f.code}`) : t("unlinked.errors.other")}`,
+            )
+            .join(" · ") + (r.failed.length > 5 ? ` (+${r.failed.length - 5})` : ""),
+        );
     });
 
   const onUpload = () => {
@@ -231,7 +257,19 @@ export function NewInboundForm({
           </ul>
           {query.trim().length >= 2 && unlinked.length > 0 && (
             <div className="flex flex-col gap-1 border-t border-line pt-2" data-testid="inbound-unlinked">
-              <p className="m-0 text-xs text-muted">{t("unlinked.hint")}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="m-0 text-xs text-muted">{t("unlinked.hint")}</p>
+                {unlinked.length > 1 && (
+                  <button
+                    type="button"
+                    className={ghostButtonCls}
+                    disabled={adopting}
+                    onClick={() => adoptMany(unlinked.map((u) => u.vendorProductId))}
+                  >
+                    {adopting ? t("unlinked.working") : t("unlinked.adoptAll", { n: unlinked.length })}
+                  </button>
+                )}
+              </div>
               <ul className="m-0 flex list-none flex-col gap-1 p-0" aria-label={t("unlinked.title")}>
                 {unlinked.map((u) => (
                   <li key={u.vendorProductId} className="flex items-center justify-between gap-2 text-sm">
@@ -243,24 +281,7 @@ export function NewInboundForm({
                       type="button"
                       className={ghostButtonCls}
                       disabled={adopting}
-                      onClick={() =>
-                        startAdopt(async () => {
-                          setAdoptError(null);
-                          const r = await adoptWarehouseProductAction(connectionId, u.vendorProductId);
-                          if ("error" in r) {
-                            setAdoptError(r.error);
-                            return;
-                          }
-                          setUnlinked((prev) => prev.filter((x) => x.vendorProductId !== u.vendorProductId));
-                          add({
-                            productId: r.product.id,
-                            sku: r.product.sku,
-                            name: r.product.name,
-                            vendorId: r.product.vendorId,
-                            quantity: 1,
-                          });
-                        })
-                      }
+                      onClick={() => adoptMany([u.vendorProductId])}
                     >
                       {t("unlinked.adopt")}
                     </button>
@@ -269,9 +290,7 @@ export function NewInboundForm({
               </ul>
               {adoptError && (
                 <p className="m-0 text-xs text-block" role="alert">
-                  {t.has(`unlinked.errors.${adoptError}`)
-                    ? t(`unlinked.errors.${adoptError}`)
-                    : t("unlinked.errors.other")}
+                  {adoptError}
                 </p>
               )}
             </div>
