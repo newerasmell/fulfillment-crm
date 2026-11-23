@@ -57,6 +57,9 @@ export const RecheckTasksInput = z.object({ orderId: z.string().min(1).max(64) }
 
 /** Reason codes (translated on the page: orders.tasksRecheck.why.*). */
 export type TaskWhy =
+  | "parcel_moved_on"
+  | "replacement_sent"
+  | "parcel_still_shipped"
   | "old_shipment_live"
   | "old_shipment_unproven"
   | "no_earlier_shipment"
@@ -146,6 +149,23 @@ async function verdictFor(
     });
     const done = !!o?.cancelledAt || ["VOIDED", "REFUNDED"].includes(o?.shopifyFinancialStatus ?? "");
     return { close: done, why: done ? "shopify_closed" : "shopify_still_open" };
+  }
+  if (alert.kind === "parcel_returning") {
+    // The carrier returns the parcel: done once the order is no longer "shipped" (returning / returned / delivered
+    // after all / cancelled) — FHB's own status follows.
+    const o = await tx.order.findFirst({ where: { accountId, id: orderId }, select: { status: true } });
+    if (o && o.status !== "SHIPPED") return { close: true, why: "parcel_moved_on" };
+    // The advice was followed: a replacement was sent for this order (and not cancelled).
+    const replaced = await tx.manualShipment.count({
+      where: {
+        accountId,
+        params: { path: ["replacement", "sourceOrderId"], equals: orderId },
+        order: { status: { not: "CANCELLED" } },
+      },
+    });
+    return replaced
+      ? { close: true, why: "replacement_sent" }
+      : { close: false, why: "parcel_still_shipped" };
   }
   if (alert.kind === "cod_nothing_outstanding") {
     const o = await tx.order.findFirst({ where: { accountId, id: orderId }, select: { status: true } });
@@ -281,19 +301,26 @@ export async function recheckOrderTasks(actor: ScopedActor, raw: z.input<typeof 
 }
 
 /** Task kinds the alerts sweep also re-checks on its own (the same rules as the button; never the person-only ones). */
-const SWEPT_KINDS = ["warehouse_cancel_refused", "reroute_refused"];
+const SWEPT_KINDS = ["warehouse_cancel_refused", "reroute_refused", "parcel_returning"];
 
 /**
  * Every 10 min (alerts sweep): the open refused-cancel tasks are checked like "Провери задачите" does and closed when
  * their cause is gone (e.g. shipped after a "Няма наличност" cancel the warehouse refused).
  */
 export async function sweepSettledOrderTasks(take = 500) {
-  const open = await systemDb().alert.findMany({
-    where: { kind: { in: SWEPT_KINDS }, entityType: "Order", status: { not: "RESOLVED" } },
-    select: { id: true, accountId: true, kind: true, entityId: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
-    take,
-  });
+  // A page per kind: many open tasks of one kind never starve the others.
+  const open = (
+    await Promise.all(
+      SWEPT_KINDS.map((kind) =>
+        systemDb().alert.findMany({
+          where: { kind, entityType: "Order", status: { not: "RESOLVED" } },
+          select: { id: true, accountId: true, kind: true, entityId: true, createdAt: true },
+          orderBy: { createdAt: "asc" },
+          take,
+        }),
+      ),
+    )
+  ).flat();
   let resolved = 0;
   for (const a of open) {
     if (!a.entityId) continue;

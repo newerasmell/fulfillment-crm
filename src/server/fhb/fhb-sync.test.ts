@@ -243,8 +243,42 @@ describe("FHB read side: orders, RMA, COD", () => {
       rawStatus: "sent",
       trackingNumbers: ["T1"],
     });
-    // One event for the one change, despite two syncs.
-    expect(await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id } })).toBe(1);
+    // One event for the one change, despite two syncs; the carrier's events of the view stored once each.
+    expect(
+      await db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: { not: "fhb:courier" } } }),
+    ).toBe(1);
+    const courierCount = () =>
+      db.fulfillmentEvent.count({ where: { fulfillmentId: f.id, source: "fhb:courier" } });
+    expect(await courierCount()).toBe(4); // the sample order's four carrier events
+    // A new carrier event while FHB still says "sent" (same status, same tracking): the sync applies it.
+    const withReturn = {
+      "/order/history": () =>
+        json({
+          page: 1,
+          total: 1,
+          orders: [
+            {
+              ...base(),
+              id: "TST-1",
+              status: "sent",
+              tracking_numbers: ["T1"],
+              tracking_events: [
+                ...((base() as { tracking_events: unknown[] }).tracking_events ?? []),
+                {
+                  date: "2026-11-19T09:00:00+0100",
+                  message: "Return to sender",
+                  event_code: "RTS",
+                  carrier_event_code: "9",
+                },
+              ],
+            },
+          ],
+        }),
+    };
+    await run(s, { resource: "orders" }, withReturn).result;
+    expect(await courierCount()).toBe(5);
+    await run(s, { resource: "orders" }, withReturn).result;
+    expect(await courierCount()).toBe(5);
     const unknown = await db.fhbOrderMirror.findUniqueOrThrow({
       where: { connectionId_externalId: { connectionId: s.connection.id, externalId: "ZOE-9" } },
     });

@@ -75,3 +75,32 @@ export async function stockPerWarehouse(actor: ScopedActor, productIds: string[]
 }
 
 export type ProductStock = Awaited<ReturnType<typeof stockPerWarehouse>>[number];
+
+/**
+ * „Нова ръчна пратка“: products by SKU, name or warehouse code (owner request 2026-11-23 — a search, not a list to
+ * scroll). Every word must match somewhere; archived products are left out. At most 30.
+ */
+export async function searchManualProducts(actor: ScopedActor, q: string) {
+  assertCan(actor.role, "orders.fulfill");
+  const words = q.trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  if (!words.length) return [];
+  return accountDb(actor.accountId).product.findMany({
+    where: {
+      archived: false,
+      AND: words.map((w) => ({
+        OR: [
+          { sku: { contains: w, mode: "insensitive" as const } },
+          { name: { contains: w, mode: "insensitive" as const } },
+          {
+            vendorProducts: {
+              some: { OR: [{ vendorId: { contains: w } }, { vendorCode: { contains: w } }] },
+            },
+          },
+        ],
+      })),
+    },
+    select: { id: true, sku: true, name: true },
+    orderBy: { sku: "asc" },
+    take: 30,
+  });
+}

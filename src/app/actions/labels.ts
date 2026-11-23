@@ -30,7 +30,7 @@ import {
   type ManualShipmentInput,
 } from "@/server/labels";
 import { enqueueLabelRead, type LabelReadJob } from "@/server/labels/jobs";
-import { stockPerWarehouse, type ProductStock } from "@/server/labels/stock-view";
+import { searchManualProducts, stockPerWarehouse, type ProductStock } from "@/server/labels/stock-view";
 import { setConnectionMode } from "@/server/outbox/outbox";
 
 /**
@@ -284,6 +284,18 @@ export async function manualStockAction(productIds: string[]): Promise<ProductSt
   const ctx = await requireAccountContext();
   try {
     return await stockPerWarehouse(actorFrom(ctx), z.array(Id).max(100).parse(productIds));
+  } catch (err) {
+    return toError(err);
+  }
+}
+
+/** „Нова ръчна пратка“: product search by SKU / name / warehouse code. */
+export async function searchManualProductsAction(
+  q: string,
+): Promise<{ id: string; sku: string; name: string }[] | Fail> {
+  const ctx = await requireAccountContext();
+  try {
+    return await searchManualProducts(actorFrom(ctx), z.string().max(100).parse(q));
   } catch (err) {
     return toError(err);
   }

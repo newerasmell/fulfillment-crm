@@ -22,7 +22,7 @@ import {
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
 import { replacementDraft, replacementLinks } from "./replacement";
-import { stockPerWarehouse } from "./stock-view";
+import { searchManualProducts, stockPerWarehouse } from "./stock-view";
 import { listOrders } from "@/server/orders";
 import { withLabelTransports } from "./transport";
 import { euCouriers, euOffices } from "./views";
@@ -878,6 +878,39 @@ describe("manual shipments and labels (P7)", () => {
     const [foreign] = await stockPerWarehouse(stranger.owner, [product.id]);
     expect(foreign?.totalPhysical).toBe(0);
     await expect(stockPerWarehouse({ ...owner, role: "VIEWER" }, [product.id])).rejects.toThrow();
+  });
+
+  it("product search: by SKU, name or warehouse code, every word; archived left out; this group only", async () => {
+    const stamp = Date.now();
+    const p = await g.db.product.create({
+      data: { accountId: g.accountId, sku: `SRCH-${stamp}`, name: "Synthetic Rose Parfum 50 ml" },
+    });
+    await g.db.vendorProduct.create({
+      data: {
+        accountId: g.accountId,
+        connectionId: g.connection.id,
+        productId: p.id,
+        vendorId: `WH${stamp}`,
+        raw: {},
+      },
+    });
+    const gone = await g.db.product.create({
+      data: {
+        accountId: g.accountId,
+        sku: `SRCH-OLD-${stamp}`,
+        name: "Synthetic Rose Parfum old",
+        archived: true,
+      },
+    });
+    const ids = async (q: string, who = owner) => (await searchManualProducts(who, q)).map((x) => x.id);
+    expect(await ids("rose 50")).toContain(p.id);
+    expect(await ids(`srch-${stamp}`)).toContain(p.id);
+    expect(await ids(`WH${stamp}`)).toContain(p.id);
+    expect(await ids("rose parfum")).not.toContain(gone.id);
+    expect(await ids("rose 75")).not.toContain(p.id);
+    const stranger = await euTestGroup("labels-search-other");
+    expect(await ids(`SRCH-${stamp}`, stranger.owner)).toEqual([]);
+    await expect(searchManualProducts({ ...owner, role: "VIEWER" }, "rose")).rejects.toThrow();
   });
 
   it("detail and isolation: another group cannot read a manual shipment", async () => {

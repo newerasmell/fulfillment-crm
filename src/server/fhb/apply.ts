@@ -6,6 +6,7 @@ import { accountDb, withAccountTransaction } from "@/server/db/client";
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { followShipment, isSupersededShipment, transition } from "@/server/pipeline";
+import { courierEvents, openReturningTask, recordCourierEvents } from "./courier";
 import { warehouseCancelConfirmed, warehouseCancelRefused } from "@/server/override/cancel-effects";
 
 /**
@@ -105,6 +106,16 @@ export async function applyFhbOrderView(
       },
     });
     await followShipment(tx, f.orderId, m.mapping.status, `fhb:${source}`, { fulfillmentId: f.id });
+    // The carrier's own events (FHB stays "sent" while the carrier returns the parcel): stored once each.
+    await recordCourierEvents(tx, { accountId, fulfillmentId: f.id, events: courierEvents(view), now });
+    if ((superseded ? f.status : shipmentStatus) === "SHIPPED")
+      await openReturningTask(tx, {
+        accountId,
+        orderId: f.orderId,
+        fulfillmentId: f.id,
+        carrier: m.carrier,
+        now,
+      });
     if (changed) {
       await tx.fulfillmentEvent.create({
         data: {

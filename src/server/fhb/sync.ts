@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { COURIER_SOURCE, courierEvents } from "./courier";
 import { FhbError, type FhbClient, type FhbClientOptions } from "@/integrations/fhb-v3/client";
 import { mapFhbProductView } from "@/integrations/fhb-v3/mapper";
 import { lineProductWhere } from "@/server/lines/lines";
@@ -353,9 +354,29 @@ export async function upsertFhbOrders(
   const ourId = (externalId: string) => fhbStornoBase(externalId) ?? externalId;
   const known = await accountDb(accountId).fulfillment.findMany({
     where: { connectionId, externalId: { in: rows.map((r) => ourId(r.externalId)) } },
-    select: { externalId: true, rawStatus: true, status: true, trackingNumbers: true, returnInfo: true },
+    select: {
+      id: true,
+      externalId: true,
+      rawStatus: true,
+      status: true,
+      trackingNumbers: true,
+      returnInfo: true,
+    },
   });
   const byId = new Map(known.map((f) => [f.externalId, f]));
+  // The carrier events already stored, by key (one read for the page; an event FHB rewrites is simply a new key).
+  const storedKeys = new Map<string, Set<string>>();
+  if (known.length)
+    for (const e of await accountDb(accountId).fulfillmentEvent.findMany({
+      where: { fulfillmentId: { in: known.map((f) => f.id) }, source: COURIER_SOURCE },
+      select: { fulfillmentId: true, payload: true },
+    })) {
+      const key = (e.payload as { key?: string } | null)?.key;
+      if (!key) continue;
+      const set = storedKeys.get(e.fulfillmentId) ?? new Set<string>();
+      set.add(key);
+      storedKeys.set(e.fulfillmentId, set);
+    }
   let applied = 0;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
@@ -372,7 +393,9 @@ export async function upsertFhbOrders(
     const changed =
       f.rawStatus !== r.rawStatus ||
       f.trackingNumbers.join("|") !== r.trackingNumbers.join("|") ||
-      (!!r.returnedAt && !f.returnInfo);
+      (!!r.returnedAt && !f.returnInfo) ||
+      // A carrier event not stored yet (FHB's status stays "sent" while the carrier moves or returns the parcel).
+      courierEvents(views[i]!).some((e) => !storedKeys.get(f.id)?.has(e.key));
     if (!changed) continue;
     // Only orders with an id can be CRM shipments (their externalId is the id we sent).
     const view = views[i]!;

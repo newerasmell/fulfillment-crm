@@ -131,6 +131,10 @@ status list "current as of July 2026".
   fractional HUF that still reaches a validator was not rounded and is a soft finding (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked
   unless a local-currency amount is stored on the order.
 
+- `tracking_events` (order reads: date, message, event_code, carrier_event_code; the codes are not documented) are
+  stored as carrier events (src/server/fhb/courier.ts). FHB's status stays `sent` while the carrier returns a parcel:
+  a return to the sender is recognised from the carrier's text (several languages, tested) and only opens a task.
+
 ### 2.4 Status mapping (documented vs observed — handle both)
 Documented: `pending, confirmed, sent, delivered, rejected` (+ `returned` accepted as history filter).
 Seen in responses/other endpoints: `imported, new, b2b_new, packed`.

@@ -571,6 +571,15 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   link per product and warehouse); flat reads (bind-parameter limit) and a failure never takes the board down
   (src/server/stock/totals.ts). Real order numbers / company names removed from comments, tests and docs (public repo);
   one remains in an applied migration's comment, which cannot change without breaking its checksum.
+- 2026-11-23 FHB carrier events (owner report: FHB keeps orders "sent" while DPD already returns them). Each
+  `tracking_events` entry is stored once (FulfillmentEvent source `fhb:courier`, keyed by date|code|carrier code|text;
+  the sync re-applies an order when a key is new). The order page shows the latest carrier status (FHB, or the
+  carrier text euShipments sends). A recent (≤14 days) return to the sender on a parcel FHB still calls sent opens one
+  task `parcel_returning` (decided from what is stored, in the same transaction; a closed task stays closed); it closes
+  when the order leaves SHIPPED or a replacement is sent. The CRM status is unchanged (FHB's own return decides).
+  Carrier events are not warehouse movement for the no-stock check. src/server/fhb/courier.ts.
+- 2026-11-23 Нова ръчна пратка: the product list became a search (SKU, name or warehouse code, the whole catalogue,
+  archived left out); lines carry their own id so a removed line never hands its picker to the next.
 
 ## Open questions
 See SPEC.md §11.

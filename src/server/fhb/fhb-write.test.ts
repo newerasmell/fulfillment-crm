@@ -9,6 +9,8 @@ import { processOutbound } from "@/server/outbox/outbox";
 import { checkOrder } from "@/server/checks";
 import { transitionOrder } from "@/server/pipeline";
 import { applyFhbOrderView, fhbStornoBase } from "./apply";
+import { isReturnToSender, latestCourierStatus } from "./courier";
+import { sweepSettledOrderTasks } from "@/server/order-tasks";
 import { authenticateFhbCallbackPath } from "./callback-token";
 import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
 import { createFhbConnection } from "./connection";
@@ -1214,5 +1216,178 @@ describe("status apply", () => {
     expect(
       await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_order_rejected" } }),
     ).toBe(0);
+  });
+});
+
+// Owner report 2026-11-23: FHB keeps an order "sent" while the carrier already returns it ("Return to sender").
+describe("FHB carrier events (tracking_events)", () => {
+  it("recognises a return to the sender in the carriers' languages, not other events", () => {
+    for (const m of [
+      "Return to sender",
+      "Returned to shipper",
+      "Returning to sender",
+      "Povrat pošiljatelju",
+      "Vrnjeno pošiljatelju",
+      "Vrácení odesílateli",
+      "Zásilka vrácena odesílateli",
+      "Vrátenie odosielateľovi",
+      "Visszaküldés a feladónak",
+      "Zwrot do nadawcy",
+      "Rücksendung an den Absender",
+      "Retur la expeditor",
+      "Връщане към подателя",
+    ])
+      expect(isReturnToSender(m), m).toBe(true);
+    for (const m of [
+      "Parcel handed to DPD",
+      "In transit",
+      "Available for collection",
+      "Delivered",
+      "At delivery centre",
+      "Parcel will be returned to sender if not collected within 7 days",
+      "Return to sender cancelled",
+      "Értesítés elküldve a feladónak",
+      "Rücksendung an Händler storniert",
+    ])
+      expect(isReturnToSender(m), m).toBe(false);
+  });
+
+  it("stores each event once, shows the latest, and a return opens one task on the order", async () => {
+    const s = await setup("LIVE");
+    const { request } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    const fhb = fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "imported" }))] });
+    await processOutbound(request.id, fhb.resolve);
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    const view = (events: { date: string; message: string; event_code: string }[]) =>
+      FhbOrderView.parse(
+        orderView({
+          id: "TST-1001",
+          status: "sent",
+          tracking_numbers: ["SYNDPD0001"],
+          tracking_events: events.map((e) => ({ ...e, carrier_event_code: "1" })),
+        }),
+      );
+    const handed = { date: "2026-11-11T10:00:00+0100", message: "Parcel handed to DPD", event_code: "PRE" };
+    await applyFhbOrderView(s.account.id, s.connection.id, view([handed]), "test");
+    const tasks = () =>
+      systemDb().alert.count({
+        where: { entityId: s.order.id, kind: "parcel_returning", status: { not: "RESOLVED" } },
+      });
+    expect(await tasks()).toBe(0);
+    expect((await latestCourierStatus(s.account.id, s.order.id))[0]).toMatchObject({
+      message: "Parcel handed to DPD",
+      returning: false,
+    });
+
+    const back = { date: "2026-11-19T09:00:00+0100", message: "Return to sender", event_code: "RTS" };
+    await applyFhbOrderView(s.account.id, s.connection.id, view([handed, back]), "test");
+    await applyFhbOrderView(s.account.id, s.connection.id, view([handed, back]), "test");
+    expect(
+      await systemDb().fulfillmentEvent.count({
+        where: { source: "fhb:courier", fulfillment: { orderId: s.order.id } },
+      }),
+    ).toBe(2);
+    expect(await tasks()).toBe(1);
+    const latest = (await latestCourierStatus(s.account.id, s.order.id))[0];
+    expect(latest).toMatchObject({ message: "Return to sender", returning: true, tracking: "SYNDPD0001" });
+    expect(latest?.at.toISOString()).toBe("2026-11-19T08:00:00.000Z");
+    // The CRM status still follows FHB ("sent" = shipped) until FHB records the return.
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe("SHIPPED");
+  });
+
+  it("a task a person closed stays closed; no task before the parcel is sent or for an old return; closes on its own", async () => {
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    const iso = (daysAgo: number) =>
+      new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace("Z", "+0000");
+    const sent = async () => {
+      const s = await setup("LIVE");
+      const { request } = await submitFhbOrder(s.owner, {
+        orderId: s.order.id,
+        connectionId: s.connection.id,
+        acknowledgeWarnings: true,
+      });
+      await processOutbound(
+        request.id,
+        fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "imported" }))] }).resolve,
+      );
+      return s;
+    };
+    const view = (status: string, events: [number, string][]) =>
+      FhbOrderView.parse(
+        orderView({
+          id: "TST-1001",
+          status,
+          tracking_events: events.map(([daysAgo, message], i) => ({
+            date: iso(daysAgo),
+            message,
+            event_code: `E${i}`,
+            carrier_event_code: "1",
+          })),
+        }),
+      );
+    const tasks = (orderId: string, open = true) =>
+      systemDb().alert.findMany({
+        where: {
+          entityId: orderId,
+          kind: "parcel_returning",
+          ...(open ? { status: { not: "RESOLVED" as const } } : {}),
+        },
+      });
+
+    // Not sent yet at FHB: no task even with a return event.
+    const a = await sent();
+    await applyFhbOrderView(
+      a.account.id,
+      a.connection.id,
+      view("confirmed", [[1, "Return to sender"]]),
+      "test",
+    );
+    expect(await tasks(a.order.id)).toHaveLength(0);
+
+    const s = await sent();
+    // Sent, but the return is a month old (a backfill of old orders): no task.
+    await applyFhbOrderView(s.account.id, s.connection.id, view("sent", [[30, "Return to sender"]]), "test");
+    expect(await tasks(s.order.id)).toHaveLength(0);
+    // A recent return on a sent parcel: one task; closed by a person, the next reads do not reopen it.
+    const both = view("sent", [
+      [30, "Return to sender"],
+      [1, "Returned to shipper"],
+    ]);
+    await applyFhbOrderView(s.account.id, s.connection.id, both, "test");
+    const [t] = await tasks(s.order.id);
+    expect(t).toBeDefined();
+    await systemDb().alert.update({
+      where: { id: t!.id },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+    await applyFhbOrderView(s.account.id, s.connection.id, both, "test");
+    expect(await tasks(s.order.id)).toHaveLength(0);
+    expect(await tasks(s.order.id, false)).toHaveLength(1);
+    // The carrier reports the same return again in a later sync: still no new task.
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      view("sent", [
+        [30, "Return to sender"],
+        [1, "Returned to shipper"],
+        [0, "Return to sender"],
+      ]),
+      "test",
+    );
+    expect(await tasks(s.order.id, false)).toHaveLength(1);
+    // Reopened by hand: closes once FHB records the return (the order leaves "shipped").
+    await systemDb().alert.update({ where: { id: t!.id }, data: { status: "OPEN", resolvedAt: null } });
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      view("returned", [[1, "Returned to shipper"]]),
+      "test",
+    );
+    await sweepSettledOrderTasks();
+    expect(await tasks(s.order.id)).toHaveLength(0);
   });
 });

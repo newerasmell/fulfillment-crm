@@ -144,9 +144,12 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
     zip: "1000",
     country: "BG",
   });
-  await form
-    .getByRole("combobox", { name: "Продукт", exact: true })
-    .selectOption({ label: "SYN-LBL-EDP-50 · Синтетичен парфюм етикети 50 мл" });
+  // A search, not a list to scroll: part of the name finds it.
+  await form.getByRole("combobox", { name: "Продукт", exact: true }).fill("парфюм етикети 50");
+  await page.getByRole("option", { name: /SYN-LBL-EDP-50 · Синтетичен парфюм етикети 50 мл/ }).click();
+  await expect(form.getByRole("combobox", { name: "Продукт", exact: true })).toHaveValue(
+    "SYN-LBL-EDP-50 · Синтетичен парфюм етикети 50 мл",
+  );
   // Quick check: the product's units in every warehouse and in total.
   await expect(form.getByTestId("manual-stock-total")).toContainText("Общо:", { timeout: 30_000 });
   await form.getByLabel("Ед. цена").fill("25");
