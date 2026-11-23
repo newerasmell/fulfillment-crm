@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AlertSeverity, CrmOrderStatus } from "@/generated/prisma/client";
+import type { AlertSeverity, CrmOrderStatus, Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
@@ -310,6 +310,50 @@ export function stuckHours(env: Env = process.env): Partial<Record<CrmOrderStatu
 const SWEEP_KINDS = ["order_blocked", "order_unknown", "order_submit_failed", "order_stuck"];
 
 /**
+ * A shipped parcel is not "stuck" while the carrier keeps reporting it (owner 2026-11-23: 130+ shipped orders in
+ * "С грешки" hid the real problems — most were moving, at a pick-up point, or on their way back). Only a parcel the
+ * carrier has said nothing about for this long is a task.
+ */
+export const SHIPPED_QUIET_DAYS = 5;
+/** Orders looked at per status and sweep at most. */
+const STUCK_SCAN_MAX = 20_000;
+/** News of the parcel: euShipments statuses, FHB statuses and carrier events, FHB Joy label tracking. */
+const CARRIER_OR_WAREHOUSE = {
+  OR: [
+    { source: "eushipments" },
+    // FHB's statuses and carrier events — not the CRM's own writes to FHB (fhb:fhb.order.create …).
+    { AND: [{ source: { startsWith: "fhb:" } }, { NOT: { source: { startsWith: "fhb:fhb." } } }] },
+    { source: { in: ["joy", "joy.status"] } },
+  ],
+} satisfies Prisma.FulfillmentEventWhereInput;
+
+/** The orders (of these) whose live shipment had a carrier / warehouse event in the quiet window — one read. */
+async function movedRecently(orderIds: string[], now: Date) {
+  const out = new Set<string>();
+  // In chunks (a long id list stays under PostgreSQL's bind-parameter limit).
+  for (let i = 0; i < orderIds.length; i += 1000)
+    for (const id of await movedRecentlyChunk(orderIds.slice(i, i + 1000), now)) out.add(id);
+  return out;
+}
+
+async function movedRecentlyChunk(orderIds: string[], now: Date) {
+  if (!orderIds.length) return new Set<string>();
+  const rows = await systemDb().fulfillmentEvent.findMany({
+    where: {
+      ...CARRIER_OR_WAREHOUSE,
+      occurredAt: {
+        gte: new Date(now.getTime() - SHIPPED_QUIET_DAYS * 86_400_000),
+        lte: new Date(now.getTime() + 3_600_000),
+      },
+      fulfillment: { orderId: { in: orderIds }, status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+    },
+    select: { fulfillment: { select: { orderId: true } } },
+    distinct: ["fulfillmentId"],
+  });
+  return new Set(rows.map((r) => r.fulfillment.orderId));
+}
+
+/**
  * Raises one alert per order in BLOCKED / UNKNOWN / SUBMIT_FAILED and per order stuck in a status longer than
  * its threshold (never a second while one is open), and resolves those alerts by itself once the order has
  * moved on (with an auto_resolve note). Runs across accounts (worker).
@@ -338,6 +382,8 @@ async function resolvedSinceEntered(
       status: "RESOLVED",
       body,
       ...(entered ? { resolvedAt: { gte: entered.createdAt } } : {}),
+      // Closed by a person — not by the sweep itself (e.g. a parcel that moved again and later went quiet).
+      notes: { none: { action: "auto_resolve" } },
     },
     select: { id: true },
   });
@@ -394,12 +440,28 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
 
   for (const [status, h] of Object.entries(hours) as [CrmOrderStatus, number][]) {
     const cutoff = new Date(now.getTime() - h * 3600_000);
-    const candidates = await db.order.findMany({
-      where: { status, updatedAt: { lt: cutoff } },
-      select: { id: true, accountId: true, number: true, status: true },
-      take,
-    });
+    // Every candidate, oldest first, page by page (moving parcels never use up the page of the quiet ones).
+    const candidates: { id: string; accountId: string; number: string; status: CrmOrderStatus }[] = [];
+    for (let cursor: string | undefined; candidates.length < STUCK_SCAN_MAX;) {
+      const page = await db.order.findMany({
+        where: { status, updatedAt: { lt: cutoff }, ...(cursor ? { id: { gt: cursor } } : {}) },
+        select: { id: true, accountId: true, number: true, status: true },
+        orderBy: { id: "asc" },
+        take,
+      });
+      candidates.push(...page);
+      if (page.length < take) break;
+      cursor = page.at(-1)!.id;
+    }
+    const moving =
+      status === "SHIPPED"
+        ? await movedRecently(
+            candidates.map((c) => c.id),
+            now,
+          )
+        : new Set<string>();
     for (const o of candidates) {
+      if (moving.has(o.id)) continue;
       const since = await db.orderEvent.findFirst({
         where: { orderId: o.id, toStatus: status },
         orderBy: { createdAt: "desc" },
@@ -410,7 +472,9 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
         o,
         "order_stuck",
         "WARNING",
-        `Order stuck in ${status} for over ${h} h`,
+        status === "SHIPPED"
+          ? `Изпратена преди над ${Math.round(h / 24)} дни, без вест от куриера ${SHIPPED_QUIET_DAYS} дни — проверете проследяването`
+          : `Order stuck in ${status} for over ${h} h`,
         `status=${status}`,
       );
     }
@@ -423,13 +487,22 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       select: { id: true, status: true },
     });
     const statusOf = new Map(orders.map((o) => [o.id, o.status]));
+    const movingNow = await movedRecently(
+      open
+        .filter((a) => a.kind === "order_stuck" && statusOf.get(a.entityId!) === "SHIPPED")
+        .map((a) => a.entityId!),
+      now,
+    );
     for (const a of open) {
       const current = statusOf.get(a.entityId!);
       const wanted = a.body?.replace(/^status=/, "") ?? null;
-      const still =
+      let still =
         a.kind === "order_stuck"
           ? current === wanted
           : current !== undefined && STATE_ALERTS[current]?.kind === a.kind;
+      // A shipped parcel the carrier reports again is moving: not stuck any more.
+      const moving = still && a.kind === "order_stuck" && current === "SHIPPED" && movingNow.has(a.entityId!);
+      if (moving) still = false;
       if (still) continue;
       const res = await db.alert.updateMany({
         where: { id: a.id, status: { not: "RESOLVED" } },
@@ -441,7 +514,9 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
             accountId: a.accountId,
             alertId: a.id,
             action: "auto_resolve",
-            note: `order now ${current ?? "gone"}`,
+            note: moving
+              ? "the carrier reported the parcel in the last days"
+              : `order now ${current ?? "gone"}`,
           },
         });
         resolved++;

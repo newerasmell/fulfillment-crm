@@ -415,3 +415,86 @@ export async function listCatalogueRuns(
     take,
   });
 }
+
+/** Warehouse products adopted per run at most (the next sync takes the rest). */
+export const ADOPT_MAX = 200;
+/** Unlinked warehouse rows looked at per run at most (a big catalogue with many conflicts stays cheap). */
+export const ADOPT_SCAN_MAX = 5000;
+
+/**
+ * New products created directly in a warehouse (FHB ZOE, the euShipments cabinet) become master products of the
+ * line by themselves (owner report 2026-11-23: an inbound could not find them, however long one waited). Runs after
+ * every product sync of the warehouse, only for a warehouse whose catalogue is already the line's source (a finished
+ * „Каталог“ run for this line and warehouse) — the same rules as that run: SKU = warehouse id without the prefix, an
+ * existing master of the line is linked, a SKU another line uses is left for a person, a link a person removed is
+ * never redone. Database only, at most ADOPT_MAX rows, small transactions.
+ */
+export async function adoptNewWarehouseProducts(accountId: string, connectionId: string) {
+  const db = accountDb(accountId);
+  const conn = await db.fulfillmentConnection.findUnique({
+    where: { id: connectionId },
+    select: { skuPrefixRule: true, company: { select: { lineId: true } } },
+  });
+  const lineId = conn?.company?.lineId;
+  if (!conn || !lineId) return { adopted: false as const, reason: "no_line" as const };
+  const source = await db.masterCatalogueRun.findFirst({
+    where: { lineId, connectionId, status: "DONE" },
+    select: { id: true },
+  });
+  if (!source) return { adopted: false as const, reason: "no_catalogue" as const };
+  const c: Counters = {
+    processed: 0,
+    created: 0,
+    linked: 0,
+    adopted: 0,
+    alreadyLinked: 0,
+    conflicts: 0,
+    samples: [],
+  };
+  const prefix = connectionPrefix(conn.skuPrefixRule);
+  // Every unlinked row is looked at (page by page, so rows that stay unlinked — a SKU another line uses — never
+  // hide a new one behind them); at most ADOPT_MAX are linked per run, the next sync takes the rest.
+  let cursor: string | undefined;
+  for (let scanned = 0; scanned < ADOPT_SCAN_MAX && c.created + c.linked < ADOPT_MAX;) {
+    const rows = await db.vendorProduct.findMany({
+      // id > cursor (not Prisma's cursor): the last row may have just been linked and left the filter.
+      where: {
+        connectionId,
+        archived: false,
+        productId: null,
+        unlinkedAt: null,
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      },
+      select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
+      orderBy: { id: "asc" },
+      take: BATCH,
+    });
+    if (!rows.length) break;
+    scanned += rows.length;
+    cursor = rows.at(-1)!.id;
+    await withAccountTransaction(accountId, (tx, helpers) =>
+      mastersBatch(tx, helpers, accountId, lineId, prefix, rows, c),
+    );
+    if (rows.length < BATCH) break;
+  }
+  // The new masters' Shopify variants and other warehouses' products by SKU, as the catalogue run does.
+  if (c.created || c.linked) await autoLinkLine(accountId, lineId);
+  if (c.created || c.linked) logger.info({ accountId, connectionId, ...c }, "new warehouse products adopted");
+  return {
+    adopted: true as const,
+    created: c.created,
+    linked: c.linked,
+    conflicts: c.conflicts,
+    samples: c.samples,
+  };
+}
+
+/** The same, never failing the sync that called it (logged instead). */
+export async function adoptNewWarehouseProductsSafe(accountId: string, connectionId: string) {
+  try {
+    return await adoptNewWarehouseProducts(accountId, connectionId);
+  } catch (err) {
+    logger.warn({ accountId, connectionId, err: String(err) }, "adopting new warehouse products failed");
+    return { adopted: false as const, reason: "failed" as const };
+  }
+}

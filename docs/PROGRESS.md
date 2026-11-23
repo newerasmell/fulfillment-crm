@@ -580,6 +580,23 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   Carrier events are not warehouse movement for the no-stock check. src/server/fhb/courier.ts.
 - 2026-11-23 Нова ръчна пратка: the product list became a search (SKU, name or warehouse code, the whole catalogue,
   archived left out); lines carry their own id so a removed line never hands its picker to the next.
+- 2026-11-23 Products created directly in a warehouse (ZOE / the euShipments cabinet) stayed unlinked warehouse
+  products (no master with that SKU), so an inbound could not find them however long one waited. After every
+  product sync, unlinked products of a warehouse whose catalogue is the line's source (a finished „Каталог“ run)
+  become masters of the line, by the catalogue's own rules (at most 200 per run, database only; a removed link is
+  never redone) — src/server/lines/catalogue.ts adoptNewWarehouseProducts. „Нова доставка“ has „Обнови продуктите от
+  склада“ (one product read of that warehouse; the queue keeps one job per warehouse). A warehouse that never had a
+  „Каталог“ run is not adopted automatically: run it once from Линии.
+- 2026-11-23 euShipments cancel by euShipments' own order id (DELETE /orders/{id}) when the create returned one;
+  references are not unique there (owner case: a delete by reference was refused for an order in Awaiting pickup).
+- 2026-11-23 „Order stuck in SHIPPED for over 240 h“ filled „С грешки“ with 130+ parcels that were moving. A shipped
+  order is now a task only when the carrier / warehouse has reported nothing for 5 days (SHIPPED_QUIET_DAYS); a
+  carrier event closes it, and it comes back if the parcel goes quiet again (only a person's close is final).
+- 2026-11-23 Excel import in „Създаване в склада“: a template per warehouse type with exactly its columns (FHB: SKU,
+  name, EAN, photo, HS code, country; euShipments: SKU, name, barcode, weight g, length/width/height mm, HS code),
+  every row checked before anything is written (limits from the vendor references), then each row becomes / completes
+  a master of the line and is created in the warehouse through the existing writers (outbox, live mode). Max 200
+  rows, 2 MB. src/server/products/import.ts.
 
 ## Open questions
 See SPEC.md §11.

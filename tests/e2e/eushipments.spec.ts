@@ -91,6 +91,28 @@ test("euShipments: connection, mode, mirror tabs and the DRY_RUN preview", async
     .click();
   await expect(page.getByTestId("to-warehouse-mode")).toContainText("Само четене");
   await page.screenshot({ path: "test-results/to-warehouse.png", fullPage: true });
+
+  // „Импорт от Excel“: the warehouse's columns and rules, the template, a file checked row by row before anything.
+  const imp = page.getByTestId("product-import");
+  await imp.locator("summary").click();
+  await expect(imp).toContainText("Баркод (EAN)");
+  const template = await page.request.get("/api/products/import-template?type=EUSHIPMENTS");
+  expect(template.headers()["content-type"]).toContain("spreadsheetml");
+  await imp.getByTestId("product-import-file").setInputFiles({
+    name: "products.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(
+      "SKU;Име;Баркод (EAN);Тегло (г);Дължина (мм);Ширина (мм);Височина (мм)\n" +
+        "E2E-IMP-1;Синтетичен импорт 50 мл;2000000000015;350;60;40;120\n" +
+        "E2E-IMP-2;Без баркод;;350;60;40;120\n",
+    ),
+  });
+  await imp.getByTestId("product-import-check").click();
+  const rows = imp.getByTestId("product-import-row");
+  await expect(rows).toHaveCount(2, { timeout: 30_000 });
+  await expect(rows.nth(0)).toContainText("нов продукт → създаване в склада");
+  await expect(rows.nth(1)).toContainText("няма баркод");
+  await expect(imp.getByTestId("product-import-apply")).toHaveText("Създай 1 продукта");
 });
 
 test("euShipments: create a connection — token to the vault, READ_ONLY, never shown again", async ({

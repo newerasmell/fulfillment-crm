@@ -81,7 +81,16 @@ export function cancelRefusal(f: ShipmentLike, type: ConnectionType, now: Date):
 }
 
 /** The outbox write that cancels one shipment — the same keys the existing "cancel at warehouse" actions use. */
-function cancelWrite(f: { id: string; externalId: string }, type: ConnectionType, rerouteId: string) {
+function cancelWrite(
+  f: {
+    id: string;
+    externalId: string;
+    vendorOrderId?: string | null;
+    manualShipment?: { id: string } | null;
+  },
+  type: ConnectionType,
+  rerouteId: string,
+) {
   if (type === "FHB_V3")
     return {
       operation: "fhb.order.delete",
@@ -91,7 +100,15 @@ function cancelWrite(f: { id: string; externalId: string }, type: ConnectionType
   return {
     operation: EU_OPS.deleteOrder,
     idempotencyKey: `delete:${f.externalId}`,
-    payload: { body: {}, ctx: { fulfillmentId: f.id, referenceNumber: f.externalId, rerouteId } },
+    payload: {
+      body: {},
+      ctx: {
+        fulfillmentId: f.id,
+        referenceNumber: f.externalId,
+        ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
+        rerouteId,
+      },
+    },
   };
 }
 
@@ -126,7 +143,10 @@ export async function targetReuseRefusal(
 const activeShipments = (tx: Tx, orderId: string) =>
   tx.fulfillment.findMany({
     where: { orderId, status: { notIn: [...INACTIVE_SHIPMENT] } },
-    include: { connection: { select: { id: true, name: true, type: true, liveMode: true } } },
+    include: {
+      connection: { select: { id: true, name: true, type: true, liveMode: true } },
+      manualShipment: { select: { id: true } },
+    },
   });
 
 /** Everything the order page needs for "Пренасочи" (reads only). */
@@ -136,7 +156,10 @@ export async function rerouteView(actor: ScopedActor, orderId: string, now = new
   const [active, history] = await Promise.all([
     db.fulfillment.findMany({
       where: { orderId, status: { notIn: [...INACTIVE_SHIPMENT] } },
-      include: { connection: { select: { id: true, name: true, type: true, liveMode: true } } },
+      include: {
+        connection: { select: { id: true, name: true, type: true, liveMode: true } },
+        manualShipment: { select: { id: true } },
+      },
     }),
     db.orderReroute.findMany({
       where: { orderId },

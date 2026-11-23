@@ -1,4 +1,5 @@
 import type { CrmOrderStatus, Prisma } from "@/generated/prisma/client";
+import { adoptNewWarehouseProductsSafe } from "@/server/lines/catalogue";
 import { lineProductWhere } from "@/server/lines/lines";
 import type { EuShipmentsClient, EuShipmentsClientOptions } from "@/integrations/eushipments/client";
 import { classifyHistoryItem, historyItemFor } from "@/integrations/eushipments/client";
@@ -481,6 +482,10 @@ export async function syncEuProducts(accountId: string, connectionId: string, de
       unmatched,
       archived: archived.count,
     };
+  }).then(async (r) => {
+    // Products created directly in the cabinet become master products of the line (when its catalogue is the source).
+    const adopted = await adoptNewWarehouseProductsSafe(accountId, connectionId);
+    return adopted.adopted ? { ...r, createdMasters: adopted.created, linkedMasters: adopted.linked } : r;
   });
 }
 

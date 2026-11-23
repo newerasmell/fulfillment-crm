@@ -7,6 +7,7 @@ import {
   parseInboundUploadAction,
   searchInboundProductsAction,
   type UploadResult,
+  refreshWarehouseProductsAction,
 } from "@/app/actions/stock";
 import { StockError } from "@/app/(app)/products/stock/forms";
 import { buttonCls, ghostButtonCls, inputCls, labelCls, tdCls, thCls } from "@/components/ui/form";
@@ -109,6 +110,7 @@ export function NewInboundForm({
         name="lines"
         value={JSON.stringify(lines.map((l) => ({ productId: l.productId, quantity: l.quantity })))}
       />
+      <RefreshProducts connectionId={connectionId} />
       <div className="grid gap-3 md:grid-cols-3">
         <label className={labelCls}>
           {t("warehouse")}
@@ -323,5 +325,34 @@ export function NewInboundForm({
       </div>
       <StockError code={state?.error} detail={state?.detail} />
     </form>
+  );
+}
+
+/**
+ * „Обнови продуктите от склада“: a product created in the warehouse itself appears here once the warehouse's
+ * catalogue is read again (and becomes a product of the line); one click instead of waiting for the next sync.
+ */
+function RefreshProducts({ connectionId }: { connectionId: string }) {
+  const t = useTranslations("stock.inbound.refresh");
+  const [pending, start] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  return (
+    <span className="flex flex-wrap items-center gap-2 text-xs font-normal">
+      <button
+        type="button"
+        className="text-accent-strong underline disabled:opacity-60"
+        disabled={pending || !connectionId}
+        data-testid="inbound-refresh-products"
+        onClick={() =>
+          start(async () => {
+            const r = await refreshWarehouseProductsAction(connectionId);
+            setMsg("error" in r ? { ok: false, text: t("failed") } : { ok: true, text: t("queued") });
+          })
+        }
+      >
+        {t("button")}
+      </button>
+      {msg && <span className={msg.ok ? "text-ok" : "text-block"}>{msg.text}</span>}
+    </span>
   );
 }

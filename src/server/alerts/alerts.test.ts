@@ -96,6 +96,46 @@ describe("alerts and tasks (DB)", () => {
     expect((await alertHistory(g.owner, alert.id)).map((h) => h.action)).toEqual(["auto_resolve"]);
   });
 
+  it("a shipped parcel the carrier keeps reporting is not stuck; one it is silent about is, until it moves again", async () => {
+    const { order: o } = await euTestOrder(g, { number: `#${++n}` });
+    await db().order.update({ where: { id: o.id }, data: { status: "SHIPPED" } });
+    const f = await db().fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: o.id,
+        connectionId: g.connection.id,
+        externalId: `ST-${n}`,
+        status: "SHIPPED",
+      },
+    });
+    const later = new Date(Date.now() + 11 * 86_400_000); // shipped > 240 h by then
+    const event = (at: Date) =>
+      db().fulfillmentEvent.create({
+        data: {
+          accountId: g.accountId,
+          fulfillmentId: f.id,
+          occurredAt: at,
+          source: "fhb:courier",
+          rawStatus: "In transit",
+        },
+      });
+    const open = () =>
+      db().alert.findMany({ where: { entityId: o.id, kind: "order_stuck", status: { not: "RESOLVED" } } });
+    await event(new Date(later.getTime() - 2 * 86_400_000)); // the carrier spoke 2 days before
+    await sweepOrderAlerts(later);
+    expect(await open()).toHaveLength(0);
+    const silent = new Date(later.getTime() + 6 * 86_400_000); // 8 days without news
+    await sweepOrderAlerts(silent);
+    const [t] = await open();
+    expect(t?.title).toMatch(/без вест от куриера 5 дни/);
+    await event(new Date(silent.getTime() - 3_600_000));
+    await sweepOrderAlerts(silent);
+    expect(await open()).toHaveLength(0);
+    // Quiet again for days: the task comes back (the sweep closed it, not a person).
+    await sweepOrderAlerts(new Date(silent.getTime() + 6 * 86_400_000));
+    expect(await open()).toHaveLength(1);
+  });
+
   it("an alert resolved with a note while the order stays in that status is not raised (or sent) again", async () => {
     const blocked = await order("BLOCKED");
     await db().orderEvent.create({

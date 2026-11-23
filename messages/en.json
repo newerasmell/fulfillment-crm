@@ -2268,7 +2268,12 @@
       "requests": "Requests to the warehouse",
       "requestsNote": "Every request goes through the outbox and the warehouse's mode.",
       "tasks": "Tasks",
-      "toAlerts": "To alerts and tasks →"
+      "toAlerts": "To alerts and tasks →",
+      "refresh": {
+        "button": "Refresh the warehouse's products",
+        "queued": "Started. Search for the product again in 1–2 minutes.",
+        "failed": "Failed — try again shortly."
+      }
     },
     "push": {
       "title": "Stock to Shopify",
@@ -3821,6 +3826,84 @@
       "forbidden": "You may not do this.",
       "not_found": "Warehouse not found.",
       "invalid": "Invalid data."
+    },
+    "import": {
+      "title": "Excel import",
+      "intro": "Create many products at once: download this warehouse's template, fill one row per product and upload the file (.xlsx or .csv). Every row is checked first; nothing is created before “Create”. Each row becomes a CRM product (or completes the existing one) and is sent to be created in the warehouse.",
+      "column": "Column",
+      "rule": "What the warehouse requires",
+      "template": "Download the template",
+      "file": "File",
+      "check": "Check the file",
+      "row": "Row",
+      "name": "Name",
+      "result": "Result",
+      "apply": "Create {n} products",
+      "done": "Done: new in the CRM {created}, completed {updated}; sent to the warehouse {queued}; already there {already}.",
+      "rowFailed": "Row {row}:",
+      "action": {
+        "create": "new product → created in the warehouse",
+        "update": "exists in the CRM → created in the warehouse",
+        "already": "already in the warehouse — skipped",
+        "error": "error"
+      },
+      "rules": {
+        "FHB_V3": {
+          "sku": "Your SKU. No spaces and no # & %. The warehouse gets it with the warehouse prefix.",
+          "name": "Up to 150 characters.",
+          "ean": "8–14 digits. Optional (FHB may correct it).",
+          "photo": "An https:// link to a photo, up to 255 characters. Optional.",
+          "hsCode": "Customs code, e.g. 640399.30.00. Optional.",
+          "country": "Two letters, e.g. FR. Optional."
+        },
+        "EUSHIPMENTS": {
+          "sku": "Your SKU. No spaces and no # & %. The warehouse gets it with the warehouse prefix.",
+          "name": "Up to 200 characters.",
+          "ean": "Required, up to 50 characters (an EAN or your own barcode). It must be unique in euShipments' whole system.",
+          "weight": "In grams: 10 – 999,000.",
+          "length": "In millimetres: 1 – 9990.",
+          "width": "In millimetres: 1 – 9990.",
+          "height": "In millimetres: 1 – 9990.",
+          "hsCode": "Customs code, e.g. 640399.30.00. Optional."
+        }
+      },
+      "error": {
+        "no_file": "Choose a file.",
+        "file_too_large": "The file is over 2 MB.",
+        "bad_file": "The file cannot be read — save it as .xlsx or .csv.",
+        "empty": "The file is empty.",
+        "missing_columns": "Required columns are missing",
+        "too_many_rows": "Over 200 rows — upload them in several files.",
+        "sku_missing": "no SKU",
+        "sku_invalid": "invalid SKU",
+        "sku_duplicate": "the SKU repeats in the file",
+        "name_missing": "no name",
+        "name_too_long": "the name is too long",
+        "ean_invalid": "invalid barcode",
+        "ean_missing": "no barcode",
+        "photo_invalid": "invalid photo link",
+        "hs_invalid": "invalid HS code",
+        "country_invalid": "invalid country",
+        "weight_missing": "no weight",
+        "weight_invalid": "invalid weight",
+        "length_missing": "no length",
+        "length_invalid": "invalid length",
+        "width_missing": "no width",
+        "width_invalid": "invalid width",
+        "height_missing": "no height",
+        "height_invalid": "invalid height",
+        "sku_other_line": "the SKU belongs to a product of another line",
+        "sku_ambiguous": "two products have this SKU",
+        "no_barcode": "no barcode",
+        "missing_dimensions": "size or weight missing",
+        "forbidden": "You are not allowed to do this.",
+        "not_found": "Warehouse not found.",
+        "invalid": "Invalid data.",
+        "sku_archived": "an archived product has this SKU — restore it or use another SKU",
+        "at_warehouse_unlinked": "the warehouse already has a product with this SKU, not linked — link it on the warehouse page",
+        "barcode_differs": "the barcode in the file differs from the CRM product's",
+        "sku_exists": "someone created a product with this SKU meanwhile"
+      }
     }
   },
   "trackingLinks": {
