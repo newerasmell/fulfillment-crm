@@ -575,3 +575,33 @@ async function resolveClosedInShopify(now: Date) {
   }
   return resolved;
 }
+
+/** Orders whose tasks one click closes at most. */
+export const CLOSE_ORDER_TASKS_MAX = 100;
+
+/**
+ * „Затвори задачите“ in „С грешки“ (owner 2026-11-24: 74 orders there and no way to close what a person has
+ * checked): every open task of these orders is resolved with the person's note, each as resolveAlert does it
+ * (conditional, audited). The sweep does not raise a closed stuck-order task again while the order stays where it is.
+ */
+export async function resolveOrderTasks(ctx: Ctx, orderIds: string[], rawNote: string) {
+  assertCan(ctx.role, "alerts.manage");
+  const note = ResolveNote.parse(rawNote);
+  const ids = [...new Set(orderIds)];
+  if (!ids.length || ids.length > CLOSE_ORDER_TASKS_MAX) throw new DomainError("invalid");
+  const open = await accountDb(ctx.accountId).alert.findMany({
+    where: { isTask: true, status: { not: "RESOLVED" }, entityType: "Order", entityId: { in: ids } },
+    select: { id: true },
+  });
+  let closed = 0;
+  for (const a of open) {
+    try {
+      await resolveAlert(ctx, a.id, note);
+      closed++;
+    } catch (err) {
+      // Closed meanwhile by someone else, or outside the member's companies: left as it is.
+      if (!(err instanceof DomainError)) throw err;
+    }
+  }
+  return { closed };
+}

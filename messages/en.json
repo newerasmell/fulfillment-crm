@@ -630,6 +630,29 @@
       "failed": "Failed — try again shortly.",
       "last": "Last pull: {at}",
       "skipped": "{n, plural, one {# store has} other {# stores have}} a failed connection test — check them in „Stores“."
+    },
+    "closeTasks": {
+      "button": "Close tasks",
+      "bulk": "Close tasks ({n})",
+      "reason": "Reason",
+      "presets": {
+        "moving": "Checked — the parcel is moving / at a pick-up point",
+        "test": "Test order",
+        "cancelled": "Rejected / cancelled",
+        "solved": "Solved"
+      },
+      "other": "Other…",
+      "note": "Note",
+      "notePlaceholder": "What was done",
+      "confirm": "Close",
+      "closing": "Closing…",
+      "cancel": "Cancel",
+      "closed": "Closed: {n}",
+      "errors": {
+        "forbidden": "You may not close tasks.",
+        "note_required": "Write a short note.",
+        "other": "Failed — try again."
+      }
     }
   },
   "orderStatus": {

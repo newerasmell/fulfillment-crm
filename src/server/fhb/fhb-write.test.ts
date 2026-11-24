@@ -1235,6 +1235,48 @@ describe("status apply", () => {
       await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_order_rejected" } }),
     ).toBe(0);
   });
+
+  it("an order FHB moved to the carrier 'STORNO OBJEDNAVKY' (status still 'sent') is cancelled at the warehouse too", async () => {
+    const s = await setup("LIVE");
+    const { request, fulfillment } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    await processOutbound(
+      request.id,
+      fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
+    );
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    // As in production: first a normal "sent" (the order shows as shipped), then the storno carrier.
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      FhbOrderView.parse(orderView({ id: "TST-1001", status: "sent" })),
+      "test",
+    );
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe("SHIPPED");
+    for (let i = 0; i < 2; i++)
+      await applyFhbOrderView(
+        s.account.id,
+        s.connection.id,
+        FhbOrderView.parse({
+          ...orderView({ id: "TST-1001", status: "sent" }),
+          parcel_service: "STORNO OBJEDNAVKY",
+        }),
+        "test",
+      );
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+    expect(f).toMatchObject({ status: "CANCELLED", rawStatus: "sent" });
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe(
+      "EXCEPTION",
+    );
+    const tasks = await systemDb().alert.findMany({
+      where: { accountId: s.account.id, kind: "fhb_order_cancelled_in_zoe", isTask: true },
+    });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.title).toContain("STORNO OBJEDNAVKY");
+  });
 });
 
 // Owner report 2026-11-23: FHB keeps an order "sent" while the carrier already returns it ("Return to sender").

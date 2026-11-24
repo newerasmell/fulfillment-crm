@@ -89,4 +89,10 @@ test("Блокирани в склад: emails to copy, sent / reply / customer 
   await expect(page.getByTestId("order-issue-reasons").first()).toContainText(
     "Стои в „Приета от склада“ твърде дълго",
   );
+  // A person checked it: the order's tasks are closed with a reason, and the order leaves „С грешки“.
+  const reasons = page.getByTestId("order-issue-reasons").first();
+  await reasons.getByRole("button", { name: "Затвори задачите" }).click();
+  await reasons.getByRole("combobox", { name: "Причина" }).selectOption({ label: "Тестова поръчка" });
+  await reasons.getByRole("button", { name: "Затвори", exact: true }).click();
+  await expect(page.getByTestId("order-issue-reasons")).toHaveCount(0);
 });

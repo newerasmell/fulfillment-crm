@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createContext, useContext, useMemo, useState, useTransition, type ReactNode } from "react";
 import { startFulfillAction } from "@/app/actions/fulfill";
+import { CloseTasks } from "./close-tasks";
 
 /**
  * Orders list selection and the sticky dark bulk bar (DESIGN.md screen 2). The bar only starts a Fulfill batch;
@@ -75,7 +76,13 @@ export function RowCheckbox({ id, label }: { id: string; label: string }) {
   );
 }
 
-export function BulkBar({ canFulfill }: { canFulfill: boolean }) {
+export function BulkBar({
+  canFulfill,
+  canCloseTasks = false,
+}: {
+  canFulfill: boolean;
+  canCloseTasks?: boolean;
+}) {
   const t = useTranslations("fulfill");
   const { selected, setAll } = useSelection();
   const router = useRouter();
@@ -106,6 +113,7 @@ export function BulkBar({ canFulfill }: { canFulfill: boolean }) {
           {pending ? t("starting") : t("fulfillSelected", { count: selected.size })}
         </button>
       )}
+      {canCloseTasks && <CloseTasks orderIds={[...selected]} variant="bar" onDone={() => setAll(false)} />}
       <button
         type="button"
         onClick={() => setAll(false)}

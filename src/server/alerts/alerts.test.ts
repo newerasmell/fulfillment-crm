@@ -11,6 +11,7 @@ import {
   emailProvider,
   listOpenAlerts,
   resolveAlert,
+  resolveOrderTasks,
   stuckHours,
   sweepOrderAlerts,
   telegramProvider,
@@ -281,5 +282,47 @@ describe("alerts and tasks (DB)", () => {
     // WARNING and above when configured so.
     await dispatchNotifications([fake], { env: { ...env, NOTIFY_MIN_SEVERITY: "WARNING" }, take: 100_000 });
     expect(sent.map((m) => m.alertId)).toContain(warning.id);
+  });
+});
+
+// „Затвори задачите“ in „С грешки“ (owner 2026-11-24). Synthetic data only.
+describe("closing an order's tasks from the orders list", () => {
+  it("closes every open task of the orders with the note, only within the member's reach, and keeps them closed", async () => {
+    const g = await euTestGroup("close-tasks");
+    const { order: a } = await euTestOrder(g, { number: "#CT-1" });
+    const { order: b } = await euTestOrder(g, { number: "#CT-2" });
+    const task = (orderId: string, kind: string) =>
+      systemDb().alert.create({
+        data: {
+          accountId: g.accountId,
+          kind,
+          isTask: true,
+          severity: "WARNING",
+          title: `Synthetic ${kind}`,
+          body: kind === "order_stuck" ? "status=PROCESSING" : null,
+          entityType: "Order",
+          entityId: orderId,
+        },
+      });
+    await task(a.id, "order_stuck");
+    await task(a.id, "open_in_shopify");
+    const other = await task(b.id, "order_stuck");
+
+    await expect(resolveOrderTasks({ ...g.owner, role: "VIEWER" }, [a.id], "Test order")).rejects.toThrow();
+    await expect(resolveOrderTasks(g.owner, [a.id], " ")).rejects.toThrow();
+    const stranger = await euTestGroup("close-tasks-other");
+    expect(await resolveOrderTasks(stranger.owner, [a.id], "Test order")).toEqual({ closed: 0 });
+
+    expect(await resolveOrderTasks(g.owner, [a.id], "Test order")).toEqual({ closed: 2 });
+    const open = await systemDb().alert.findMany({
+      where: { accountId: g.accountId, entityId: { in: [a.id, b.id] }, status: { not: "RESOLVED" } },
+    });
+    expect(open.map((x) => x.id)).toEqual([other.id]);
+    const notes = await systemDb().alertNote.findMany({
+      where: { accountId: g.accountId, action: "resolve", note: "Test order" },
+    });
+    expect(notes).toHaveLength(2);
+    // Again: nothing left to close.
+    expect(await resolveOrderTasks(g.owner, [a.id], "Test order")).toEqual({ closed: 0 });
   });
 });
