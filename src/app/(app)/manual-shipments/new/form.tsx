@@ -111,6 +111,8 @@ export function ManualForm(props: {
     },
   );
   const [cod, setCod] = useState("");
+  // Required recipient fields light up in red after the first Провери / Създай (owner request 2026-11-24).
+  const [attempted, setAttempted] = useState(false);
   const [currency, setCurrency] = useState(draft?.currency ?? "EUR");
   const [parcels, setParcels] = useState("1");
   const [weight, setWeight] = useState("1");
@@ -176,7 +178,7 @@ export function ManualForm(props: {
         buildingNumber: r.buildingNumber || null,
         address2: r.address2 || null,
         city: r.city,
-        zip: r.zip || null,
+        zip: r.zip,
         region: r.region || null,
         countryCode: r.countryCode,
       },
@@ -214,6 +216,18 @@ export function ManualForm(props: {
   })();
   // A replacement needs its reason before it can be checked or created.
   const reasonMissing = !!draft && (!reason || (reason === "other" && !reasonText.trim()));
+  // Without these no parcel can go out (owner request 2026-11-24): name, phone, country, street, city, postcode.
+  const REQUIRED = ["name", "phone", "countryCode", "address1", "city", "zip"] as const;
+  const missing = REQUIRED.filter((k) => !String(r[k] ?? "").trim());
+  const bad = (k: (typeof REQUIRED)[number]) => attempted && missing.includes(k);
+  const reqCls = (k: (typeof REQUIRED)[number]) => (bad(k) ? " !border-block bg-block-bg" : "");
+  const codZero = !(Number(num(cod) ?? 0) > 0);
+  const missingError = () => {
+    setAttempted(true);
+    if (!missing.length) return false;
+    setError(t("form.missingRequired", { fields: missing.map((k) => t(`form.req.${k}`)).join(", ") }));
+    return true;
+  };
 
   const msg = (f: Finding) => (locale === "en" ? f.message_en : f.message_bg);
   const errText = (code: string) => (t.has(`errors.${code}`) ? t(`errors.${code}`) : t("errors.generic"));
@@ -229,6 +243,7 @@ export function ManualForm(props: {
   const check = () =>
     start(async () => {
       setError(null);
+      if (missingError()) return;
       const res = await previewManualAction(input);
       if ("error" in res) {
         setError(errText(res.error));
@@ -240,7 +255,10 @@ export function ManualForm(props: {
   const create = () =>
     start(async () => {
       setError(null);
+      if (missingError()) return;
       if (reasonMissing) return setError(t("replacement.reasonRequired"));
+      // A parcel without cash on delivery is allowed, but never by oversight (owner request 2026-11-24).
+      if (codZero && !window.confirm(t("form.codZeroConfirm"))) return;
       const soft = findings.filter((f) => f.severity === "soft").map((f) => f.code);
       const res = await createManualAction({ ...input, acknowledgedCodes: soft });
       if ("error" in res) {
@@ -296,6 +314,8 @@ export function ManualForm(props: {
       <form
         className="flex flex-col gap-4 rounded-[var(--radius-card)] border border-line bg-surface p-5"
         aria-label={t("form.title")}
+        // Our own check marks the missing fields in red (the browser's would stop at the first one silently).
+        noValidate
         onSubmit={(e) => {
           e.preventDefault();
           if (reasonMissing) return setError(t("replacement.reasonRequired"));
@@ -422,17 +442,29 @@ export function ManualForm(props: {
         <fieldset className="m-0 grid gap-3 border-0 p-0 sm:grid-cols-2">
           <legend className="mb-2 text-[13px] font-semibold">{t("form.recipient")}</legend>
           <label className={labelCls}>
-            {t("form.name")}
-            <input value={r.name} onChange={set("name")} required maxLength={100} className={inputCls} />
+            <Req>{t("form.name")}</Req>
+            <input
+              value={r.name}
+              onChange={set("name")}
+              required
+              aria-invalid={bad("name") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.name")}
+              maxLength={100}
+              className={inputCls + reqCls("name")}
+            />
           </label>
           <label className={labelCls}>
-            {t("form.phone")}
+            <Req>{t("form.phone")}</Req>
             <input
               value={r.phone}
               onChange={set("phone")}
               required
+              aria-invalid={bad("phone") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.phone")}
               maxLength={40}
-              className={`${inputCls} font-mono`}
+              className={`${inputCls} font-mono${reqCls("phone")}`}
             />
           </label>
           <label className={labelCls}>
@@ -446,23 +478,29 @@ export function ManualForm(props: {
             />
           </label>
           <label className={labelCls}>
-            {t("form.country")}
+            <Req>{t("form.country")}</Req>
             <input
               value={r.countryCode}
               onChange={set("countryCode")}
               required
+              aria-invalid={bad("countryCode") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.country")}
               maxLength={2}
-              className={`${inputCls} w-24 font-mono uppercase`}
+              className={`${inputCls} w-24 font-mono uppercase${reqCls("countryCode")}`}
             />
           </label>
           <label className={labelCls}>
-            {t("form.street")}
+            <Req>{t("form.street")}</Req>
             <input
               value={r.address1}
               onChange={set("address1")}
               required
+              aria-invalid={bad("address1") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.street")}
               maxLength={200}
-              className={inputCls}
+              className={inputCls + reqCls("address1")}
             />
           </label>
           <label className={labelCls}>
@@ -479,12 +517,30 @@ export function ManualForm(props: {
             <input value={r.address2} onChange={set("address2")} maxLength={200} className={inputCls} />
           </label>
           <label className={labelCls}>
-            {t("form.city")}
-            <input value={r.city} onChange={set("city")} required maxLength={100} className={inputCls} />
+            <Req>{t("form.city")}</Req>
+            <input
+              value={r.city}
+              onChange={set("city")}
+              required
+              aria-invalid={bad("city") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.city")}
+              maxLength={100}
+              className={inputCls + reqCls("city")}
+            />
           </label>
           <label className={labelCls}>
-            {t("form.zip")}
-            <input value={r.zip} onChange={set("zip")} maxLength={15} className={`${inputCls} font-mono`} />
+            <Req>{t("form.zip")}</Req>
+            <input
+              value={r.zip}
+              onChange={set("zip")}
+              required
+              aria-invalid={bad("zip") || undefined}
+              // The visible "*" is not part of the field's name.
+              aria-label={t("form.zip")}
+              maxLength={15}
+              className={`${inputCls} font-mono${reqCls("zip")}`}
+            />
           </label>
           {eu && (
             <label className={labelCls}>
@@ -514,8 +570,11 @@ export function ManualForm(props: {
               className={`${inputCls} font-mono`}
             />
           </label>
-          <label className={labelCls}>
-            {t("form.cod")}
+          <label
+            className={`${labelCls} rounded-[10px] border-2 p-2 ${codZero ? "border-block bg-block-bg" : "border-ok bg-ok-bg"}`}
+            data-testid="manual-cod"
+          >
+            <span className="font-semibold">{t("form.cod")}</span>
             <span className="flex gap-2">
               <input
                 value={cod}
@@ -531,7 +590,9 @@ export function ManualForm(props: {
                 className={`${inputCls} w-20 font-mono`}
               />
             </span>
-            <span className="text-xs font-normal text-muted">{t("form.codHint")}</span>
+            <span className={`text-xs font-normal ${codZero ? "font-semibold text-block" : "text-muted"}`}>
+              {codZero ? t("form.codZeroHint") : t("form.codHint")}
+            </span>
           </label>
           {eu && (
             <label className={labelCls}>
@@ -1003,5 +1064,18 @@ function ProductPicker({
         </span>
       )}
     </div>
+  );
+}
+
+/** A required field's label: the text and a red asterisk. */
+function Req({ children }: { children: React.ReactNode }) {
+  return (
+    <span>
+      {children}
+      <span className="text-block" aria-hidden>
+        {" "}
+        *
+      </span>
+    </span>
   );
 }

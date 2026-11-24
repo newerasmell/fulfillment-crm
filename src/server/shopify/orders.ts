@@ -111,6 +111,12 @@ export async function importShopifyOrder(
   accountId: string,
   store: StoreForImport,
   o: ShopifyOrder,
+  /**
+   * force: „Обнови от Shopify“ — the same Shopify version is applied again (never an older one). An edit that came
+   * while the order was past approval was only recorded (raw + a task); once the order is back in review, the person's
+   * refresh makes its lines / COD follow Shopify (owner report 2026-11-24: an order edited 100 h ago stayed old).
+   */
+  opts: { force?: boolean } = {},
 ): Promise<ImportResult> {
   const updatedAt = new Date(o.updatedAt);
   return withAccountTransaction(
@@ -152,7 +158,10 @@ export async function importShopifyOrder(
         : new Set<string>();
       const foreign = ourGids.size ? foreignShopifyFulfillments(o, ourGids) : null;
       const externallyFulfilled = shopifyFulfilled(o) && (foreign === null || foreign.length > 0);
-      if (existing?.shopifyUpdatedAt && existing.shopifyUpdatedAt >= updatedAt) {
+      if (
+        existing?.shopifyUpdatedAt &&
+        (opts.force ? existing.shopifyUpdatedAt > updatedAt : existing.shopifyUpdatedAt >= updatedAt)
+      ) {
         return { orderId: existing.id, outcome: "stale" as const };
       }
       // "Само поръчки с таг": without the store's tag an order is set aside (AWAITING_TAG) until it gets it.
@@ -281,8 +290,9 @@ export async function importShopifyOrder(
           : {}),
         billingAddress: json(normaliseAddress(o.billingAddress)),
         currency: o.currencyCode,
-        subtotal: money(o.subtotalPriceSet),
-        total: money(o.totalPriceSet),
+        // After an edit in Shopify (a line removed) the current amounts, not the original ones (owner 2026-11-24).
+        subtotal: money(o.currentSubtotalPriceSet ?? o.subtotalPriceSet),
+        total: money(o.currentTotalPriceSet ?? o.totalPriceSet),
         // A person's manual COD (OrderCodOverride) is kept over Shopify's payment facts.
         ...(existing?.codOverride
           ? {
@@ -722,7 +732,8 @@ export async function refreshShopifyOrder(
   store: StoreForImport,
   client: ShopifyClient,
   orderGid: string,
+  opts: { force?: boolean } = {},
 ) {
   const { order } = await client.query(ORDER_BY_ID_QUERY, { id: orderGid }, OrderById);
-  return order ? importShopifyOrder(accountId, store, await completeOrderLines(client, order)) : null;
+  return order ? importShopifyOrder(accountId, store, await completeOrderLines(client, order), opts) : null;
 }

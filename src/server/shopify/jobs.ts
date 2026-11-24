@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { WEBHOOK_TOPICS } from "@/integrations/shopify/webhooks";
 import type { PgBoss } from "pg-boss";
 import type { ShopifyClientOptions } from "@/integrations/shopify/client";
@@ -8,7 +9,7 @@ import { QUEUES } from "@/server/jobs/queues";
 import { accountDb, systemDb } from "@/server/db/client";
 import { purgeStore } from "@/server/store-lifecycle";
 import { refreshStoreScopes, testStoreConnection } from "./connection";
-import { syncStoreOrders } from "./orders";
+import { refreshShopifyOrder, syncStoreOrders } from "./orders";
 import { syncStoreProducts } from "./products";
 import { shopifyClientForStore } from "./store-client";
 import {
@@ -65,6 +66,9 @@ export const enqueueShopify = {
     boss.send(QUEUES.shopifySyncOrders.name, d, {
       singletonKey: d.mode === "backfill" ? `${d.storeId}:backfill:${d.from}` : `${d.storeId}:reconcile`,
     }),
+  /** One order, now (one waiting per order). */
+  refreshOrder: (boss: PgBoss, d: StoreJob & { orderId: string }) =>
+    boss.send(QUEUES.shopifyRefreshOrder.name, d, { singletonKey: d.orderId }),
   syncProducts: (boss: PgBoss, d: StoreJob) =>
     boss.send(QUEUES.shopifySyncProducts.name, d, { singletonKey: d.storeId }),
   webhook: (boss: PgBoss, d: WebhookJob) =>
@@ -304,6 +308,29 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
           ? { kind: "backfill" as const, from: data.from!, to: data.to! }
           : { kind: "reconcile" as const };
       await syncStoreOrders(data.accountId, store, client, mode);
+    }
+  });
+
+  await boss.work<StoreJob & { orderId: string }>(QUEUES.shopifyRefreshOrder.name, opts, async (jobs) => {
+    for (const job of jobs) {
+      const data = z
+        .object({
+          accountId: z.string().min(1).max(64),
+          storeId: z.string().min(1).max(64),
+          orderId: z.string().min(1).max(64),
+        })
+        .parse(job.data);
+      if (!(await connectedStore(data.accountId, data.storeId))) {
+        logger.warn({ storeId: data.storeId }, "refresh order: store not connected, skipped");
+        continue;
+      }
+      const order = await accountDb(data.accountId).order.findFirst({
+        where: { id: data.orderId, storeId: data.storeId },
+        select: { shopifyOrderGid: true },
+      });
+      if (!order?.shopifyOrderGid) continue;
+      const { store, client } = await shopifyClientForStore(data.accountId, data.storeId);
+      await refreshShopifyOrder(data.accountId, store, client, order.shopifyOrderGid, { force: true });
     }
   });
 

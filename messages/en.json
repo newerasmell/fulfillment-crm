@@ -655,6 +655,19 @@
         "other": "Failed — try again.",
         "invalid": "Select up to 100 orders at a time."
       }
+    },
+    "refreshShopify": {
+      "button": "Refresh from Shopify",
+      "working": "Starting…",
+      "queued": "Reading from Shopify — the page refreshes itself in a few seconds. Once the order is at a warehouse, changes become a task.",
+      "queuedReopened": "The order went back to review and is read from Shopify — review and approve it again.",
+      "errors": {
+        "forbidden": "You may not refresh from Shopify.",
+        "not_shopify": "This order is not from Shopify.",
+        "not_found": "Order not found.",
+        "other": "Failed — try again.",
+        "store_not_connected": "The store is not connected — check it in „Stores“."
+      }
     }
   },
   "orderStatus": {
@@ -2783,7 +2796,18 @@
       "payload": "Exactly what will be sent",
       "shopifyOrderNumber": "Shopify order number (optional)",
       "shopifyOrderNumberPlaceholder": "e.g. #1001",
-      "shopifyOrderNumberHint": "Which shop order the parcel is for. Search finds the manual order by it."
+      "shopifyOrderNumberHint": "Which shop order the parcel is for. Search finds the manual order by it.",
+      "missingRequired": "Fill in the required fields: {fields}.",
+      "req": {
+        "name": "name",
+        "phone": "phone",
+        "countryCode": "country",
+        "address1": "address",
+        "city": "city",
+        "zip": "postcode"
+      },
+      "codZeroHint": "No cash on delivery (0). If the customer pays on delivery, enter the amount!",
+      "codZeroConfirm": "This parcel has NO cash on delivery (0). Are you sure it must be sent with 0 COD?"
     },
     "detail": {
       "title": "Manual shipment",

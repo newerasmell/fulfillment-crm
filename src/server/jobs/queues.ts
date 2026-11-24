@@ -65,6 +65,11 @@ export const QUEUES = {
     name: "shopify.syncProducts",
     options: { ...retry, policy: "stately", expireInSeconds: 3600 },
   },
+  /** Shopify: re-read one order now (data: { accountId, storeId, orderId }) — „Обнови от Shopify“ on the order page. */
+  shopifyRefreshOrder: {
+    name: "shopify.refreshOrder",
+    options: { ...retry, policy: "stately", retryLimit: 1, expireInSeconds: 300 },
+  },
   /** Shopify: act on one stored webhook event (data: { accountId, eventId }). */
   shopifyWebhook: {
     name: "shopify.webhook",
