@@ -599,14 +599,19 @@ export async function adoptNewWarehouseProductsSafe(accountId: string, connectio
  * „Добави като основен продукт“ in a new inbound (owner request 2026-11-23): one product of the warehouse that has no
  * master yet becomes one — by a person, one at a time, with the same rules as the „Каталог“ run (SKU = warehouse id
  * without the prefix; an existing master of the line with that SKU is linked, not duplicated; a SKU another line
- * uses, or a link a person removed, is refused). Returns the master.
+ * uses, or a link a person removed, is refused). „Добави всички“ sends up to ADOPT_MANY_MAX at once; each row that
+ * cannot be added is reported with its reason, the others are added.
  */
-export async function adoptWarehouseProduct(
+export const ADOPT_MANY_MAX = 200;
+
+export async function adoptWarehouseProducts(
   actor: ScopedActor,
-  input: { connectionId: string; vendorProductId: string },
+  input: { connectionId: string; vendorProductIds: string[] },
 ) {
   assertCan(actor.role, "inbound.manage");
   assertCan(actor.role, "lines.catalogue");
+  const ids = [...new Set(input.vendorProductIds)];
+  if (!ids.length || ids.length > ADOPT_MANY_MAX) throw new DomainError("invalid");
   const db = accountDb(actor.accountId);
   const conn = await db.fulfillmentConnection.findFirst({
     where: {
@@ -619,12 +624,20 @@ export async function adoptWarehouseProduct(
   if (!conn) throw new DomainError("not_found");
   const lineId = conn.company?.lineId;
   if (!lineId) throw new DomainError("no_line");
-  const row = await db.vendorProduct.findFirst({
-    where: { id: input.vendorProductId, connectionId: conn.id, archived: false },
+  const rows = await db.vendorProduct.findMany({
+    where: { id: { in: ids }, connectionId: conn.id, archived: false },
     select: { id: true, vendorId: true, productId: true, raw: true, unlinkedAt: true },
+    orderBy: { id: "asc" },
   });
-  if (!row) throw new DomainError("not_found");
-  if (row.unlinkedAt) throw new DomainError("unlinked_by_person");
+  const failed: { vendorProductId: string; vendorId: string | null; code: string }[] = [];
+  const found = new Set(rows.map((r) => r.id));
+  for (const id of ids)
+    if (!found.has(id)) failed.push({ vendorProductId: id, vendorId: null, code: "not_found" });
+  const usable = rows.filter((r) => {
+    if (!r.unlinkedAt) return true;
+    failed.push({ vendorProductId: r.id, vendorId: r.vendorId, code: "unlinked_by_person" });
+    return false;
+  });
   const c: Counters = {
     processed: 0,
     created: 0,
@@ -634,38 +647,72 @@ export async function adoptWarehouseProduct(
     conflicts: 0,
     samples: [],
   };
-  const product = await withAccountTransaction(actor.accountId, async (tx, helpers) => {
-    // Under the line's lock; the link is conditional and read back (a sync or a colleague may have linked it meanwhile).
-    await mastersBatch(tx, helpers, actor.accountId, lineId, connectionPrefix(conn.skuPrefixRule), [row], c);
-    const linked = await tx.vendorProduct.findFirstOrThrow({
-      where: { accountId: actor.accountId, id: row.id },
-      select: { product: { select: { id: true, sku: true, name: true, lineId: true } } },
-    });
-    // Not linked to a master of this line: the SKU belongs to another line (or two masters differ only by case).
-    if (!linked.product || linked.product.lineId !== lineId) throw new DomainError("sku_conflict");
-    return { ...linked.product, changed: c.linked === 1 || c.adopted > 0 };
+  const prefix = connectionPrefix(conn.skuPrefixRule);
+  // Small transactions under the line's lock; each link is conditional and read back below. A chunk that fails
+  // (a SKU created meanwhile outside this line, a timeout) is reported and the others go on.
+  const failedChunk = new Set<string>();
+  for (let i = 0; i < usable.length; i += BATCH) {
+    const chunk = usable.slice(i, i + BATCH);
+    try {
+      await withAccountTransaction(actor.accountId, (tx, helpers) =>
+        mastersBatch(tx, helpers, actor.accountId, lineId, prefix, chunk, c),
+      );
+    } catch (err) {
+      logger.warn({ err: String(err), rows: chunk.length }, "adopting warehouse products: a batch failed");
+      for (const r of chunk) failedChunk.add(r.id);
+    }
+  }
+  const after = await db.vendorProduct.findMany({
+    where: { id: { in: usable.map((r) => r.id) } },
+    select: {
+      id: true,
+      vendorId: true,
+      product: { select: { id: true, sku: true, name: true, lineId: true } },
+    },
+    orderBy: { vendorId: "asc" },
   });
-  // After the commit (the audit log is written on its own connection), only when something changed; then, as the
-  // „Каталог“ run, the line's Shopify variants and other warehouses' products with that SKU are linked too.
-  if (product.changed) {
+  const added: { id: string; sku: string; name: string; vendorId: string }[] = [];
+  for (const r of after) {
+    if (failedChunk.has(r.id) && !r.product) {
+      failed.push({ vendorProductId: r.id, vendorId: r.vendorId, code: "other" });
+      continue;
+    }
+    // Not linked to a master of this line: the SKU belongs to another line (or two masters differ only by case).
+    if (!r.product || r.product.lineId !== lineId)
+      failed.push({ vendorProductId: r.id, vendorId: r.vendorId, code: "sku_conflict" });
+    else added.push({ id: r.product.id, sku: r.product.sku, name: r.product.name, vendorId: r.vendorId });
+  }
+  const changed = c.linked > 0 || c.adopted > 0;
+  if (changed)
     await recordAudit({
       accountId: actor.accountId,
       userId: actor.userId,
       action: "lines.adoptWarehouseProduct",
-      entityType: "VendorProduct",
-      entityId: row.id,
+      entityType: "FulfillmentConnection",
+      entityId: conn.id,
       after: {
-        productId: product.id,
-        sku: product.sku,
-        createdMaster: c.created > 0,
-        adoptedIntoLine: c.adopted > 0,
+        linked: c.linked,
+        createdMasters: c.created,
+        adoptedIntoLine: c.adopted,
+        failed: failed.length,
+        products: added.map((a) => a.id),
+        failedRows: failed.map((f) => ({ id: f.vendorProductId, code: f.code })),
       },
       ip: actor.ip ?? null,
       userAgent: actor.userAgent ?? null,
     });
-    await autoLinkLine(actor.accountId, lineId).catch((err: unknown) =>
-      logger.warn({ err: String(err) }, "auto-link after adopting a warehouse product failed"),
-    );
-  }
-  return { id: product.id, sku: product.sku, name: product.name, vendorId: row.vendorId };
+  return { lineId, changed, added, failed };
+}
+
+/** One product: the same, failing with its reason. */
+export async function adoptWarehouseProduct(
+  actor: ScopedActor,
+  input: { connectionId: string; vendorProductId: string },
+) {
+  const r = await adoptWarehouseProducts(actor, {
+    connectionId: input.connectionId,
+    vendorProductIds: [input.vendorProductId],
+  });
+  if (r.failed[0]) throw new DomainError(r.failed[0].code);
+  return r.added[0]!;
 }

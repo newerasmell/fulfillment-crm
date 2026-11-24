@@ -98,6 +98,16 @@ export async function seedStock() {
       raw: { name: "Синтетичен нов продукт от кабинета" },
     },
   });
+  await sys.vendorProduct.create({
+    data: {
+      accountId,
+      connectionId: euLined.id,
+      vendorId: "STK-NEWCAB-2",
+      vendorCode: "90002",
+      lastSyncAt: now,
+      raw: { name: "Синтетичен втори продукт от кабинета" },
+    },
+  });
   const vOrig = await vp(fhb.id, orig.id, "RSK-STK-ORIG", 12, 10);
   await vp(eu.id, orig.id, "EU-STK-ORIG", 5, 5);
   await vp(fhb.id, tester.id, "RSK-STK-TEST", 2, 2);

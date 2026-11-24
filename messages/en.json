@@ -621,7 +621,16 @@
       "label": "Latest from the carrier:",
       "returning": "returning to the sender"
     },
-    "issueStuck": "Too long in „{status}“ (task since {since})"
+    "issueStuck": "Too long in „{status}“ (task since {since})",
+    "pullNow": {
+      "button": "Pull orders now",
+      "working": "Starting…",
+      "queued": "Pull started for {n, plural, one {# store} other {# stores}} — new orders appear within 1–2 minutes (the list refreshes itself).",
+      "none": "No connected stores to pull.",
+      "failed": "Failed — try again shortly.",
+      "last": "Last pull: {at}",
+      "skipped": "{n, plural, one {# store has} other {# stores have}} a failed connection test — check them in „Stores“."
+    }
   },
   "orderStatus": {
     "IMPORTED": "Imported",
@@ -2286,7 +2295,9 @@
           "forbidden": "You may not add master products.",
           "not_found": "The product is no longer at the warehouse.",
           "other": "Failed — try again."
-        }
+        },
+        "adoptAll": "Add all ({n})",
+        "working": "Adding…"
       }
     },
     "push": {

@@ -115,6 +115,13 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await page.goto("/inbound?tab=all");
   await expect(page.locator("tbody tr")).toHaveCount(2);
 
+  // „Поръчки“: pull the stores' orders now (the scheduled read-only pull; this group's store has no credentials).
+  await page.goto("/orders");
+  await page.getByRole("button", { name: "Изтегли поръчките сега" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Няма свързани магазини за изтегляне." }),
+  ).toBeVisible();
+
   // A product created in the warehouse's own cabinet (no master yet) is found and added as a master in one click.
   await page.goto("/inbound/new");
   await page.waitForLoadState("networkidle");
@@ -124,9 +131,12 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await form.getByLabel("Добави продукт").fill("NEWCAB");
   const notYet = form.getByRole("list", { name: "Продукти в склада без основен продукт" });
   await expect(notYet).toContainText("Синтетичен нов продукт от кабинета");
-  await notYet.getByRole("button", { name: "Добави като основен продукт" }).click();
+  await expect(notYet).toContainText("Синтетичен втори продукт от кабинета");
+  // All of them in one click.
+  await form.getByRole("button", { name: "Добави всички (2)" }).click();
   await expect(form.getByTestId("inbound-unlinked")).toBeHidden();
   await expect(form).toContainText("STK-NEWCAB-1");
+  await expect(form).toContainText("STK-NEWCAB-2");
   // Now a master product: found as one.
   await form.getByLabel("Добави продукт").fill("STK-NEWCAB");
   await expect(form.getByRole("list", { name: "Намерени продукти" })).toContainText("Синтетичен нов продукт");

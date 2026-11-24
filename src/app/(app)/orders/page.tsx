@@ -15,6 +15,8 @@ import {
 import { listStores } from "@/server/stores";
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
+import { PullOrdersNow } from "./pull-now";
+import { lastOrdersPull } from "@/server/shopify/pull-now";
 import { LineChip } from "@/components/ui/LineChip";
 
 type Search = Record<string, string | string[] | undefined>;
@@ -37,11 +39,13 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
   } as const;
   const page = Math.max(1, Number(one(sp.page)) || 1);
-  const [result, counts, stores] = await Promise.all([
+  const mayPull = can(ctx.role, "stores.sync");
+  const [result, counts, stores, lastPull] = await Promise.all([
     listOrders(ctx, { ...filters, tab, page }),
     orderTabCounts(ctx, filters),
     // Archived stores stay in the filter: their orders are history and remain searchable.
     listStores(ctx, { includeArchived: true }),
+    mayPull ? lastOrdersPull(ctx) : Promise.resolve(null),
   ]);
   const ts = await getTranslations("stores");
   // Carried to the order page: its J / K and "back" stay in this list.
@@ -55,7 +59,14 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
 
   return (
     <>
-      <PageHeader title={t("title")} />
+      <PageHeader
+        title={t("title")}
+        actions={
+          mayPull ? (
+            <PullOrdersNow lastPull={lastPull ? format.relativeTime(lastPull, new Date()) : null} />
+          ) : undefined
+        }
+      />
       <nav aria-label={t("tabs")} className="flex flex-wrap gap-1 border-b border-line">
         {/* "Чака таг" only while something waits there (stores with "Само поръчки с таг"). */}
         {(Object.keys(ORDER_TABS) as OrderTab[])

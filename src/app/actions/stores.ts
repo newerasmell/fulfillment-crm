@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { logger } from "@/lib/logger";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { ForbiddenError, assertCan } from "@/server/auth/rbac";
@@ -11,6 +12,7 @@ import { deleteNoCarrierRule, saveCarrierTrackingLink } from "@/server/shopify/t
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
+import { pullOrdersNow } from "@/server/shopify/pull-now";
 import { webhookCallbackUrl } from "@/server/shopify/webhooks";
 import { backfillWindows } from "@/server/shopify/orders";
 import { createStore, getStore, replaceStoreCredentials, updateStoreSettings } from "@/server/stores";
@@ -351,5 +353,24 @@ export async function saveTrackingLinkAction(input: {
   } catch (err) {
     if (err instanceof z.ZodError) return { error: String(err.issues[0]?.message ?? "invalid") };
     return (toError(err) as { error: string }) ?? { error: "unexpected" };
+  }
+}
+
+/** „Изтегли поръчките сега“ in „Поръчки“: the scheduled order pull, now, for every store the member sees. */
+export async function pullOrdersNowAction(): Promise<
+  { ok: true; queued: number; already: number; skipped: number } | { error: string }
+> {
+  const ctx = await requireAccountContext();
+  try {
+    const boss = await webBoss();
+    const r = await pullOrdersNow(ctx, (storeId) =>
+      enqueueShopify.syncOrders(boss, { accountId: ctx.accountId, storeId, mode: "reconcile" }),
+    );
+    return { ok: true, ...r };
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    // The queue or the database did not answer: the button says so (nothing was half done).
+    logger.warn({ err: String(err) }, "pull orders now failed");
+    return { error: "unexpected" };
   }
 }

@@ -212,6 +212,11 @@ export const QUEUES = {
     name: "lines.catalogue",
     options: { ...retry, policy: "stately", retryLimit: 3, expireInSeconds: 3600 },
   },
+  /** Auto-link of a line after products were added by hand (data: { accountId, lineId }); one waiting per line. */
+  linesAutoLink: {
+    name: "lines.autoLink",
+    options: { ...retry, policy: "stately", retryLimit: 2, expireInSeconds: 1800 },
+  },
   /** Every minute: follow open reroutes (P4-09) — confirm the old warehouse's cancel by read-back, then switch. */
   ordersRerouteSweep: {
     name: "orders.rerouteSweep",

@@ -6,7 +6,9 @@ import { z } from "zod";
 import { SpreadsheetError, readTable } from "@/lib/xlsx";
 import { DomainError } from "@/server/accounts";
 import { assertCan, can, ForbiddenError } from "@/server/auth/rbac";
-import { adoptWarehouseProduct } from "@/server/lines/catalogue";
+import { ADOPT_MANY_MAX, adoptWarehouseProducts } from "@/server/lines/catalogue";
+import { enqueueAutoLink } from "@/server/lines/jobs";
+import { logger } from "@/lib/logger";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { FhbPreflightError } from "@/server/fhb/orders";
 import { webBoss } from "@/server/jobs/boss";
@@ -102,6 +104,7 @@ export async function searchUnlinkedInboundProductsAction(connectionId: string, 
       ctx,
       z.string().min(1).max(64).parse(connectionId),
       String(q).slice(0, 100),
+      100,
     );
   } catch (err) {
     if (err instanceof DomainError || err instanceof z.ZodError) return [];
@@ -109,22 +112,36 @@ export async function searchUnlinkedInboundProductsAction(connectionId: string, 
   }
 }
 
-/** „Добави като основен продукт“: the warehouse product becomes (or is linked to) a master of the line, then a line. */
-export async function adoptWarehouseProductAction(
+/**
+ * „Добави като основен продукт“ / „Добави всички“: the warehouse products become (or are linked to) masters of the
+ * line and lines of the inbound. Linking the rest of the line by SKU (Shopify variants, other warehouses) runs in the
+ * worker afterwards, so the click returns at once.
+ */
+export async function adoptWarehouseProductsAction(
   connectionId: string,
-  vendorProductId: string,
+  vendorProductIds: string[],
 ): Promise<
-  { ok: true; product: { id: string; sku: string; name: string; vendorId: string } } | { error: string }
+  | {
+      ok: true;
+      added: { id: string; sku: string; name: string; vendorId: string }[];
+      failed: { vendorProductId: string; vendorId: string | null; code: string }[];
+    }
+  | { error: string }
 > {
   const ctx = await requireAccountContext();
   try {
     const id = z.string().min(1).max(64);
-    const product = await adoptWarehouseProduct(actorFrom(ctx), {
+    const r = await adoptWarehouseProducts(actorFrom(ctx), {
       connectionId: id.parse(connectionId),
-      vendorProductId: id.parse(vendorProductId),
+      vendorProductIds: z.array(id).min(1).max(ADOPT_MANY_MAX).parse(vendorProductIds),
     });
+    if (r.changed)
+      // The masters are already in place: a queue failure only delays linking the rest (next sync / „Каталог“).
+      await webBoss()
+        .then((boss) => enqueueAutoLink(boss, { accountId: ctx.accountId, lineId: r.lineId }))
+        .catch((err: unknown) => logger.warn({ err: String(err) }, "queueing the line's auto-link failed"));
     revalidatePath("/products/stock");
-    return { ok: true, product };
+    return { ok: true, added: r.added, failed: r.failed };
   } catch (err) {
     if (err instanceof ForbiddenError) return { error: "forbidden" };
     if (err instanceof DomainError) return { error: err.code };
