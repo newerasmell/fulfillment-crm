@@ -88,9 +88,31 @@ describe("classifyCod (pure)", () => {
     );
     expect(row.expected).toEqual({ amount: 32825, currency: "HUF" });
     expect(huf(32826)).toBe("amount");
+    // CZK (whole crowns since 2026-11-24): a shipment sent earlier with the decimals is no mismatch either.
+    const czk = (cod: number) =>
+      classifyCod(
+        base({
+          order: {
+            paymentMethod: "COD",
+            currency: "CZK",
+            codAmount: 2185.1,
+            codLocalAmount: null,
+            codLocalCurrency: null,
+          },
+          fhb: { cod, status: "waiting", receivedAt: null, paidAt: null },
+        }),
+        opts,
+      ).mismatch;
+    expect(czk(2185)).toBeNull();
+    expect(czk(2185.1)).toBeNull();
+    expect(czk(2186)).toBe("amount");
     expect(collectableCod(32825.5, "huf")).toBe(32826);
     expect(collectableCod(32825.49, "HUF")).toBe(32825);
     expect(collectableCod(12.34, "EUR")).toBe(12.34);
+    // CZK: whole crowns (FHB refused 2185,10 CZK with INVALID_COD_VALUE_ERROR).
+    expect(collectableCod(2185.1, "CZK")).toBe(2185);
+    expect(collectableCod(2185.5, "czk")).toBe(2186);
+    expect(collectableCod(12.34, "PLN")).toBe(12.34);
   });
 
   it("FHB: paid / received / unknown raw status; amount and missing mismatches", () => {

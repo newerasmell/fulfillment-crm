@@ -698,6 +698,74 @@ describe("Shopify import (DB)", () => {
     expect((await db.order.findUniqueOrThrow({ where: { id: test.orderId } })).status).toBe("ON_HOLD");
   });
 
+  it("an order edited in Shopify before approval (a line removed): COD and totals follow the current amounts", async () => {
+    // Owner report 2026-11-24: 3 products, COD 200; one removed in Shopify; the CRM kept the old COD.
+    const s = await store();
+    const db = accountDb(accountId);
+    const first = await importShopifyOrder(
+      accountId,
+      s,
+      order({ id: "gid://shopify/Order/6101", name: "#6101", totalPriceSet: money("45.00") }),
+    );
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(45);
+    await importShopifyOrder(
+      accountId,
+      s,
+      order({
+        id: "gid://shopify/Order/6101",
+        name: "#6101",
+        updatedAt: "2026-11-02T10:00:00Z",
+        totalPriceSet: money("45.00"), // Shopify keeps the original here
+        currentSubtotalPriceSet: money("20.00"),
+        currentTotalPriceSet: money("25.00"),
+        totalOutstandingSet: money("25.00"),
+      }),
+    );
+    const o = await db.order.findUniqueOrThrow({ where: { id: first.orderId } });
+    expect(Number(o.codAmount)).toBe(25);
+    expect(Number(o.total)).toBe(25);
+    expect(Number(o.subtotal)).toBe(20);
+
+    // An edit that came while the order was past approval is only recorded; back in review, a forced refresh of the
+    // same Shopify version applies it (an ordinary re-import of it stays "stale").
+    await db.order.update({ where: { id: first.orderId }, data: { status: "SUBMIT_FAILED" } });
+    const edited = order({
+      id: "gid://shopify/Order/6101",
+      name: "#6101",
+      updatedAt: "2026-11-03T10:00:00Z",
+      currentSubtotalPriceSet: money("10.00"),
+      currentTotalPriceSet: money("15.00"),
+      totalOutstandingSet: money("15.00"),
+    });
+    await importShopifyOrder(accountId, s, edited);
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(25);
+    await db.order.update({ where: { id: first.orderId }, data: { status: "NEEDS_REVIEW" } });
+    expect((await importShopifyOrder(accountId, s, edited)).outcome).toBe("stale");
+    await importShopifyOrder(accountId, s, edited, { force: true });
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(15);
+    // At a warehouse a forced refresh changes nothing of the CRM's data (only Shopify's own status fields).
+    await db.order.update({ where: { id: first.orderId }, data: { status: "ACCEPTED" } });
+    await importShopifyOrder(
+      accountId,
+      s,
+      order({
+        id: "gid://shopify/Order/6101",
+        name: "#6101",
+        updatedAt: "2026-11-04T10:00:00Z",
+        currentTotalPriceSet: money("5.00"),
+        totalOutstandingSet: money("5.00"),
+      }),
+      { force: true },
+    );
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(15);
+    await db.order.update({ where: { id: first.orderId }, data: { status: "NEEDS_REVIEW" } });
+    // Never an older version, forced or not.
+    await importShopifyOrder(accountId, s, order({ id: "gid://shopify/Order/6101", name: "#6101" }), {
+      force: true,
+    });
+    expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(15);
+  });
+
   it("concurrent imports of one order (webhook + reconcile) create it once and keep the newest version", async () => {
     const s = await store();
     const o = order({ id: "gid://shopify/Order/7001", name: "#7001" });

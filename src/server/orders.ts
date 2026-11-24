@@ -3,6 +3,7 @@ import { shopifyRefTag } from "@/lib/shopify-ref";
 import { DomainError, type Actor } from "@/server/accounts";
 import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
+import { latestCommentOf } from "@/server/order-comments";
 
 /** Order list tabs (DESIGN.md screen 2). "transit" fills up from phase 2 on. */
 export const ORDER_TABS = {
@@ -172,8 +173,17 @@ export async function listOrders(ctx: Ctx, f: OrderFilters) {
     });
     tasksOf.set(a.entityId!, list);
   }
+  // The latest comment (what a person found / did), on every tab.
+  const comments = await latestCommentOf(
+    ctx.accountId,
+    rows.map((r) => r.id),
+  );
   return {
-    rows: withWarehouse.map((r) => ({ ...r, tasks: tasksOf.get(r.id) ?? [] })),
+    rows: withWarehouse.map((r) => ({
+      ...r,
+      tasks: tasksOf.get(r.id) ?? [],
+      lastComment: comments.get(r.id) ?? null,
+    })),
     total,
     page,
     pages: Math.max(1, Math.ceil(total / ORDERS_PAGE_SIZE)),

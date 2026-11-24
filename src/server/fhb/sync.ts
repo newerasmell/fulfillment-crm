@@ -16,7 +16,13 @@ import type { FhbOrderListItem, FhbOrderView, FhbProductView } from "@/integrati
 import { logger } from "@/lib/logger";
 import { scrubText } from "@/lib/scrub";
 import { accountDb, withAccountTransaction } from "@/server/db/client";
-import { applyFhbOrderView, fhbStornoBase, raiseAlertOnce } from "./apply";
+import {
+  applyFhbOrderView,
+  fhbStornoBase,
+  isStornoCarrier,
+  raiseAlertOnce,
+  STORNO_CARRIER_STATUSES,
+} from "./apply";
 import { fhbClientForConnection } from "./connection";
 import { refreshSuspiciousLinksSafe } from "@/server/products/suspicious";
 
@@ -387,7 +393,15 @@ export async function upsertFhbOrders(
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
     const f = byId.get(ourId(r.externalId));
-    if (f && fhbStornoBase(r.externalId) && f.status !== "CANCELLED") {
+    // Cancelled in ZOE: the id renamed ("#STORNO#"), or the order moved to the carrier "STORNO OBJEDNAVKY" while the
+    // status stays "sent" (2026-11-24) — neither changes the status or tracking, so it is applied here.
+    if (
+      f &&
+      (fhbStornoBase(r.externalId) ||
+        (isStornoCarrier(views[i]!.parcel_service) &&
+          STORNO_CARRIER_STATUSES.has((r.rawStatus ?? "").toLowerCase()))) &&
+      f.status !== "CANCELLED"
+    ) {
       const v = views[i]!;
       if (v.id) {
         await applyFhbOrderView(accountId, connectionId, v as FhbOrderView, opts.source, now);

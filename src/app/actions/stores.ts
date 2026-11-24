@@ -12,7 +12,7 @@ import { deleteNoCarrierRule, saveCarrierTrackingLink } from "@/server/shopify/t
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { webBoss } from "@/server/jobs/boss";
 import { enqueueShopify } from "@/server/shopify/jobs";
-import { pullOrdersNow } from "@/server/shopify/pull-now";
+import { pullOrdersNow, refreshOrderFromShopify } from "@/server/shopify/pull-now";
 import { webhookCallbackUrl } from "@/server/shopify/webhooks";
 import { backfillWindows } from "@/server/shopify/orders";
 import { createStore, getStore, replaceStoreCredentials, updateStoreSettings } from "@/server/stores";
@@ -371,6 +371,30 @@ export async function pullOrdersNowAction(): Promise<
     if (err instanceof ForbiddenError) return { error: "forbidden" };
     // The queue or the database did not answer: the button says so (nothing was half done).
     logger.warn({ err: String(err) }, "pull orders now failed");
+    return { error: "unexpected" };
+  }
+}
+
+/**
+ * „Обнови от Shopify“ on an order (owner request 2026-11-24): re-reads this one order now instead of waiting for
+ * the next sync (an edit in Shopify: lines, COD). An approved order not yet sent goes back to review first, so its
+ * amounts follow Shopify again; once at a warehouse the CRM keeps its data and Shopify's changes become a task.
+ */
+export async function refreshOrderFromShopifyAction(
+  orderId: string,
+): Promise<{ ok: true; reopened: boolean } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    const r = await refreshOrderFromShopify(actorFrom(ctx), z.string().min(1).max(64).parse(orderId), (d) =>
+      webBoss().then((boss) => enqueueShopify.refreshOrder(boss, d)),
+    );
+    revalidatePath(`/orders/${orderId}`);
+    return { ok: true, reopened: r.reopened };
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError) return { error: err.code };
+    if (err instanceof z.ZodError) return { error: "invalid" };
+    logger.warn({ err: String(err) }, "refresh order from Shopify failed");
     return { error: "unexpected" };
   }
 }

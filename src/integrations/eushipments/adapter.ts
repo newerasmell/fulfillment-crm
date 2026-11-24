@@ -261,16 +261,33 @@ export class EuShipmentsTransport implements OutboundTransport {
               ? ctx.vendorOrderId
               : null;
           const res = vendorId ? await client.deleteOrderById(vendorId) : await client.deleteOrderByRef(ref);
-          if (!res.ok) {
+          // A refused delete of an order that is already gone (deleted in the cabinet, or an earlier delete that
+          // went through): euShipments answers 400 "cannot be deleted" (Deleted is not a deletable status) or 404
+          // for /orders/{id} (owner report 2026-11-24: "the CRM says the warehouse refuses, the order is not in the
+          // cabinet"). Confirmed by euShipments itself, never assumed: see alreadyDeleted.
+          if (!res.ok || res.data.error) {
+            const error = !res.ok ? res.error : scrubText(String(res.data.error));
+            if (res.ok || res.status !== 401) {
+              const gone = await alreadyDeleted(client, {
+                ref,
+                byId: !!vendorId,
+                notFoundById:
+                  !res.ok && res.status === 404 && /does not exist/i.test(String(res.error ?? "")),
+                awbs: ctx.awbs,
+              });
+              if (gone) {
+                if (live) await this.effect(call, "orderDeleted", ctx);
+                return {
+                  outcome: "accepted",
+                  response: { alreadyDeleted: gone, vendor: res.ok ? res.data : res.body },
+                };
+              }
+            }
             // 401: the vendor never evaluated the delete (our token) — not a warehouse refusal, no refusal task;
             // the outbox row is FAILED with "unauthenticated" and the card says the cancel was not sent.
-            if (live && res.status !== 401) await this.effect(call, "orderDeleteRejected", ctx, res.error);
-            return { outcome: "rejected", response: res.body, error: res.error };
-          }
-          if (res.data.error) {
-            const error = scrubText(String(res.data.error));
-            if (live) await this.effect(call, "orderDeleteRejected", ctx, error);
-            return { outcome: "rejected", response: res.data, error };
+            if (live && (res.ok || res.status !== 401))
+              await this.effect(call, "orderDeleteRejected", ctx, error);
+            return { outcome: "rejected", response: res.ok ? res.data : res.body, error };
           }
           if (live) await this.effect(call, "orderDeleted", ctx);
           return { outcome: "accepted", response: res.data };
@@ -390,6 +407,32 @@ export class EuShipmentsTransport implements OutboundTransport {
       default:
         throw new Error(`no read-back for ${call.operation}`);
     }
+  }
+}
+
+/**
+ * After a refused delete: is our order already deleted at euShipments? Only an exact answer from euShipments counts
+ * (never a guess: a live order marked cancelled would be shipped twice after a reroute):
+ *  - deleted by our euShipments id: only DELETE /orders/{id} → 404 "The order does not exist." — a by-id refusal
+ *    is never checked by reference (that exact order refused);
+ *  - deleted by reference: orders-history ends in Deleted / Cancelled AND carries our AWB. References are not
+ *    unique there (2026-11-23) and early statuses have no AWB yet, so without our AWB on both sides it is no proof.
+ * Anything else (not listed, another status, no AWB, a read error): the refusal stands.
+ */
+export async function alreadyDeleted(
+  client: Pick<EuShipmentsClient, "ordersHistory">,
+  input: { ref: string; byId: boolean; notFoundById: boolean; awbs: unknown },
+): Promise<"by_id" | "history" | null> {
+  if (input.byId) return input.notFoundById ? "by_id" : null;
+  const ours = Array.isArray(input.awbs) ? input.awbs.map(String).filter(Boolean) : [];
+  if (!input.ref || !ours.length) return null;
+  try {
+    const lookup = classifyHistoryItem(historyItemFor(await client.ordersHistory([input.ref]), input.ref));
+    if (lookup.kind !== "found" || !isDeleted(lookup.item)) return null;
+    const theirs = lookup.item.awb ? String(lookup.item.awb) : null;
+    return theirs && ours.includes(theirs) ? "history" : null;
+  } catch {
+    return null;
   }
 }
 

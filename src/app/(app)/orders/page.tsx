@@ -16,6 +16,7 @@ import { listStores } from "@/server/stores";
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
 import { PullOrdersNow } from "./pull-now";
+import { CloseTasks } from "./close-tasks";
 import { lastOrdersPull } from "@/server/shopify/pull-now";
 import { LineChip } from "@/components/ui/LineChip";
 
@@ -40,6 +41,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   } as const;
   const page = Math.max(1, Number(one(sp.page)) || 1);
   const mayPull = can(ctx.role, "stores.sync");
+  const mayCloseTasks = can(ctx.role, "alerts.manage");
   const [result, counts, stores, lastPull] = await Promise.all([
     listOrders(ctx, { ...filters, tab, page }),
     orderTabCounts(ctx, filters),
@@ -234,6 +236,24 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                       <td className={tdCls}>{o.paymentMethod === "COD" ? t("cod") : t("prepaid")}</td>
                       <td className={tdCls}>
                         <StatusChip status={o.status} />
+                        {o.lastComment && (
+                          <p
+                            className="m-0 mt-1 max-w-[280px] text-xs text-ink-2"
+                            data-testid="order-last-comment"
+                            title={o.lastComment.body}
+                          >
+                            <span aria-hidden>💬 </span>
+                            <strong>{o.lastComment.author}</strong> ·{" "}
+                            {format.dateTime(o.lastComment.createdAt, {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                            :{" "}
+                            {o.lastComment.body.length > 120
+                              ? `${o.lastComment.body.slice(0, 120)}…`
+                              : o.lastComment.body}
+                          </p>
+                        )}
                         {o.tasks.length > 0 && (
                           <ul
                             className="m-0 mt-1 flex max-w-[280px] list-none flex-col gap-0.5 p-0 text-xs text-warn"
@@ -252,6 +272,11 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                               </li>
                             ))}
                             {o.tasks.length > 3 && <li>+{o.tasks.length - 3}</li>}
+                            {mayCloseTasks && (
+                              <li>
+                                <CloseTasks orderIds={[o.id]} />
+                              </li>
+                            )}
                           </ul>
                         )}
                       </td>
@@ -285,7 +310,10 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
             </nav>
           )}
         </Card>
-        <BulkBar canFulfill={can(ctx.role, "orders.fulfill")} />
+        <BulkBar
+          canFulfill={can(ctx.role, "orders.fulfill")}
+          canCloseTasks={tab === "issues" && mayCloseTasks}
+        />
       </SelectionProvider>
     </>
   );

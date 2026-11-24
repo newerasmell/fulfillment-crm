@@ -8,8 +8,8 @@ import { accountDb, systemDb } from "@/server/db/client";
 import { processOutbound } from "@/server/outbox/outbox";
 import { checkOrder } from "@/server/checks";
 import { transitionOrder } from "@/server/pipeline";
-import { applyFhbOrderView, fhbStornoBase } from "./apply";
-import { isReturnToSender, latestCourierStatus } from "./courier";
+import { applyFhbOrderView, fhbStornoBase, isStornoCarrier } from "./apply";
+import { isDeliveredToRecipient, isReturnToSender, latestCourierStatus } from "./courier";
 import { sweepSettledOrderTasks } from "@/server/order-tasks";
 import { authenticateFhbCallbackPath } from "./callback-token";
 import { clientFailureCode } from "@/integrations/fhb-v3/adapter";
@@ -377,6 +377,24 @@ describe("FHB order create through the outbox", () => {
       connectionId: s.connection.id,
     });
     expect(findings.map((f) => f.code)).not.toContain("fhb.cod.fractional");
+  });
+
+  it("CZK COD goes out in whole crowns (FHB refused 2185,10 CZK with INVALID_COD_VALUE_ERROR)", async () => {
+    const s = await setup("LIVE");
+    // Synthetic: the destination is set to collect CZK (the rounding depends on the currency only).
+    await systemDb().countrySetting.updateMany({
+      where: { accountId: s.account.id, country: "SK" },
+      data: { currency: "CZK" },
+    });
+    await systemDb().order.update({
+      where: { id: s.order.id },
+      data: { currency: "CZK", subtotal: "2185.10", total: "2185.10", codAmount: "2185.10" },
+    });
+    const body = await previewFhbOrderPayload(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(body).toMatchObject({ cod: 2185 });
   });
 
   it("duplicate-submit: a timed-out create that FHB did receive is recovered by read-back, never re-sent", async () => {
@@ -1217,6 +1235,55 @@ describe("status apply", () => {
       await systemDb().alert.count({ where: { accountId: s.account.id, kind: "fhb_order_rejected" } }),
     ).toBe(0);
   });
+
+  it("an order FHB moved to the carrier 'STORNO OBJEDNAVKY' (status still 'sent') is cancelled at the warehouse too", async () => {
+    const s = await setup("LIVE");
+    const { request, fulfillment } = await submitFhbOrder(s.owner, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+      acknowledgeWarnings: true,
+    });
+    await processOutbound(
+      request.id,
+      fakeFhb({ "POST /order": [() => json(orderView({ id: "TST-1001", status: "pending" }))] }).resolve,
+    );
+    const { FhbOrderView } = await import("@/integrations/fhb-v3/schemas");
+    // As in production: first a normal "sent" (the order shows as shipped), then the storno carrier.
+    await applyFhbOrderView(
+      s.account.id,
+      s.connection.id,
+      FhbOrderView.parse(orderView({ id: "TST-1001", status: "sent" })),
+      "test",
+    );
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe("SHIPPED");
+    // Through the scheduled order sync: only the carrier changes (status and tracking stay the same).
+    const { upsertFhbOrders } = await import("./sync");
+    const { FhbOrderListItem } = await import("@/integrations/fhb-v3/schemas");
+    for (let i = 0; i < 2; i++)
+      await upsertFhbOrders(
+        { accountId: s.account.id, connectionId: s.connection.id, now: new Date() } as never,
+        [
+          FhbOrderListItem.parse({
+            ...orderView({ id: "TST-1001", status: "sent" }),
+            parcel_service: "STORNO OBJEDNAVKY",
+          }),
+        ],
+        { source: "test" },
+      );
+    const f = await systemDb().fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } });
+    expect(f).toMatchObject({ status: "CANCELLED", rawStatus: "sent" });
+    expect((await systemDb().order.findUniqueOrThrow({ where: { id: s.order.id } })).status).toBe(
+      "EXCEPTION",
+    );
+    const tasks = await systemDb().alert.findMany({
+      where: { accountId: s.account.id, kind: "fhb_order_cancelled_in_zoe", isTask: true },
+    });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.title).toContain("STORNO OBJEDNAVKY");
+    expect(isStornoCarrier("STORNO_OBJEDNAVKY")).toBe(true);
+    expect(isStornoCarrier("remax")).toBe(false);
+    expect(isStornoCarrier("Packeta storno")).toBe(false);
+  });
 });
 
 // Owner report 2026-11-23: FHB keeps an order "sent" while the carrier already returns it ("Return to sender").
@@ -1250,6 +1317,63 @@ describe("FHB carrier events (tracking_events)", () => {
       "Rücksendung an Händler storniert",
     ])
       expect(isReturnToSender(m), m).toBe(false);
+  });
+
+  it("recognises a delivery to the recipient in the carriers' languages, not a pick-up point or an attempt", () => {
+    for (const m of [
+      "Delivered",
+      "The parcel has been delivered",
+      "Podpísané na papieri",
+      "Zásilka doručena",
+      "Kézbesítve",
+      "Pošiljka je dostavljena",
+      "Pošiljka uručena",
+      "Paket vročen",
+      "Przesyłka doręczona",
+      "Zugestellt",
+      "Colet livrat",
+      "Пратката е доставена",
+      "Παραδόθηκε",
+    ])
+      expect(isDeliveredToRecipient(m), m).toBe(true);
+    for (const m of [
+      "We delivered the parcel to the pick-up point.",
+      "Delivered to ParcelShop",
+      "Zásilka byla doručena na výdejní místo",
+      "Delivery attempt failed",
+      "Not delivered - recipient absent",
+      "Nem kézbesíthető",
+      "In transit",
+      "Return to sender",
+      // Out for delivery / in progress (nouns, not a done delivery).
+      "Zásielka je na doručení",
+      "V doručení",
+      "Připraveno k doručení",
+      "Kézbesítés folyamatban",
+      "Kézbesítésre kiadva",
+      "Uručenje u tijeku",
+      "Out for delivery",
+      // Future tense.
+      "The parcel will be delivered today",
+      "Expected to be delivered during the day",
+      "To be delivered",
+      "Zásilka bude doručena",
+      "Die Sendung wird heute zugestellt",
+      "Va fi livrat astazi",
+      "Ще бъде доставена днес",
+      // A pick-up point / box / post office.
+      "Doručené na výdajné miesto",
+      "Doręczona do Paczkomatu",
+      "Zugestellt an Packstation",
+      "Livrat in punct de ridicare",
+      "Kézbesítve csomagpontba",
+      "Dostavljeno u poštanski ured",
+      // Back to the sender.
+      "Delivered to sender",
+      "Doručené odosielateľovi",
+      "Returned to sender - delivered",
+    ])
+      expect(isDeliveredToRecipient(m), m).toBe(false);
   });
 
   it("stores each event once, shows the latest, and a return opens one task on the order", async () => {

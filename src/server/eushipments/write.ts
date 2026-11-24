@@ -207,7 +207,7 @@ export function localCod(
   },
   localCurrency: string | null,
 ): { amount: string; currency: string } | null {
-  // Whole units where the courier collects whole units (HUF, collectableCod); other currencies unchanged.
+  // Whole units where the courier collects whole units (WHOLE_UNIT_COD_CURRENCIES: HUF, CZK; collectableCod); other currencies unchanged.
   const collectable = (amount: string, currency: string) =>
     WHOLE_UNIT_COD_CURRENCIES.has(currency) ? String(collectableCod(Number(amount), currency)) : amount;
   if (localCurrency && order.currency.toUpperCase() === localCurrency.toUpperCase()) {
@@ -912,6 +912,8 @@ export async function queueEuOrderDeletion(
         referenceNumber: f.externalId,
         // A label shipment's vendorOrderId is the courier AWB, not an euShipments order id.
         ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
+        // Our AWB: tells our order from another one with the same reference after a refused delete.
+        ...(f.trackingNumbers.length ? { awbs: f.trackingNumbers } : {}),
       },
     }),
     fulfillmentId: f.id,

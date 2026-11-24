@@ -11,6 +11,7 @@ import {
   emailProvider,
   listOpenAlerts,
   resolveAlert,
+  resolveOrderTasks,
   stuckHours,
   sweepOrderAlerts,
   telegramProvider,
@@ -134,6 +135,72 @@ describe("alerts and tasks (DB)", () => {
     // Quiet again for days: the task comes back (the sweep closed it, not a person).
     await sweepOrderAlerts(new Date(silent.getTime() + 6 * 86_400_000));
     expect(await open()).toHaveLength(1);
+  });
+
+  it("a parcel the carrier handed to the recipient (warehouse still 'sent') is not stuck, its task closes", async () => {
+    // Owner report 2026-11-24: GLS "Podpísané na papieri" 11 days ago, FHB still "sent".
+    const { order: o } = await euTestOrder(g, { number: `#${++n}` });
+    await db().order.update({ where: { id: o.id }, data: { status: "SHIPPED" } });
+    const f = await db().fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: o.id,
+        connectionId: g.connection.id,
+        externalId: `DL-${n}`,
+        status: "SHIPPED",
+      },
+    });
+    const later = new Date(Date.now() + 20 * 86_400_000);
+    const open = () =>
+      db().alert.findMany({ where: { entityId: o.id, kind: "order_stuck", status: { not: "RESOLVED" } } });
+    await sweepOrderAlerts(later);
+    expect(await open()).toHaveLength(1);
+    await db().fulfillmentEvent.create({
+      data: {
+        accountId: g.accountId,
+        fulfillmentId: f.id,
+        occurredAt: new Date(later.getTime() - 11 * 86_400_000),
+        source: "fhb:courier",
+        rawStatus: "Podpísané na papieri",
+        payload: { key: "k1", message: "Podpísané na papieri" },
+      },
+    });
+    await sweepOrderAlerts(later);
+    expect(await open()).toHaveLength(0);
+    await sweepOrderAlerts(new Date(later.getTime() + 10 * 86_400_000));
+    expect(await open()).toHaveLength(0);
+
+    // Not a delivery to the recipient: an euShipments carrier comment about an office, or "out for delivery".
+    for (const comment of ["Delivered to office", "Out for delivery"]) {
+      const { order: q } = await euTestOrder(g, { number: `#${++n}` });
+      await db().order.update({ where: { id: q.id }, data: { status: "SHIPPED" } });
+      const fq = await db().fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: q.id,
+          connectionId: g.connection.id,
+          externalId: `DQ-${n}`,
+          status: "SHIPPED",
+        },
+      });
+      await db().fulfillmentEvent.create({
+        data: {
+          accountId: g.accountId,
+          fulfillmentId: fq.id,
+          occurredAt: new Date(later.getTime() - 11 * 86_400_000),
+          source: "eushipments",
+          rawStatus: "In transit",
+          payload: { comment },
+        },
+      });
+      await sweepOrderAlerts(later);
+      expect(
+        await db().alert.count({
+          where: { entityId: q.id, kind: "order_stuck", status: { not: "RESOLVED" } },
+        }),
+        comment,
+      ).toBe(1);
+    }
   });
 
   it("an alert resolved with a note while the order stays in that status is not raised (or sent) again", async () => {
@@ -281,5 +348,58 @@ describe("alerts and tasks (DB)", () => {
     // WARNING and above when configured so.
     await dispatchNotifications([fake], { env: { ...env, NOTIFY_MIN_SEVERITY: "WARNING" }, take: 100_000 });
     expect(sent.map((m) => m.alertId)).toContain(warning.id);
+  });
+});
+
+// „Затвори задачите“ in „С грешки“ (owner 2026-11-24). Synthetic data only.
+describe("closing an order's tasks from the orders list", () => {
+  it("closes every open task of the orders with the note, only within the member's reach, and keeps them closed", async () => {
+    const g = await euTestGroup("close-tasks");
+    const { order: a } = await euTestOrder(g, { number: "#CT-1" });
+    const { order: b } = await euTestOrder(g, { number: "#CT-2" });
+    const task = (orderId: string, kind: string) =>
+      systemDb().alert.create({
+        data: {
+          accountId: g.accountId,
+          kind,
+          isTask: true,
+          severity: "WARNING",
+          title: `Synthetic ${kind}`,
+          body: kind === "order_stuck" ? "status=PROCESSING" : null,
+          entityType: "Order",
+          entityId: orderId,
+        },
+      });
+    await task(a.id, "order_stuck");
+    await task(a.id, "open_in_shopify");
+    const other = await task(b.id, "order_stuck");
+
+    await expect(resolveOrderTasks({ ...g.owner, role: "VIEWER" }, [a.id], "Test order")).rejects.toThrow();
+    await expect(resolveOrderTasks(g.owner, [a.id], " ")).rejects.toThrow();
+    const stranger = await euTestGroup("close-tasks-other");
+    expect(await resolveOrderTasks(stranger.owner, [a.id], "Test order")).toEqual({ closed: 0 });
+
+    // A member of this group whose companies do not include the order's: nothing closes.
+    const elsewhere = await systemDb().company.create({
+      data: { accountId: g.accountId, name: "Elsewhere" },
+    });
+    expect(
+      await resolveOrderTasks(
+        { ...g.owner, role: "OPERATOR", companyScope: [elsewhere.id] },
+        [a.id],
+        "Test order",
+      ),
+    ).toEqual({ closed: 0 });
+    expect(await resolveOrderTasks(g.owner, [a.id], "Test order")).toEqual({ closed: 2 });
+    const open = await systemDb().alert.findMany({
+      where: { accountId: g.accountId, entityId: { in: [a.id, b.id] }, status: { not: "RESOLVED" } },
+    });
+    expect(open.map((x) => x.id)).toEqual([other.id]);
+    const notes = await systemDb().alertNote.findMany({
+      where: { accountId: g.accountId, action: "resolve", note: "Test order" },
+    });
+    expect(notes).toHaveLength(2);
+    // Again: nothing left to close.
+    expect(await resolveOrderTasks(g.owner, [a.id], "Test order")).toEqual({ closed: 0 });
   });
 });

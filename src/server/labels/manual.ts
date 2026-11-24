@@ -91,7 +91,8 @@ export const ManualShipmentInput = z
       address2: optText(200),
       buildingNumber: optText(40),
       city: text(100).min(1),
-      zip: optText(15),
+      // Required (owner 2026-11-24: no parcel goes out without a postcode).
+      zip: text(15).min(1),
       province: optText(100),
       region: optText(100),
       countryCode: z

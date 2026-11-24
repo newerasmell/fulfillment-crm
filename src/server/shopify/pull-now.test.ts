@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { systemDb } from "@/server/db/client";
-import { euTestGroup } from "@/server/eushipments/test-fixtures";
-import { lastOrdersPull, pullOrdersNow } from "./pull-now";
+import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
+import { lastOrdersPull, pullOrdersNow, refreshOrderFromShopify } from "./pull-now";
 
 // „Изтегли поръчките сега“ (owner request 2026-11-23). Synthetic data only; the queue is a stub.
 describe("pull orders now", () => {
@@ -69,5 +69,48 @@ describe("pull orders now", () => {
     const theirs: string[] = [];
     await pullOrdersNow({ ...ctx, accountId: stranger.accountId }, async (id) => (theirs.push(id), "job"));
     expect(theirs).not.toContain(connected.id);
+  });
+});
+
+describe("refresh one order from Shopify", () => {
+  it("queues this order only; an approved order goes back to review first; scope and role apply", async () => {
+    const g = await euTestGroup("refresh-one");
+    const db = systemDb();
+    const { order } = await euTestOrder(g, { number: "#RF-1" });
+    await db.order.update({
+      where: { id: order.id },
+      data: { storeId: g.store.id, shopifyOrderGid: "gid://shopify/Order/900001", status: "APPROVED" },
+    });
+    await db.store.update({ where: { id: g.store.id }, data: { connectionStatus: { ok: true } } });
+    const sent: unknown[] = [];
+    const enqueue = async (d: unknown) => void sent.push(d);
+    const r = await refreshOrderFromShopify(g.owner, order.id, enqueue);
+    expect(r).toEqual({ reopened: true });
+    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("NEEDS_REVIEW");
+    expect(sent).toEqual([{ accountId: g.accountId, storeId: g.store.id, orderId: order.id }]);
+
+    // At a warehouse: only re-read (the CRM keeps its data; changes become a task in the import).
+    await db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+    expect(await refreshOrderFromShopify(g.owner, order.id, enqueue)).toEqual({ reopened: false });
+    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("ACCEPTED");
+
+    await expect(
+      refreshOrderFromShopify({ ...g.owner, role: "WAREHOUSE" }, order.id, enqueue),
+    ).rejects.toThrow();
+    const stranger = await euTestGroup("refresh-one-other");
+    await expect(refreshOrderFromShopify(stranger.owner, order.id, enqueue)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    // A store whose connection test failed: refused before anything changes.
+    await db.store.update({ where: { id: g.store.id }, data: { connectionStatus: { ok: false } } });
+    await db.order.update({ where: { id: order.id }, data: { status: "APPROVED" } });
+    await expect(refreshOrderFromShopify(g.owner, order.id, enqueue)).rejects.toMatchObject({
+      code: "store_not_connected",
+    });
+    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("APPROVED");
+    const { order: manual } = await euTestOrder(g, { number: "#RF-2" });
+    await expect(refreshOrderFromShopify(g.owner, manual.id, enqueue)).rejects.toMatchObject({
+      code: "not_shopify",
+    });
   });
 });

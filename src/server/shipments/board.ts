@@ -268,7 +268,7 @@ const num = (d: Prisma.Decimal | null) => (d == null ? null : Number(d));
 
 function codOf(o: Row["order"]) {
   if (o.paymentMethod !== "COD") return null;
-  // What the warehouse collects: whole forints for HUF (collectableCod), as sent.
+  // What the warehouse collects: whole units in WHOLE_UNIT_COD_CURRENCIES (collectableCod), as sent.
   if (o.codLocalAmount != null && o.codLocalCurrency)
     return {
       amount: collectableCod(num(o.codLocalAmount)!, o.codLocalCurrency),

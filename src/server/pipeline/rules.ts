@@ -38,6 +38,12 @@ export type TransitionCause =
    */
   | "restart"
   /**
+   * A person attaches a manual shipment to the Shopify order it was sent for (owner request 2026-11-24): the order
+   * takes over the manual shipment (→ its status) and the manual order record is closed (→ CANCELLED). Guarded in
+   * labels/link.ts: the order has no live shipment and nothing on its way to a warehouse.
+   */
+  | "manual_link"
+  /**
    * Operator cancels in the CRM (never AI, never once a shipment is active at a warehouse). From BLOCKED / EXCEPTION /
    * UNKNOWN only when no shipment is active and no vendor write of the order is pending or uncertain.
    */
@@ -106,6 +112,7 @@ export const CAUSES: readonly TransitionCause[] = [
   "tag_missing",
   "tag_added",
   "qty_release",
+  "manual_link",
 ];
 
 export interface TransitionRule {
@@ -243,6 +250,31 @@ export const RULES: readonly TransitionRule[] = [
   { cause: "tag_added", from: ["AWAITING_TAG"], to: ["IMPORTED"], actors: ["system", "user"] },
   { cause: "qty_release", from: ["QTY_HOLD"], to: ["IMPORTED", "AWAITING_TAG"], actors: ["user", "system"] },
   { cause: "vendor_reinstate", from: ["BLOCKED"], to: ["ACCEPTED"], actors: ["system"] },
+  {
+    cause: "manual_link",
+    from: [
+      "IMPORTED",
+      "CHECKING",
+      "NEEDS_REVIEW",
+      "READY",
+      "APPROVED",
+      "SUBMIT_FAILED",
+      "ON_HOLD",
+      "AWAITING_TAG",
+      "QTY_HOLD",
+      "BLOCKED",
+      "EXCEPTION",
+      "UNKNOWN",
+    ],
+    to: ["ACCEPTED", "PROCESSING", "SHIPPED", "DELIVERED"],
+    actors: ["user"],
+  },
+  {
+    cause: "manual_link",
+    from: ["ACCEPTED", "PROCESSING", "SHIPPED", "DELIVERED", "EXCEPTION", "BLOCKED", "UNKNOWN"],
+    to: ["CANCELLED"],
+    actors: ["user"],
+  },
   ...Object.entries(VENDOR_FROM).map(([to, from]): TransitionRule => ({
     cause: "vendor",
     from: from!,

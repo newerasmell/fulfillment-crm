@@ -49,6 +49,8 @@ export const ORDER_FIELDS = /* GraphQL */ `
     subtotalPriceSet { ${MONEY} }
     totalPriceSet { ${MONEY} }
     totalOutstandingSet { ${MONEY} }
+    currentSubtotalPriceSet { ${MONEY} }
+    currentTotalPriceSet { ${MONEY} }
     customer { id firstName lastName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } }
     shippingAddress { ${ADDRESS} }
     billingAddress { ${ADDRESS} }
@@ -157,6 +159,9 @@ export const ShopifyOrder = z.object({
   subtotalPriceSet: Money.nullish(),
   totalPriceSet: Money,
   totalOutstandingSet: Money,
+  /** After order edits / refunds (totalPriceSet stays the original); absent in orders stored before 2026-11-24. */
+  currentSubtotalPriceSet: Money.nullish(),
+  currentTotalPriceSet: Money.nullish(),
   customer: z
     .object({
       id: z.string(),

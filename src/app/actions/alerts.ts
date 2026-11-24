@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { DomainError } from "@/server/accounts";
-import { assignAlert, resolveAlert } from "@/server/alerts";
+import { assignAlert, CLOSE_ORDER_TASKS_MAX, resolveAlert, resolveOrderTasks } from "@/server/alerts";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 
@@ -39,4 +39,24 @@ export async function resolveAlertAction(alertId: string, note: string): Promise
   revalidatePath("/alerts");
   revalidatePath("/");
   return { ok: true };
+}
+
+/** „Затвори задачите“ in „С грешки“: one order's tasks or the selected orders' tasks, with one note. */
+export async function resolveOrderTasksAction(
+  orderIds: string[],
+  note: string,
+): Promise<AlertActionResult & { closed?: number }> {
+  const ctx = await requireAccountContext();
+  let closed = 0;
+  const ids = z.array(Id).min(1).max(CLOSE_ORDER_TASKS_MAX).safeParse(orderIds);
+  if (!ids.success) return { error: "invalid" };
+  try {
+    ({ closed } = await resolveOrderTasks(actorFrom(ctx), ids.data, String(note ?? "")));
+  } catch (err) {
+    return toError(err);
+  }
+  revalidatePath("/orders");
+  revalidatePath("/alerts");
+  revalidatePath("/");
+  return { ok: true, closed };
 }

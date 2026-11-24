@@ -6,6 +6,7 @@ import { assertCan } from "@/server/auth/rbac";
 import type { CompanyScope } from "@/server/companies";
 import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
+import { deliveredByCarrier } from "@/server/fhb/courier";
 
 type Env = Record<string, string | undefined>;
 
@@ -453,12 +454,20 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       if (page.length < take) break;
       cursor = page.at(-1)!.id;
     }
+    // Moving (news in the quiet window), or handed to the recipient by the carrier while the warehouse still says
+    // "sent" (owner 2026-11-24): not stuck.
     const moving =
       status === "SHIPPED"
-        ? await movedRecently(
-            candidates.map((c) => c.id),
-            now,
-          )
+        ? new Set([
+            ...(await movedRecently(
+              candidates.map((c) => c.id),
+              now,
+            )),
+            ...(await deliveredByCarrier(
+              db,
+              candidates.map((c) => c.id),
+            )),
+          ])
         : new Set<string>();
     for (const o of candidates) {
       if (moving.has(o.id)) continue;
@@ -487,12 +496,13 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       select: { id: true, status: true },
     });
     const statusOf = new Map(orders.map((o) => [o.id, o.status]));
-    const movingNow = await movedRecently(
-      open
-        .filter((a) => a.kind === "order_stuck" && statusOf.get(a.entityId!) === "SHIPPED")
-        .map((a) => a.entityId!),
-      now,
-    );
+    const shippedStuck = open
+      .filter((a) => a.kind === "order_stuck" && statusOf.get(a.entityId!) === "SHIPPED")
+      .map((a) => a.entityId!);
+    const movingNow = new Set([
+      ...(await movedRecently(shippedStuck, now)),
+      ...(await deliveredByCarrier(db, shippedStuck)),
+    ]);
     for (const a of open) {
       const current = statusOf.get(a.entityId!);
       const wanted = a.body?.replace(/^status=/, "") ?? null;
@@ -515,7 +525,7 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
             alertId: a.id,
             action: "auto_resolve",
             note: moving
-              ? "the carrier reported the parcel in the last days"
+              ? "the carrier reported the parcel moving, or delivered to the recipient"
               : `order now ${current ?? "gone"}`,
           },
         });
@@ -574,4 +584,34 @@ async function resolveClosedInShopify(now: Date) {
     resolved++;
   }
   return resolved;
+}
+
+/** Orders whose tasks one click closes at most. */
+export const CLOSE_ORDER_TASKS_MAX = 100;
+
+/**
+ * „Затвори задачите“ in „С грешки“ (owner 2026-11-24: 74 orders there and no way to close what a person has
+ * checked): every open task of these orders is resolved with the person's note, each as resolveAlert does it
+ * (conditional, audited). The sweep does not raise a closed stuck-order task again while the order stays where it is.
+ */
+export async function resolveOrderTasks(ctx: Ctx, orderIds: string[], rawNote: string) {
+  assertCan(ctx.role, "alerts.manage");
+  const note = ResolveNote.parse(rawNote);
+  const ids = [...new Set(orderIds)];
+  if (!ids.length || ids.length > CLOSE_ORDER_TASKS_MAX) throw new DomainError("invalid");
+  const open = await accountDb(ctx.accountId).alert.findMany({
+    where: { isTask: true, status: { not: "RESOLVED" }, entityType: "Order", entityId: { in: ids } },
+    select: { id: true },
+  });
+  let closed = 0;
+  for (const a of open) {
+    try {
+      await resolveAlert(ctx, a.id, note);
+      closed++;
+    } catch (err) {
+      // Closed meanwhile by someone else, or outside the member's companies: left as it is.
+      if (!(err instanceof DomainError)) throw err;
+    }
+  }
+  return { closed };
 }

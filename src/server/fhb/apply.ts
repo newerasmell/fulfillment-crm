@@ -54,6 +54,20 @@ export async function raiseAlertOnce(
   return created.id;
 }
 
+/** FHB's "carrier" for an order it cancelled (2026-11-24: "STORNO OBJEDNAVKY"). Pure. */
+export function isStornoCarrier(carrier: string | null | undefined) {
+  return /^storno(?:[\s_-]|$)/i.test((carrier ?? "").trim());
+}
+/** Only before delivery (FHB's statuses, status-map.ts): a delivered / returned parcel is never turned into a cancelled one. */
+export const STORNO_CARRIER_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "new",
+  "imported",
+  "confirmed",
+  "packed",
+  "sent",
+]);
+
 /** "1-TST2849#STORNO#TJX6KD" → "1-TST2849" (an order cancelled by hand in ZOE); null for any other id. */
 export function fhbStornoBase(externalId: string): string | null {
   const i = externalId.indexOf("#STORNO#");
@@ -72,6 +86,12 @@ export async function applyFhbOrderView(
   // its id renamed to "{our id}#STORNO#{random}" and status "rejected". Match it to our shipment by the id we sent
   // (or by FHB's uid) and treat it as cancelled at the warehouse — a person decides what happens next.
   const storno = fhbStornoBase(m.externalId);
+  // Observed in production (2026-11-24, not in the reference): FHB also cancels an order it will not ship (a ticket
+  // "we are not able to send the order with COD to Cyprus") by moving it to the carrier "STORNO OBJEDNAVKY" — the
+  // status stays "sent". Cancelled at the warehouse as well; never a parcel to follow or to report to Shopify.
+  const stornoCarrier =
+    !storno && isStornoCarrier(m.carrier) && STORNO_CARRIER_STATUSES.has((m.mapping.raw ?? "").toLowerCase());
+  const cancelled = !!storno || stornoCarrier;
   const result = await withAccountTransaction(accountId, async (tx) => {
     const f =
       (await tx.fulfillment.findUnique({
@@ -88,7 +108,7 @@ export async function applyFhbOrderView(
     if (!f) return null;
     // Replaced by a confirmed reroute (P4-09): the vendor's late view is kept, but never reactivates it.
     const superseded = await isSupersededShipment(tx, f.id);
-    const shipmentStatus = storno ? "CANCELLED" : m.mapping.status;
+    const shipmentStatus = cancelled ? "CANCELLED" : m.mapping.status;
     const changed = f.rawStatus !== m.mapping.raw || f.status !== shipmentStatus;
     await tx.fulfillment.update({
       where: { id: f.id },
@@ -105,7 +125,11 @@ export async function applyFhbOrderView(
         ...(m.returnInfo ? { returnInfo: json(m.returnInfo) } : {}),
       },
     });
-    await followShipment(tx, f.orderId, m.mapping.status, `fhb:${source}`, { fulfillmentId: f.id });
+    // EXCEPTION, not BLOCKED: the order already shows as shipped, and only EXCEPTION may follow from there; a person
+    // then cancels it or sends it again (restart).
+    await followShipment(tx, f.orderId, stornoCarrier ? "EXCEPTION" : m.mapping.status, `fhb:${source}`, {
+      fulfillmentId: f.id,
+    });
     // The carrier's own events (FHB stays "sent" while the carrier returns the parcel): stored once each.
     await recordCourierEvents(tx, { accountId, fulfillmentId: f.id, events: courierEvents(view), now });
     if ((superseded ? f.status : shipmentStatus) === "SHIPPED")
@@ -129,6 +153,7 @@ export async function applyFhbOrderView(
             trackingNumbers: m.trackingNumbers,
             vendorUid: m.vendorUid,
             ...(storno ? { stornoId: m.externalId } : {}),
+            ...(stornoCarrier ? { stornoCarrier: m.carrier } : {}),
           }),
         },
       });
@@ -151,12 +176,14 @@ export async function applyFhbOrderView(
       entityType: "Fulfillment",
       entityId: result.fulfillmentId,
     });
-  } else if (storno) {
+  } else if (cancelled) {
     await raiseAlertOnce(accountId, {
       kind: "fhb_order_cancelled_in_zoe",
       severity: "CRITICAL",
       isTask: true,
-      title: `FHB: поръчка ${storno} е анулирана в ZOE — изпратете я отново или я откажете в Shopify`,
+      title: stornoCarrier
+        ? `FHB: поръчка ${m.externalId} е анулирана в ZOE (куриер „${m.carrier}“) — вижте тикета в ZOE, изпратете я от друг склад или я откажете в Shopify`
+        : `FHB: поръчка ${storno} е анулирана в ZOE — изпратете я отново или я откажете в Shopify`,
       entityType: "Fulfillment",
       entityId: result.fulfillmentId,
     });

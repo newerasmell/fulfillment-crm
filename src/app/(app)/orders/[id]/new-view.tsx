@@ -1,3 +1,6 @@
+import { ManualLinkBlock } from "./manual-link-block";
+import { OrderComments } from "./comments";
+import { RefreshFromShopify } from "./refresh-from-shopify";
 import { collectableCod } from "@/lib/cod-rounding";
 import { CourierLine } from "./courier-line";
 import { ReplacementBlock } from "./replacement-block";
@@ -295,6 +298,7 @@ export async function NewOrderView({
           orderGid={order.shopifyOrderGid}
           label={t("openInShopify")}
         />
+        {order.shopifyOrderGid && can(ctx.role, "stores.sync") && <RefreshFromShopify orderId={order.id} />}
         {order.tags.map((tag) => (
           <span key={tag} className="rounded-full bg-hover px-2 py-0.5 text-xs">
             {tag}
@@ -329,6 +333,7 @@ export async function NewOrderView({
       <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
       <CourierLine accountId={ctx.accountId} orderId={order.id} />
       <ReplacementBlock actor={actorFrom(ctx)} orderId={order.id} canSend={can(ctx.role, "orders.fulfill")} />
+      <ManualLinkBlock accountId={ctx.accountId} order={order} canLink={can(ctx.role, "orders.fulfill")} />
       {order.alerts.some((a) => a.status !== "RESOLVED") && can(ctx.role, "orders.review") && (
         <TasksRecheck orderId={order.id} />
       )}
@@ -1033,6 +1038,8 @@ export async function NewOrderView({
           )}
         </div>
       </div>
+
+      <OrderComments actor={actorFrom(ctx)} orderId={order.id} />
 
       <Fold
         title={r("timeline.title")}

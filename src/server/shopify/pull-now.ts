@@ -1,4 +1,6 @@
+import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
+import { transitionOrder } from "@/server/pipeline";
 import { companyFilter, type CompanyScope } from "@/server/companies";
 import { accountDb } from "@/server/db/client";
 import type { Role } from "@/generated/prisma/client";
@@ -59,4 +61,45 @@ export async function lastOrdersPull(ctx: {
     .filter((d) => !Number.isNaN(d.getTime()));
   if (!times.length) return null;
   return new Date(Math.min(...times.map((d) => d.getTime())));
+}
+
+/** „Обнови от Shopify“ on one order: see refreshOrderFromShopifyAction. */
+export async function refreshOrderFromShopify(
+  actor: { accountId: string; userId: string; role: Role; companyScope: CompanyScope },
+  orderId: string,
+  enqueue: (d: { accountId: string; storeId: string; orderId: string }) => Promise<unknown>,
+) {
+  assertCan(actor.role, "stores.sync");
+  const order = await accountDb(actor.accountId).order.findFirst({
+    where: {
+      id: orderId,
+      ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
+    },
+    select: { id: true, status: true, storeId: true, shopifyOrderGid: true },
+  });
+  if (!order) throw new DomainError("not_found");
+  if (!order.storeId || !order.shopifyOrderGid) throw new DomainError("not_shopify");
+  // Never reopen an order the worker could not read: the store must be connected (and not archived).
+  const store = await accountDb(actor.accountId).store.findFirst({
+    where: { id: order.storeId, archivedAt: null },
+    select: { connectionStatus: true },
+  });
+  if ((store?.connectionStatus as { ok?: boolean } | null)?.ok !== true)
+    throw new DomainError("store_not_connected");
+  // Approved but not sent: back to review, so the refreshed amounts / lines / COD replace the approved ones.
+  let reopened = false;
+  if (order.status === "APPROVED") {
+    assertCan(actor.role, "orders.review");
+    const t = await transitionOrder(actor.accountId, {
+      orderId: order.id,
+      to: "NEEDS_REVIEW",
+      cause: "reopen",
+      actor: { kind: "user", userId: actor.userId },
+      source: "shopify.refreshOrder",
+      reason: "refresh from Shopify",
+    });
+    reopened = t.changed;
+  }
+  await enqueue({ accountId: actor.accountId, storeId: order.storeId, orderId: order.id });
+  return { reopened };
 }

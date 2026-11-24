@@ -61,9 +61,13 @@ function euVendor(
     history?: "down";
     /** euShipments order id → our reference, for DELETE /orders/{id}. */
     idToRef?: Record<string, string>;
+    /** References already deleted in the cabinet (orders-history ends in "Deleted"). */
+    preDeleted?: string[];
+    /** The AWB orders-history shows for every reference. */
+    histAwb?: string | null;
   } = {},
 ) {
-  const deleted = new Set<string>();
+  const deleted = new Set<string>(o.preDeleted ?? []);
   const calls: string[] = [];
   const fetchImpl = async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname.replace("/api/v1", "");
@@ -85,9 +89,10 @@ function euVendor(
       if (o.history === "down") throw new Error("down");
       const body = JSON.parse(String(init!.body)) as { orders: { refNum: string }[] };
       return jsonRes(
-        body.orders.map(({ refNum }) =>
-          histItem(refNum, deleted.has(refNum) ? (o.afterDelete ?? "Deleted") : "Information received"),
-        ),
+        body.orders.map(({ refNum }) => ({
+          ...histItem(refNum, deleted.has(refNum) ? (o.afterDelete ?? "Deleted") : "Information received"),
+          awb: o.histAwb ?? null,
+        })),
       );
     }
     throw new Error(`unexpected call ${path}`);
@@ -659,6 +664,91 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect(await processOutbound(req.requestId, refusing)).toBe("FAILED");
       expect(await processReroute(g.accountId, req.rerouteId, refusing)).toBe("REFUSED");
       expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(shipment.status);
+    });
+
+    it("a refused delete counts as done only on euShipments' exact word: our AWB on a Deleted reference", async () => {
+      // Owner report 2026-11-24: "the CRM says the warehouse refuses, the order is not in the cabinet".
+      const cannot = () => jsonRes({ error: true, message: "The order cannot be deleted.", code: 400 }, 400);
+      const withAwb = async (awb: string) => {
+        const sent = await sentAtA("Awaiting pickup");
+        await g.db.fulfillment.update({
+          where: { id: sent.fulfillment.id },
+          data: { trackingNumbers: [awb] },
+        });
+        return { ...sent, req: await reroute(sent.order.id) };
+      };
+      const status = async (id: string) =>
+        (await g.db.fulfillment.findUniqueOrThrow({ where: { id } })).status;
+
+      // Deleted in the cabinet, the history shows our AWB: cancelled, the reroute goes on.
+      const a = await withAwb("OUR-AWB-1");
+      const gone = vendors(
+        euVendor({ del: cannot, preDeleted: [a.fulfillment.externalId], histAwb: "OUR-AWB-1" }),
+      );
+      expect(await processOutbound(a.req.requestId, gone)).toBe("SENT");
+      expect(await status(a.fulfillment.id)).toBe("CANCELLED");
+      expect(await processReroute(g.accountId, a.req.rerouteId, gone)).toBe("DONE");
+
+      // Another order's AWB on that reference (references are not unique there): the refusal stands.
+      const b = await withAwb("OUR-AWB-2");
+      const notOurs = vendors(
+        euVendor({ del: cannot, preDeleted: [b.fulfillment.externalId], histAwb: "OTHER-AWB-9" }),
+      );
+      expect(await processOutbound(b.req.requestId, notOurs)).toBe("FAILED");
+      expect(await processReroute(g.accountId, b.req.rerouteId, notOurs)).toBe("REFUSED");
+      expect(await status(b.fulfillment.id)).not.toBe("CANCELLED");
+
+      // No AWB on our side (early statuses): a Deleted reference proves nothing — the refusal stands.
+      const c = await sentAtA("Awaiting pickup");
+      const reqC = await reroute(c.order.id);
+      expect(
+        await processOutbound(
+          reqC.requestId,
+          vendors(euVendor({ del: cannot, preDeleted: [c.fulfillment.externalId] })),
+        ),
+      ).toBe("FAILED");
+      expect(await status(c.fulfillment.id)).not.toBe("CANCELLED");
+
+      // Still there: the refusal stands; and a history read that fails never counts as a delete.
+      const d = await withAwb("OUR-AWB-4");
+      expect(
+        await processOutbound(d.req.requestId, vendors(euVendor({ del: cannot, history: "down" }))),
+      ).toBe("FAILED");
+      expect(await status(d.fulfillment.id)).not.toBe("CANCELLED");
+    });
+
+    it("by our euShipments id: only 404 'does not exist' counts as deleted; a refusal by id is never checked by reference", async () => {
+      const byId = async () => {
+        const sent = await sentAtA("Awaiting pickup");
+        await g.db.fulfillment.update({
+          where: { id: sent.fulfillment.id },
+          data: { vendorOrderId: String(400000 + ++n), trackingNumbers: ["ID-AWB"] },
+        });
+        return { ...sent, req: await reroute(sent.order.id) };
+      };
+      const status = async (id: string) =>
+        (await g.db.fulfillment.findUniqueOrThrow({ where: { id } })).status;
+      const a = await byId();
+      const notExist = () => jsonRes({ error: true, message: "The order does not exist.", code: 404 }, 404);
+      expect(await processOutbound(a.req.requestId, vendors(euVendor({ del: notExist })))).toBe("SENT");
+      expect(await status(a.fulfillment.id)).toBe("CANCELLED");
+
+      // Some other 404 (a gateway, a wrong path): not proof.
+      const b = await byId();
+      const other404 = () => jsonRes({ message: "Not Found" }, 404);
+      expect(await processOutbound(b.req.requestId, vendors(euVendor({ del: other404 })))).toBe("FAILED");
+      expect(await status(b.fulfillment.id)).not.toBe("CANCELLED");
+
+      // 400 by id, even with a Deleted reference carrying our AWB: that exact order refused.
+      const c = await byId();
+      const cannot = () => jsonRes({ error: true, message: "The order cannot be deleted.", code: 400 }, 400);
+      expect(
+        await processOutbound(
+          c.req.requestId,
+          vendors(euVendor({ del: cannot, preDeleted: [c.fulfillment.externalId], histAwb: "ID-AWB" })),
+        ),
+      ).toBe("FAILED");
+      expect(await status(c.fulfillment.id)).not.toBe("CANCELLED");
     });
 
     it("an euShipments target on the same euShipments account (same token) is refused before any cancel", async () => {

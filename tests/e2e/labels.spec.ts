@@ -69,6 +69,24 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
   await bar.getByRole("button", { name: "Един PDF с етикетите" }).click();
   await expect(bar.getByText("Чака склада…")).toBeVisible({ timeout: 30_000 });
 
+  // Required fields: an empty form marks them in red and names them; nothing is checked or created.
+  await openNew(page);
+  const empty = page.getByRole("form", { name: "Нова ръчна пратка" });
+  await expect(empty.getByTestId("manual-cod")).toContainText("Без наложен платеж (0)");
+  await empty.getByRole("button", { name: "Провери" }).click();
+  await expect(empty).toContainText(
+    "Попълнете задължителните полета: име, телефон, адрес, град, пощенски код.",
+  );
+  await expect(empty.getByLabel("Град", { exact: true })).toHaveAttribute("aria-invalid", "true");
+  await expect(empty.getByLabel("Пощенски код", { exact: true })).toHaveAttribute("aria-invalid", "true");
+
+  // Creating with 0 cash on delivery always asks first (accepted here).
+  const codQuestions: string[] = [];
+  page.on("dialog", (d) => {
+    codQuestions.push(d.message());
+    void d.accept();
+  });
+
   // Hard block: Joy without an email cannot be created.
   await openNew(page);
   let form = await fillRecipient(page, {
@@ -158,6 +176,7 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
   await expect(checks).toContainText("Маршрут и какво ще се изпрати", { timeout: 30_000 });
   await expect(checks).toContainText("Наличност: достатъчна");
   await form.getByRole("button", { name: "Създай поръчката" }).click();
+  await expect.poll(() => codQuestions.join("\n")).toContain("БЕЗ наложен платеж");
   await expect(page).toHaveURL(/\/orders\/[a-z0-9]+$/, { timeout: 60_000 });
   await expect(page.getByRole("heading", { name: /^Поръчка M\d+$/, level: 1 })).toBeVisible({
     timeout: 60_000,
@@ -165,6 +184,8 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
 
   // The Shopify number typed for it is on the order page and finds it in the order list.
   await expect(page.getByTestId("shopify-ref")).toContainText("Поръчка в Shopify: #SR-7001");
+  // „Прикачи към поръчка от Shopify“ is offered only once the warehouse has the shipment (it is only queued here).
+  await expect(page.getByTestId("link-manual")).toHaveCount(0);
 
   // „Изпрати замяна“ from this order: the form starts from it — free (price 0, no COD), a reason is required —
   // and the two orders are linked both ways.

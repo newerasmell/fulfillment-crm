@@ -74,6 +74,7 @@ function cancelWrite(
     externalId: string;
     vendorOrderId?: string | null;
     manualShipment?: { id: string } | null;
+    trackingNumbers?: string[];
   },
   type: ConnectionType,
   ctx: { requestedById: string; reasonCode: string; reasonText: string | null },
@@ -99,6 +100,8 @@ function cancelWrite(
         fulfillmentId: f.id,
         referenceNumber: f.externalId,
         ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
+        // Our AWB: tells our order from another one with the same reference after a refused delete.
+        ...(f.trackingNumbers?.length ? { awbs: f.trackingNumbers } : {}),
         ...mark,
       },
     },

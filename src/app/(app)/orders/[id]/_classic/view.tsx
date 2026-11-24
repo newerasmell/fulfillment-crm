@@ -1,3 +1,6 @@
+import { ManualLinkBlock } from "../manual-link-block";
+import { OrderComments } from "../comments";
+import { RefreshFromShopify } from "../refresh-from-shopify";
 import { collectableCod } from "@/lib/cod-rounding";
 import { CourierLine } from "../courier-line";
 import { ReplacementBlock } from "../replacement-block";
@@ -244,6 +247,7 @@ export async function ClassicOrderView({
           orderGid={order.shopifyOrderGid}
           label={t("openInShopify")}
         />
+        {order.shopifyOrderGid && can(ctx.role, "stores.sync") && <RefreshFromShopify orderId={order.id} />}
         {order.tags.map((tag) => (
           <span key={tag} className="rounded-full bg-hover px-2 py-0.5 text-xs">
             {tag}
@@ -278,6 +282,7 @@ export async function ClassicOrderView({
       <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
       <CourierLine accountId={ctx.accountId} orderId={order.id} />
       <ReplacementBlock actor={actorFrom(ctx)} orderId={order.id} canSend={can(ctx.role, "orders.fulfill")} />
+      <ManualLinkBlock accountId={ctx.accountId} order={order} canLink={can(ctx.role, "orders.fulfill")} />
       {order.alerts
         .filter((a) => a.status !== "RESOLVED" && !(a.kind === CARRIER_TASK && heldCarriers.length > 0))
         .map((a) => (
@@ -459,6 +464,8 @@ export async function ClassicOrderView({
               <dd className="m-0 font-mono font-semibold">{money(order.total)}</dd>
             </dl>
           </Card>
+
+          <OrderComments actor={actorFrom(ctx)} orderId={order.id} />
 
           <Card>
             <h2 className="mt-0 text-base font-semibold">{r("timeline.title")}</h2>

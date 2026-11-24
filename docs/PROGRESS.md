@@ -612,6 +612,42 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   line) in the web request. Now up to 200 rows per click („Добави всички (N)“, chunks of 50, a failed chunk is
   reported and the rest go on, one audit entry) and the line's auto-link runs in the worker (queue lines.autoLink,
   stately per line; an enqueue failure only logs).
+- 2026-11-24 „С грешки“: each order's tasks can be closed right there („Затвори задачите“ with a preset reason or a
+  note; also for the selected orders in the bulk bar, max 100). Each task is resolved as on „Задачи“ (note, audit); a
+  closed stuck-order task is not raised again while the order stays in that status.
+- 2026-11-24 FHB cancels an order it will not ship (ticket: "not able to send the order with COD to Cyprus") by
+  moving it to the carrier "STORNO OBJEDNAVKY" with status still "sent". Now: shipment CANCELLED, order EXCEPTION
+  (only that may follow SHIPPED; a person cancels or sends it again), one task. Not in the FHB reference.
+- 2026-11-24 euShipments: a cancel / reroute refused because the order is already gone counts as cancelled only on
+  euShipments' exact word: 404 "does not exist" for our own euShipments id, or orders-history Deleted for our reference
+  carrying our AWB (INTEGRATION_NOTES §4.3). Otherwise the refusal stands (never a duplicate shipment).
+- 2026-11-24 A shipped order whose carrier says it was handed to the recipient (GLS "Podpísané na papieri", FHB still
+  "sent") is not stuck: the sweep skips / closes its task, and the order page marks the courier line "доставена".
+  The CRM status is not changed by carrier text (the warehouse decides DELIVERED).
+- 2026-11-24 „Нова ръчна пратка“: name, phone, country, street, city and postcode are required (red "*", marked red
+  and named when missing); the COD box is red at 0 and creating with 0 COD asks for a confirmation.
+- 2026-11-24 „Обнови от Shopify“ on an order (stores.sync): re-reads that one order now (queue shopify.refreshOrder,
+  one per order); an APPROVED order not yet sent goes back to review first so its amounts follow Shopify. Order
+  totals use Shopify's current amounts (currentTotalPriceSet / currentSubtotalPriceSet) after edits.
+  The refresh re-applies the same Shopify version (force; never an older one): an edit that came while the order was
+  past approval was only recorded, and is applied once the order is back in review. Known limit: a phone changed in
+  Shopify while approved is taken as an operator edit after the reopen (kept, not replaced). Orders before approval
+  whose current total differs from the original are re-checked once after deploy (fingerprint includes the total).
+- 2026-11-24 Order comments (owner request): a „Коментари“ card on the order page (date, time, author; never edited)
+  and the latest comment under the status in the orders list. New table OrderComment (migration
+  20261124120000_order_comments: one new table with RLS, nothing existing changes). Write: alerts.manage roles.
+- 2026-11-24 „Прикачи към поръчка от Shopify“ on a manual order (optional, orders.fulfill): search the Shopify
+  order by number (same company; prefilled from the typed Shopify number); the manual shipment moves to that order
+  (its lines by product, or the whole order for a label parcel), the order follows it (pipeline cause manual_link),
+  its open tasks close, Shopify gets the tracking through the usual write-back; the manual record → CANCELLED with a
+  link. Refused while the Shopify order has a live shipment, a warehouse write or a Shopify write-back on its way, while
+  the manual shipment has a write / reroute on its way, when the parcel does not cover the whole order, when the order
+  is cancelled / voided / refunded in Shopify, or (unless confirmed, then a task) when the COD differs. Only the tasks
+  the shipment answers close (also those on the order's old refused shipments). Label parcels reserve no stock.
+- 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
+  joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
+  label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB
+  v3 a fractional CZK COD is now a hard pre-flight block. Pending: owner confirmation of half-up rounding for CZK.
 - 2026-11-23 „Изтегли поръчките сега“ in „Поръчки“ (stores.sync): queues the scheduled read-only order pull
   (reconcile) for every connected store the member sees; one waiting pull per store (stately, the same key as the
   schedule), so repeated clicks add nothing. Shows the oldest last pull of those stores; the list refreshes itself.
