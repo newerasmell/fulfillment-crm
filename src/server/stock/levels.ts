@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import type { StockSource } from "@/generated/prisma/client";
 import { accountDb } from "@/server/db/client";
 import { heldUnits, skuHolds, type SkuHold } from "@/server/warehouse-cases/sku";
@@ -71,6 +72,14 @@ export async function crmReservations(
   return out;
 }
 
+/**
+ * Shipments picked from a warehouse's stock: not a label parcel packed by hand (a manual label attached to a Shopify
+ * order carries that order's lines for the Shopify write-back, but takes nothing from the warehouse).
+ */
+const WAREHOUSE_PICKED: Prisma.FulfillmentWhereInput = {
+  OR: [{ manualShipment: { is: null } }, { manualShipment: { is: { kind: "WAREHOUSE" } } }],
+};
+
 /** Units reserved by the CRM's own orders per (connection, product). */
 async function orderReservations(
   accountId: string,
@@ -97,14 +106,22 @@ async function orderReservations(
       },
     }),
     db.fulfillment.findMany({
-      where: { status: { in: [...NOT_AT_VENDOR_YET] }, ...(only ? { lines: { some: fLineWhere } } : {}) },
+      where: {
+        status: { in: [...NOT_AT_VENDOR_YET] },
+        ...WAREHOUSE_PICKED,
+        ...(only ? { lines: { some: fLineWhere } } : {}),
+      },
       select: {
         connectionId: true,
         lines: { where: fLineWhere, select: { quantity: true, orderLine: { select: { productId: true } } } },
       },
     }),
     db.fulfillment.findMany({
-      where: { status: { in: [...AT_VENDOR] }, ...(only ? { lines: { some: fLineWhere } } : {}) },
+      where: {
+        status: { in: [...AT_VENDOR] },
+        ...WAREHOUSE_PICKED,
+        ...(only ? { lines: { some: fLineWhere } } : {}),
+      },
       select: {
         connectionId: true,
         submittedAt: true,

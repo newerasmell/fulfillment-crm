@@ -636,6 +636,14 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-24 Order comments (owner request): a „Коментари“ card on the order page (date, time, author; never edited)
   and the latest comment under the status in the orders list. New table OrderComment (migration
   20261124120000_order_comments: one new table with RLS, nothing existing changes). Write: alerts.manage roles.
+- 2026-11-24 „Прикачи към поръчка от Shopify“ on a manual order (optional, orders.fulfill): search the Shopify
+  order by number (same company; prefilled from the typed Shopify number); the manual shipment moves to that order
+  (its lines by product, or the whole order for a label parcel), the order follows it (pipeline cause manual_link),
+  its open tasks close, Shopify gets the tracking through the usual write-back; the manual record → CANCELLED with a
+  link. Refused while the Shopify order has a live shipment, a warehouse write or a Shopify write-back on its way, while
+  the manual shipment has a write / reroute on its way, when the parcel does not cover the whole order, when the order
+  is cancelled / voided / refunded in Shopify, or (unless confirmed, then a task) when the COD differs. Only the tasks
+  the shipment answers close (also those on the order's old refused shipments). Label parcels reserve no stock.
 - 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
   joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
   label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB

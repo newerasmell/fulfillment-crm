@@ -1,3 +1,4 @@
+import { ManualLinkBlock } from "./manual-link-block";
 import { OrderComments } from "./comments";
 import { RefreshFromShopify } from "./refresh-from-shopify";
 import { collectableCod } from "@/lib/cod-rounding";
@@ -332,6 +333,7 @@ export async function NewOrderView({
       <StuckCaseBanner accountId={ctx.accountId} orderId={order.id} />
       <CourierLine accountId={ctx.accountId} orderId={order.id} />
       <ReplacementBlock actor={actorFrom(ctx)} orderId={order.id} canSend={can(ctx.role, "orders.fulfill")} />
+      <ManualLinkBlock accountId={ctx.accountId} order={order} canLink={can(ctx.role, "orders.fulfill")} />
       {order.alerts.some((a) => a.status !== "RESOLVED") && can(ctx.role, "orders.review") && (
         <TasksRecheck orderId={order.id} />
       )}

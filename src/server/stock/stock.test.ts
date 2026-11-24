@@ -1047,6 +1047,39 @@ describe("reservations cover every order not inside the warehouse numbers yet", 
     expect((await crmReservations(g.accountId)).get(`${g.fhb.id}:${p.id}`)).toBe(3);
   });
 
+  it("a label parcel packed by hand reserves nothing; a warehouse shipment (manual or not) does", async () => {
+    // A manual label attached to a Shopify order carries the order's lines (for Shopify) but takes nothing from stock.
+    const g = await group("resv-labels");
+    const p = await g.product("RSV-L");
+    await g.vp(g.fhb.id, p.id, "R-RSV-L", { physical: 10, free: 10 });
+    const ship = async (status: "QUEUED" | "ACCEPTED", kind: "WAREHOUSE" | "AWB" | null) => {
+      const o = await order(g, p.id, 1, "ACCEPTED", g.fhb.id);
+      const f = await g.db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: o.id,
+          connectionId: g.fhb.id,
+          externalId: `RSV-${Math.random().toString(36).slice(2, 8)}`,
+          status,
+          submittedAt: new Date(Date.now() + 60_000), // after the stock snapshot
+        },
+      });
+      await g.db.fulfillmentLine.create({
+        data: { accountId: g.accountId, fulfillmentId: f.id, orderLineId: o.lines[0]!.id, quantity: 1 },
+      });
+      if (kind)
+        await g.db.manualShipment.create({
+          data: { accountId: g.accountId, orderId: o.id, kind, connectionId: g.fhb.id, fulfillmentId: f.id },
+        });
+    };
+    await ship("ACCEPTED", null);
+    await ship("ACCEPTED", "WAREHOUSE");
+    await ship("ACCEPTED", "AWB");
+    await ship("QUEUED", "WAREHOUSE");
+    await ship("QUEUED", "AWB");
+    expect((await crmReservations(g.accountId)).get(`${g.fhb.id}:${p.id}`)).toBe(3);
+  });
+
   it("euShipments: an order accepted after the (daily) snapshot lowers the target, one before does not", async () => {
     const g = await group("resv-eu");
     const p = await g.product("RSV-EU");

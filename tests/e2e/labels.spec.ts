@@ -184,6 +184,8 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
 
   // The Shopify number typed for it is on the order page and finds it in the order list.
   await expect(page.getByTestId("shopify-ref")).toContainText("Поръчка в Shopify: #SR-7001");
+  // „Прикачи към поръчка от Shopify“ is offered only once the warehouse has the shipment (it is only queued here).
+  await expect(page.getByTestId("link-manual")).toHaveCount(0);
 
   // „Изпрати замяна“ from this order: the form starts from it — free (price 0, no COD), a reason is required —
   // and the two orders are linked both ways.

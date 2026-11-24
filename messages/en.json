@@ -682,6 +682,33 @@
         "not_found": "Order not found.",
         "other": "Failed — try again."
       }
+    },
+    "linkManual": {
+      "title": "Attach to a Shopify order (optional)",
+      "hint": "If this manual shipment was sent instead of a Shopify order: the order takes over the shipment (status, tracking, the customer gets the tracking), its tasks close and it leaves „With errors“; this manual record is closed.",
+      "search": "Shopify order number",
+      "placeholder": "e.g. 1-ABC1234",
+      "results": "Orders found",
+      "none": "No order with this number in this company.",
+      "link": "Attach",
+      "confirm": "Attach this manual shipment to order {number}? The order will follow this shipment.",
+      "done": "Attached to order",
+      "attached": "This manual shipment is attached to order",
+      "errors": {
+        "forbidden": "Not allowed.",
+        "not_found": "Order not found.",
+        "manual_not_shipped": "This manual order has no live shipment yet.",
+        "other_company": "The order belongs to another company.",
+        "order_has_shipment": "The order already has a live shipment at a warehouse — cancel it first (otherwise there would be two).",
+        "order_write_pending": "A warehouse request for this order is still on its way or unknown — wait or check it.",
+        "lines_do_not_match": "The manual shipment's items do not cover the order exactly (product or quantity).",
+        "transition_not_allowed": "The order's status does not allow attaching.",
+        "other": "Failed — try again.",
+        "manual_write_pending": "A warehouse request for this manual shipment (cancel, reroute) is not finished yet — wait.",
+        "order_cancelled_in_shopify": "The order is cancelled in Shopify.",
+        "cod_differs": "The cash on delivery differs — the attachment was not confirmed."
+      },
+      "codDiffers": "The cash on delivery differs: the parcel collects {sent} {sentCurrency}, the order expects {expected} {expectedCurrency}. Attach anyway? (a task to check it opens)"
     }
   },
   "orderStatus": {

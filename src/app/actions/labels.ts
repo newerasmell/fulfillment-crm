@@ -8,6 +8,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import type { Finding } from "@/server/checks/findings";
 import { webBoss } from "@/server/jobs/boss";
+import { findShopifyOrdersToLink, linkManualToShopifyOrder } from "@/server/labels/link";
 import { QUEUES } from "@/server/jobs/queues";
 import {
   createJoyConnection,
@@ -298,5 +299,60 @@ export async function searchManualProductsAction(
     return await searchManualProducts(actorFrom(ctx), z.string().max(100).parse(q));
   } catch (err) {
     return toError(err);
+  }
+}
+
+/** „Прикачи към поръчка от Shopify“: Shopify orders of the manual order's company matching a number. */
+export async function findShopifyOrdersToLinkAction(manualOrderId: string, q: string) {
+  const ctx = await requireAccountContext();
+  try {
+    return await findShopifyOrdersToLink(
+      actorFrom(ctx),
+      z.string().min(1).max(64).parse(manualOrderId),
+      z.string().max(40).parse(q),
+    );
+  } catch (err) {
+    if (err instanceof DomainError || err instanceof ForbiddenError || err instanceof z.ZodError) return [];
+    throw err;
+  }
+}
+
+/** „Прикачи“: the manual shipment becomes the Shopify order's shipment (see labels/link.ts). */
+export async function linkManualToShopifyOrderAction(
+  manualOrderId: string,
+  shopifyOrderId: string,
+  acknowledgeCod = false,
+): Promise<
+  | { ok: true; orderId: string; orderNumber: string }
+  | {
+      error: string;
+      cod?: { sent: number; sentCurrency: string; expected: number; expectedCurrency: string };
+    }
+> {
+  const ctx = await requireAccountContext();
+  const id = z.string().min(1).max(64);
+  const a = id.safeParse(manualOrderId);
+  const b = id.safeParse(shopifyOrderId);
+  if (!a.success || !b.success) return { error: "not_found" };
+  try {
+    const r = await linkManualToShopifyOrder(actorFrom(ctx), {
+      manualOrderId: a.data,
+      shopifyOrderId: b.data,
+      acknowledgeCod: acknowledgeCod === true,
+    });
+    revalidatePath(`/orders/${r.orderId}`);
+    revalidatePath(`/orders/${r.manualOrderId}`);
+    revalidatePath("/orders");
+    return { ok: true, orderId: r.orderId, orderNumber: r.orderNumber };
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError)
+      return {
+        error: err.code,
+        ...((err as DomainError & { detail?: unknown }).detail
+          ? { cod: (err as DomainError & { detail: never }).detail }
+          : {}),
+      };
+    throw err;
   }
 }
