@@ -207,7 +207,7 @@ export function localCod(
   },
   localCurrency: string | null,
 ): { amount: string; currency: string } | null {
-  // Whole units where the courier collects whole units (HUF, collectableCod); other currencies unchanged.
+  // Whole units where the courier collects whole units (WHOLE_UNIT_COD_CURRENCIES: HUF, CZK; collectableCod); other currencies unchanged.
   const collectable = (amount: string, currency: string) =>
     WHOLE_UNIT_COD_CURRENCIES.has(currency) ? String(collectableCod(Number(amount), currency)) : amount;
   if (localCurrency && order.currency.toUpperCase() === localCurrency.toUpperCase()) {

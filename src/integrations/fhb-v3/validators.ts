@@ -324,8 +324,9 @@ export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
   } else if (o.isCod && o.codAmount !== null && o.codAmount <= 0) {
     out.push(f("fhb.cod.zero", "hard", "cod", "Наложеният платеж е 0.", "The COD amount is zero."));
   }
-  // The CRM rounds whole-unit currencies (HUF) before sending (collectableCod); a fractional amount that still
-  // reaches the validator was not rounded and is flagged (INTEGRATION_NOTES §2.3).
+  // The CRM rounds whole-unit currencies (WHOLE_UNIT_COD_CURRENCIES) before sending (collectableCod); a fractional
+  // amount that still reaches the validator was not rounded and is flagged (INTEGRATION_NOTES §2.3). FHB refuses a
+  // fractional CZK COD (INVALID_COD_VALUE_ERROR, 2026-11-24), so for CZK it blocks.
   if (
     o.isCod &&
     o.codAmount !== null &&
@@ -336,7 +337,7 @@ export function validateFhbOrder(o: FhbOrderCheck): ValidationFinding[] {
     out.push(
       f(
         "fhb.cod.fractional",
-        "soft",
+        o.codCurrency.toUpperCase() === "CZK" ? "hard" : "soft",
         "cod",
         `Наложеният платеж ${o.codAmount} ${o.codCurrency} има дробна част; в тази валута се събират цели суми.`,
         `The COD ${o.codAmount} ${o.codCurrency} has a fractional part; this currency is collected in whole units.`,

@@ -612,6 +612,10 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   line) in the web request. Now up to 200 rows per click („Добави всички (N)“, chunks of 50, a failed chunk is
   reported and the rest go on, one audit entry) and the line's auto-link runs in the worker (queue lines.autoLink,
   stately per line; an enqueue failure only logs).
+- 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
+  joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
+  label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB
+  v3 a fractional CZK COD is now a hard pre-flight block. Pending: owner confirmation of half-up rounding for CZK.
 - 2026-11-23 „Изтегли поръчките сега“ in „Поръчки“ (stores.sync): queues the scheduled read-only order pull
   (reconcile) for every connected store the member sees; one waiting pull per store (stately, the same key as the
   schedule), so repeated clicks add nothing. Shows the oldest last pull of those stores; the list refreshes itself.

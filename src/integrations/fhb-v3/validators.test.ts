@@ -208,6 +208,13 @@ describe("FHB order pre-flight", () => {
       (x) => x.code === "fhb.cod.fractional",
     );
     expect(found?.severity).toBe("soft");
+    // CZK: FHB refuses a fractional COD (INVALID_COD_VALUE_ERROR), so it blocks.
+    const czk = { codCurrency: "CZK", localCurrency: "CZK", country: "CZ" };
+    expect(
+      validateFhbOrder(good({ ...czk, codAmount: 2185.1 })).find((x) => x.code === "fhb.cod.fractional")
+        ?.severity,
+    ).toBe("hard");
+    expect(codes(good({ ...czk, codAmount: 2185 }))).not.toContain("fhb.cod.fractional");
   });
 
   it("duplicate id and PUDO without a point are hard blocks", () => {

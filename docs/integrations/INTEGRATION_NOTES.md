@@ -125,7 +125,8 @@ status list "current as of July 2026".
   The shipment id is in the path (and in the HMAC scope) because the payload format is not documented: the
   URL itself must say which order to re-read. On any call, re-read `GET /order?id=` and update from that. Do
   not parse the body as truth.
-- Rounding (owner decision 2026-11-11): a COD in a whole-unit currency (HUF) is rounded half-up to the whole
+- Rounding (owner decision 2026-11-11; CZK added 2026-11-24 after FHB refused 2185,10 CZK with
+  `INVALID_COD_VALUE_ERROR`): a COD in a whole-unit currency (HUF, CZK) is rounded half-up to the whole
   unit before it is sent (`collectableCod`, src/lib/cod-rounding.ts) — FHB v3 create/update, euShipments, FHB Joy
   manual labels — and the COD board expects that amount back. Other currencies go out with 2 decimals. A
   fractional HUF that still reaches a validator was not rounded and is a soft finding (`fhb.cod.fractional`). No rate table / conversion display exists yet: a COD in another currency is blocked

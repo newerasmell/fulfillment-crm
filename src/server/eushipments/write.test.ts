@@ -126,6 +126,11 @@ describe("euShipments write side through the outbox (DB)", () => {
     expect(
       localCod({ ...base, currency: "EUR", codLocalAmount: "32825.60", codLocalCurrency: "huf" }, "HUF"),
     ).toEqual({ amount: "32826", currency: "HUF" });
+    // CZK too (whole crowns).
+    expect(localCod({ ...base, currency: "CZK", codAmount: "2185.10" }, "CZK")).toEqual({
+      amount: "2185",
+      currency: "CZK",
+    });
     expect(localCod(base, "RON")).toBeNull(); // EUR order to a RON country without a stored local amount
     expect(localCod({ ...base, codLocalAmount: "632.00", codLocalCurrency: "RON" }, "RON")).toEqual({
       amount: "632.00",

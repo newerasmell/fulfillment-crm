@@ -379,6 +379,24 @@ describe("FHB order create through the outbox", () => {
     expect(findings.map((f) => f.code)).not.toContain("fhb.cod.fractional");
   });
 
+  it("CZK COD goes out in whole crowns (FHB refused 2185,10 CZK with INVALID_COD_VALUE_ERROR)", async () => {
+    const s = await setup("LIVE");
+    // Synthetic: the destination is set to collect CZK (the rounding depends on the currency only).
+    await systemDb().countrySetting.updateMany({
+      where: { accountId: s.account.id, country: "SK" },
+      data: { currency: "CZK" },
+    });
+    await systemDb().order.update({
+      where: { id: s.order.id },
+      data: { currency: "CZK", subtotal: "2185.10", total: "2185.10", codAmount: "2185.10" },
+    });
+    const body = await previewFhbOrderPayload(s.account.id, {
+      orderId: s.order.id,
+      connectionId: s.connection.id,
+    });
+    expect(body).toMatchObject({ cod: 2185 });
+  });
+
   it("duplicate-submit: a timed-out create that FHB did receive is recovered by read-back, never re-sent", async () => {
     const s = await setup("LIVE");
     const { request } = await submitFhbOrder(s.owner, {

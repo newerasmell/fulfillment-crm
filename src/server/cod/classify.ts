@@ -120,7 +120,7 @@ function vendorOf(s: CodShipmentIn): CodRow["vendor"] {
 
 export function classifyCod(s: CodShipmentIn, opts: { now: Date; missingDays: number }): CodRow {
   const isCod = s.order.paymentMethod === "COD";
-  // What the warehouse was asked to collect: whole forints for HUF (collectableCod), like the payloads.
+  // What the warehouse was asked to collect: whole units in WHOLE_UNIT_COD_CURRENCIES (collectableCod), like the payloads.
   const raw = isCod
     ? s.order.codLocalAmount != null
       ? { amount: s.order.codLocalAmount, currency: s.order.codLocalCurrency ?? s.order.currency }
@@ -143,7 +143,14 @@ export function classifyCod(s: CodShipmentIn, opts: { now: Date; missingDays: nu
   let mismatch: CodMismatch | null = null;
   if (!isCod) {
     if (vendor.amount != null && cents(vendor.amount) > 0) mismatch = "unexpected";
-  } else if (expected && vendor.amount != null && cents(vendor.amount) !== cents(expected.amount)) {
+  } else if (
+    expected &&
+    raw &&
+    vendor.amount != null &&
+    cents(vendor.amount) !== cents(expected.amount) &&
+    // A whole-unit currency sent before it was rounded (CZK before 2026-11-24): the amount as sent also matches.
+    cents(vendor.amount) !== cents(Number(raw.amount))
+  ) {
     mismatch = "amount";
   } else if (
     vendor.state === "none" &&
