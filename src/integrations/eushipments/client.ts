@@ -4,6 +4,7 @@ import { scrubText } from "@/lib/scrub";
 import { EUSHIPMENTS_BASE_URL, EUSHIPMENTS_TIMEOUT_MS, ORDERS_HISTORY_BATCH } from "./config";
 import { EuShipmentsError } from "./errors";
 import {
+  AwbStatusResponse,
   AttachPdfBody,
   AttachPdfResponse,
   CreateOrderBody,
@@ -372,6 +373,21 @@ export class EuShipmentsClient {
       undefined,
       OfficesPageResponse,
       { emptyOn: [404], empty: { offices: [], pagination: { current_page: page, last_page: page } } },
+    );
+  }
+
+  /**
+   * GET /get-status/{AWB}?testMode=0 — the last status of one AWB (read-only). An AWB is unique, unlike our order
+   * reference: "canceled/deleted" is exact proof that this parcel was deleted there.
+   */
+  async getAwbStatus(awb: string) {
+    if (!/^[A-Za-z0-9-]{4,40}$/.test(awb)) throw new Error("invalid AWB");
+    return this.read(
+      "get-status",
+      "GET",
+      `/get-status/${encodeURIComponent(awb)}?testMode=0`,
+      undefined,
+      AwbStatusResponse,
     );
   }
 

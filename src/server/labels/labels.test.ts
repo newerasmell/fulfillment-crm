@@ -21,7 +21,12 @@ import {
   type ManualShipmentInput,
 } from "./index";
 import { ManualShipmentInput as ManualShipmentSchema } from "./manual";
-import { replacementDraft, replacementLinks } from "./replacement";
+import {
+  orderDraftForManual,
+  replacementDraft,
+  replacementLinks,
+  searchOrdersForManual,
+} from "./replacement";
 import { searchManualProducts, stockPerWarehouse } from "./stock-view";
 import { listOrders } from "@/server/orders";
 import { withLabelTransports } from "./transport";
@@ -679,6 +684,59 @@ describe("manual shipments and labels (P7)", () => {
     expect(order.check?.connectionId).toBe(g.connection.id);
     expect(order.fulfillments).toHaveLength(0);
     expect(await g.db.outboundRequest.count({ where: { fulfillment: { orderId: r.orderId } } })).toBe(0);
+  });
+
+  it("„Поръчка от Shopify“ in the manual form: search by number / customer, then its data with prices and COD", async () => {
+    const { order: src, product } = await euTestOrder(g, {
+      number: `#PICK${Date.now() % 100000}`,
+      cod: "40.00",
+    });
+    const found = await searchOrdersForManual(owner, src.number.slice(1, 6));
+    expect(found.map((o) => o.id)).toContain(src.id);
+    expect((await searchOrdersForManual(owner, "Test Buyer")).length).toBeGreaterThan(0);
+    const d = await orderDraftForManual(owner, src.id);
+    expect(d).toMatchObject({
+      shopifyNumber: src.number,
+      cod: { amount: "40", currency: "EUR" },
+      recipient: expect.objectContaining({ name: "Test Buyer", city: "Sofia", zip: "1000" }),
+    });
+    expect(d.lines).toEqual([
+      expect.objectContaining({ productId: product.id, quantity: 2, unitPrice: "20", sku: product.sku }),
+    ]);
+    expect(d).toMatchObject({ liveShipment: null, pricesCleared: false });
+    // Half a local pair is never used; the whole pair in another currency clears the line prices.
+    await g.db.order.update({
+      where: { id: src.id },
+      data: { codLocalAmount: "999", codLocalCurrency: null },
+    });
+    expect((await orderDraftForManual(owner, src.id)).cod).toEqual({ amount: "40", currency: "EUR" });
+    await g.db.order.update({ where: { id: src.id }, data: { codLocalCurrency: "CZK" } });
+    const local = await orderDraftForManual(owner, src.id);
+    expect(local).toMatchObject({ cod: { amount: "999", currency: "CZK" }, pricesCleared: true });
+    expect(local.lines[0]!.unitPrice).toBe("");
+    // Still at a warehouse: the picker warns, and the manual preview asks for confirmation (never twice silently).
+    await g.db.fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: src.id,
+        connectionId: g.connection.id,
+        externalId: `LIVE-${src.number.slice(1)}`,
+        status: "ACCEPTED",
+      },
+    });
+    expect((await orderDraftForManual(owner, src.id)).liveShipment).toMatchObject({ status: "ACCEPTED" });
+    const pv = await previewManualShipment(owner, {
+      ...awbInput({ lines: [{ productId: product.id, quantity: 1, unitPrice: 20 }] }),
+      shopifyOrderNumber: src.number,
+    });
+    expect(pv.findings.map((f) => f.code)).toContain("manual.shopify_order_live");
+    // Delivered: a resend is a person's normal choice, no false alarm.
+    await g.db.fulfillment.updateMany({ where: { orderId: src.id }, data: { status: "DELIVERED" } });
+    expect((await orderDraftForManual(owner, src.id)).liveShipment).toBeNull();
+    // Another group never sees it.
+    const other = await euTestGroup("pick-other");
+    expect(await searchOrdersForManual(other.owner, src.number.slice(1, 6))).toEqual([]);
+    await expect(orderDraftForManual(other.owner, src.id)).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("Изпрати замяна: the form starts from the order (free, no COD); the two orders are linked both ways", async () => {

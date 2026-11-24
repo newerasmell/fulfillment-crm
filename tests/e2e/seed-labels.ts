@@ -90,6 +90,37 @@ export async function seedLabels() {
     },
   });
 
+  // A Shopify order the manual form can be filled from („Поръчка от Shopify“).
+  await sys.order.create({
+    data: {
+      accountId,
+      companyId: company.id,
+      source: "SHOPIFY",
+      number: "1-SYN7001",
+      status: "BLOCKED",
+      customerName: "Синтетичен Клиент Шопифай",
+      phone: "+420601000333",
+      shippingAddress: {
+        name: "Синтетичен Клиент Шопифай",
+        address1: "Synteticka 7",
+        city: "Testov",
+        zip: "75502",
+        countryCode: "CZ",
+        phone: "+420601000333",
+      },
+      countryCode: "CZ",
+      currency: "CZK",
+      subtotal: "990.00",
+      total: "990.00",
+      paymentMethod: "COD",
+      codAmount: "990.00",
+      placedAt: new Date(),
+      lines: {
+        create: [{ productId: product.id, sku: product.sku, title: "x", quantity: 1, unitPrice: "990.00" }],
+      },
+    },
+  });
+
   // One label already printed at Joy (as if the worker had sent it): stored PDF, tracking number.
   const r = await createManualShipment(actor, {
     kind: "JOY_LABEL",

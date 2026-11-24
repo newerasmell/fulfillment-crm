@@ -102,6 +102,12 @@ export const QUEUES = {
     name: "eushipments.syncStock",
     options: { ...retry, policy: "stately", expireInSeconds: 900 },
   },
+  /** Every hour: live euShipments shipments of orders with an open task, asked by their AWB (read-only). */
+  eushipmentsAwbCheck: {
+    name: "eushipments.awbCheck",
+    options: { retryLimit: 0, policy: "stately", expireInSeconds: 1800 },
+    cron: "41 * * * *",
+  },
   eushipmentsPollOrders: {
     name: "eushipments.pollOrders",
     options: { ...retry, policy: "stately", expireInSeconds: 1800 },

@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
-import { useEffect, useId, useState, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   createManualAction,
   manualStockAction,
@@ -11,6 +11,8 @@ import {
   previewManualAction,
   quoteAction,
   quoteStatusAction,
+  orderDraftForManualAction,
+  searchOrdersForManualAction,
 } from "@/app/actions/labels";
 import { buttonCls, ghostButtonCls, inputCls, labelCls } from "@/components/ui/form";
 import type { Finding } from "@/server/checks/findings";
@@ -21,6 +23,7 @@ import type {
   ReplacementReason,
 } from "@/server/labels";
 import type { ProductStock } from "@/server/labels/stock-view";
+import type { ManualOrderDraft } from "@/server/labels/replacement";
 
 const REASONS: ReplacementReason[] = ["damaged", "missing_item", "wrong_item", "lost", "other"];
 
@@ -81,6 +84,8 @@ export function ManualForm(props: {
   products: { id: string; sku: string; name: string }[];
   /** „Изпрати замяна“: the form starts from this order (free: price 0, no COD), every field still editable. */
   replacement?: ReplacementDraft | null;
+  /** The usual destination country of each company (its stores' first country): the form's default. */
+  companyCountries?: Record<string, string>;
 }) {
   const draft = props.replacement ?? null;
   const t = useTranslations("manual");
@@ -107,9 +112,44 @@ export function ManualForm(props: {
       city: "",
       zip: "",
       region: "",
-      countryCode: "BG",
+      countryCode: props.companyCountries?.[draft?.companyId ?? props.defaultCompanyId] ?? "BG",
     },
   );
+  // The country follows the company until a person types one or picks an order.
+  const [countryTouched, setCountryTouched] = useState(!!draft);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [pickedNotes, setPickedNotes] = useState<{
+    unmatched: string[];
+    pricesCleared: boolean;
+    live: ManualOrderDraft["liveShipment"];
+  } | null>(null);
+  const applyOrder = (d: ManualOrderDraft) => {
+    if (d.companyId) setCompanyId(d.companyId);
+    setR({ ...d.recipient });
+    setCountryTouched(true);
+    setShopifyRef(d.shopifyNumber);
+    setCurrency(d.cod?.currency ?? d.currency);
+    setCod(d.cod ? d.cod.amount : "");
+    // Always replaced (never the previous order's lines left behind); unmatched lines are named below.
+    setLines(
+      d.lines.length
+        ? d.lines.map((l) => ({
+            uid: uuid(),
+            productId: l.productId,
+            quantity: String(l.quantity),
+            unitPrice: l.unitPrice,
+          }))
+        : [{ uid: uuid(), productId: "", quantity: "1", unitPrice: "" }],
+    );
+    setLabels((prev) => ({
+      ...prev,
+      ...Object.fromEntries(d.lines.map((l) => [l.productId, { id: l.productId, sku: l.sku, name: l.name }])),
+    }));
+    setPicked(d.shopifyNumber);
+    setPickedNotes({ unmatched: d.unmatched, pricesCleared: d.pricesCleared, live: d.liveShipment });
+    setPreview(null);
+    setFindings([]);
+  };
   const [cod, setCod] = useState("");
   // Required recipient fields light up in red after the first Провери / Създай (owner request 2026-11-24).
   const [attempted, setAttempted] = useState(false);
@@ -322,6 +362,26 @@ export function ManualForm(props: {
           check();
         }}
       >
+        {!draft && <ShopifyOrderPicker picked={picked} onPick={applyOrder} />}
+        {!draft && pickedNotes && (
+          <div className="flex flex-col gap-1 text-sm" data-testid="manual-pick-notes">
+            {pickedNotes.live && (
+              <p className="m-0 rounded-[10px] bg-warn-bg p-2 text-warn" role="alert">
+                {t("pickOrder.live", {
+                  warehouse: pickedNotes.live.warehouse ?? "—",
+                  ref: pickedNotes.live.externalId ?? "—",
+                  status: pickedNotes.live.status,
+                })}
+              </p>
+            )}
+            {pickedNotes.unmatched.length > 0 && (
+              <p className="m-0 text-warn">
+                {t("replacement.unmatched", { items: pickedNotes.unmatched.join(", ") })}
+              </p>
+            )}
+            {pickedNotes.pricesCleared && <p className="m-0 text-muted">{t("pickOrder.pricesCleared")}</p>}
+          </div>
+        )}
         {!draft && (
           <label className={labelCls}>
             <span>{t("form.shopifyOrderNumber")}</span>
@@ -408,7 +468,12 @@ export function ManualForm(props: {
             {t("form.company")}
             <select
               value={companyId}
-              onChange={(e) => (setCompanyId(e.target.value), invalidate())}
+              onChange={(e) => {
+                setCompanyId(e.target.value);
+                const c = props.companyCountries?.[e.target.value];
+                if (!countryTouched && c) setR((x) => ({ ...x, countryCode: c }));
+                invalidate();
+              }}
               className={inputCls}
             >
               {props.companies.map((c) => (
@@ -468,20 +533,10 @@ export function ManualForm(props: {
             />
           </label>
           <label className={labelCls}>
-            {t("form.email")}
-            <input
-              value={r.email}
-              onChange={set("email")}
-              type="email"
-              maxLength={100}
-              className={inputCls}
-            />
-          </label>
-          <label className={labelCls}>
             <Req>{t("form.country")}</Req>
             <input
               value={r.countryCode}
-              onChange={set("countryCode")}
+              onChange={(e) => (setCountryTouched(true), set("countryCode")(e))}
               required
               aria-invalid={bad("countryCode") || undefined}
               // The visible "*" is not part of the field's name.
@@ -502,19 +557,6 @@ export function ManualForm(props: {
               maxLength={200}
               className={inputCls + reqCls("address1")}
             />
-          </label>
-          <label className={labelCls}>
-            {t("form.building")}
-            <input
-              value={r.buildingNumber}
-              onChange={set("buildingNumber")}
-              maxLength={40}
-              className={inputCls}
-            />
-          </label>
-          <label className={labelCls}>
-            {t("form.address2")}
-            <input value={r.address2} onChange={set("address2")} maxLength={200} className={inputCls} />
           </label>
           <label className={labelCls}>
             <Req>{t("form.city")}</Req>
@@ -541,6 +583,33 @@ export function ManualForm(props: {
               maxLength={15}
               className={`${inputCls} font-mono${reqCls("zip")}`}
             />
+          </label>
+          {/* Optional fields last (owner request 2026-11-24): the required ones above are what a parcel needs. */}
+          <p className="m-0 border-t border-line pt-2 text-xs font-semibold text-muted sm:col-span-2">
+            {t("form.optional")}
+          </p>
+          <label className={labelCls}>
+            {t("form.email")}
+            <input
+              value={r.email}
+              onChange={set("email")}
+              type="email"
+              maxLength={100}
+              className={inputCls}
+            />
+          </label>
+          <label className={labelCls}>
+            {t("form.building")}
+            <input
+              value={r.buildingNumber}
+              onChange={set("buildingNumber")}
+              maxLength={40}
+              className={inputCls}
+            />
+          </label>
+          <label className={labelCls}>
+            {t("form.address2")}
+            <input value={r.address2} onChange={set("address2")} maxLength={200} className={inputCls} />
           </label>
           {eu && (
             <label className={labelCls}>
@@ -1077,5 +1146,112 @@ function Req({ children }: { children: React.ReactNode }) {
         *
       </span>
     </span>
+  );
+}
+
+/**
+ * „Поръчка от Shopify“ (owner request 2026-11-24): search an order by number or customer and fill the form from it.
+ */
+function ShopifyOrderPicker({
+  picked,
+  onPick,
+}: {
+  picked: string | null;
+  onPick: (d: ManualOrderDraft) => void;
+}) {
+  const t = useTranslations("manual.pickOrder");
+  const tStatus = useTranslations("orderStatus");
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState<Awaited<ReturnType<typeof searchOrdersForManualAction>>>([]);
+  const [searched, setSearched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  // Only the answer to the latest search is shown (a slow earlier one never overwrites it).
+  const seq = useRef(0);
+  useEffect(() => {
+    if (q.trim().length < 2) return;
+    const mine = ++seq.current;
+    const id = setTimeout(
+      () =>
+        start(async () => {
+          const rows = await searchOrdersForManualAction(q);
+          if (mine !== seq.current) return;
+          setFound(rows);
+          setSearched(true);
+        }),
+      250,
+    );
+    return () => clearTimeout(id);
+  }, [q]);
+  return (
+    <section
+      className="flex flex-col gap-2 rounded-[10px] border border-line p-3 text-sm"
+      aria-label={t("title")}
+      data-testid="manual-pick-order"
+    >
+      <strong>{t("title")}</strong>
+      <span className="text-xs text-muted">{t("hint")}</span>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        aria-label={t("search")}
+        placeholder={t("placeholder")}
+        className={inputCls}
+      />
+      {picked && (
+        <span className="text-xs text-ok" role="status">
+          {t("picked", { number: picked })}
+        </span>
+      )}
+      {q.trim().length >= 2 && (
+        <ul className="m-0 flex list-none flex-col gap-1 p-0" aria-label={t("results")}>
+          {searched && found.length === 0 && <li className="text-muted">{t("none")}</li>}
+          {found.map((o) => (
+            <li key={o.id} className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                <span className="font-mono font-semibold">{o.number}</span> · {o.customerName ?? "—"} ·{" "}
+                <span className="font-mono">{o.countryCode ?? "—"}</span> ·{" "}
+                <span className="text-muted">{tStatus(o.status)}</span>
+              </span>
+              <button
+                type="button"
+                className={ghostButtonCls}
+                disabled={pending}
+                onClick={() =>
+                  start(async () => {
+                    setError(null);
+                    const d = await orderDraftForManualAction(o.id);
+                    if ("error" in d) return setError(t("failed"));
+                    // Still at a warehouse: a manual parcel would send it twice — only on a person's word.
+                    if (
+                      d.liveShipment &&
+                      !window.confirm(
+                        t("live", {
+                          warehouse: d.liveShipment.warehouse ?? "—",
+                          ref: d.liveShipment.externalId ?? "—",
+                          status: d.liveShipment.status,
+                        }),
+                      )
+                    )
+                      return;
+                    onPick(d);
+                    setQ("");
+                    setFound([]);
+                    setSearched(false);
+                  })
+                }
+              >
+                {t("use")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <span className="text-block" role="alert">
+          {error}
+        </span>
+      )}
+    </section>
   );
 }

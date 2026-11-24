@@ -31,6 +31,11 @@ export function euShipmentsTransportFor(
     effects: euEffects(accountOf, connection.id),
     onEffectFailed: effectFailureAlert(accountOf, connection.id),
     now: opts.now,
+    currentShipment: async (fulfillmentId) =>
+      accountDb(await accountOf()).fulfillment.findFirst({
+        where: { id: fulfillmentId, connectionId: connection.id },
+        select: { status: true, trackingNumbers: true },
+      }),
   });
 }
 

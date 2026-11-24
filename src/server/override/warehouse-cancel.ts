@@ -6,7 +6,13 @@ import { assertCan, can } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import type { ScopedActor } from "@/server/stores";
-import { CANCEL_IN_FLIGHT, CANCEL_OPERATIONS, WAREHOUSE_CANCEL_MARK } from "./cancel-effects";
+import {
+  CANCEL_IN_FLIGHT,
+  CANCEL_OPERATIONS,
+  WAREHOUSE_CANCEL_MARK,
+  warehouseCancelConfirmed,
+} from "./cancel-effects";
+import { recordAudit } from "@/server/audit";
 import { recordTimelineEvent } from "./choice";
 import { INACTIVE_SHIPMENT } from "./guards";
 import { scopedOrderForChoice } from "./options";
@@ -278,4 +284,117 @@ export async function requestWarehouseCancel(
     if (isUniqueViolation(err)) throw new DomainError("already_requested");
     throw err;
   }
+}
+
+/**
+ * „Складът я е изтрил — потвърди ръчно“ (owner report 2026-11-24): the warehouse deleted the order in its own system
+ * (a person checked the cabinet / the warehouse wrote so) while the CRM's delete was refused and the vendor still
+ * reports the old status. Only after a refused cancel of this shipment and with nothing on its way; a person confirms
+ * with a note, which is audited. Then the shipment is cancelled and the order goes to BLOCKED as for a confirmed
+ * cancel: it can be rerouted / sent again. The person carries the responsibility that the parcel is not shipped.
+ */
+export async function confirmWarehouseCancelByHand(
+  actor: ScopedActor,
+  input: { fulfillmentId: string; note: string },
+) {
+  assertCan(actor.role, "orders.cancelShipment");
+  const note = z.string().trim().min(5).max(500).parse(input.note);
+  const db = accountDb(actor.accountId);
+  const f = await db.fulfillment.findUnique({
+    where: { id: input.fulfillmentId },
+    select: {
+      id: true,
+      orderId: true,
+      status: true,
+      externalId: true,
+      order: { select: { companyId: true } },
+    },
+  });
+  if (!f || (actor.companyScope && !actor.companyScope.includes(f.order.companyId ?? "")))
+    throw new DomainError("not_found");
+  await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+    await lockForUpdate("Order", f.orderId);
+    const fresh = await tx.fulfillment.findUniqueOrThrow({ where: { id: f.id }, select: { status: true } });
+    if ((INACTIVE_SHIPMENT as readonly string[]).includes(fresh.status))
+      throw new DomainError("not_cancellable");
+    const last = await tx.outboundRequest.findFirst({
+      where: { fulfillmentId: f.id, operation: { in: [...CANCEL_OPERATIONS] } },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { id: true, status: true, payload: true, lastError: true, createdAt: true },
+    });
+    // Only after the warehouse refused our cancel, never while a cancel (or any write) is on its way. A 401 is our
+    // token, not the warehouse's answer: the cancel never reached it, so there is nothing to confirm.
+    if (!last || last.status !== "FAILED" || /unauthenticated|auth_failed/i.test(last.lastError ?? ""))
+      throw new DomainError("not_refused");
+    // Positive evidence that the warehouse itself answered "no" to THIS request (not a transport failure, not
+    // "max attempts (not sent)"): the refusal recorded by the vendor's answer, after the request was made.
+    const refused = await tx.orderEvent.findFirst({
+      where: {
+        orderId: f.orderId,
+        cause: "warehouse_cancel_refused",
+        createdAt: { gte: last.createdAt },
+        meta: { path: ["fulfillmentId"], equals: f.id },
+      },
+      select: { id: true },
+    });
+    if (!refused) throw new DomainError("not_refused");
+    // Any write of this shipment still on its way or of unknown outcome (a sent create is settled).
+    const open = await tx.outboundRequest.count({
+      where: {
+        fulfillmentId: f.id,
+        status: { in: ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING", "UNCERTAIN"] },
+      },
+    });
+    if (open) throw new DomainError("already_requested");
+    await tx.fulfillment.update({
+      where: { id: f.id },
+      data: { status: "CANCELLED", rawStatus: "deleted (confirmed by hand)" },
+    });
+    await tx.fulfillmentEvent.create({
+      data: {
+        accountId: actor.accountId,
+        fulfillmentId: f.id,
+        occurredAt: new Date(),
+        source: "manual:deleted_at_warehouse",
+        rawStatus: "deleted (confirmed by hand)",
+        status: "CANCELLED",
+        payload: { userId: actor.userId, note },
+      },
+    });
+    await warehouseCancelConfirmed(tx, {
+      accountId: actor.accountId,
+      orderId: f.orderId,
+      fulfillmentId: f.id,
+      source: "manual.confirmedDeleted",
+      // The refused request carries the reason (e.g. no stock → „Липсващи артикули“ + Shopify tags).
+      request: { id: last.id, payload: last.payload },
+    });
+    // The "warehouse refused the cancel" task is answered.
+    const tasks = await tx.alert.findMany({
+      where: {
+        isTask: true,
+        status: { not: "RESOLVED" },
+        entityType: "Order",
+        entityId: f.orderId,
+        kind: "warehouse_cancel_refused",
+      },
+      select: { id: true },
+    });
+    for (const a of tasks) {
+      await tx.alert.update({ where: { id: a.id }, data: { status: "RESOLVED", resolvedAt: new Date() } });
+      await tx.alertNote.create({
+        data: { accountId: actor.accountId, alertId: a.id, userId: actor.userId, action: "resolve", note },
+      });
+    }
+  });
+  await recordAudit({
+    accountId: actor.accountId,
+    userId: actor.userId,
+    action: "warehouse_cancel.confirmed_by_hand",
+    entityType: "Fulfillment",
+    entityId: f.id,
+    after: { orderId: f.orderId, externalId: f.externalId, note },
+    ip: actor.ip ?? null,
+    userAgent: actor.userAgent ?? null,
+  });
 }

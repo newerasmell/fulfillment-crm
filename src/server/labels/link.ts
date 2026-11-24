@@ -72,12 +72,24 @@ export async function linkManualToShopifyOrder(
   assertCan(actor.role, "orders.fulfill");
   const result = await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate, lockKey }) => {
     // Lock order as the label / euShipments workers take it: the shipment's keys first, then the order rows (sorted).
-    const pre = await tx.manualShipment.findFirst({
+    const ms = await tx.manualShipment.findFirst({
       where: { orderId: input.manualOrderId },
       select: { fulfillmentId: true },
     });
-    if (!pre) throw new DomainError("not_found");
-    if (!pre.fulfillmentId) throw new DomainError("manual_not_shipped");
+    if (!ms) throw new DomainError("not_found");
+    // A warehouse manual order's shipment is not always written on its ManualShipment: its live shipment then.
+    const fid =
+      ms.fulfillmentId ??
+      (
+        await tx.fulfillment.findFirst({
+          where: { orderId: input.manualOrderId, status: { in: [...SHIPPING] } },
+          select: { id: true },
+          orderBy: { createdAt: "desc" },
+        })
+      )?.id ??
+      null;
+    if (!fid) throw new DomainError("manual_not_shipped");
+    const pre = { fulfillmentId: fid };
     await lockKey(`labels:fulfillment:${pre.fulfillmentId}`);
     await lockKey(`eushipments:fulfillment:${pre.fulfillmentId}`);
     for (const id of [input.shopifyOrderId, input.manualOrderId].sort()) await lockForUpdate("Order", id);
@@ -92,21 +104,15 @@ export async function linkManualToShopifyOrder(
         codAmount: true,
         currency: true,
         lines: { select: { id: true, productId: true, quantity: true } },
-        manualShipment: {
-          select: {
-            id: true,
-            kind: true,
-            fulfillment: {
-              select: { id: true, orderId: true, status: true, shippedAt: true, lines: true },
-            },
-          },
-        },
+        manualShipment: { select: { id: true, kind: true } },
       },
     });
     if (!manual) throw new DomainError("not_found");
-    const f = manual.manualShipment?.fulfillment;
-    if (!f || f.orderId !== manual.id || f.id !== pre.fulfillmentId)
-      throw new DomainError("manual_not_shipped");
+    const f = await tx.fulfillment.findFirst({
+      where: { id: pre.fulfillmentId, orderId: manual.id },
+      select: { id: true, orderId: true, status: true, shippedAt: true, lines: true },
+    });
+    if (!f || !manual.manualShipment) throw new DomainError("manual_not_shipped");
     if (!(SHIPPING as readonly string[]).includes(f.status)) throw new DomainError("manual_not_shipped");
     // Nothing of the manual shipment on its way either (a void / cancel / reroute would land on the wrong order).
     const manualWrites = await tx.outboundRequest.count({
@@ -138,6 +144,9 @@ export async function linkManualToShopifyOrder(
     if (order.companyId !== manual.companyId) throw new DomainError("other_company");
     if (order.cancelledAt || ["VOIDED", "REFUNDED"].includes(order.shopifyFinancialStatus ?? ""))
       throw new DomainError("order_cancelled_in_shopify");
+    // Cancelled in the CRM is final (the pipeline never reopens it): attach nothing to it.
+    if (order.status === "CANCELLED" || order.status === "FULFILLED_EXTERNALLY")
+      throw new DomainError("order_closed_in_crm");
     // Never two shipments: no live shipment and no warehouse write on its way for the Shopify order.
     const live = await tx.fulfillment.count({
       where: { orderId: order.id, status: { notIn: [...INACTIVE_SHIPMENT] } },
@@ -206,6 +215,11 @@ export async function linkManualToShopifyOrder(
     });
     await tx.fulfillmentLine.deleteMany({ where: { fulfillmentId: f.id } });
     await tx.fulfillment.update({ where: { id: f.id }, data: { orderId: order.id } });
+    // The manual record keeps pointing at its shipment (the link on its page reads it).
+    await tx.manualShipment.update({
+      where: { id: manual.manualShipment.id },
+      data: { fulfillmentId: f.id },
+    });
     if (moved.size)
       await tx.fulfillmentLine.createMany({
         data: [...moved].map(([orderLineId, quantity]) => ({

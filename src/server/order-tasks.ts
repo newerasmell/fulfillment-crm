@@ -24,6 +24,8 @@ import { CANCEL_OPERATIONS, warehouseCancelMeta } from "@/server/override/cancel
  *  - shopify_writeback_uncertain: no write-back with an unknown result left;
  *  - shopify_writeback_orphaned: every Shopify fulfillment of a cancelled shipment was taken over (SENT, not a dry
  *    run) by a shipment that is still live.
+ *  - order_submit_failed / order_blocked / order_unknown / order_stuck (the alert sweep's tasks): closed once the
+ *    order has left that status (the sweep would close them at its next run).
  * Never closed here: reroute_uncertain and warehouse_cancel_not_blocked (only a person who checked can say).
  */
 
@@ -57,6 +59,8 @@ export const RecheckTasksInput = z.object({ orderId: z.string().min(1).max(64) }
 
 /** Reason codes (translated on the page: orders.tasksRecheck.why.*). */
 export type TaskWhy =
+  | "order_state_left"
+  | "order_state_holds"
   | "parcel_moved_on"
   | "replacement_sent"
   | "parcel_still_shipped"
@@ -82,8 +86,26 @@ async function verdictFor(
   tx: Prisma.TransactionClient,
   accountId: string,
   orderId: string,
-  alert: { kind: string; createdAt: Date },
+  alert: { kind: string; createdAt: Date; body?: string | null },
 ): Promise<Verdict | null> {
+  // The sweep's own order-state tasks (owner report 2026-11-24: an order accepted at last kept „Sending to the
+  // warehouse failed“ until the next sweep): closed as soon as the order has left that state.
+  const stateOf: Record<string, string> = {
+    order_submit_failed: "SUBMIT_FAILED",
+    order_blocked: "BLOCKED",
+    order_unknown: "UNKNOWN",
+  };
+  if (alert.kind in stateOf || alert.kind === "order_stuck") {
+    const wanted =
+      alert.kind === "order_stuck"
+        ? (alert.body ?? "").replace(/^status=/, "") || null
+        : stateOf[alert.kind]!;
+    const o = await tx.order.findFirst({ where: { accountId, id: orderId }, select: { status: true } });
+    if (!o || !wanted) return null;
+    return o.status === wanted
+      ? { close: false, why: "order_state_holds" }
+      : { close: true, why: "order_state_left" };
+  }
   if (REFUSED_CANCEL.has(alert.kind)) {
     // The shipments the task is about (one open task per order collects every refusal): from the refusals themselves.
     const ids =
@@ -233,7 +255,7 @@ export async function recheckOrderTasks(actor: ScopedActor, raw: z.input<typeof 
       entityId: orderId,
       status: { not: "RESOLVED" },
     },
-    select: { id: true, kind: true, title: true, createdAt: true },
+    select: { id: true, kind: true, title: true, createdAt: true, body: true },
   });
   const closed: { id: string; title: string; why: TaskWhy }[] = [];
   const kept: { id: string; title: string; why: TaskWhy | null }[] = [];

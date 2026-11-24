@@ -28,7 +28,7 @@ export default async function NewManualShipmentPage({
       if (!(err instanceof DomainError)) throw err;
       notFound = true;
     }
-  const [companies, connections, products] = await Promise.all([
+  const [companies, connections, products, stores] = await Promise.all([
     listCompanies(actorFrom(ctx)),
     manualConnections(actor),
     // Only the products the form starts with (a replacement's lines); everything else comes from the search.
@@ -38,7 +38,20 @@ export default async function NewManualShipmentPage({
           select: { id: true, sku: true, name: true },
         })
       : Promise.resolve([]),
+    // Each company's usual destination country (owner request 2026-11-24): its stores' first country.
+    accountDb(ctx.accountId).store.findMany({
+      where: {
+        archivedAt: null,
+        companyId: ctx.companyScope ? { in: ctx.companyScope } : { not: null },
+      },
+      select: { companyId: true, countries: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
+  const companyCountries: Record<string, string> = {};
+  for (const st of stores)
+    if (st.companyId && !companyCountries[st.companyId] && st.countries[0])
+      companyCountries[st.companyId] = st.countries[0].toUpperCase();
   const couriers: Record<
     string,
     { courierId: number; name: string; toOffice: boolean; country: string | null }[]
@@ -82,6 +95,7 @@ export default async function NewManualShipmentPage({
             : products
         }
         replacement={replacement}
+        companyCountries={companyCountries}
       />
     </>
   );

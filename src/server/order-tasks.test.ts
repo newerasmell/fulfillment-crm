@@ -339,3 +339,43 @@ describe("re-check an order's tasks", () => {
     expect(await statusOf(theirTask.id)).not.toBe("RESOLVED");
   });
 });
+
+// Owner report 2026-11-24: an order accepted at last kept „Sending to the warehouse failed“ until the next sweep.
+describe("the sweep's order-state tasks on „Провери задачите“", () => {
+  it("close once the order left that state; stay while it holds", async () => {
+    const g = await euTestGroup("recheck-state");
+    const { order } = await euTestOrder(g, { number: "#RS-1" });
+    const db = systemDb();
+    await db.order.update({ where: { id: order.id }, data: { status: "SUBMIT_FAILED" } });
+    const failed = await db.alert.create({
+      data: {
+        accountId: g.accountId,
+        kind: "order_submit_failed",
+        isTask: true,
+        severity: "CRITICAL",
+        title: "Sending to the warehouse failed: #RS-1",
+        body: "status=SUBMIT_FAILED",
+        entityType: "Order",
+        entityId: order.id,
+      },
+    });
+    const stuck = await db.alert.create({
+      data: {
+        accountId: g.accountId,
+        kind: "order_stuck",
+        isTask: true,
+        severity: "WARNING",
+        title: "Order stuck in QUEUED",
+        body: "status=QUEUED",
+        entityType: "Order",
+        entityId: order.id,
+      },
+    });
+    let r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.closed.map((c) => c.id)).toEqual([stuck.id]); // not QUEUED any more
+    expect(r.kept.find((k) => k.id === failed.id)?.why).toBe("order_state_holds");
+    await db.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
+    r = await recheckOrderTasks(g.owner, { orderId: order.id });
+    expect(r.closed.map((c) => c.id)).toEqual([failed.id]);
+  });
+});

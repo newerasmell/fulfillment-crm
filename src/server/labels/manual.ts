@@ -20,6 +20,7 @@ import type { ValidationFinding } from "@/integrations/fhb-v3/validators";
 import { normalisePhoneE164 } from "@/integrations/fhb-v3/phone";
 import { customPhoneRule, type PhoneRule } from "@/integrations/eushipments/phone";
 import { MAX_VARIABLE_SYMBOL } from "@/integrations/fhb-v3/mapper";
+import { NOT_IN_FLIGHT_SHIPMENT } from "@/server/override/guards";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
 import { assertCan } from "@/server/auth/rbac";
@@ -245,7 +246,8 @@ const SHIPPED_STATUSES = new Set([
  * were already sent for it (two people answering the same complaint). Used by preview and create alike.
  */
 async function replacementFindings(db: Tx, actor: ScopedActor, v: Parsed): Promise<Finding[]> {
-  if (!v.replacement) return [];
+  const live = await shopifyOrderLiveFinding(db, v);
+  if (!v.replacement) return live;
   const src = await db.order.findUnique({
     where: { id: v.replacement.sourceOrderId },
     select: { id: true, number: true, companyId: true, status: true },
@@ -253,7 +255,7 @@ async function replacementFindings(db: Tx, actor: ScopedActor, v: Parsed): Promi
   if (!src || (actor.companyScope && !actor.companyScope.includes(src.companyId ?? "")))
     throw new DomainError("replacement_source_not_found");
   if (src.companyId !== v.companyId) throw new DomainError("replacement_other_company");
-  const out: Finding[] = [];
+  const out: Finding[] = [...live];
   if (!SHIPPED_STATUSES.has(src.status))
     out.push({
       code: "manual.replacement_source_not_shipped",
@@ -282,6 +284,60 @@ async function replacementFindings(db: Tx, actor: ScopedActor, v: Parsed): Promi
       message_en: `A replacement was already sent for order ${src.number}: ${earlier.map((e) => e.order.number).join(", ")}.`,
     });
   return out;
+}
+
+/**
+ * The Shopify order typed (or picked) on a manual parcel still has a shipment at a warehouse, or a write on its way:
+ * a manual parcel on top would send it twice. Soft — a person confirms (e.g. the warehouse deleted it in its cabinet).
+ */
+async function shopifyOrderLiveFinding(db: Tx, v: Parsed): Promise<Finding[]> {
+  if (!v.shopifyOrderNumber) return [];
+  const n = v.shopifyOrderNumber;
+  const orders = await db.order.findMany({
+    where: {
+      companyId: v.companyId,
+      source: "SHOPIFY",
+      OR: [
+        { number: { equals: n, mode: "insensitive" } },
+        { number: { equals: `#${n}`, mode: "insensitive" } },
+      ],
+    },
+    select: {
+      number: true,
+      fulfillments: {
+        where: {
+          OR: [
+            { status: { notIn: [...NOT_IN_FLIGHT_SHIPMENT] } },
+            {
+              outboundRequests: {
+                some: {
+                  status: {
+                    in: ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING", "UNCERTAIN"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+        select: { externalId: true, status: true, connection: { select: { name: true } } },
+        take: 1,
+      },
+    },
+    take: 3,
+  });
+  const hit = orders.find((o) => o.fulfillments.length);
+  if (!hit) return [];
+  const f = hit.fulfillments[0]!;
+  return [
+    {
+      code: "manual.shopify_order_live",
+      severity: "soft",
+      source: "routing",
+      field: null,
+      message_bg: `Поръчка ${hit.number} вече има пратка в склад „${f.connection.name}“ (${f.externalId}, ${f.status}) — ръчната ще я изпрати втори път.`,
+      message_en: `Order ${hit.number} already has a shipment at "${f.connection.name}" (${f.externalId}, ${f.status}) — a manual parcel would send it twice.`,
+    },
+  ];
 }
 
 /** What the audit log keeps of a replacement (the free text may hold personal data: left out). */

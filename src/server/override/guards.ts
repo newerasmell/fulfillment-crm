@@ -20,3 +20,16 @@ export const isRerouteOpen = (err: unknown) => messageOf(err).includes("crm_rero
 
 /** Shipment states in which nothing is (or may be) live at a warehouse — the same set the pipeline uses. */
 export const INACTIVE_SHIPMENT = ["SUBMIT_FAILED", "CANCELLED"] as const;
+
+/**
+ * Shipment states in which a second parcel would NOT duplicate one still on its way: never sent / cancelled, or
+ * the parcel already reached the customer or is coming back (a resend after that is a person's normal choice).
+ */
+export const NOT_IN_FLIGHT_SHIPMENT = [
+  ...INACTIVE_SHIPMENT,
+  "DELIVERED",
+  "COD_PAID",
+  "RETURNING",
+  "RETURN_RECEIVED",
+  "FULFILLED_EXTERNALLY",
+] as const;

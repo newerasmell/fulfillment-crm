@@ -644,6 +644,29 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   the manual shipment has a write / reroute on its way, when the parcel does not cover the whole order, when the order
   is cancelled / voided / refunded in Shopify, or (unless confirmed, then a task) when the COD differs. Only the tasks
   the shipment answers close (also those on the order's old refused shipments). Label parcels reserve no stock.
+- 2026-11-24 „Нова ръчна пратка“: „Поръчка от Shopify“ — search an order (number / customer) and fill the form from it
+  (recipient, country, lines with prices, COD in the destination currency, Shopify number); optional fields moved to
+  the bottom; the default country follows the company (its stores' first country) until a person changes it.
+- 2026-11-24 Orders store filter: a multi-select grouped by product line, alphabetical (`store=a,b`, `store=all`).
+  „Моите магазини“ (settings, every member): the list starts with those stores. New table MemberStorePreference
+  (migration 20261124200000_member_store_preferences: one new table with RLS).
+- 2026-11-24 euShipments: an AWB answering `canceled/deleted` (GET /get-status, unique per parcel) is exact proof of a
+  delete — used after a refused delete and by an hourly read-only check (queue eushipments.awbCheck) of live shipments
+  of orders with an open task: deleted → shipment CANCELLED, order BLOCKED (confirmed cancel, or a task).
+  „Складът я е изтрил — потвърди ръчно“ after a refused cancel: a person confirms with a note (audited).
+- 2026-11-24 A no-stock cancel confirmed by the warehouse also tags the Shopify order `cancelled by warehouse <name>`
+  (with out_of_stock, the store tag removed as before).
+- 2026-11-24 „Провери задачите“ closes the sweep's order-state tasks (submit failed, blocked, unknown, stuck) as soon as
+  the order left that state. Attaching a manual shipment finds the manual order's live shipment when its ManualShipment
+  has no shipment id; an order cancelled in the CRM is final and refused.
+- 2026-11-24 Audit fixes for this batch: the AWB proof needs EVERY AWB of the shipment (≤ 3) deleted; the hourly check
+  covers only ACCEPTED / PROCESSING, takes the shipment lock before the order lock, rotates through all problem
+  shipments (200 per run) and leaves a connection after 3 failed lookups. Hand confirm: never after a 401, and the
+  refused request's reason (no stock) is carried to „Липсващи артикули“. Manual form from a Shopify order: warns
+  (confirm + soft finding `manual.shopify_order_live`) when the order still has a shipment at a warehouse; the local
+  COD pair only when complete; line prices left empty when the COD is in another currency. „Моите магазини“ only
+  within the active company / line. Decision: COD edited by euShipments in its cabinet cannot be read back before
+  delivery (no COD field in orders-history / get-status) — edits go through the CRM / Shopify.
 - 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
   joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
   label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB

@@ -32,6 +32,8 @@ export interface OrderFilters {
   tab: OrderTab;
   q?: string;
   storeId?: string;
+  /** Several stores (the multi-select): comma-separated in the URL as `store`. */
+  storeIds?: string[];
   country?: string;
   payment?: "COD" | "PREPAID";
   page?: number;
@@ -43,7 +45,7 @@ function baseWhere(ctx: Ctx, f: Omit<OrderFilters, "tab" | "page">): Prisma.Orde
   const q = f.q?.trim();
   return {
     ...companyFilter(ctx),
-    ...(f.storeId ? { storeId: f.storeId } : {}),
+    ...(f.storeIds?.length ? { storeId: { in: f.storeIds } } : f.storeId ? { storeId: f.storeId } : {}),
     ...(f.country ? { countryCode: f.country.toUpperCase() } : {}),
     ...(f.payment ? { paymentMethod: f.payment } : {}),
     ...(q
@@ -299,6 +301,20 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
 /** The orders list the order page was opened from (tab + filters), carried in the order page URL. */
 export type OrderListContext = Omit<OrderFilters, "page">;
 
+/** `store=a,b,c` → the stores (max 100); "all" or nothing → none (no store filter). */
+export function parseStoreParam(v: string | undefined): string[] | undefined {
+  if (!v || v === "all") return undefined;
+  const ids = [
+    ...new Set(
+      v
+        .split(",")
+        .map((x) => x.trim().slice(0, 64))
+        .filter(Boolean),
+    ),
+  ].slice(0, 100);
+  return ids.length ? ids : undefined;
+}
+
 /** Reads the list context from the order page's query (the same keys the orders list uses). */
 export function parseOrderListContext(
   sp: Record<string, string | string[] | undefined>,
@@ -310,7 +326,7 @@ export function parseOrderListContext(
   return {
     tab,
     q: one(sp.q)?.slice(0, 100),
-    storeId: one(sp.store)?.slice(0, 64),
+    storeIds: parseStoreParam(one(sp.store)),
     country: one(sp.country)?.slice(0, 2),
     payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
   };
@@ -321,7 +337,8 @@ export function orderListQuery(c: OrderListContext | null) {
   if (!c) return "";
   const p = new URLSearchParams({ tab: c.tab });
   if (c.q) p.set("q", c.q);
-  if (c.storeId) p.set("store", c.storeId);
+  if (c.storeIds?.length) p.set("store", c.storeIds.join(","));
+  else if (c.storeId) p.set("store", c.storeId);
   if (c.country) p.set("country", c.country);
   if (c.payment) p.set("payment", c.payment);
   return p.toString();

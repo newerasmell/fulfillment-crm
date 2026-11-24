@@ -69,6 +69,19 @@ test("manual shipments: Joy label in CANARY, AWB, from stock, hard block, label 
   await bar.getByRole("button", { name: "Един PDF с етикетите" }).click();
   await expect(bar.getByText("Чака склада…")).toBeVisible({ timeout: 30_000 });
 
+  // „Поръчка от Shopify“: search it, fill the form from it (recipient, country, COD, Shopify number).
+  await openNew(page);
+  const pick = page.getByTestId("manual-pick-order");
+  await pick.getByRole("textbox", { name: "Търси поръчка от Shopify" }).fill("SYN7001");
+  await pick.getByRole("button", { name: "Попълни от нея" }).click();
+  await expect(pick).toContainText("Попълнено от поръчка 1-SYN7001");
+  const filled = page.getByRole("form", { name: "Нова ръчна пратка" });
+  await expect(filled.getByLabel("Име", { exact: true })).toHaveValue("Синтетичен Клиент Шопифай");
+  await expect(filled.getByLabel("Държава (ISO)", { exact: true })).toHaveValue("CZ");
+  await expect(filled.getByLabel("Пощенски код", { exact: true })).toHaveValue("75502");
+  await expect(filled.getByTestId("manual-shopify-number")).toHaveValue("1-SYN7001");
+  await expect(filled.getByTestId("manual-cod")).not.toContainText("Без наложен платеж");
+
   // Required fields: an empty form marks them in red and names them; nothing is checked or created.
   await openNew(page);
   const empty = page.getByRole("form", { name: "Нова ръчна пратка" });

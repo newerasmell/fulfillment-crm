@@ -334,6 +334,20 @@ contracts. Separate base URL, separate auth call, camelCase.
   euShipments id, or — by reference only — orders-history ending in Deleted with OUR AWB. A by-id 400 is never checked
   by reference, and no AWB on our side is no proof (early statuses have none; references are not unique). Limitation:
   our AWB itself comes from orders-history by reference, so the by-id path is the reliable one.
+  Also exact, on either path: `GET /get-status/{awb}?testMode=0` answering `"canceled/deleted"` for EVERY AWB we
+  hold for the shipment (an AWB is unique; a re-labelled parcel keeps a live one). More than 3 AWBs, any other
+  status, or a read error: no proof. (Owner 2026-11-24, case: deleted in the cabinet while orders-history still
+  answered "Awaiting pickup" for the reference.)
+- Hourly AWB check (queue `eushipments.awbCheck`, read-only `GET /get-status`): live euShipments shipments still at
+  the warehouse (ACCEPTED / PROCESSING — never once the courier has it) of orders with an open task, at most 200 per
+  run, rotating through all of them. Every AWB deleted → shipment CANCELLED; after a CRM cancel the order follows as a
+  confirmed cancel (no stock → „Липсващи артикули“ + Shopify tags `out_of_stock`, `cancelled by warehouse <name>`),
+  otherwise BLOCKED with the `eushipments_cancelled_at_vendor` task. A connection is left for the run after 3
+  lookups in a row without an answer.
+- Confirmed by hand (`warehouse_cancel.confirmed_by_hand`, audited, note required): only after the warehouse refused
+  our cancel (not after a 401 — that never reached it) and with no write of the shipment on its way.
+- COD edited by the warehouse in its cabinet is NOT readable before delivery: orders-history and get-status carry
+  no COD field; the COD comes back only with the paid-COD lists. Such edits are made in the CRM / Shopify too.
 - Attach invoice: `POST /fulfilment/attach-pdf-files` — **only before the AWB is generated** (422 after),
   one file per request, content must be a real PDF (signature checked). Attach immediately after create.
 

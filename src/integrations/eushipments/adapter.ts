@@ -86,6 +86,12 @@ export interface EuTransportDeps {
   onEffectFailed?(failure: EffectFailure): Promise<void>;
   /** Clock for the waybillAvailableDate check (tests). */
   now?(): Date;
+  /**
+   * The shipment as the CRM holds it NOW (status, every AWB the poller recorded since the delete was queued). The AWB
+   * proof of a refused delete is used only for a shipment still at the warehouse and with these AWBs; without this
+   * lookup there is no AWB proof.
+   */
+  currentShipment?(fulfillmentId: string): Promise<{ status: string; trackingNumbers: string[] } | null>;
 }
 
 const str = (v: unknown) => (v === null || v === undefined || v === false ? null : String(v));
@@ -95,6 +101,22 @@ export class EuShipmentsTransport implements OutboundTransport {
 
   supportsTestMode(operation: string) {
     return TEST_MODE_OPS.has(operation);
+  }
+
+  /**
+   * The AWBs that may prove a delete: the shipment's CURRENT AWBs, only while it is still at the warehouse (ACCEPTED /
+   * PROCESSING). A parcel already with the courier (a re-labelled one keeps a cancelled old AWB) is never "deleted".
+   */
+  private async awbProofFor(ctx: Envelope["ctx"]): Promise<string[] | null> {
+    const id = typeof ctx.fulfillmentId === "string" ? ctx.fulfillmentId : null;
+    if (!id || !this.deps.currentShipment) return null;
+    try {
+      const f = await this.deps.currentShipment(id);
+      if (!f || !AWB_PROOF_STATUSES.has(f.status)) return null;
+      return f.trackingNumbers;
+    } catch {
+      return null;
+    }
   }
 
   /** Runs a domain effect; a failure is logged and never turns a vendor answer into a different outcome. */
@@ -274,6 +296,7 @@ export class EuShipmentsTransport implements OutboundTransport {
                 notFoundById:
                   !res.ok && res.status === 404 && /does not exist/i.test(String(res.error ?? "")),
                 awbs: ctx.awbs,
+                awbProof: await this.awbProofFor(ctx),
               });
               if (gone) {
                 if (live) await this.effect(call, "orderDeleted", ctx);
@@ -420,11 +443,21 @@ export class EuShipmentsTransport implements OutboundTransport {
  * Anything else (not listed, another status, no AWB, a read error): the refusal stands.
  */
 export async function alreadyDeleted(
-  client: Pick<EuShipmentsClient, "ordersHistory">,
-  input: { ref: string; byId: boolean; notFoundById: boolean; awbs: unknown },
-): Promise<"by_id" | "history" | null> {
-  if (input.byId) return input.notFoundById ? "by_id" : null;
+  client: Pick<EuShipmentsClient, "ordersHistory" | "getAwbStatus">,
+  input: {
+    ref: string;
+    byId: boolean;
+    notFoundById: boolean;
+    awbs: unknown;
+    /** The shipment's current AWBs while it is still at the warehouse; null = no AWB proof (see awbProofFor). */
+    awbProof?: string[] | null;
+  },
+): Promise<"by_id" | "awb" | "history" | null> {
+  if (input.byId && input.notFoundById) return "by_id";
   const ours = Array.isArray(input.awbs) ? input.awbs.map(String).filter(Boolean) : [];
+  // Every current AWB says it was deleted (owner idea 2026-11-24): an AWB is unique, so this is exact for either path.
+  if (input.awbProof?.length && (await awbDeleted(client, input.awbProof)) === "deleted") return "awb";
+  if (input.byId) return null;
   if (!input.ref || !ours.length) return null;
   try {
     const lookup = classifyHistoryItem(historyItemFor(await client.ordersHistory([input.ref]), input.ref));
@@ -435,6 +468,33 @@ export async function alreadyDeleted(
     return null;
   }
 }
+
+/**
+ * Do our AWBs say the parcel was deleted at euShipments? Only when EVERY AWB of the shipment (at most 3) answers
+ * "canceled/deleted": a re-labelled parcel (old AWB cancelled, new one live) is not deleted. More than 3 or a
+ * malformed AWB: "no_proof"; a read error: "unknown" (also no proof).
+ */
+export async function awbDeleted(
+  client: Pick<EuShipmentsClient, "getAwbStatus">,
+  awbs: string[],
+): Promise<"deleted" | "alive" | "unknown" | "no_proof"> {
+  const list = [...new Set(awbs.filter(Boolean))];
+  // Nothing to ask (no AWB, more than 3, a malformed one): no proof, and no sign of a failing connection either.
+  if (!list.length || list.length > 3 || list.some((a) => !/^[A-Za-z0-9-]{4,40}$/.test(a))) return "no_proof";
+  for (const awb of list) {
+    let status: string;
+    try {
+      status = normaliseStatusText((await client.getAwbStatus(awb)).status ?? "");
+    } catch {
+      return "unknown";
+    }
+    if (status !== "canceled/deleted") return "alive";
+  }
+  return "deleted";
+}
+
+/** Shipment statuses (CRM) in which an AWB answering canceled/deleted proves a delete: before the courier has it. */
+export const AWB_PROOF_STATUSES: ReadonlySet<string> = new Set(["ACCEPTED", "PROCESSING"]);
 
 const DELETED = new Set(["deleted", "cancelled", "canceled/deleted"]);
 /** The item's last status is Deleted / Cancelled at euShipments. Pure. */

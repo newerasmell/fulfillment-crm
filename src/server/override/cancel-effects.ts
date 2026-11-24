@@ -151,10 +151,17 @@ async function openOrderTask(
  */
 export async function warehouseCancelConfirmed(
   tx: Tx,
-  input: { accountId: string; orderId: string; fulfillmentId: string; source: string },
+  input: {
+    accountId: string;
+    orderId: string;
+    fulfillmentId: string;
+    source: string;
+    /** The cancel request this confirms when it never left as "sent" (a refusal confirmed by hand). */
+    request?: { id: string; payload: unknown };
+  },
 ): Promise<boolean> {
   if (await isRerouteOwnedShipment(tx, input.fulfillmentId)) return false;
-  const req = await latestCancelRequest(tx, input.accountId, input.fulfillmentId);
+  const req = input.request ?? (await latestCancelRequest(tx, input.accountId, input.fulfillmentId));
   const meta = req ? warehouseCancelMeta(req.payload) : null;
   const line = await cancelReasonLine(tx, input.accountId, meta);
   const t = await transition(tx, {
@@ -209,6 +216,7 @@ export async function warehouseCancelConfirmed(
         accountId: input.accountId,
         orderId: input.orderId,
         userId: meta.requestedById,
+        fulfillmentId: input.fulfillmentId,
       });
     }
     return t.changed;
@@ -280,7 +288,17 @@ const OUT_OF_STOCK_TAG = "out_of_stock";
  * store that writes to Shopify (LIVE), with no shipment left at any warehouse. Runs inside the transaction that
  * records the warehouse's cancel, so it never throws: whatever stops it leaves the order BLOCKED with a task.
  */
-async function toMissingItems(tx: Tx, a: { accountId: string; orderId: string; userId: string }) {
+/**
+ * Shopify tag naming the warehouse that cancelled the order (owner request 2026-11-24: "out of stock — cancelled by
+ * warehouse Warehouse A", so it is clear in Shopify and in the CRM where what happened). Shopify keeps tags ≤ 40 chars.
+ */
+export const cancelledByWarehouseTag = (warehouse: string) =>
+  `cancelled by warehouse ${warehouse.replace(/[,"]/g, " ").replace(/\s+/g, " ").trim()}`.slice(0, 40).trim();
+
+async function toMissingItems(
+  tx: Tx,
+  a: { accountId: string; orderId: string; userId: string; fulfillmentId?: string },
+) {
   const order = await tx.order.findFirst({
     where: { id: a.orderId, accountId: a.accountId },
     select: {
@@ -345,12 +363,21 @@ async function toMissingItems(tx: Tx, a: { accountId: string; orderId: string; u
     where: { accountId_storeId: { accountId: a.accountId, storeId: order.storeId } },
     select: { tag: true },
   });
+  const warehouseName = a.fulfillmentId
+    ? (
+        await tx.fulfillment.findFirst({
+          where: { accountId: a.accountId, id: a.fulfillmentId },
+          select: { connection: { select: { name: true } } },
+        })
+      )?.connection.name
+    : null;
+  const warehouseTag = warehouseName ? cancelledByWarehouseTag(warehouseName) : null;
   if (!pending)
     await queueTagChange(tx, {
       accountId: a.accountId,
       storeId: order.storeId,
       orderId: a.orderId,
-      add: [OUT_OF_STOCK_TAG],
+      add: [OUT_OF_STOCK_TAG, ...(warehouseTag ? [warehouseTag] : [])],
       remove: gate?.tag ? [gate.tag] : [],
       createdById: a.userId,
     });

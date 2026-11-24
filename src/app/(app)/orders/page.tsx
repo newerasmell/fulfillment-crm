@@ -11,11 +11,13 @@ import {
   orderTabCounts,
   type OrderTab,
   orderListQuery,
+  parseStoreParam,
 } from "@/server/orders";
-import { listStores } from "@/server/stores";
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
 import { PullOrdersNow } from "./pull-now";
+import { StoreMultiSelect } from "./store-multi-select";
+import { myStoreIds, storesByLine } from "@/server/store-preferences";
 import { CloseTasks } from "./close-tasks";
 import { lastOrdersPull } from "@/server/shopify/pull-now";
 import { LineChip } from "@/components/ui/LineChip";
@@ -33,28 +35,38 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const tabParam = one(sp.tab);
   const tab: OrderTab = isOrderTab(tabParam) ? tabParam : "review";
   const payment = one(sp.payment);
+  // „Моите магазини“ (owner request 2026-11-24): without a store filter in the URL the list starts with the member's
+  // own stores; `store=all` widens to every store.
+  const [saved, stores] = await Promise.all([
+    myStoreIds({ accountId: ctx.accountId, userId: ctx.user.id, companyScope: ctx.companyScope }),
+    // Archived stores stay in the filter: their orders are history and remain searchable.
+    storesByLine(ctx, { includeArchived: true }),
+  ]);
+  // Only the member's stores visible under the active company / line (another company's would empty the list).
+  const visible = new Set(stores.flatMap((g) => g.stores.map((s) => s.id)));
+  const mine = saved.filter((id) => visible.has(id));
+  const storeParam = one(sp.store);
+  const storeIds = storeParam === undefined && mine.length ? mine : parseStoreParam(storeParam);
   const filters = {
     q: one(sp.q),
-    storeId: one(sp.store),
+    storeIds,
     country: one(sp.country)?.slice(0, 2),
     payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
   } as const;
+  const storeValue = storeIds?.length ? storeIds.join(",") : mine.length ? "all" : undefined;
   const page = Math.max(1, Number(one(sp.page)) || 1);
   const mayPull = can(ctx.role, "stores.sync");
   const mayCloseTasks = can(ctx.role, "alerts.manage");
-  const [result, counts, stores, lastPull] = await Promise.all([
+  const [result, counts, lastPull] = await Promise.all([
     listOrders(ctx, { ...filters, tab, page }),
     orderTabCounts(ctx, filters),
-    // Archived stores stay in the filter: their orders are history and remain searchable.
-    listStores(ctx, { includeArchived: true }),
     mayPull ? lastOrdersPull(ctx) : Promise.resolve(null),
   ]);
-  const ts = await getTranslations("stores");
   // Carried to the order page: its J / K and "back" stay in this list.
   const listQuery = orderListQuery({ tab, ...filters });
   const href = (patch: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
-    const merged = { tab, ...filters, store: filters.storeId, storeId: undefined, page: undefined, ...patch };
+    const merged = { tab, ...filters, store: storeValue, storeIds: undefined, page: undefined, ...patch };
     for (const [k, v] of Object.entries(merged)) if (v !== undefined && v !== "") p.set(k, String(v));
     return `/orders?${p.toString()}`;
   };
@@ -104,20 +116,12 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               aria-label={t("search")}
               className={`${inputCls} w-72`}
             />
-            <select
-              name="store"
-              defaultValue={filters.storeId ?? ""}
-              aria-label={t("store")}
-              className={inputCls}
-            >
-              <option value="">{t("allStores")}</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                  {s.archivedAt ? ` (${ts("archivedTag")})` : ""}
-                </option>
-              ))}
-            </select>
+            <StoreMultiSelect
+              key={(storeIds ?? []).join(",")}
+              groups={stores}
+              selected={storeIds ?? []}
+              mine={mine}
+            />
             <input
               name="country"
               defaultValue={filters.country}
