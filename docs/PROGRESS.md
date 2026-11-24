@@ -633,6 +633,9 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
   past approval was only recorded, and is applied once the order is back in review. Known limit: a phone changed in
   Shopify while approved is taken as an operator edit after the reopen (kept, not replaced). Orders before approval
   whose current total differs from the original are re-checked once after deploy (fingerprint includes the total).
+- 2026-11-24 Order comments (owner request): a „Коментари“ card on the order page (date, time, author; never edited)
+  and the latest comment under the status in the orders list. New table OrderComment (migration
+  20261124120000_order_comments: one new table with RLS, nothing existing changes). Write: alerts.manage roles.
 - 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
   joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
   label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB

@@ -236,6 +236,24 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                       <td className={tdCls}>{o.paymentMethod === "COD" ? t("cod") : t("prepaid")}</td>
                       <td className={tdCls}>
                         <StatusChip status={o.status} />
+                        {o.lastComment && (
+                          <p
+                            className="m-0 mt-1 max-w-[280px] text-xs text-ink-2"
+                            data-testid="order-last-comment"
+                            title={o.lastComment.body}
+                          >
+                            <span aria-hidden>💬 </span>
+                            <strong>{o.lastComment.author}</strong> ·{" "}
+                            {format.dateTime(o.lastComment.createdAt, {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                            :{" "}
+                            {o.lastComment.body.length > 120
+                              ? `${o.lastComment.body.slice(0, 120)}…`
+                              : o.lastComment.body}
+                          </p>
+                        )}
                         {o.tasks.length > 0 && (
                           <ul
                             className="m-0 mt-1 flex max-w-[280px] list-none flex-col gap-0.5 p-0 text-xs text-warn"

@@ -1,3 +1,4 @@
+import { OrderComments } from "./comments";
 import { RefreshFromShopify } from "./refresh-from-shopify";
 import { collectableCod } from "@/lib/cod-rounding";
 import { CourierLine } from "./courier-line";
@@ -1035,6 +1036,8 @@ export async function NewOrderView({
           )}
         </div>
       </div>
+
+      <OrderComments actor={actorFrom(ctx)} orderId={order.id} />
 
       <Fold
         title={r("timeline.title")}

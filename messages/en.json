@@ -668,6 +668,20 @@
         "other": "Failed — try again.",
         "store_not_connected": "The store is not connected — check it in „Stores“."
       }
+    },
+    "comments": {
+      "title": "Comments",
+      "empty": "No comments yet. Describe the problem and what was done — it shows here and in the orders list.",
+      "new": "New comment",
+      "placeholder": "What is the problem, what was done, what is it waiting for…",
+      "add": "Add comment",
+      "adding": "Adding…",
+      "errors": {
+        "forbidden": "You may not write comments.",
+        "too_short": "Write at least a few words (up to 2000 characters).",
+        "not_found": "Order not found.",
+        "other": "Failed — try again."
+      }
     }
   },
   "orderStatus": {

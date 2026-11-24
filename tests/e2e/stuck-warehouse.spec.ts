@@ -95,4 +95,15 @@ test("Блокирани в склад: emails to copy, sent / reply / customer 
   await reasons.getByRole("combobox", { name: "Причина" }).selectOption({ label: "Тестова поръчка" });
   await reasons.getByRole("button", { name: "Затвори", exact: true }).click();
   await expect(page.getByTestId("order-issue-reasons")).toHaveCount(0);
+
+  // Comments on an order: written on the order page, shown there and in the orders list.
+  await page.goto("/orders?tab=all");
+  await page.locator("tbody tr").first().getByRole("link").first().click();
+  const comments = page.getByTestId("order-comments");
+  await expect(comments).toContainText("Още няма коментари");
+  await comments.getByRole("textbox", { name: "Нов коментар" }).fill("Синтетичен коментар: чакаме склада");
+  await comments.getByRole("button", { name: "Добави коментар" }).click();
+  await expect(comments.getByTestId("order-comment")).toContainText("Синтетичен коментар: чакаме склада");
+  await page.goto("/orders?tab=all");
+  await expect(page.getByTestId("order-last-comment").first()).toContainText("чакаме склада");
 });

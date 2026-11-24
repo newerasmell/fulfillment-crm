@@ -1,3 +1,4 @@
+import { OrderComments } from "../comments";
 import { RefreshFromShopify } from "../refresh-from-shopify";
 import { collectableCod } from "@/lib/cod-rounding";
 import { CourierLine } from "../courier-line";
@@ -461,6 +462,8 @@ export async function ClassicOrderView({
               <dd className="m-0 font-mono font-semibold">{money(order.total)}</dd>
             </dl>
           </Card>
+
+          <OrderComments actor={actorFrom(ctx)} orderId={order.id} />
 
           <Card>
             <h2 className="mt-0 text-base font-semibold">{r("timeline.title")}</h2>

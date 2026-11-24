@@ -255,6 +255,7 @@ model Account {
   warehouseCaseOrders       WarehouseCaseOrder[]
   warehouseCaseMessages     WarehouseCaseMessage[]
   skuIncidents              SkuIncident[]
+  orderComments             OrderComment[]
 }
 
 model User {
@@ -844,6 +845,7 @@ model Order {
   aiSuggestions     AiSuggestion[]
 
   warehouseCaseOrders WarehouseCaseOrder[]
+  comments          OrderComment[]
 
   @@unique([accountId, id])
   @@unique([accountId, storeId, shopifyOrderGid])
@@ -3070,4 +3072,23 @@ model SkuIncident {
   @@unique([accountId, id])
   @@unique([fulfillmentId, productId])
   @@index([accountId, connectionId, productId, clearedAt])
+}
+
+/// A person's comment on an order (owner request 2026-11-24): what the problem is and what was done, outside the
+/// status history, so management sees it at a glance. Text only; never edited — a correction is a new comment.
+model OrderComment {
+  id        String   @id @default(cuid())
+  accountId String
+  orderId   String
+  userId    String?
+  /// The author's name/email at the time (members can be removed later).
+  author    String
+  body      String
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [accountId, orderId], references: [accountId, id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@index([accountId, orderId, createdAt])
 }
