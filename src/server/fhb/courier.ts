@@ -67,6 +67,89 @@ export function isReturnToSender(message: string): boolean {
   );
 }
 
+/**
+ * Pure: does the carrier say the parcel was handed to the recipient (owner report 2026-11-24: GLS "Podpísané na
+ * papieri", FHB still "sent")? Compared without accents, in the carriers' languages: EN "Delivered", SK "Podpísané" /
+ * "Doručené", CZ "Doručeno", HU "Kézbesítve", HR/SI "Dostavljeno" / "Uručeno" / "Vročeno", PL "Doręczona", DE
+ * "Zugestellt", RO "Livrat", BG "Доставена", EL "Παραδόθηκε". Not: a parcel left at a pick-up point / box / office (the
+ * customer has not taken it), an attempt, or a negation.
+ */
+export function isDeliveredToRecipient(message: string): boolean {
+  const m = message.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  // Not done yet (future, in progress, an attempt) or negated.
+  if (
+    /\b(not|unable|failed|attempt\w*|undeliver\w*|could|will|expected|scheduled|out for|to be|nie|nem|ne|nebol\w*|nebyl\w*|nicht|pokus\w*|kiserlet\w*|nije|neuspe\w*|nu|bude|budu|wird|va fi)\b/.test(
+      m,
+    ) ||
+    /ще |не е|не бе|na dorucen|k doruc|v doruc|folyamatban|kiadva|kezbesitesre|tijeku|w doreczeniu|in zustellung|in curs/.test(
+      m,
+    )
+  )
+    return false;
+  // At a pick-up point / box / office (the customer has not taken it), or back to the sender.
+  if (
+    /pick-?up|parcel ?shop|parcel ?box|locker|point|depot|office|branch|vyda?jn|vydejn|odbern|box|automat|paczkomat|packstation|paketshop|filiale|punct|punkt|pont|posta|postu|ured|easybox|ofis|офис|автомат/.test(
+      m,
+    ) ||
+    /sender|shipper|odosielatel|odesilatel|feladonak|feladohoz|absender|nadawc|expeditor|posiljatelj|подател/.test(
+      m,
+    ) ||
+    isReturnToSender(message)
+  )
+    return false;
+  // Completed forms only (a noun like "doručení" / "kézbesítés" / "uručenje" is not a delivery).
+  return (
+    /\b(has been |was |been )?delivered\b|\bpodpisane\b|\bpodpisan[aeoy]\b|\bdorucen[aeoy]\b|\bdoruceno\b|\bkezbesitve\b/.test(
+      m,
+    ) ||
+    /\bdostavljen[aeo]?\b|\burucen[aeo]\b|\bvrocen[aeo]?\b|\bdoreczon[aey]\b|\bzugestellt\b|\blivrat[aă]?\b|доставен[ао]?\b|доставена|παραδοθηκε/.test(
+      m,
+    )
+  );
+}
+
+/** Orders (of these) whose live shipment's latest carrier word is a delivery to the recipient — one read per chunk. */
+export async function deliveredByCarrier(
+  db: { fulfillmentEvent: { findMany: (args: never) => Promise<unknown[]> } },
+  orderIds: string[],
+) {
+  const out = new Set<string>();
+  for (let i = 0; i < orderIds.length; i += 1000) {
+    const rows = (await db.fulfillmentEvent.findMany({
+      where: {
+        OR: [{ source: COURIER_SOURCE }, { source: "eushipments" }],
+        fulfillment: {
+          orderId: { in: orderIds.slice(i, i + 1000) },
+          status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] },
+        },
+      },
+      select: {
+        fulfillmentId: true,
+        occurredAt: true,
+        payload: true,
+        fulfillment: { select: { orderId: true } },
+      },
+      orderBy: { occurredAt: "desc" },
+    } as never)) as {
+      fulfillmentId: string;
+      payload: unknown;
+      fulfillment: { orderId: string };
+    }[];
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      const p = (r.payload ?? {}) as { message?: string; comment?: string | null };
+      // The carrier's own words only (an euShipments status row without a carrier comment says nothing here).
+      if (!p.message && !p.comment) continue;
+      if (!latest.has(r.fulfillmentId)) latest.set(r.fulfillmentId, r);
+    }
+    for (const r of latest.values()) {
+      const p = (r.payload ?? {}) as { message?: string; comment?: string | null };
+      if (isDeliveredToRecipient(p.message ?? p.comment ?? "")) out.add(r.fulfillment.orderId);
+    }
+  }
+  return out;
+}
+
 /** Stores the events not stored yet; returns the newly stored ones. */
 export async function recordCourierEvents(
   tx: Tx,
@@ -137,6 +220,7 @@ export async function latestCourierStatus(accountId: string, orderId: string) {
         message,
         at: e.occurredAt,
         returning: isReturnToSender(message),
+        delivered: isDeliveredToRecipient(message),
       },
     ];
   });

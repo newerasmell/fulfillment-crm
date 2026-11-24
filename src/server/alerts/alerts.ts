@@ -6,6 +6,7 @@ import { assertCan } from "@/server/auth/rbac";
 import type { CompanyScope } from "@/server/companies";
 import { accountDb, systemDb, withAccountTransaction } from "@/server/db/client";
 import type { ScopedActor } from "@/server/stores";
+import { deliveredByCarrier } from "@/server/fhb/courier";
 
 type Env = Record<string, string | undefined>;
 
@@ -453,12 +454,20 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       if (page.length < take) break;
       cursor = page.at(-1)!.id;
     }
+    // Moving (news in the quiet window), or handed to the recipient by the carrier while the warehouse still says
+    // "sent" (owner 2026-11-24): not stuck.
     const moving =
       status === "SHIPPED"
-        ? await movedRecently(
-            candidates.map((c) => c.id),
-            now,
-          )
+        ? new Set([
+            ...(await movedRecently(
+              candidates.map((c) => c.id),
+              now,
+            )),
+            ...(await deliveredByCarrier(
+              db,
+              candidates.map((c) => c.id),
+            )),
+          ])
         : new Set<string>();
     for (const o of candidates) {
       if (moving.has(o.id)) continue;
@@ -487,12 +496,13 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
       select: { id: true, status: true },
     });
     const statusOf = new Map(orders.map((o) => [o.id, o.status]));
-    const movingNow = await movedRecently(
-      open
-        .filter((a) => a.kind === "order_stuck" && statusOf.get(a.entityId!) === "SHIPPED")
-        .map((a) => a.entityId!),
-      now,
-    );
+    const shippedStuck = open
+      .filter((a) => a.kind === "order_stuck" && statusOf.get(a.entityId!) === "SHIPPED")
+      .map((a) => a.entityId!);
+    const movingNow = new Set([
+      ...(await movedRecently(shippedStuck, now)),
+      ...(await deliveredByCarrier(db, shippedStuck)),
+    ]);
     for (const a of open) {
       const current = statusOf.get(a.entityId!);
       const wanted = a.body?.replace(/^status=/, "") ?? null;
@@ -515,7 +525,7 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
             alertId: a.id,
             action: "auto_resolve",
             note: moving
-              ? "the carrier reported the parcel in the last days"
+              ? "the carrier reported the parcel moving, or delivered to the recipient"
               : `order now ${current ?? "gone"}`,
           },
         });

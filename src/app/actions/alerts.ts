@@ -48,12 +48,10 @@ export async function resolveOrderTasksAction(
 ): Promise<AlertActionResult & { closed?: number }> {
   const ctx = await requireAccountContext();
   let closed = 0;
+  const ids = z.array(Id).min(1).max(CLOSE_ORDER_TASKS_MAX).safeParse(orderIds);
+  if (!ids.success) return { error: "invalid" };
   try {
-    ({ closed } = await resolveOrderTasks(
-      actorFrom(ctx),
-      z.array(Id).min(1).max(CLOSE_ORDER_TASKS_MAX).parse(orderIds),
-      String(note ?? ""),
-    ));
+    ({ closed } = await resolveOrderTasks(actorFrom(ctx), ids.data, String(note ?? "")));
   } catch (err) {
     return toError(err);
   }

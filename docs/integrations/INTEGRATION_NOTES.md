@@ -196,6 +196,13 @@ problem that needs an operator, which is BLOCKED plus an operator task.
   NOT_EXISTING_ORDER_ERROR` (the id was renamed). The adapter then scans `GET /order/history?status=rejected` (90
   days by creation date, ≤ 20 pages / 2 min) for `{id}#STORNO#…`: found → the delete is done (shipment CANCELLED, a
   reroute completes); not found, or the lookup fails → the refusal as before (press again later).
+- 2026-11-24: FHB also cancels an order it will not ship (a ticket: "not able to send the order with COD to Cyprus")
+  by moving it to the carrier `STORNO OBJEDNAVKY` — the status stays `sent`, the id is unchanged. Not documented.
+  Before delivery (pending / new / imported / confirmed / packed / sent) the CRM treats it as cancelled in ZOE: shipment `CANCELLED`, order
+  `EXCEPTION` (only that may follow SHIPPED; a person cancels or reroutes), one `fhb_order_cancelled_in_zoe` task. The
+  30-min sync applies it although status and tracking did not change. A tracking already reported to Shopify on the
+  earlier "sent" stays there (the task tells the person to act in Shopify).
+- FHB does not ship COD to Cyprus (ticket 2026-11-20): route CY COD orders elsewhere.
 
 ## 3. FHB Joy API (label printing / manual parcels)
 
@@ -321,6 +328,12 @@ contracts. Separate base URL, separate auth call, camelCase.
   leaves the shipment and opens a task. After that the order can **never be sent to euShipments again** (the
   reference is always `{PREFIX}-{number}` and a deleted reference is refused by the pre-send check, on any
   connection sharing the credential): only another warehouse, or cancel the order.
+- Delete refused for an order that is already gone (owner 2026-11-24): `/orders-delete/{ref}` answers 400 "The order
+  cannot be deleted." (Deleted is not a deletable status); `/orders/{id}` answers 404 "The order does not exist.".
+  The adapter (alreadyDeleted) counts it as deleted only on an exact answer: 404 "does not exist" by our own
+  euShipments id, or — by reference only — orders-history ending in Deleted with OUR AWB. A by-id 400 is never checked
+  by reference, and no AWB on our side is no proof (early statuses have none; references are not unique). Limitation:
+  our AWB itself comes from orders-history by reference, so the by-id path is the reliable one.
 - Attach invoice: `POST /fulfilment/attach-pdf-files` — **only before the AWB is generated** (422 after),
   one file per request, content must be a real PDF (signature checked). Attach immediately after create.
 

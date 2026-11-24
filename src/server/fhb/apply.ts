@@ -54,6 +54,20 @@ export async function raiseAlertOnce(
   return created.id;
 }
 
+/** FHB's "carrier" for an order it cancelled (2026-11-24: "STORNO OBJEDNAVKY"). Pure. */
+export function isStornoCarrier(carrier: string | null | undefined) {
+  return /^storno(?:[\s_-]|$)/i.test((carrier ?? "").trim());
+}
+/** Only before delivery (FHB's statuses, status-map.ts): a delivered / returned parcel is never turned into a cancelled one. */
+export const STORNO_CARRIER_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "new",
+  "imported",
+  "confirmed",
+  "packed",
+  "sent",
+]);
+
 /** "1-TST2849#STORNO#TJX6KD" → "1-TST2849" (an order cancelled by hand in ZOE); null for any other id. */
 export function fhbStornoBase(externalId: string): string | null {
   const i = externalId.indexOf("#STORNO#");
@@ -75,7 +89,8 @@ export async function applyFhbOrderView(
   // Observed in production (2026-11-24, not in the reference): FHB also cancels an order it will not ship (a ticket
   // "we are not able to send the order with COD to Cyprus") by moving it to the carrier "STORNO OBJEDNAVKY" — the
   // status stays "sent". Cancelled at the warehouse as well; never a parcel to follow or to report to Shopify.
-  const stornoCarrier = !storno && /\bstorno\b/i.test(m.carrier ?? "");
+  const stornoCarrier =
+    !storno && isStornoCarrier(m.carrier) && STORNO_CARRIER_STATUSES.has((m.mapping.raw ?? "").toLowerCase());
   const cancelled = !!storno || stornoCarrier;
   const result = await withAccountTransaction(accountId, async (tx) => {
     const f =

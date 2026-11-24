@@ -618,6 +618,12 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-24 FHB cancels an order it will not ship (ticket: "not able to send the order with COD to Cyprus") by
   moving it to the carrier "STORNO OBJEDNAVKY" with status still "sent". Now: shipment CANCELLED, order EXCEPTION
   (only that may follow SHIPPED; a person cancels or sends it again), one task. Not in the FHB reference.
+- 2026-11-24 euShipments: a cancel / reroute refused because the order is already gone counts as cancelled only on
+  euShipments' exact word: 404 "does not exist" for our own euShipments id, or orders-history Deleted for our reference
+  carrying our AWB (INTEGRATION_NOTES §4.3). Otherwise the refusal stands (never a duplicate shipment).
+- 2026-11-24 A shipped order whose carrier says it was handed to the recipient (GLS "Podpísané na papieri", FHB still
+  "sent") is not stuck: the sweep skips / closes its task, and the order page marks the courier line "доставена".
+  The CRM status is not changed by carrier text (the warehouse decides DELIVERED).
 - 2026-11-24 FHB refused a Czech COD order (2185,10 CZK) with `INVALID_COD_VALUE_ERROR` (3 retries by hand). CZK
   joins HUF as a whole-unit COD currency (WHOLE_UNIT_COD_CURRENCIES): rounded half-up before every warehouse /
   label write; the COD board accepts the rounded amount or the amount as sent before (no false mismatches); on FHB

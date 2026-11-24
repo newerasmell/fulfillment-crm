@@ -619,7 +619,8 @@
     },
     "courier": {
       "label": "Latest from the carrier:",
-      "returning": "returning to the sender"
+      "returning": "returning to the sender",
+      "delivered": "delivered to the recipient (per the carrier)"
     },
     "issueStuck": "Too long in „{status}“ (task since {since})",
     "pullNow": {
@@ -651,7 +652,8 @@
       "errors": {
         "forbidden": "You may not close tasks.",
         "note_required": "Write a short note.",
-        "other": "Failed — try again."
+        "other": "Failed — try again.",
+        "invalid": "Select up to 100 orders at a time."
       }
     }
   },

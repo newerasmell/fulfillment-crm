@@ -912,6 +912,8 @@ export async function queueEuOrderDeletion(
         referenceNumber: f.externalId,
         // A label shipment's vendorOrderId is the courier AWB, not an euShipments order id.
         ...(f.vendorOrderId && !f.manualShipment ? { vendorOrderId: f.vendorOrderId } : {}),
+        // Our AWB: tells our order from another one with the same reference after a refused delete.
+        ...(f.trackingNumbers.length ? { awbs: f.trackingNumbers } : {}),
       },
     }),
     fulfillmentId: f.id,

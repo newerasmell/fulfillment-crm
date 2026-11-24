@@ -113,7 +113,13 @@ export function BulkBar({
           {pending ? t("starting") : t("fulfillSelected", { count: selected.size })}
         </button>
       )}
-      {canCloseTasks && <CloseTasks orderIds={[...selected]} variant="bar" onDone={() => setAll(false)} />}
+      {canCloseTasks && (
+        <CloseTasks
+          orderIds={[...selected]}
+          variant="bar"
+          onDone={() => setTimeout(() => setAll(false), 2500)}
+        />
+      )}
       <button
         type="button"
         onClick={() => setAll(false)}
