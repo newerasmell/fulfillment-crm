@@ -735,13 +735,14 @@
       "title": "Stores",
       "all": "All stores",
       "count": "{n} stores",
-      "mine": "Mine ({n})",
+      "mine": "My stores ({n})",
       "setMine": "Set my stores",
       "noLine": "No line",
-      "none": "clear all",
-      "allOfLine": "select all",
-      "archived": "archived"
-    }
+      "archived": "archived",
+      "myStores": "My stores",
+      "otherStores": "Other stores"
+    },
+    "foundIn": "Found in:"
   },
   "orderStatus": {
     "IMPORTED": "Imported",
