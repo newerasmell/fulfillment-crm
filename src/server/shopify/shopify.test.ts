@@ -766,6 +766,68 @@ describe("Shopify import (DB)", () => {
     expect(Number((await db.order.findUniqueOrThrow({ where: { id: first.orderId } })).codAmount)).toBe(15);
   });
 
+  it("a line removed in Shopify that an old cancelled shipment still names: the refresh applies (never fails)", async () => {
+    // Owner report 2026-11-25 (an order edited in Shopify, sent before and refused by the warehouse): the refresh
+    // failed on the removed line (still on the old shipment), so nothing changed — lines, total, COD.
+    const s = await store();
+    const db = systemDb();
+    const two = order({
+      id: "gid://shopify/Order/6201",
+      name: "#6201",
+      lineItems: {
+        nodes: [
+          order().lineItems.nodes[0]!,
+          {
+            id: "gid://shopify/LineItem/62012",
+            name: "Removed 30ml",
+            sku: "XX-REMOVED",
+            quantity: 1,
+            currentQuantity: 1,
+            variant: { id: "gid://shopify/ProductVariant/62012" },
+            product: { id: "gid://shopify/Product/62012" },
+            discountedUnitPriceAfterAllDiscountsSet: money("10.00"),
+          },
+        ],
+      },
+    });
+    const { orderId } = await importShopifyOrder(accountId, s, two);
+    const lines = await db.orderLine.findMany({ where: { orderId } });
+    const removed = lines.find((l) => l.sku === "XX-REMOVED")!;
+    const conn = await db.fulfillmentConnection.create({
+      data: { accountId, type: "EUSHIPMENTS", name: "Synthetic EU", liveMode: "READ_ONLY" },
+    });
+    // The old shipment (refused by the warehouse) names both lines.
+    const old = await db.fulfillment.create({
+      data: {
+        accountId,
+        orderId,
+        connectionId: conn.id,
+        externalId: "SYN-6201",
+        status: "SUBMIT_FAILED",
+        lines: { create: lines.map((l) => ({ orderLineId: l.id, quantity: l.quantity })) },
+      },
+    });
+    await db.order.update({ where: { id: orderId }, data: { status: "NEEDS_REVIEW" } });
+    const edited = {
+      ...two,
+      updatedAt: "2026-11-05T10:00:00Z",
+      lineItems: {
+        nodes: [two.lineItems.nodes[0]!, { ...two.lineItems.nodes[1]!, currentQuantity: 0 }],
+      },
+      currentTotalPriceSet: money("35.00"),
+      totalOutstandingSet: money("35.00"),
+    };
+    expect((await importShopifyOrder(accountId, s, edited, { force: true })).outcome).toBe("updated");
+    const after = await db.order.findUniqueOrThrow({ where: { id: orderId }, include: { lines: true } });
+    expect(after.lines.map((l) => l.sku)).not.toContain("XX-REMOVED");
+    expect(Number(after.codAmount)).toBe(35);
+    expect(Number(after.total)).toBe(35);
+    // The old shipment keeps the line it still lists only for what is left.
+    expect(
+      await db.fulfillmentLine.count({ where: { fulfillmentId: old.id, orderLineId: removed.id } }),
+    ).toBe(0);
+  });
+
   it("concurrent imports of one order (webhook + reconcile) create it once and keep the newest version", async () => {
     const s = await store();
     const o = order({ id: "gid://shopify/Order/7001", name: "#7001" });

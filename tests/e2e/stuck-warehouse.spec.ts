@@ -67,6 +67,10 @@ test("Блокирани в склад: emails to copy, sent / reply / customer 
   );
   await page.goto("/orders/stuck?tab=sku");
   await expect(page.getByTestId("sku-watch-empty")).toBeVisible();
+  // The blocked-units history (owner request 2026-11-25): the unit of #S-8102, released after the warehouse's reply.
+  const hist = page.getByTestId("sku-history-row").filter({ hasText: "#S-8102" });
+  await expect(hist).toBeVisible();
+  await expect(hist).toContainText("Отключена");
 
   // The order page shows its case.
   await page.goto("/orders/stuck");

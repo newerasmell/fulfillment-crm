@@ -567,6 +567,7 @@ export function SkuWatchTable({
     incidents: number;
     frozen: boolean;
     lastAt: string;
+    orders: { orderId: string | null; number: string | null; quantity: number; at: string }[];
   }[];
   canAct: boolean;
 }) {
@@ -604,6 +605,28 @@ export function SkuWatchTable({
                     {r.frozen ? t("sku.frozen") : t("sku.watch", { units: r.units })}
                   </span>
                   <div className="text-xs text-muted">{t("sku.incidents", { count: r.incidents })}</div>
+                  {/* Which orders left these units blocked, and when (owner request 2026-11-25). */}
+                  <ul
+                    className="m-0 mt-1 flex list-none flex-col gap-0.5 p-0 text-xs"
+                    data-testid="sku-watch-orders"
+                  >
+                    {r.orders.map((o, i) => (
+                      <li key={i}>
+                        {o.orderId ? (
+                          <Link
+                            className="font-mono text-accent hover:underline"
+                            href={`/orders/${o.orderId}`}
+                          >
+                            {o.number}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}{" "}
+                        × {o.quantity} ·{" "}
+                        {format.dateTime(new Date(o.at), { dateStyle: "short", timeStyle: "short" })}
+                      </li>
+                    ))}
+                  </ul>
                 </td>
                 <td className={tdCls}>
                   {format.dateTime(new Date(r.lastAt), { dateStyle: "short", timeStyle: "short" })}
@@ -663,5 +686,99 @@ export function SkuWatchTable({
       </table>
       <Msg msg={msg} />
     </div>
+  );
+}
+
+/** „История на блокираните бройки“: every blocked unit of the last days — product, warehouse, order, when, released. */
+export function SkuHoldHistory({
+  rows,
+  days,
+  max,
+}: {
+  max: number;
+  rows: {
+    id: string;
+    warehouse: string;
+    sku: string | null;
+    title: string;
+    quantity: number;
+    at: string;
+    orderId: string | null;
+    orderNumber: string | null;
+    releasedAt: string | null;
+    releasedBy: string | null;
+    note: string | null;
+  }[];
+  days: number;
+}) {
+  const t = useTranslations("warehouseCases");
+  const format = useFormatter();
+  const when = (v: string) => format.dateTime(new Date(v), { dateStyle: "short", timeStyle: "short" });
+  return (
+    <section className="mt-6 flex flex-col gap-2" data-testid="sku-history">
+      <h2 className="m-0 text-base font-semibold">{t("sku.history.title")}</h2>
+      <p className="m-0 text-sm text-muted">
+        {t("sku.history.intro", { days })}
+        {rows.length >= max && ` ${t("sku.history.more", { n: max })}`}
+      </p>
+      {rows.length === 0 ? (
+        <p className="m-0 text-sm text-muted">{t("sku.history.empty")}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={thCls}>{t("sku.history.at")}</th>
+                <th className={thCls}>{t("sku.warehouse")}</th>
+                <th className={thCls}>{t("sku.product")}</th>
+                <th className={thCls}>{t("sku.history.qty")}</th>
+                <th className={thCls}>{t("sku.history.order")}</th>
+                <th className={thCls}>{t("sku.history.state")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} data-testid="sku-history-row">
+                  <td className={`${tdCls} whitespace-nowrap`}>{when(r.at)}</td>
+                  <td className={tdCls}>{r.warehouse}</td>
+                  <td className={tdCls}>
+                    <span className="font-mono text-[13px]">{r.sku}</span>
+                    <div className="text-xs text-muted">{r.title}</div>
+                  </td>
+                  <td className={`${tdCls} font-mono`}>{r.quantity}</td>
+                  <td className={tdCls}>
+                    {r.orderId ? (
+                      <Link className="font-mono text-accent hover:underline" href={`/orders/${r.orderId}`}>
+                        {r.orderNumber}
+                      </Link>
+                    ) : (
+                      "—"
+                    )}
+                    <div className="text-xs text-muted">{t("sku.history.why")}</div>
+                  </td>
+                  <td className={tdCls}>
+                    {r.releasedAt ? (
+                      <>
+                        <span className="rounded-full bg-ok-bg px-2 py-0.5 text-xs text-ok">
+                          {t("sku.history.released", { when: when(r.releasedAt) })}
+                        </span>
+                        <div className="text-xs text-muted">
+                          {r.releasedBy ?? "—"}
+                          {r.note ? ` · ${r.note}` : ""}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="rounded-full bg-warn-bg px-2 py-0.5 text-xs text-warn">
+                        {t("sku.history.blocked")}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

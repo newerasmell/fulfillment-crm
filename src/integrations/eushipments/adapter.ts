@@ -299,7 +299,7 @@ export class EuShipmentsTransport implements OutboundTransport {
                 awbProof: await this.awbProofFor(ctx),
               });
               if (gone) {
-                if (live) await this.effect(call, "orderDeleted", ctx);
+                if (live) await this.effect(call, "orderDeleted", { ...ctx, deleteProof: gone });
                 return {
                   outcome: "accepted",
                   response: { alreadyDeleted: gone, vendor: res.ok ? res.data : res.body },

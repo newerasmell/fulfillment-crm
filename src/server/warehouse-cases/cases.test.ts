@@ -13,7 +13,7 @@ import {
   warehouseCasesView,
 } from "./cases";
 import { saveEscalationSettings } from "./settings";
-import { FROZEN_UNITS, recordSkuIncident, skuWatchList, unlockSku } from "./sku";
+import { FROZEN_UNITS, recordSkuIncident, skuHoldHistory, skuWatchList, unlockSku } from "./sku";
 
 // „Блокирани в склад“ (owner request 2026-11-18). Synthetic data only; a fixed Wednesday as "now".
 describe("warehouse cases", () => {
@@ -230,12 +230,25 @@ describe("warehouse cases", () => {
       recordSkuIncident(tx, { accountId: g.accountId, fulfillmentId: b.f.id }),
     );
     expect((await crmReservations(g.accountId, [productId])).get(key)).toBeGreaterThanOrEqual(FROZEN_UNITS);
-    expect((await skuWatchList(g.owner)).find((w) => w.productId === productId)).toMatchObject({
-      frozen: true,
-      units: 2,
-    });
+    const held = (await skuWatchList(g.owner)).find((w) => w.productId === productId);
+    expect(held).toMatchObject({ frozen: true, units: 2 });
+    // Which orders left the units blocked, and when (owner request 2026-11-25).
+    expect(held!.orders.map((o) => o.orderId).sort()).toEqual([a.order.id, b.order.id].sort());
+    // In each order's history, once (idempotent like the incident).
+    expect(await db().orderEvent.count({ where: { orderId: a.order.id, cause: "sku_held" } })).toBe(1);
+    expect(
+      (await skuHoldHistory(g.owner)).filter((h) => h.orderId === b.order.id && !h.releasedAt),
+    ).toHaveLength(1);
 
     await unlockSku(g.owner, { connectionId: g.connection.id, productId, note: "stock counted" });
+    // The release is in the history too: who, when, why — on the board and in each order.
+    const released = (await skuHoldHistory(g.owner)).filter((h) => h.orderId === a.order.id);
+    expect(released[0]).toMatchObject({ note: "stock counted" });
+    expect(released[0]!.releasedAt).not.toBeNull();
+    const ev = await db().orderEvent.findFirstOrThrow({
+      where: { orderId: b.order.id, cause: "sku_released" },
+    });
+    expect(ev.reason).toContain("stock counted");
     expect((await crmReservations(g.accountId, [productId])).get(key) ?? 0).toBe(before.get(key) ?? 0);
     await expect(
       unlockSku(g.owner, { connectionId: g.connection.id, productId, note: "again" }),

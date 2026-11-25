@@ -5,8 +5,13 @@ import { Card, PageHeader } from "@/components/ui/PageHeader";
 import { can } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import { warehouseCasesView } from "@/server/warehouse-cases/cases";
-import { skuWatchList } from "@/server/warehouse-cases/sku";
-import { CaseCard, RefreshButton, SkuWatchTable } from "./ui";
+import {
+  SKU_HISTORY_DAYS,
+  SKU_HISTORY_MAX,
+  skuHoldHistory,
+  skuWatchList,
+} from "@/server/warehouse-cases/sku";
+import { CaseCard, RefreshButton, SkuHoldHistory, SkuWatchTable } from "./ui";
 
 /**
  * „Блокирани в склад“ (owner request 2026-11-18): shipments the warehouse accepted but has not handed to the courier,
@@ -26,7 +31,11 @@ export default async function StuckAtWarehousePage({
     activeCompanyId: ctx.activeCompanyId,
     lineCompanyIds: ctx.lineCompanyIds,
   };
-  const [cases, watch] = await Promise.all([warehouseCasesView(view), skuWatchList(view)]);
+  const [cases, watch, history] = await Promise.all([
+    warehouseCasesView(view),
+    skuWatchList(view),
+    tab === "sku" ? skuHoldHistory(view) : Promise.resolve([]),
+  ]);
   const canAct = can(ctx.role, "orders.review");
   const open = cases.filter((c) => !c.closedAt);
   return (
@@ -69,9 +78,19 @@ export default async function StuckAtWarehousePage({
                 incidents: w.incidents,
                 frozen: w.frozen,
                 lastAt: w.lastAt.toISOString(),
+                orders: w.orders.map((o) => ({ ...o, at: o.at.toISOString() })),
               }))}
             />
           )}
+          <SkuHoldHistory
+            days={SKU_HISTORY_DAYS}
+            max={SKU_HISTORY_MAX}
+            rows={history.map((h) => ({
+              ...h,
+              at: h.at.toISOString(),
+              releasedAt: h.releasedAt?.toISOString() ?? null,
+            }))}
+          />
         </Card>
       ) : cases.length === 0 ? (
         <Card>

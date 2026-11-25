@@ -745,6 +745,10 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect(await processOutbound(a.req.requestId, vendors(goneA))).toBe("SENT");
       expect(await status(a.fulfillment.id)).toBe("CANCELLED");
       expect(goneA.calls.some((c) => c.startsWith("/fulfilment/orders-history"))).toBe(false);
+      // The order's history says how euShipments proved it (never our request alone).
+      expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: a.fulfillment.id } })).rawStatus).toBe(
+        "deleted (every AWB: canceled/deleted)",
+      );
 
       // Two AWBs, both deleted: done. One still alive (a re-labelled parcel): the refusal stands.
       const b = await withAwbs(["AWB-DEL-2", "AWB-DEL-3"]);
@@ -926,7 +930,22 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
         code: "not_found",
       });
 
+      // A task whose cause goes away with the confirmed cancel (stuck in ACCEPTED): closed at once, not at the sweep.
+      const stuck = await g.db.alert.create({
+        data: {
+          accountId: g.accountId,
+          kind: "order_stuck",
+          isTask: true,
+          severity: "WARNING",
+          title: "Synthetic stuck",
+          body: "status=ACCEPTED",
+          entityType: "Order",
+          entityId: order.id,
+        },
+      });
       await confirmWarehouseCancelByHand(g.owner, args);
+      expect((await g.db.alert.findUniqueOrThrow({ where: { id: stuck.id } })).status).toBe("RESOLVED");
+      expect(await g.db.alertNote.count({ where: { alertId: stuck.id, action: "auto_resolve" } })).toBe(1);
       expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
         "CANCELLED",
       );

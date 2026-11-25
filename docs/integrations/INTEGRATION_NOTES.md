@@ -516,6 +516,16 @@ Rules per vendor in production:
   fulfillment is read back before every send and retry (events newest first; an incomplete page is unreadable). A
   shipment cancelled after its fulfilment reached Shopify opens a task; its replacement (same order + lines)
   reuses that Shopify fulfillment instead of creating one.
+  Exception (owner 2026-11-25): `fulfillmentCancel(id: ID!)` (Admin GraphQL, FulfillmentCancelPayload {fulfillment
+  {id status}, userErrors}) — write-back kind CANCEL, same modes, one per Shopify fulfillment — only for a shipment
+  whose delete the warehouse confirmed: a delete the CRM sent and euShipments / FHB accepted, or a delete proved
+  exactly (every AWB canceled/deleted, confirmed by hand). Never for one given up on "not found", re-routed away (the
+  new shipment adopts the fulfillment), an FHB STORNO, a voided label or a cancel read from polling — those keep the
+  operator task — nor for one whose task a person already closed. Also an order cancelled in the CRM: its Shopify
+  fulfillment is cancelled too (nothing was shipped). Queued at the moment of the confirmed cancel, sent by the next
+  sweep (≤ 2 min); checked again right before the send (a live shipment of the order, or another shipment holding
+  the same fulfillment → refused, the task opens); read back first (already CANCELLED → done). A refused / failed
+  CANCEL leaves the task to a person. Shopify reopens the fulfillment orders, so the order is no longer "Fulfilled".
   One exception, by design: **webhook subscriptions** (`webhookSubscriptionCreate`) are created in every
   mode, including READ_ONLY. They change no order, product, stock or customer data — only where Shopify
   sends change notifications — and without them reading is limited to the 15-minute reconcile. The worker

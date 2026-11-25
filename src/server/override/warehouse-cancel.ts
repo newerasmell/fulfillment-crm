@@ -18,6 +18,7 @@ import { INACTIVE_SHIPMENT } from "./guards";
 import { scopedOrderForChoice } from "./options";
 import { assertWarehouseReason } from "./reasons";
 import { cancelRefusal } from "./reroute";
+import { settleAfterWarehouseCancel } from "@/server/override/settle-after-cancel";
 
 /**
  * "Откажи в склада" (owner request 2026-11-03): cancel one active shipment at its warehouse from the CRM, without
@@ -387,6 +388,7 @@ export async function confirmWarehouseCancelByHand(
       });
     }
   });
+  await settleAfterWarehouseCancel(actor.accountId, f.orderId, "manual.confirmedDeleted");
   await recordAudit({
     accountId: actor.accountId,
     userId: actor.userId,
