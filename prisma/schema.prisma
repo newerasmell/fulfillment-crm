@@ -256,6 +256,7 @@ model Account {
   warehouseCaseMessages     WarehouseCaseMessage[]
   skuIncidents              SkuIncident[]
   orderComments             OrderComment[]
+  memberStorePreferences    MemberStorePreference[]
 }
 
 model User {
@@ -3091,4 +3092,19 @@ model OrderComment {
 
   @@unique([accountId, id])
   @@index([accountId, orderId, createdAt])
+}
+
+/// The stores a member works with (owner request 2026-11-24): the orders list starts filtered to them. One row per
+/// member; an empty list or no row = all stores.
+model MemberStorePreference {
+  id        String   @id @default(cuid())
+  accountId String
+  userId    String
+  storeIds  String[]
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, id])
+  @@unique([accountId, userId])
 }

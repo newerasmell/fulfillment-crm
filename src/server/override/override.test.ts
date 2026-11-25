@@ -23,6 +23,7 @@ import {
   processReroute,
   requestReroute,
   requestWarehouseCancel,
+  confirmWarehouseCancelByHand,
   rerouteView,
   setWarehouseChoice,
   warehouseOptions,
@@ -65,6 +66,8 @@ function euVendor(
     preDeleted?: string[];
     /** The AWB orders-history shows for every reference. */
     histAwb?: string | null;
+    /** GET /get-status/{awb}: the status per AWB ("down" throws); unlisted AWBs are an unexpected call. */
+    awbStatus?: Record<string, string>;
   } = {},
 ) {
   const deleted = new Set<string>(o.preDeleted ?? []);
@@ -84,6 +87,11 @@ function euVendor(
       const ref = o.idToRef?.[byId[1]!];
       if (ref) deleted.add(ref);
       return jsonRes({ error: false, message: "The order was deleted successfully.", code: 200 });
+    }
+    if (path.startsWith("/get-status/") && o.awbStatus) {
+      const status = o.awbStatus[decodeURIComponent(path.slice("/get-status/".length))];
+      if (status === undefined || status === "down") throw new Error("down");
+      return jsonRes({ status });
     }
     if (path.startsWith("/fulfilment/orders-history")) {
       if (o.history === "down") throw new Error("down");
@@ -717,6 +725,92 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       expect(await status(d.fulfillment.id)).not.toBe("CANCELLED");
     });
 
+    it("a refused delete counts as done when EVERY AWB of ours says canceled/deleted (GET /get-status)", async () => {
+      // Owner report 2026-11-24 (deleted in the cabinet, orders-history still shows the old status for the reference).
+      const cannot = () => jsonRes({ error: true, message: "The order cannot be deleted.", code: 400 }, 400);
+      const withAwbs = async (awbs: string[]) => {
+        const sent = await sentAtA("Awaiting pickup");
+        await g.db.fulfillment.update({
+          where: { id: sent.fulfillment.id },
+          data: { trackingNumbers: awbs },
+        });
+        return { ...sent, req: await reroute(sent.order.id) };
+      };
+      const status = async (id: string) =>
+        (await g.db.fulfillment.findUniqueOrThrow({ where: { id } })).status;
+
+      // One AWB, deleted: SENT + CANCELLED (the reference history is never needed).
+      const a = await withAwbs(["AWB-DEL-1"]);
+      const goneA = euVendor({ del: cannot, awbStatus: { "AWB-DEL-1": "Canceled/Deleted" } });
+      expect(await processOutbound(a.req.requestId, vendors(goneA))).toBe("SENT");
+      expect(await status(a.fulfillment.id)).toBe("CANCELLED");
+      expect(goneA.calls.some((c) => c.startsWith("/fulfilment/orders-history"))).toBe(false);
+
+      // Two AWBs, both deleted: done. One still alive (a re-labelled parcel): the refusal stands.
+      const b = await withAwbs(["AWB-DEL-2", "AWB-DEL-3"]);
+      const both = { "AWB-DEL-2": "canceled/deleted", "AWB-DEL-3": "canceled/deleted" };
+      expect(
+        await processOutbound(b.req.requestId, vendors(euVendor({ del: cannot, awbStatus: both }))),
+      ).toBe("SENT");
+      expect(await status(b.fulfillment.id)).toBe("CANCELLED");
+      const c = await withAwbs(["AWB-DEL-4", "AWB-LIVE-5"]);
+      const mixed = { "AWB-DEL-4": "canceled/deleted", "AWB-LIVE-5": "Awaiting pickup" };
+      expect(
+        await processOutbound(c.req.requestId, vendors(euVendor({ del: cannot, awbStatus: mixed }))),
+      ).toBe("FAILED");
+      expect(await status(c.fulfillment.id)).not.toBe("CANCELLED");
+
+      // Any other status, or a lookup that fails: never a delete.
+      const d = await withAwbs(["AWB-LIVE-6"]);
+      const alive = { "AWB-LIVE-6": "Delivered" };
+      expect(
+        await processOutbound(d.req.requestId, vendors(euVendor({ del: cannot, awbStatus: alive }))),
+      ).toBe("FAILED");
+      expect(await status(d.fulfillment.id)).not.toBe("CANCELLED");
+      const e = await withAwbs(["AWB-DOWN-7"]);
+      const down = { "AWB-DOWN-7": "down" };
+      expect(
+        await processOutbound(e.req.requestId, vendors(euVendor({ del: cannot, awbStatus: down }))),
+      ).toBe("FAILED");
+      expect(await status(e.fulfillment.id)).not.toBe("CANCELLED");
+
+      // Already with the courier (a re-labelled parcel keeps a cancelled old AWB): never "deleted".
+      const sh = await withAwbs(["AWB-DEL-9"]);
+      await g.db.fulfillment.update({ where: { id: sh.fulfillment.id }, data: { status: "SHIPPED" } });
+      expect(
+        await processOutbound(
+          sh.req.requestId,
+          vendors(euVendor({ del: cannot, awbStatus: { "AWB-DEL-9": "canceled/deleted" } })),
+        ),
+      ).toBe("FAILED");
+      expect(await status(sh.fulfillment.id)).toBe("SHIPPED");
+      // A newer AWB recorded since the delete was queued (still alive): the current AWBs decide.
+      const nw = await withAwbs(["AWB-DEL-10"]);
+      await g.db.fulfillment.update({
+        where: { id: nw.fulfillment.id },
+        data: { trackingNumbers: ["AWB-DEL-10", "AWB-NEW-11"] },
+      });
+      const relabel = { "AWB-DEL-10": "canceled/deleted", "AWB-NEW-11": "Awaiting pickup" };
+      expect(
+        await processOutbound(nw.req.requestId, vendors(euVendor({ del: cannot, awbStatus: relabel }))),
+      ).toBe("FAILED");
+      expect(await status(nw.fulfillment.id)).not.toBe("CANCELLED");
+
+      // By our euShipments id too: a 400 by id is answered by the AWB (exact), not by the reference.
+      const f = await withAwbs(["AWB-DEL-8"]);
+      await g.db.fulfillment.update({
+        where: { id: f.fulfillment.id },
+        data: { vendorOrderId: String(500000 + ++n) },
+      });
+      expect(
+        await processOutbound(
+          f.req.requestId,
+          vendors(euVendor({ del: cannot, awbStatus: { "AWB-DEL-8": "canceled/deleted" } })),
+        ),
+      ).toBe("SENT");
+      expect(await status(f.fulfillment.id)).toBe("CANCELLED");
+    });
+
     it("by our euShipments id: only 404 'does not exist' counts as deleted; a refusal by id is never checked by reference", async () => {
       const byId = async () => {
         const sent = await sentAtA("Awaiting pickup");
@@ -771,6 +865,90 @@ describe("manual warehouse choice and reroute (P4-09)", () => {
       await expect(reroute(order.id)).rejects.toMatchObject({ code: "reroute_not_allowed" });
       expect(await g.db.orderReroute.count({ where: { orderId: order.id } })).toBe(0);
       expect((await rerouteView(g.owner, order.id)).refusal).toBe("order_status");
+    });
+
+    it("deleted at the warehouse, confirmed by hand after a refused cancel: shipment cancelled, the order can move on", async () => {
+      // Owner report 2026-11-24: the warehouse deleted it in its cabinet; its API still says "Awaiting pickup".
+      const { order, fulfillment } = await sentAtA("Awaiting pickup");
+      const args = { fulfillmentId: fulfillment.id, note: "Deleted in the cabinet, checked" };
+      // Not before a cancel was refused.
+      await expect(confirmWarehouseCancelByHand(g.owner, args)).rejects.toMatchObject({
+        code: "not_refused",
+      });
+      const wc = await requestWarehouseCancel(g.owner, {
+        fulfillmentId: fulfillment.id,
+        reasonCode: "no_stock",
+        reasonText: null,
+      });
+      // Not while it is on its way.
+      await expect(confirmWarehouseCancelByHand(g.owner, args)).rejects.toMatchObject({
+        code: "not_refused",
+      });
+      // A 401 (our token) is not the warehouse's refusal: the cancel never reached it.
+      await g.db.outboundRequest.update({
+        where: { id: wc.requestId },
+        data: { status: "FAILED", lastError: "unauthenticated" },
+      });
+      await expect(confirmWarehouseCancelByHand(g.owner, args)).rejects.toMatchObject({
+        code: "not_refused",
+      });
+      // A failure that never reached the warehouse (no transport, not sent) is no refusal either.
+      await g.db.outboundRequest.update({
+        where: { id: wc.requestId },
+        data: { status: "FAILED", lastError: "no_transport" },
+      });
+      await expect(confirmWarehouseCancelByHand(g.owner, args)).rejects.toMatchObject({
+        code: "not_refused",
+      });
+      // The warehouse's own refusal, recorded from its answer.
+      await g.db.outboundRequest.update({
+        where: { id: wc.requestId },
+        data: { status: "FAILED", lastError: "The order cannot be deleted." },
+      });
+      await g.db.orderEvent.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          fromStatus: "ACCEPTED",
+          toStatus: "ACCEPTED",
+          cause: "warehouse_cancel_refused",
+          actorType: "system",
+          source: "test",
+          reason: "The order cannot be deleted.",
+          meta: { fulfillmentId: fulfillment.id },
+        },
+      });
+      // A note is required; the role must allow cancelling shipments; another group never reaches it.
+      await expect(confirmWarehouseCancelByHand(g.owner, { ...args, note: " x " })).rejects.toThrow();
+      await expect(confirmWarehouseCancelByHand({ ...g.owner, role: "OPERATOR" }, args)).rejects.toThrow();
+      const stranger = await euTestGroup("by-hand-other");
+      await expect(confirmWarehouseCancelByHand(stranger.owner, args)).rejects.toMatchObject({
+        code: "not_found",
+      });
+
+      await confirmWarehouseCancelByHand(g.owner, args);
+      expect((await g.db.fulfillment.findUniqueOrThrow({ where: { id: fulfillment.id } })).status).toBe(
+        "CANCELLED",
+      );
+      expect((await g.db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("BLOCKED");
+      // The refused request's reason is carried (no stock → the „Липсващи артикули“ path runs).
+      const ev = await g.db.orderEvent.findFirstOrThrow({
+        where: { orderId: order.id, cause: "warehouse_cancelled" },
+      });
+      expect(ev.meta).toMatchObject({ cancelRequestId: wc.requestId, reasonCode: "no_stock" });
+      expect(
+        await g.db.auditLog.count({
+          where: {
+            accountId: g.accountId,
+            action: "warehouse_cancel.confirmed_by_hand",
+            entityId: fulfillment.id,
+          },
+        }),
+      ).toBe(1);
+      // Once is enough.
+      await expect(confirmWarehouseCancelByHand(g.owner, args)).rejects.toMatchObject({
+        code: "not_cancellable",
+      });
     });
 
     it("a warehouse cancel already on its way refuses the reroute (it never takes the cancel over)", async () => {

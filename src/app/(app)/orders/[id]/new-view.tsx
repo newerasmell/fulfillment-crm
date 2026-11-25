@@ -1,3 +1,4 @@
+import { ConfirmDeletedByHand } from "./confirm-deleted";
 import { ManualLinkBlock } from "./manual-link-block";
 import { OrderComments } from "./comments";
 import { RefreshFromShopify } from "./refresh-from-shopify";
@@ -859,6 +860,9 @@ export async function NewOrderView({
                                 ? ` (${row.request.lastError})`
                                 : ""}
                             </span>
+                          )}
+                          {row.request?.status === "FAILED" && wc.canCancel && (
+                            <ConfirmDeletedByHand orderId={order.id} fulfillmentId={f.id} />
                           )}
                           {row.request &&
                             row.liveMode === "CANARY" &&

@@ -9,6 +9,7 @@ import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import type { Finding } from "@/server/checks/findings";
 import { webBoss } from "@/server/jobs/boss";
 import { findShopifyOrdersToLink, linkManualToShopifyOrder } from "@/server/labels/link";
+import { orderDraftForManual, searchOrdersForManual } from "@/server/labels/replacement";
 import { QUEUES } from "@/server/jobs/queues";
 import {
   createJoyConnection,
@@ -353,6 +354,28 @@ export async function linkManualToShopifyOrderAction(
           ? { cod: (err as DomainError & { detail: never }).detail }
           : {}),
       };
+    throw err;
+  }
+}
+
+/** „Поръчка от Shopify“ in „Нова ръчна пратка“: search, then the chosen order's data for the form. */
+export async function searchOrdersForManualAction(q: string) {
+  const ctx = await requireAccountContext();
+  try {
+    return await searchOrdersForManual(actorFrom(ctx), z.string().max(40).parse(q));
+  } catch (err) {
+    if (err instanceof DomainError || err instanceof ForbiddenError || err instanceof z.ZodError) return [];
+    throw err;
+  }
+}
+
+export async function orderDraftForManualAction(orderId: string) {
+  const ctx = await requireAccountContext();
+  try {
+    return await orderDraftForManual(actorFrom(ctx), z.string().min(1).max(64).parse(orderId));
+  } catch (err) {
+    if (err instanceof DomainError || err instanceof ForbiddenError || err instanceof z.ZodError)
+      return { error: "not_found" as const };
     throw err;
   }
 }

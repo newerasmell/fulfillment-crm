@@ -471,3 +471,6 @@ export const CodInfo = z
   })
   .passthrough();
 export type CodInfo = z.infer<typeof CodInfo>;
+
+/** GET /get-status/{AWB}: the last status of one AWB; "canceled/deleted" when it was deleted / cancelled there. */
+export const AwbStatusResponse = z.object({ status: z.string().nullable().optional() }).passthrough();

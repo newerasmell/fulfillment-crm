@@ -115,6 +115,25 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await page.goto("/inbound?tab=all");
   await expect(page.locator("tbody tr")).toHaveCount(2);
 
+  // „Моите магазини“: the member picks the stores they work with; the orders list starts filtered to them.
+  await page.goto("/settings/my-stores");
+  const myStores = page.getByRole("form", { name: "Моите магазини" });
+  await myStores.getByRole("checkbox", { name: "Магазин С" }).check();
+  await myStores.getByRole("button", { name: "Запази" }).click();
+  await expect(myStores.getByRole("status")).toContainText("Запазено: 1 магазина.");
+  await page.goto("/orders?tab=all");
+  await expect(page.getByTestId("store-filter")).toContainText("Магазин С");
+  // The filter: grouped list with checkboxes; „Всички магазини“ widens it.
+  await page.getByTestId("store-filter").click();
+  await page
+    .getByRole("group", { name: "Магазини" })
+    .getByRole("button", { name: "Всички магазини" })
+    .click();
+  await expect(page.getByTestId("store-filter")).toContainText("Всички магазини");
+  await page.getByTestId("store-filter").click();
+  await page.getByRole("button", { name: "Филтрирай" }).click();
+  await expect(page).toHaveURL(/store=all/);
+
   // „Поръчки“: pull the stores' orders now (the scheduled read-only pull; this group's store has no credentials).
   await page.goto("/orders");
   await page.getByRole("button", { name: "Изтегли поръчките сега" }).click();

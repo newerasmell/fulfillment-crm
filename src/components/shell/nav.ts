@@ -60,6 +60,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { href: "/settings/countries", key: "countries", icon: "pin" },
       { href: "/settings/tracking-links", key: "trackingLinks", icon: "truck" },
       { href: "/settings/warehouse-emails", key: "warehouseEmails", icon: "bell" },
+      { href: "/settings/my-stores", key: "myStores", icon: "store" },
       { href: "/settings/stock-sync", key: "stockSync", icon: "box", permission: "inventory.push" },
       { href: "/ai", key: "ai", icon: "sparkle", permission: "ai.read" },
       { href: "/directory", key: "directory", icon: "pin" },

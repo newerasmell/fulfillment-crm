@@ -1,3 +1,4 @@
+import { checkProblemShipmentsByAwb } from "./awb-check";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { logger } from "@/lib/logger";
@@ -133,6 +134,9 @@ export async function registerEushipmentsWorkers(boss: PgBoss, opts: { pollingIn
     opts,
     each(QUEUES.eushipmentsPollOrders.name, pollEuOrders),
   );
+  await boss.work(QUEUES.eushipmentsAwbCheck.name, opts, async () => {
+    await checkProblemShipmentsByAwb();
+  });
   await boss.work<EuConnectionJob>(
     QUEUES.eushipmentsPollBookings.name,
     opts,

@@ -189,4 +189,20 @@ describe("euShipments status tracking (DB)", () => {
       (await applyOrderHistory(g.accountId, f2.id, answer, new Date("2026-11-03T09:00:00Z"))).alerts,
     ).toEqual([]);
   });
+
+  it("a shipment cancelled since the poll read it (AWB check, confirmed delete) is never revived by a stale history", async () => {
+    const f = await newFulfillment("#STALE-1");
+    await g.db.fulfillment.update({
+      where: { id: f.id },
+      data: { status: "CANCELLED", rawStatus: "canceled/deleted (AWB)" },
+    });
+    const r = await applyOrderHistory(
+      g.accountId,
+      f.id,
+      item([rec(9101, "Awaiting pickup", "2026-11-24 09:00:00")], "SYNAWB9101"),
+    );
+    expect(r).toMatchObject({ status: "CANCELLED", stopPolling: true });
+    const after = await g.db.fulfillment.findUniqueOrThrow({ where: { id: f.id } });
+    expect(after).toMatchObject({ status: "CANCELLED", rawStatus: "canceled/deleted (AWB)" });
+  });
 });

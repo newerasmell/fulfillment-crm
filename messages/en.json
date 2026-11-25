@@ -43,7 +43,8 @@
     "stockSync": "Stock sync",
     "missingStock": "Missing items",
     "stuckAtWarehouse": "Stuck at warehouse",
-    "warehouseEmails": "Warehouse emails"
+    "warehouseEmails": "Warehouse emails",
+    "myStores": "My stores"
   },
   "mode": {
     "READ_ONLY": "Read only",
@@ -589,7 +590,9 @@
         "shipped_after_all": "a \"no stock\" cancel was refused and the warehouse shipped the parcel after all — nothing to do",
         "parcel_moved_on": "the parcel is no longer shipped (returning, returned, delivered or cancelled)",
         "parcel_still_shipped": "the carrier is returning the parcel while the warehouse still has it as sent — contact the customer or send a replacement",
-        "replacement_sent": "a replacement was sent for the order"
+        "replacement_sent": "a replacement was sent for the order",
+        "order_state_left": "the order has left that status",
+        "order_state_holds": "the order is still in that status"
       }
     },
     "phoneWaiver": {
@@ -706,9 +709,38 @@
         "other": "Failed — try again.",
         "manual_write_pending": "A warehouse request for this manual shipment (cancel, reroute) is not finished yet — wait.",
         "order_cancelled_in_shopify": "The order is cancelled in Shopify.",
-        "cod_differs": "The cash on delivery differs — the attachment was not confirmed."
+        "cod_differs": "The cash on delivery differs — the attachment was not confirmed.",
+        "order_closed_in_crm": "The order is „Cancelled“ or „Fulfilled outside the CRM“ — no shipment can be attached to it. Add the tracking in Shopify by hand if the customer receives it."
       },
       "codDiffers": "The cash on delivery differs: the parcel collects {sent} {sentCurrency}, the order expects {expected} {expectedCurrency}. Attach anyway? (a task to check it opens)"
+    },
+    "confirmDeleted": {
+      "button": "The warehouse deleted it — confirm by hand",
+      "hint": "Only if you checked in the warehouse's cabinet (or the warehouse wrote) that the order is deleted and will not ship. Then the order can be rerouted or sent again.",
+      "note": "Note",
+      "placeholder": "e.g. deleted in the warehouse cabinet, checked by …",
+      "confirm": "Confirm the deletion",
+      "cancel": "Cancel",
+      "errors": {
+        "forbidden": "Not allowed.",
+        "note_required": "Write a note (at least 5 characters).",
+        "not_refused": "First request the cancel at the warehouse — this is confirmed only after a refusal.",
+        "already_requested": "A warehouse request for this shipment is not finished yet.",
+        "not_cancellable": "The shipment is already cancelled.",
+        "not_found": "Shipment not found.",
+        "other": "Failed — try again."
+      }
+    },
+    "storeFilter": {
+      "title": "Stores",
+      "all": "All stores",
+      "count": "{n} stores",
+      "mine": "Mine ({n})",
+      "setMine": "Set my stores",
+      "noLine": "No line",
+      "none": "clear all",
+      "allOfLine": "select all",
+      "archived": "archived"
     }
   },
   "orderStatus": {
@@ -2848,7 +2880,8 @@
         "zip": "postcode"
       },
       "codZeroHint": "No cash on delivery (0). If the customer pays on delivery, enter the amount!",
-      "codZeroConfirm": "This parcel has NO cash on delivery (0). Are you sure it must be sent with 0 COD?"
+      "codZeroConfirm": "This parcel has NO cash on delivery (0). Are you sure it must be sent with 0 COD?",
+      "optional": "Optional"
     },
     "detail": {
       "title": "Manual shipment",
@@ -2962,6 +2995,19 @@
       "searching": "Searching…",
       "none": "No such product.",
       "failed": "The search failed — try again."
+    },
+    "pickOrder": {
+      "title": "Shopify order (optional)",
+      "hint": "Pick the order this parcel is for — recipient, country, items with prices, cash on delivery and number are filled from it (all still editable).",
+      "search": "Search a Shopify order",
+      "placeholder": "number or customer name",
+      "results": "Orders found",
+      "none": "No such order.",
+      "use": "Fill from it",
+      "picked": "Filled from order {number} — check the fields.",
+      "failed": "The order could not be loaded.",
+      "live": "The order already has a shipment at \"{warehouse}\" ({ref}, {status}). A manual parcel would send it twice — continue only if the warehouse deleted or refused it.",
+      "pricesCleared": "Line prices were left empty: the cash on delivery is in another currency than the order."
     }
   },
   "ai": {
@@ -4320,5 +4366,15 @@
       "not_found": "Company not found.",
       "invalid": "Invalid data."
     }
+  },
+  "myStores": {
+    "title": "My stores",
+    "intro": "Pick the stores you work with — the orders list starts with them (you can always choose „All stores“).",
+    "noLine": "No line",
+    "wholeLine": "Whole line",
+    "hint": "With no store picked the list shows all.",
+    "save": "Save",
+    "saved": "Saved: {n} stores.",
+    "failed": "Failed — try again."
   }
 }

@@ -2,6 +2,7 @@ import { shopifyRefOf } from "@/lib/shopify-ref";
 import { DomainError } from "@/server/accounts";
 import { assertCan } from "@/server/auth/rbac";
 import { accountDb } from "@/server/db/client";
+import { NOT_IN_FLIGHT_SHIPMENT } from "@/server/override/guards";
 import type { ScopedActor } from "@/server/stores";
 import type { REPLACEMENT_REASONS } from "./manual";
 
@@ -123,3 +124,96 @@ export async function replacementLinks(
     shopifyRef: ref ? { number: ref, order: refOrder } : null,
   };
 }
+
+/**
+ * „Нова ръчна пратка“ → „Поръчка от Shopify“ (owner request 2026-11-24): the form is filled from a Shopify order the
+ * person picks — recipient, country, the lines with their prices, the cash on delivery in the destination currency and
+ * the Shopify number (which also offers „Прикачи“ on the manual order later). Every field stays editable.
+ */
+export async function searchOrdersForManual(actor: ScopedActor, q: string) {
+  assertCan(actor.role, "orders.fulfill");
+  const query = q.trim().replace(/^#/, "");
+  if (query.length < 2) return [];
+  return accountDb(actor.accountId).order.findMany({
+    where: {
+      source: "SHOPIFY",
+      ...(actor.companyScope ? { companyId: { in: actor.companyScope } } : {}),
+      OR: [
+        { number: { contains: query, mode: "insensitive" } },
+        { customerName: { contains: query, mode: "insensitive" } },
+      ],
+    },
+    select: { id: true, number: true, customerName: true, status: true, countryCode: true },
+    orderBy: { placedAt: "desc" },
+    take: 10,
+  });
+}
+
+export async function orderDraftForManual(actor: ScopedActor, orderId: string) {
+  const base = await replacementDraft(actor, orderId);
+  const order = await accountDb(actor.accountId).order.findUniqueOrThrow({
+    where: { id: orderId },
+    select: {
+      paymentMethod: true,
+      codAmount: true,
+      codLocalAmount: true,
+      codLocalCurrency: true,
+      currency: true,
+      fulfillments: {
+        where: { status: { notIn: [...NOT_IN_FLIGHT_SHIPMENT] } },
+        select: { externalId: true, status: true, connection: { select: { name: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+      lines: {
+        select: {
+          productId: true,
+          quantity: true,
+          unitPrice: true,
+          product: { select: { sku: true, name: true } },
+        },
+      },
+    },
+  });
+  // The destination-currency pair only when both halves are known; otherwise the order's own amount and currency.
+  const local = order.codLocalAmount != null && !!order.codLocalCurrency;
+  const cod =
+    order.paymentMethod === "COD"
+      ? {
+          amount: String((local ? order.codLocalAmount : order.codAmount) ?? ""),
+          currency: local ? order.codLocalCurrency! : order.currency,
+        }
+      : null;
+  // Line prices are in the order's currency: next to a COD in another currency they would be wrong — left empty.
+  const pricesCleared = !!cod && cod.currency !== order.currency;
+  // A shipment still at a warehouse (or on its way): a manual one on top would send the order twice.
+  const live = order.fulfillments[0];
+  const openWrites = await accountDb(actor.accountId).outboundRequest.count({
+    where: {
+      fulfillment: { orderId },
+      status: { in: ["PENDING", "PAUSED", "AWAITING_CONFIRMATION", "HELD", "SENDING", "UNCERTAIN"] },
+    },
+  });
+  return {
+    ...base,
+    shopifyNumber: base.sourceNumber,
+    cod,
+    pricesCleared,
+    liveShipment: live
+      ? { externalId: live.externalId, status: live.status, warehouse: live.connection.name }
+      : openWrites
+        ? { externalId: null, status: "PENDING", warehouse: null }
+        : null,
+    lines: order.lines
+      .filter((l): l is typeof l & { productId: string } => !!l.productId)
+      .map((l) => ({
+        productId: l.productId,
+        quantity: l.quantity,
+        unitPrice: pricesCleared ? "" : String(l.unitPrice ?? ""),
+        sku: l.product?.sku ?? "",
+        name: l.product?.name ?? "",
+      })),
+  };
+}
+
+export type ManualOrderDraft = Awaited<ReturnType<typeof orderDraftForManual>>;

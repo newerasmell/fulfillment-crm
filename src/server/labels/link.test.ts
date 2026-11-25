@@ -257,4 +257,20 @@ describe("attach a manual shipment to its Shopify order", () => {
       }),
     ).rejects.toMatchObject({ code: "manual_not_shipped" });
   });
+
+  it("a warehouse manual order whose ManualShipment has no shipment id is attached; a CRM-cancelled order is refused", async () => {
+    // Owner case 2026-11-24: „още няма активна пратка“ for a manual order accepted at the warehouse.
+    const { g, db, order, manual, f } = await setup("link-noid");
+    await db.manualShipment.updateMany({ where: { orderId: manual.id }, data: { fulfillmentId: null } });
+    // An order cancelled in the CRM is final: refused.
+    await db.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
+    await expect(
+      linkManualToShopifyOrder(g.owner, { manualOrderId: manual.id, shopifyOrderId: order.id }),
+    ).rejects.toMatchObject({ code: "order_closed_in_crm" });
+    await db.order.update({ where: { id: order.id }, data: { status: "BLOCKED" } });
+    await linkManualToShopifyOrder(g.owner, { manualOrderId: manual.id, shopifyOrderId: order.id });
+    expect((await db.fulfillment.findUniqueOrThrow({ where: { id: f.id } })).orderId).toBe(order.id);
+    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("SHIPPED");
+    expect(await attachedTo(g.accountId, manual.id)).toMatchObject({ id: order.id });
+  });
 });

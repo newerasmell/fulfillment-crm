@@ -7,6 +7,7 @@ import { ForbiddenError } from "@/server/auth/rbac";
 import { actorFrom, requireAccountContext } from "@/server/auth/session";
 import type { Finding } from "@/server/checks/findings";
 import {
+  confirmWarehouseCancelByHand,
   clearWarehouseChoice,
   RerouteBlockedError,
   requestReroute,
@@ -97,4 +98,26 @@ export async function warehouseCancelAction(input: {
   } catch (err) {
     return toError(err);
   }
+}
+
+/** „Складът я е изтрил — потвърди ръчно“: after a refused cancel, a person confirms the warehouse deleted it. */
+export async function confirmWarehouseCancelByHandAction(
+  orderId: string,
+  fulfillmentId: string,
+  note: string,
+): Promise<{ ok: true } | { error: string }> {
+  const ctx = await requireAccountContext();
+  try {
+    await confirmWarehouseCancelByHand(actorFrom(ctx), {
+      fulfillmentId: z.string().min(1).max(64).parse(fulfillmentId),
+      note: String(note ?? ""),
+    });
+  } catch (err) {
+    if (err instanceof ForbiddenError) return { error: "forbidden" };
+    if (err instanceof DomainError) return { error: err.code };
+    if (err instanceof z.ZodError) return { error: "note_required" };
+    throw err;
+  }
+  revalidatePath(`/orders/${orderId}`);
+  return { ok: true };
 }

@@ -236,6 +236,7 @@ export async function applyOrderHistory(
         connectionId: true,
         externalId: true,
         status: true,
+        rawStatus: true,
         trackingNumbers: true,
         shippedAt: true,
         deliveredAt: true,
@@ -319,6 +320,17 @@ export async function applyOrderHistory(
       return { category: null, status: f.status, newEvents: 0, stopPolling: false, alerts };
     }
     const rule = resolveStatus(latest.record.STATUS, table);
+    // Cancelled since the poll read it (the AWB check, a confirmed delete, confirmed by hand): a stale history
+    // ("Awaiting pickup" for a reference deleted in the cabinet) never revives it. Only a shipment given up as "not
+    // found" is made active again by history (it is polled on purpose).
+    if (f.status === "CANCELLED" && f.rawStatus !== GONE_NOT_FOUND)
+      return {
+        category: rule.category,
+        status: f.status,
+        newEvents: fresh.length,
+        stopPolling: true,
+        alerts,
+      };
     // A shipment replaced by a confirmed reroute (P4-09) keeps its status; the order follows its new shipment.
     const superseded = await isSupersededShipment(tx, f.id);
     const crm = superseded ? f.status : (CRM_STATUS[rule.category] ?? f.status); // CANCEL_PENDING keeps the previous status

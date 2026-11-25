@@ -325,7 +325,13 @@ describe("Откажи в склада (cancel a shipment at the warehouse from 
         await g.db.shopifyTagWrite.findFirstOrThrow({
           where: { orderId: order.id, add: { has: "out_of_stock" } },
         }),
-      ).toMatchObject({ status: "PENDING", createdById: g.owner.userId, remove: ["Confirmed"] });
+      ).toMatchObject({
+        status: "PENDING",
+        createdById: g.owner.userId,
+        remove: ["Confirmed"],
+        // …and a tag naming the warehouse that cancelled it (owner request 2026-11-24).
+        add: ["out_of_stock", expect.stringMatching(/^cancelled by warehouse /)],
+      });
       await g.db.storeOrderTag.deleteMany({ where: { storeId: g.store.id } });
       expect(
         await g.db.orderEvent.count({ where: { orderId: order.id, source: "warehouse_cancel.no_stock" } }),
