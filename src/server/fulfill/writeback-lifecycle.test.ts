@@ -16,6 +16,7 @@ import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "@/server/eushipments/test-fixtures";
 import { ForbiddenError } from "@/server/auth/rbac";
 import { setShipmentCarrier } from "./carrier";
+import { settleOrderTasksNow } from "@/server/order-tasks";
 import {
   CARRIER_TASK,
   CARRIER_UNKNOWN,
@@ -1157,14 +1158,9 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
     await sweepWriteBacks();
     const first = liveShop();
     expect(await processWriteBack((await row(f.id, "FULFIL")).id, first.clients)).toBe("SENT");
-    // The warehouse cancels it.
+    // The warehouse cancels it, and the order is sent again at once: a new shipment of the same order and lines,
+    // already with a tracking number (live: the Shopify fulfillment is kept for it, never cancelled).
     await move(f.id, "CANCELLED");
-    await sweepWriteBacks();
-    await sweepWriteBacks();
-    expect(
-      await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_orphaned" } }),
-    ).toBe(1);
-    // Sent again: a new shipment of the same order and lines, already with a tracking number.
     const line = await db().orderLine.findFirstOrThrow({ where: { orderId: order.id } });
     const again = await db().fulfillment.create({
       data: {
@@ -1181,6 +1177,11 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
       },
     });
     await sweepWriteBacks();
+    await sweepWriteBacks();
+    expect(
+      await db().alert.count({ where: { entityId: order.id, kind: "shopify_writeback_orphaned" } }),
+    ).toBe(1);
+    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: f.id, kind: "CANCEL" } })).toBe(0);
     const shop = fakeShopify({
       // The order's lines are fulfilled in Shopify by the old shipment's fulfillment (no tracking on it).
       FulfillmentWriteBackRead: () => orderRead([{ id: FUL_GID, status: "SUCCESS", trackingInfo: [] }], 0),
@@ -1214,6 +1215,210 @@ describe("Shopify write-back lifecycle (DB, mocked Shopify)", () => {
       "SENT",
     );
     expect(shop.count("FulfillmentWriteBack")).toBe(0);
+  });
+
+  it("deleted at the warehouse, nothing else live: the Shopify fulfillment is cancelled (fulfillmentCancel), once", async () => {
+    // Owner request 2026-11-25: the order stayed "Fulfilled" in Shopify after the warehouse deleted the shipment.
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f, order } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    // Cancelled without the warehouse's confirmed delete (e.g. a STORNO, a status read from polling): only the task.
+    await move(f.id, "CANCELLED");
+    await sweepWriteBacks();
+    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: f.id, kind: "CANCEL" } })).toBe(0);
+    expect(
+      await db().alert.count({
+        where: { entityId: order.id, kind: "shopify_writeback_orphaned", status: { not: "RESOLVED" } },
+      }),
+    ).toBe(1);
+    // The warehouse's confirmed delete (proved by euShipments): the Shopify fulfillment is cancelled.
+    await db().fulfillment.update({
+      where: { id: f.id },
+      data: { rawStatus: "deleted (euShipments accepted the delete)" },
+    });
+    await sweepWriteBacks();
+    await sweepWriteBacks(); // idempotent: one row
+    const cancels = await db().shopifyWriteBack.findMany({ where: { fulfillmentId: f.id, kind: "CANCEL" } });
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toMatchObject({ value: FUL_GID, status: "PENDING" });
+    const live = fakeShopify({
+      FulfillmentWriteBackState: () => state(),
+      FulfillmentCancelWriteBack: (v) => ({
+        fulfillmentCancel: { fulfillment: { id: v.id, status: "CANCELLED" }, userErrors: [] },
+      }),
+    });
+    expect(await processWriteBack(cancels[0]!.id, live.clients)).toBe("SENT");
+    expect(live.varsOf("FulfillmentCancelWriteBack")).toEqual([{ id: FUL_GID }]);
+    // Cancelled in Shopify: the order's "cancelled shipment" task is answered at once.
+    expect(
+      await db().alert.count({
+        where: { entityId: order.id, kind: "shopify_writeback_orphaned", status: { not: "RESOLVED" } },
+      }),
+    ).toBe(0);
+    // Already cancelled in Shopify (read before sending): nothing sent again.
+    await db().shopifyWriteBack.update({ where: { id: cancels[0]!.id }, data: { status: "PENDING" } });
+    const done = fakeShopify({
+      FulfillmentWriteBackState: () => {
+        const st = state() as { fulfillment: Record<string, unknown> };
+        return { fulfillment: { ...st.fulfillment, status: "CANCELLED" } };
+      },
+    });
+    expect(await processWriteBack(cancels[0]!.id, done.clients)).toBe("SENT");
+    expect(done.count("FulfillmentCancelWriteBack")).toBe(0);
+  });
+
+  it("a person already answered the 'cancelled shipment' task: the CRM never cancels that fulfillment later", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f, order } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    await db().shopifyWriteBack.updateMany({
+      where: { fulfillmentId: f.id, kind: "FULFIL" },
+      data: { shopifyFulfillmentGid: `gid://shopify/Fulfillment/${f.id}` },
+    });
+    await move(f.id, "CANCELLED");
+    await sweepWriteBacks();
+    // Closed by the CRM itself (no person): not a decision — a later proof still cancels it…
+    const task = await db().alert.findFirstOrThrow({
+      where: { entityId: order.id, kind: "shopify_writeback_orphaned" },
+    });
+    await db().alert.update({ where: { id: task.id }, data: { status: "RESOLVED", resolvedAt: new Date() } });
+    // …but a person who resolved it decided: recorded with their note.
+    await db().alertNote.create({
+      data: {
+        accountId: g.accountId,
+        alertId: task.id,
+        userId: g.owner.userId,
+        action: "resolve",
+        note: "kept the fulfillment",
+      },
+    });
+    // A proof arrives later (e.g. the hourly AWB check): the person's decision stands.
+    await db().fulfillment.update({ where: { id: f.id }, data: { rawStatus: "canceled/deleted (AWB)" } });
+    await sweepWriteBacks();
+    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: f.id, kind: "CANCEL" } })).toBe(0);
+  });
+
+  it("Shopify refuses the cancel: FAILED with a task that 'Провери задачите' never closes on its own", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    const { f, order } = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    // Its own Shopify fulfillment (one CANCEL per Shopify fulfillment across the account).
+    await db().shopifyWriteBack.updateMany({
+      where: { fulfillmentId: f.id, kind: "FULFIL" },
+      data: { shopifyFulfillmentGid: `gid://shopify/Fulfillment/${f.id}` },
+    });
+    await db().fulfillment.update({
+      where: { id: f.id },
+      data: { status: "CANCELLED", rawStatus: "deleted (every AWB: canceled/deleted)" },
+    });
+    await sweepWriteBacks();
+    const c = await db().shopifyWriteBack.findFirstOrThrow({
+      where: { fulfillmentId: f.id, kind: "CANCEL" },
+    });
+    const shop = fakeShopify({
+      FulfillmentWriteBackState: () => state(),
+      FulfillmentCancelWriteBack: () => ({
+        fulfillmentCancel: { fulfillment: null, userErrors: [{ field: ["id"], message: "Cannot cancel" }] },
+      }),
+    });
+    expect(await processWriteBack(c.id, shop.clients)).toBe("FAILED");
+    await settleOrderTasksNow(g.accountId, order.id, "test");
+    expect(
+      await db().alert.count({
+        where: { entityId: order.id, kind: "shopify_writeback_failed", status: { not: "RESOLVED" } },
+      }),
+    ).toBe(1);
+  });
+
+  it("no Shopify cancel when the order is live again, or the shipment was only given up on 'not found'", async () => {
+    await setStore({ writeBackMode: "LIVE", fulfilTrigger: "ON_ACCEPT" });
+    // Given up on "not found" (no proof from the warehouse): the Shopify fulfillment stays (a task, as before).
+    const a = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(a.f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    // Its own Shopify fulfillment (one CANCEL per Shopify fulfillment across the account).
+    await db().shopifyWriteBack.updateMany({
+      where: { fulfillmentId: a.f.id, kind: "FULFIL" },
+      data: { shopifyFulfillmentGid: `gid://shopify/Fulfillment/${a.f.id}` },
+    });
+    await db().fulfillment.update({
+      where: { id: a.f.id },
+      data: { status: "CANCELLED", rawStatus: "not found at euShipments" },
+    });
+    await sweepWriteBacks();
+    expect(await db().shopifyWriteBack.count({ where: { fulfillmentId: a.f.id, kind: "CANCEL" } })).toBe(0);
+    // Queued, then a new shipment of the order went live before the send: refused, nothing sent.
+    const b = await shipment("ACCEPTED");
+    await sweepWriteBacks();
+    expect(await processWriteBack((await row(b.f.id, "FULFIL")).id, liveShop().clients)).toBe("SENT");
+    // Its own Shopify fulfillment (one CANCEL per Shopify fulfillment across the account).
+    await db().shopifyWriteBack.updateMany({
+      where: { fulfillmentId: b.f.id, kind: "FULFIL" },
+      data: { shopifyFulfillmentGid: `gid://shopify/Fulfillment/${b.f.id}` },
+    });
+    await db().fulfillment.update({
+      where: { id: b.f.id },
+      data: { status: "CANCELLED", rawStatus: "canceled/deleted (AWB)" },
+    });
+    await sweepWriteBacks();
+    const c = await db().shopifyWriteBack.findFirstOrThrow({
+      where: { fulfillmentId: b.f.id, kind: "CANCEL" },
+    });
+    await db().fulfillment.create({
+      data: {
+        accountId: g.accountId,
+        orderId: b.order.id,
+        connectionId: g.connection.id,
+        externalId: `LC-${n}-live`,
+        status: "ACCEPTED",
+      },
+    });
+    const none = fakeShopify({});
+    expect(await processWriteBack(c.id, none.clients)).toBe("REFUSED");
+    expect(none.ops).toEqual([]);
+    // A refused CANCEL leaves it to a person: the "cancelled shipment" task opens.
+    await sweepWriteBacks();
+    expect(
+      await db().alert.count({
+        where: { entityId: b.order.id, kind: "shopify_writeback_orphaned", status: { not: "RESOLVED" } },
+      }),
+    ).toBe(1);
+    // DRY_RUN store: the exact mutation is recorded, nothing sent.
+    await setStore({ writeBackMode: "DRY_RUN", fulfilTrigger: "ON_ACCEPT" });
+    const d = await shipment("ACCEPTED");
+    await db().shopifyWriteBack.create({
+      data: {
+        accountId: g.accountId,
+        storeId: (await db().order.findUniqueOrThrow({ where: { id: d.order.id } })).storeId!,
+        orderId: d.order.id,
+        fulfillmentId: d.f.id,
+        kind: "FULFIL",
+        value: "",
+        status: "SENT",
+        shopifyFulfillmentGid: "gid://shopify/Fulfillment/9549999",
+      },
+    });
+    await db().fulfillment.update({
+      where: { id: d.f.id },
+      data: { status: "CANCELLED", rawStatus: "deleted (confirmed by hand)" },
+    });
+    await sweepWriteBacks();
+    const dr = await db().shopifyWriteBack.findFirstOrThrow({
+      where: { fulfillmentId: d.f.id, kind: "CANCEL" },
+    });
+    const dry = fakeShopify({});
+    expect(await processWriteBack(dr.id, dry.clients)).toBe("DRY_RUN_RECORDED");
+    expect(dry.ops).toEqual([]);
+    expect(
+      (
+        (await db().shopifyWriteBack.findUniqueOrThrow({ where: { id: dr.id } })).request as {
+          variables: unknown;
+        }
+      ).variables,
+    ).toEqual({ id: "gid://shopify/Fulfillment/9549999" });
   });
 
   it("DRY_RUN → LIVE: the fulfilment re-runs with a fresh read-back key (a fulfillment created since is not ours)", async () => {

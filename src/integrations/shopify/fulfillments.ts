@@ -107,6 +107,18 @@ mutation FulfillmentEventWriteBack($fulfillmentEvent: FulfillmentEventInput!) {
   }
 }`;
 
+/**
+ * Cancels a Shopify fulfillment (Admin GraphQL `fulfillmentCancel(id: ID!)` → FulfillmentCancelPayload {fulfillment,
+ * userErrors}). Shopify reopens the fulfillment orders of its items, so the order is no longer "Fulfilled".
+ */
+export const FULFILLMENT_CANCEL_MUTATION = `#graphql
+mutation FulfillmentCancelWriteBack($id: ID!) {
+  fulfillmentCancel(id: $id) {
+    fulfillment { id status }
+    userErrors { field message }
+  }
+}`;
+
 const TrackingInfo = z.object({
   number: z.string().nullable(),
   company: z.string().nullable(),
@@ -203,6 +215,15 @@ export type WriteBackState = z.infer<typeof WriteBackStateSchema>;
 
 export const FulfillmentTrackingUpdateSchema = z.object({
   fulfillmentTrackingInfoUpdate: z
+    .object({
+      fulfillment: z.object({ id: z.string(), status: z.string() }).nullable(),
+      userErrors: UserErrors,
+    })
+    .nullable(),
+});
+
+export const FulfillmentCancelSchema = z.object({
+  fulfillmentCancel: z
     .object({
       fulfillment: z.object({ id: z.string(), status: z.string() }).nullable(),
       userErrors: UserErrors,

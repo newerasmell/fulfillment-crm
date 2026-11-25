@@ -499,7 +499,34 @@ async function replaceLines(
     linkByGid.set(stub.shopifyVariantGid, stub);
   }
   const keep = o.lineItems.nodes.filter((l) => l.currentQuantity > 0);
-  await tx.orderLine.deleteMany({ where: { orderId, shopifyLineGid: { notIn: keep.map((l) => l.id) } } });
+  const gone = { orderId, shopifyLineGid: { notIn: keep.map((l) => l.id) } };
+  // A removed line an old shipment still names (sent before, refused / cancelled at the warehouse — owner report
+  // 2026-11-25): that shipment no longer lists it, so the edit applies. Never a live shipment's line: such a line
+  // stays (the order is not in review then; a task says so) — the import never fails on it.
+  await tx.fulfillmentLine.deleteMany({
+    where: {
+      accountId,
+      orderLine: gone,
+      fulfillment: {
+        status: { in: ["CANCELLED", "SUBMIT_FAILED"] },
+        // Given up on "not found" at euShipments: it may be found again (reinstated) — its lines stay.
+        OR: [{ rawStatus: null }, { rawStatus: { not: "not found at euShipments" } }],
+      },
+    },
+  });
+  const pinned = await tx.orderLine.findMany({
+    where: { ...gone, fulfillmentLines: { some: {} } },
+    select: { id: true, sku: true, title: true },
+  });
+  await tx.orderLine.deleteMany({ where: { ...gone, id: { notIn: pinned.map((l) => l.id) } } });
+  if (pinned.length)
+    await openTask(
+      tx,
+      accountId,
+      orderId,
+      "shopify_line_removed_live_shipment",
+      `Order ${o.name}: ${pinned.map((l) => l.sku ?? l.title).join(", ")} removed in Shopify but still on a shipment that may be live at the warehouse — check it`,
+    );
   // A product a person chose by hand for a line (OrderLineProductChoice) survives every re-import.
   const chosen = new Map(
     (

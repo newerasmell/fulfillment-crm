@@ -391,12 +391,19 @@ async function resolvedSinceEntered(
   return !!resolved;
 }
 
-export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHours(), take = 500) {
+export async function sweepOrderAlerts(
+  now: Date = new Date(),
+  hours = stuckHours(),
+  take = 500,
+  /** One account only (tests: the shared test database holds every other test's orders). */
+  scope: { accountId?: string } = {},
+) {
   const db = systemDb();
+  const inScope = scope.accountId ? { accountId: scope.accountId } : {};
   let created = 0;
   let resolved = 0;
   const open = await db.alert.findMany({
-    where: { kind: { in: SWEEP_KINDS }, entityType: "Order", ...OPEN },
+    where: { kind: { in: SWEEP_KINDS }, entityType: "Order", ...OPEN, ...inScope },
     select: { id: true, accountId: true, kind: true, entityId: true, body: true },
   });
   const openKey = new Set(open.map((a) => `${a.kind}:${a.entityId}`));
@@ -432,7 +439,7 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
     NonNullable<(typeof STATE_ALERTS)[CrmOrderStatus]>,
   ][]) {
     const orders = await db.order.findMany({
-      where: { status },
+      where: { status, ...inScope },
       select: { id: true, accountId: true, number: true, status: true },
       take,
     });
@@ -445,7 +452,7 @@ export async function sweepOrderAlerts(now: Date = new Date(), hours = stuckHour
     const candidates: { id: string; accountId: string; number: string; status: CrmOrderStatus }[] = [];
     for (let cursor: string | undefined; candidates.length < STUCK_SCAN_MAX;) {
       const page = await db.order.findMany({
-        where: { status, updatedAt: { lt: cutoff }, ...(cursor ? { id: { gt: cursor } } : {}) },
+        where: { status, updatedAt: { lt: cutoff }, ...inScope, ...(cursor ? { id: { gt: cursor } } : {}) },
         select: { id: true, accountId: true, number: true, status: true },
         orderBy: { id: "asc" },
         take,

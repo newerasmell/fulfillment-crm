@@ -8,6 +8,7 @@ import { scrubText } from "@/lib/scrub";
 import { followShipment, isSupersededShipment, transition } from "@/server/pipeline";
 import { courierEvents, openReturningTask, recordCourierEvents } from "./courier";
 import { warehouseCancelConfirmed, warehouseCancelRefused } from "@/server/override/cancel-effects";
+import { settleAfterWarehouseCancel } from "@/server/override/settle-after-cancel";
 
 /**
  * Applies what FHB told us (create/update responses, read-backs, callback re-reads) to the CRM mirror:
@@ -346,6 +347,7 @@ export async function applyFhbResult(accountId: string, connectionId: string, e:
           source: "fhb:fhb.order.delete",
         });
       });
+      await settleAfterWarehouseCancel(accountId, f.orderId, "fhb.order.delete");
       return;
     }
     case "product":

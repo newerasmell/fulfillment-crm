@@ -1744,7 +1744,8 @@
       "kind": {
         "FULFIL": "Fulfilment",
         "TRACKING": "Tracking",
-        "EVENT": "Status"
+        "EVENT": "Status",
+        "CANCEL": "Fulfillment cancel"
       },
       "event": {
         "IN_TRANSIT": "in transit",
@@ -2065,7 +2066,9 @@
       "reroute_simulated": "Reroute (dry run): recorded only",
       "warehouse_cancel_requested": "Cancel at warehouse requested",
       "warehouse_cancelled": "Cancelled at the warehouse",
-      "warehouse_cancel_refused": "The warehouse refused the cancel"
+      "warehouse_cancel_refused": "The warehouse refused the cancel",
+      "sku_held": "Unit blocked at the warehouse (not sold from there)",
+      "sku_released": "Unit released at the warehouse"
     },
     "error": {
       "generic": "Action failed.",
@@ -4319,7 +4322,20 @@
       "incidents": "{count, plural, one {# case} other {# cases}}",
       "unlock": "Unlock",
       "notePlaceholder": "Reason, e.g. the warehouse confirmed stock",
-      "unlocked": "Unlocked."
+      "unlocked": "Unlocked.",
+      "history": {
+        "title": "Blocked units history",
+        "intro": "Every unit blocked at a warehouse in the last {days} days: when, which warehouse, which product, from which order, and who released it and why.",
+        "empty": "No blocked units in this period.",
+        "at": "When",
+        "qty": "Units",
+        "order": "Order",
+        "state": "State",
+        "why": "cancelled or re-routed at the warehouse — no stock there",
+        "blocked": "Blocked",
+        "released": "Released {when}",
+        "more": "Showing the latest {n} entries."
+      }
     },
     "banner": "Stuck at {warehouse}: {hours} h without courier handover",
     "bannerLink": "Open the case →"

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logger } from "@/lib/logger";
 import type { Prisma } from "@/generated/prisma/client";
 import { DomainError } from "@/server/accounts";
 import { recordAudit } from "@/server/audit";
@@ -23,7 +24,7 @@ import { CANCEL_OPERATIONS, warehouseCancelMeta } from "@/server/override/cancel
  *    something in Shopify; TRACKING / EVENT rows of a shipment that is gone do not);
  *  - shopify_writeback_uncertain: no write-back with an unknown result left;
  *  - shopify_writeback_orphaned: every Shopify fulfillment of a cancelled shipment was taken over (SENT, not a dry
- *    run) by a shipment that is still live.
+ *    run) by a shipment that is still live, or cancelled in Shopify by the CRM (a CANCEL write-back SENT).
  *  - order_submit_failed / order_blocked / order_unknown / order_stuck (the alert sweep's tasks): closed once the
  *    order has left that status (the sweep would close them at its next run).
  * Never closed here: reroute_uncertain and warehouse_cancel_not_blocked (only a person who checked can say).
@@ -50,7 +51,7 @@ const goneShipment = {
 const provenGone = {
   OR: [
     { status: "SUBMIT_FAILED" },
-    { status: "CANCELLED", NOT: { rawStatus: GONE_NOT_FOUND } },
+    { status: "CANCELLED", OR: [{ rawStatus: null }, { rawStatus: { not: GONE_NOT_FOUND } }] },
     { reroutesFrom: { some: { status: "DONE" } } },
   ],
 } satisfies Prisma.FulfillmentWhereInput;
@@ -201,7 +202,8 @@ async function verdictFor(
         accountId,
         orderId,
         status: "FAILED",
-        OR: [{ kind: "FULFIL" }, { fulfillment: { NOT: provenGone } }],
+        // A failed FULFIL may have left something in Shopify; a failed CANCEL left the fulfillment standing.
+        OR: [{ kind: { in: ["FULFIL", "CANCEL"] } }, { fulfillment: { NOT: provenGone } }],
       },
     });
     return { close: !failed, why: failed ? "writeback_failed_left" : "writeback_failed_none" };
@@ -230,7 +232,18 @@ async function verdictFor(
       },
       select: { shopifyFulfillmentGid: true },
     });
-    const held = new Set(adopted.map((a) => a.shopifyFulfillmentGid));
+    // Cancelled in Shopify by the CRM (the warehouse deleted the shipment, owner request 2026-11-25): done too.
+    const cancelled = await tx.shopifyWriteBack.findMany({
+      where: {
+        accountId,
+        orderId,
+        kind: "CANCEL",
+        status: "SENT",
+        value: { in: orphaned.map((o) => o.shopifyFulfillmentGid!) },
+      },
+      select: { value: true },
+    });
+    const held = new Set([...adopted.map((a) => a.shopifyFulfillmentGid), ...cancelled.map((c) => c.value)]);
     const left = orphaned.some((o) => !held.has(o.shopifyFulfillmentGid));
     return { close: !left, why: left ? "orphan_left" : "orphan_adopted" };
   }
@@ -323,7 +336,12 @@ export async function recheckOrderTasks(actor: ScopedActor, raw: z.input<typeof 
 }
 
 /** Task kinds the alerts sweep also re-checks on its own (the same rules as the button; never the person-only ones). */
-const SWEPT_KINDS = ["warehouse_cancel_refused", "reroute_refused", "parcel_returning"];
+const SWEPT_KINDS = [
+  "warehouse_cancel_refused",
+  "reroute_refused",
+  "parcel_returning",
+  "shopify_writeback_orphaned",
+];
 
 /**
  * Every 10 min (alerts sweep): the open refused-cancel tasks are checked like "Провери задачите" does and closed when
@@ -363,4 +381,43 @@ export async function sweepSettledOrderTasks(take = 500) {
     if (done) resolved++;
   }
   return { resolved };
+}
+
+/**
+ * Right after something settled an order (owner report 2026-11-25: the warehouse cancel was confirmed and four yellow
+ * tasks stayed until the next sweep): its open tasks are checked by the same rules as "Провери задачите" and closed
+ * when their cause is gone — at once, not at the next sweep. Each closed task keeps a note (history); a task whose
+ * cause still holds stays. Never throws (the caller's work is already committed).
+ */
+export async function settleOrderTasksNow(accountId: string, orderId: string, source: string) {
+  let closed = 0;
+  try {
+    const open = await accountDb(accountId).alert.findMany({
+      where: { accountId, entityType: "Order", entityId: orderId, status: { not: "RESOLVED" } },
+      select: { id: true, kind: true, createdAt: true, body: true },
+    });
+    for (const a of open) {
+      const done = await withAccountTransaction(accountId, async (tx, { lockForUpdate }) => {
+        await lockForUpdate("Order", orderId);
+        const v = await verdictFor(tx, accountId, orderId, a);
+        if (!v?.close) return false;
+        const r = await tx.alert.updateMany({
+          where: { id: a.id, accountId, status: { not: "RESOLVED" } },
+          data: { status: "RESOLVED", resolvedAt: new Date() },
+        });
+        if (!r.count) return false;
+        await tx.alertNote.create({
+          data: { accountId, alertId: a.id, action: "auto_resolve", note: `${source}: ${v.why}` },
+        });
+        return true;
+      });
+      if (done) closed++;
+    }
+  } catch (err) {
+    logger.warn(
+      { orderId, err: String((err as Error)?.message ?? err).slice(0, 300) },
+      "settle order tasks failed",
+    );
+  }
+  return closed;
 }

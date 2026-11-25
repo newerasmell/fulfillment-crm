@@ -7,6 +7,7 @@ import { crmCancelLeft, warehouseCancelConfirmed } from "@/server/override/cance
 import { isSupersededShipment } from "@/server/pipeline";
 import { advanceOrderStatus } from "./statuses";
 import { euReadClientFor } from "./connection";
+import { settleAfterWarehouseCancel } from "@/server/override/settle-after-cancel";
 
 /**
  * Problem shipments checked by their AWB (owner idea 2026-11-24): the warehouse deletes an order in its cabinet while
@@ -171,7 +172,10 @@ export async function checkProblemShipmentsByAwb(
       );
       return false;
     });
-    if (done) deleted++;
+    if (done) {
+      deleted++;
+      await settleAfterWarehouseCancel(f.accountId, f.orderId, "eushipments.awb");
+    }
   }
   if (deleted)
     logger.info({ checked: shipments.length, deleted }, "euShipments AWB check: deleted shipments found");

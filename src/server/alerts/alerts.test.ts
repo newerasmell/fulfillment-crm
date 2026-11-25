@@ -79,8 +79,8 @@ describe("alerts and tasks (DB)", () => {
     const unknown = await order("UNKNOWN");
     const queued = await order("QUEUED");
     const later = new Date(Date.now() + 5 * 3600_000); // QUEUED for > 4 h by then
-    await sweepOrderAlerts(later);
-    await sweepOrderAlerts(later); // idempotent
+    await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
+    await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId }); // idempotent
     const kinds = async (id: string) =>
       (await db().alert.findMany({ where: { entityId: id, status: { not: "RESOLVED" } } })).map(
         (a) => a.kind,
@@ -90,7 +90,7 @@ describe("alerts and tasks (DB)", () => {
     expect(await kinds(queued.id)).toEqual(["order_stuck"]);
 
     await db().order.update({ where: { id: blocked.id }, data: { status: "PROCESSING" } });
-    const r = await sweepOrderAlerts(later);
+    const r = await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
     expect(r.resolved).toBeGreaterThanOrEqual(1);
     expect(await kinds(blocked.id)).toEqual([]);
     const alert = await db().alert.findFirstOrThrow({ where: { entityId: blocked.id } });
@@ -123,17 +123,19 @@ describe("alerts and tasks (DB)", () => {
     const open = () =>
       db().alert.findMany({ where: { entityId: o.id, kind: "order_stuck", status: { not: "RESOLVED" } } });
     await event(new Date(later.getTime() - 2 * 86_400_000)); // the carrier spoke 2 days before
-    await sweepOrderAlerts(later);
+    await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
     expect(await open()).toHaveLength(0);
     const silent = new Date(later.getTime() + 6 * 86_400_000); // 8 days without news
-    await sweepOrderAlerts(silent);
+    await sweepOrderAlerts(silent, undefined, undefined, { accountId: g.accountId });
     const [t] = await open();
     expect(t?.title).toMatch(/без вест от куриера 5 дни/);
     await event(new Date(silent.getTime() - 3_600_000));
-    await sweepOrderAlerts(silent);
+    await sweepOrderAlerts(silent, undefined, undefined, { accountId: g.accountId });
     expect(await open()).toHaveLength(0);
     // Quiet again for days: the task comes back (the sweep closed it, not a person).
-    await sweepOrderAlerts(new Date(silent.getTime() + 6 * 86_400_000));
+    await sweepOrderAlerts(new Date(silent.getTime() + 6 * 86_400_000), undefined, undefined, {
+      accountId: g.accountId,
+    });
     expect(await open()).toHaveLength(1);
   });
 
@@ -153,7 +155,7 @@ describe("alerts and tasks (DB)", () => {
     const later = new Date(Date.now() + 20 * 86_400_000);
     const open = () =>
       db().alert.findMany({ where: { entityId: o.id, kind: "order_stuck", status: { not: "RESOLVED" } } });
-    await sweepOrderAlerts(later);
+    await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
     expect(await open()).toHaveLength(1);
     await db().fulfillmentEvent.create({
       data: {
@@ -165,9 +167,11 @@ describe("alerts and tasks (DB)", () => {
         payload: { key: "k1", message: "Podpísané na papieri" },
       },
     });
-    await sweepOrderAlerts(later);
+    await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
     expect(await open()).toHaveLength(0);
-    await sweepOrderAlerts(new Date(later.getTime() + 10 * 86_400_000));
+    await sweepOrderAlerts(new Date(later.getTime() + 10 * 86_400_000), undefined, undefined, {
+      accountId: g.accountId,
+    });
     expect(await open()).toHaveLength(0);
 
     // Not a delivery to the recipient: an euShipments carrier comment about an office, or "out for delivery".
@@ -193,7 +197,7 @@ describe("alerts and tasks (DB)", () => {
           payload: { comment },
         },
       });
-      await sweepOrderAlerts(later);
+      await sweepOrderAlerts(later, undefined, undefined, { accountId: g.accountId });
       expect(
         await db().alert.count({
           where: { entityId: q.id, kind: "order_stuck", status: { not: "RESOLVED" } },
@@ -216,14 +220,18 @@ describe("alerts and tasks (DB)", () => {
         createdAt: new Date(Date.now() - 60_000),
       },
     });
-    await sweepOrderAlerts();
+    await sweepOrderAlerts(undefined, undefined, undefined, { accountId: g.accountId });
     const first = await db().alert.findFirstOrThrow({
       where: { entityId: blocked.id, kind: "order_blocked" },
     });
     await resolveAlert(g.owner, first.id, "Asked the warehouse, they are on it");
     // 10 minutes later the order is still BLOCKED: no new alert.
-    await sweepOrderAlerts(new Date(Date.now() + 10 * 60_000));
-    await sweepOrderAlerts(new Date(Date.now() + 20 * 60_000));
+    await sweepOrderAlerts(new Date(Date.now() + 10 * 60_000), undefined, undefined, {
+      accountId: g.accountId,
+    });
+    await sweepOrderAlerts(new Date(Date.now() + 20 * 60_000), undefined, undefined, {
+      accountId: g.accountId,
+    });
     expect(await db().alert.count({ where: { entityId: blocked.id, kind: "order_blocked" } })).toBe(1);
     // It leaves BLOCKED and comes back later: a new episode, a new alert.
     await db().orderEvent.create({
@@ -237,7 +245,9 @@ describe("alerts and tasks (DB)", () => {
         createdAt: new Date(Date.now() + 1000),
       },
     });
-    await sweepOrderAlerts(new Date(Date.now() + 30 * 60_000));
+    await sweepOrderAlerts(new Date(Date.now() + 30 * 60_000), undefined, undefined, {
+      accountId: g.accountId,
+    });
     expect(
       await db().alert.count({ where: { entityId: blocked.id, kind: "order_blocked", status: "OPEN" } }),
     ).toBe(1);

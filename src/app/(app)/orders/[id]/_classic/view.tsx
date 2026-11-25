@@ -78,6 +78,7 @@ const WRITE_BACK_MUTATION = {
   FULFIL: "fulfillmentCreate",
   TRACKING: "fulfillmentTrackingInfoUpdate",
   EVENT: "fulfillmentEventCreate",
+  CANCEL: "fulfillmentCancel",
 } as const;
 
 export async function ClassicOrderView({

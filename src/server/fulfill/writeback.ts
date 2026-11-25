@@ -11,6 +11,8 @@ import {
   FULFILLMENT_CREATE_MUTATION,
   FULFILLMENT_EVENT_CREATE_MUTATION,
   FULFILLMENT_TRACKING_UPDATE_MUTATION,
+  FULFILLMENT_CANCEL_MUTATION,
+  FulfillmentCancelSchema,
   FulfillmentCreateSchema,
   FulfillmentEventCreateSchema,
   FulfillmentTrackingUpdateSchema,
@@ -38,6 +40,8 @@ import { accountDb, systemDb, withSystemTransaction } from "@/server/db/client";
 import { globalOutboxPaused } from "@/server/outbox/outbox";
 import { applyNoCarrierRule, shopifyCompanyFor } from "@/server/shopify/carrier-company";
 import { trackingUrlFor } from "@/server/shopify/tracking-links";
+import { settleOrderTasksNow } from "@/server/order-tasks";
+import { crmCancelLeft } from "@/server/override/cancel-effects";
 import { shopifyClientForStore } from "@/server/shopify/store-client";
 
 /**
@@ -207,11 +211,13 @@ const WHAT: Record<ShopifyWriteBackKind, string> = {
   FULFIL: "Shopify fulfillment",
   TRACKING: "Shopify tracking update",
   EVENT: "Shopify fulfillment event",
+  CANCEL: "Shopify fulfillment cancel",
 };
 const MUTATION_NAME: Record<ShopifyWriteBackKind, string> = {
   FULFIL: "fulfillmentCreate",
   TRACKING: "fulfillmentTrackingInfoUpdate",
   EVENT: "fulfillmentEventCreate",
+  CANCEL: "fulfillmentCancel",
 };
 
 export type StoreClientFactory = (
@@ -406,15 +412,24 @@ export async function sweepWriteBacks(now: Date = new Date(), limit = 200) {
     cursor = batch.at(-1)!.id;
   }
 
-  // A shipment cancelled / re-routed after its fulfilment reached Shopify: the Shopify fulfillment stays (we never
-  // cancel it) — one operator task per row; the marker in lastError keeps it from opening again.
+  // A shipment the warehouse confirmed deleted, after its fulfilment reached Shopify, of an order with no other live
+  // shipment: the Shopify fulfillment is cancelled (owner request 2026-11-25 — the order must not stay "Fulfilled").
+  created += (await queueShopifyCancels({ since, limit })).created;
+
+  // A shipment cancelled / re-routed after its fulfilment reached Shopify, NOT cancelled above (re-routed, given up
+  // on "not found", or another shipment of the order is live and may adopt it): the Shopify fulfillment stays — one
+  // operator task per row; the marker in lastError keeps it from opening again.
   const orphaned = await db.shopifyWriteBack.findMany({
     where: {
       kind: "FULFIL",
       status: "SENT",
       createdAt: { gte: since },
       OR: [{ lastError: null }, { lastError: { not: ORPHANED } }],
-      fulfillment: goneShipment,
+      // A CANCEL under way / done answers it; a refused or failed one leaves it to a person (task).
+      fulfillment: {
+        ...goneShipment,
+        shopifyWriteBacks: { none: { kind: "CANCEL", status: { in: CANCEL_ACTIVE } } },
+      },
     },
     select: { id: true, accountId: true, orderId: true, shopifyFulfillmentGid: true },
     take: limit,
@@ -616,6 +631,27 @@ export async function processWriteBack(
       return { kind: "done", status: "PAUSED" };
     }
     if (mode === "READ_ONLY") return refuse("store_read_only");
+    if (row.kind === "CANCEL") {
+      // Only while nothing of the order is live at a warehouse (a new shipment would adopt the Shopify fulfillment)
+      // and the shipment is still cancelled by the warehouse's word.
+      const twin = await tx.shopifyWriteBack.count({
+        where: {
+          accountId: row.accountId,
+          kind: "CANCEL",
+          value: row.value,
+          id: { not: row.id },
+          status: { in: ["SENDING", "SENT", "UNCERTAIN"] },
+        },
+      });
+      if (twin || !(await cancelStillDue(tx, row.accountId, row.orderId, row.fulfillmentId, row.value)))
+        return refuse(CANCEL_NOT_DUE);
+      const attempts = row.attempts + 1;
+      await tx.shopifyWriteBack.update({
+        where: { id },
+        data: { status: "SENDING", evaluatedMode: mode, attempts, lockedAt: now, lastError: null },
+      });
+      return { kind: "go", mode, attempts, row, target: row.value };
+    }
     if (
       row.fulfillment.status === "CANCELLED" ||
       row.fulfillment.reroutesFrom.length > 0 ||
@@ -706,7 +742,12 @@ export async function processWriteBack(
       await event(claim.row, "refused", { lastError: claim.reason ?? null });
     return claim.status;
   }
-  return run(claim, clients, now);
+  const status = await run(claim, clients, now);
+  // Cancelled in Shopify (sent, already there, or found by read-back): the order's "cancelled shipment" task is
+  // answered at once.
+  if (status === "SENT" && claim.row.kind === "CANCEL")
+    await settleOrderTasksNow(claim.row.accountId, claim.row.orderId, "shopify.cancel");
+  return status;
 }
 
 /** What one kind sends, and how to tell from Shopify that it is already there. */
@@ -833,7 +874,9 @@ async function run(claim: Extract<Claim, { kind: "go" }>, clients: StoreClientFa
         ? await prepareFulfil(ctx)
         : row.kind === "TRACKING"
           ? await prepareTracking(ctx)
-          : await prepareEvent(ctx);
+          : row.kind === "CANCEL"
+            ? await prepareCancel(ctx)
+            : await prepareEvent(ctx);
   } catch (err) {
     // Only reads (and location moves, which every attempt re-reads before repeating) happened: try again later.
     return retryLater(`read failed: ${scrubText((err as Error).message)}`);
@@ -1479,6 +1522,224 @@ async function prepareEvent(ctx: KindContext): Promise<Prepared> {
       },
     },
   };
+}
+
+/** CANCEL: fulfillmentCancel of the Shopify fulfillment our FULFIL created (row.value = its gid). */
+async function prepareCancel(ctx: KindContext): Promise<Prepared> {
+  const gid = ctx.target!;
+  if (ctx.mode === "LIVE") {
+    // Checked again right before the send: a shipment that went live (or adopted the gid) since the claim decides.
+    const due = await withSystemTransaction((tx) =>
+      cancelStillDue(tx, ctx.row.accountId, ctx.row.orderId, ctx.row.fulfillmentId, gid),
+    );
+    if (!due) {
+      const s = await ctx.finalize({ lastError: CANCEL_NOT_DUE }, "REFUSED");
+      if (s === "REFUSED") await event(ctx.row, "refused", { lastError: CANCEL_NOT_DUE });
+      return final(s);
+    }
+    const before = await readState(ctx.reader, gid);
+    if (!before.fulfillment) return final(await ctx.failVisibly("shopify_fulfillment_not_found"));
+    if (before.fulfillment.status === "CANCELLED")
+      return final(await ctx.alreadyThere(gid, before.fulfillment));
+  }
+  const variables = { id: gid };
+  return {
+    kind: "plan",
+    dryRunPayload: { variables },
+    plan: {
+      request: json({ mutation: FULFILLMENT_CANCEL_MUTATION, variables }),
+      send: async () => {
+        const answer = await ctx.writer.query(
+          FULFILLMENT_CANCEL_MUTATION,
+          variables,
+          FulfillmentCancelSchema,
+        );
+        const p = answer.fulfillmentCancel;
+        if (!p?.fulfillment || p.userErrors.length || p.fulfillment.status !== "CANCELLED")
+          return {
+            ok: false,
+            reason: userErrorText(p?.userErrors) || `fulfillment status ${p?.fulfillment?.status ?? "none"}`,
+            response: p,
+          };
+        return { ok: true, gid: p.fulfillment.id, response: p };
+      },
+      confirm: async () => {
+        const after = await readState(ctx.reader, gid);
+        return after.fulfillment?.status === "CANCELLED"
+          ? { gid: after.fulfillment.id, response: after.fulfillment }
+          : null;
+      },
+    },
+  };
+}
+
+/** lastError of a CANCEL row refused because it is no longer due (a live shipment again, another row for the gid). */
+const CANCEL_NOT_DUE = "cancel_not_due";
+/** rawStatus of a shipment given up on "not found" (not the warehouse's word: never cancelled in Shopify). */
+const GONE_UNPROVEN = "not found at euShipments";
+/** rawStatus set when euShipments proved a delete without our own delete going through (AWB check, by hand, effect). */
+const PROVEN_DELETE_RAW = [
+  "canceled/deleted (AWB)",
+  "deleted (confirmed by hand)",
+  "deleted (euShipments accepted the delete)",
+  "deleted (every AWB: canceled/deleted)",
+  "deleted (euShipments: the order does not exist)",
+  "deleted (orders-history: Deleted with our AWB)",
+];
+/** Write-back statuses of a CANCEL row that is handled or under way (REFUSED / FAILED leave it to a person). */
+const CANCEL_ACTIVE: OutboundStatus[] = [
+  "PENDING",
+  "PAUSED",
+  "SENDING",
+  "SENT",
+  "DRY_RUN_RECORDED",
+  "UNCERTAIN",
+];
+
+/**
+ * Whether the Shopify fulfillment of this cancelled shipment should be cancelled now (INTEGRATION_NOTES §6). Only a
+ * delete the warehouse confirmed: one the CRM sent and euShipments / FHB accepted, or one proved exactly (every AWB
+ * canceled/deleted, confirmed by hand). Never: given up on "not found", re-routed away (its new shipment adopts the
+ * Shopify fulfillment), FHB STORNO, a voided label, a status read from polling — those keep the operator task. And
+ * only while no other shipment of the order is live, and no other shipment's FULFIL row holds this gid.
+ */
+async function cancelStillDue(
+  db: Prisma.TransactionClient,
+  accountId: string,
+  orderId: string,
+  fulfillmentId: string,
+  gid: string,
+) {
+  const f = await db.fulfillment.findFirst({
+    where: {
+      accountId,
+      id: fulfillmentId,
+      status: "CANCELLED",
+      OR: [{ rawStatus: null }, { rawStatus: { not: GONE_UNPROVEN } }],
+      reroutesFrom: { none: {} },
+    },
+    select: { rawStatus: true },
+  });
+  if (!f) return false;
+  const confirmed =
+    PROVEN_DELETE_RAW.includes(f.rawStatus ?? "") || (await crmCancelLeft(db, accountId, fulfillmentId));
+  if (!confirmed) return false;
+  const live = await db.fulfillment.count({
+    where: {
+      accountId,
+      orderId,
+      id: { not: fulfillmentId },
+      status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] },
+    },
+  });
+  if (live) return false;
+  // Adopted by another shipment of the order (same Shopify fulfillment): that one decides, not this one.
+  const adopted = await db.shopifyWriteBack.count({
+    where: {
+      accountId,
+      orderId,
+      kind: "FULFIL",
+      shopifyFulfillmentGid: gid,
+      fulfillmentId: { not: fulfillmentId },
+      fulfillment: { status: { notIn: ["CANCELLED", "SUBMIT_FAILED"] } },
+    },
+  });
+  return adopted === 0;
+}
+
+/**
+ * Creates the CANCEL rows that are due (idempotent: one per Shopify fulfillment gid). Right after a confirmed warehouse
+ * cancel for one order (settleAfterWarehouseCancel) and by the sweep — for the sweep only shipments whose
+ * "cancelled shipment" task is not yet answered by a person (a person who closed it may have kept the fulfillment on
+ * purpose), paged over the whole window.
+ */
+export async function queueShopifyCancels(opts: {
+  since?: Date;
+  limit?: number;
+  accountId?: string;
+  orderId?: string;
+}) {
+  const db = systemDb();
+  const since = opts.since ?? new Date(Date.now() - WRITE_BACK_WINDOW_DAYS * 86_400_000);
+  const pageSize = opts.limit ?? 200;
+  let created = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const rows = await db.shopifyWriteBack.findMany({
+      where: {
+        kind: "FULFIL",
+        status: "SENT",
+        shopifyFulfillmentGid: { not: null },
+        createdAt: { gte: since },
+        ...(opts.accountId ? { accountId: opts.accountId } : {}),
+        ...(opts.orderId ? { orderId: opts.orderId } : {}),
+        store: { writeBackMode: { not: "READ_ONLY" } },
+        order: { source: "SHOPIFY", status: { not: "FULFILLED_EXTERNALLY" } },
+        fulfillment: {
+          status: "CANCELLED",
+          OR: [{ rawStatus: null }, { rawStatus: { not: GONE_UNPROVEN } }],
+          reroutesFrom: { none: {} },
+        },
+      },
+      select: {
+        id: true,
+        accountId: true,
+        storeId: true,
+        orderId: true,
+        fulfillmentId: true,
+        shopifyFulfillmentGid: true,
+        lastError: true,
+      },
+      orderBy: { id: "asc" },
+      take: pageSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    for (const r of rows) {
+      const gid = r.shopifyFulfillmentGid!;
+      // One CANCEL per Shopify fulfillment, whatever shipment it came from.
+      if (await db.shopifyWriteBack.count({ where: { accountId: r.accountId, kind: "CANCEL", value: gid } }))
+        continue;
+      // Its "cancelled shipment" task was answered by a PERSON (not closed by the CRM itself): left as they decided.
+      if (r.lastError === ORPHANED) {
+        const byPerson = await db.alertNote.count({
+          where: {
+            accountId: r.accountId,
+            userId: { not: null },
+            action: "resolve",
+            alert: {
+              kind: "shopify_writeback_orphaned",
+              entityType: "Order",
+              entityId: r.orderId,
+              status: "RESOLVED",
+            },
+          },
+        });
+        if (byPerson) continue;
+      }
+      const due = await withSystemTransaction((tx) =>
+        cancelStillDue(tx, r.accountId, r.orderId, r.fulfillmentId, gid),
+      );
+      if (!due) continue;
+      const res = await db.shopifyWriteBack.createMany({
+        data: [
+          {
+            accountId: r.accountId,
+            storeId: r.storeId,
+            orderId: r.orderId,
+            fulfillmentId: r.fulfillmentId,
+            kind: "CANCEL",
+            value: gid,
+            shopifyFulfillmentGid: gid,
+          },
+        ],
+        skipDuplicates: true,
+      });
+      created += res.count;
+    }
+    if (rows.length < pageSize) break;
+    cursor = rows.at(-1)!.id;
+  }
+  return { created };
 }
 
 /** Timeline + audit entry for every write-back outcome that matters (INTEGRATION_NOTES §6). */

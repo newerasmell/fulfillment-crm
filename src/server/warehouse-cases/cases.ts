@@ -20,7 +20,7 @@ import {
   type WarehouseLevel,
 } from "@/lib/warehouse-case-emails";
 import { defaultsFor, escalationSettingsByCompany, type EscalationSettings } from "./settings";
-import { holdKey, skuHolds } from "./sku";
+import { holdKey, releaseSkuIncidents, skuHolds } from "./sku";
 
 /**
  * „Блокирани в склад“ (owner request 2026-11-18, real case: orders in euShipments "Awaiting pickup" for days, emails
@@ -832,19 +832,12 @@ export async function addWarehouseReply(actor: ScopedActor, raw: z.input<typeof 
         ),
       ),
     ];
-    const r = await tx.skuIncident.updateMany({
-      where: { connectionId: c.connectionId, productId: { in: products }, clearedAt: null },
-      data: {
-        clearedAt: now,
-        clearedById: actor.userId,
-        clearNote:
-          `warehouse wrote it has the goods (${confirmed.map((o) => o.order.number).join(", ")})`.slice(
-            0,
-            500,
-          ),
-      },
+    return releaseSkuIncidents(tx, {
+      accountId: actor.accountId,
+      where: { connectionId: c.connectionId, productId: { in: products } },
+      userId: actor.userId,
+      note: `warehouse wrote it has the goods (${confirmed.map((o) => o.order.number).join(", ")})`,
     });
-    return r.count;
   });
   await recordAudit({
     accountId: actor.accountId,

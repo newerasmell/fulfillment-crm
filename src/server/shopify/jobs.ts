@@ -4,6 +4,7 @@ import type { PgBoss } from "pg-boss";
 import type { ShopifyClientOptions } from "@/integrations/shopify/client";
 import { parseAppCredentials } from "@/integrations/shopify/credentials";
 import { logger } from "@/lib/logger";
+import { scrubText } from "@/lib/scrub";
 import { readCredentialSecret } from "@/server/security/credentials";
 import { QUEUES } from "@/server/jobs/queues";
 import { accountDb, systemDb } from "@/server/db/client";
@@ -329,8 +330,47 @@ export async function registerShopifyWorkers(boss: PgBoss, opts: { pollingInterv
         select: { shopifyOrderGid: true },
       });
       if (!order?.shopifyOrderGid) continue;
-      const { store, client } = await shopifyClientForStore(data.accountId, data.storeId);
-      await refreshShopifyOrder(data.accountId, store, client, order.shopifyOrderGid, { force: true });
+      try {
+        const { store, client } = await shopifyClientForStore(data.accountId, data.storeId);
+        await refreshShopifyOrder(data.accountId, store, client, order.shopifyOrderGid, { force: true });
+        // A refresh that failed before is answered by this one.
+        await accountDb(data.accountId).alert.updateMany({
+          where: {
+            kind: "shopify_refresh_failed",
+            entityType: "Order",
+            entityId: data.orderId,
+            status: { not: "RESOLVED" },
+          },
+          data: { status: "RESOLVED", resolvedAt: new Date() },
+        });
+      } catch (err) {
+        // „Обнови от Shopify“ must never fail silently (owner report 2026-11-25): a task on the order says why.
+        const why = scrubText(String((err as Error)?.message ?? err), 300);
+        logger.error({ orderId: data.orderId, err: why }, "refresh order from Shopify failed");
+        const db = accountDb(data.accountId);
+        const open = await db.alert.findFirst({
+          where: {
+            kind: "shopify_refresh_failed",
+            entityType: "Order",
+            entityId: data.orderId,
+            status: { not: "RESOLVED" },
+          },
+          select: { id: true },
+        });
+        if (!open)
+          await db.alert.create({
+            data: {
+              accountId: data.accountId,
+              kind: "shopify_refresh_failed",
+              isTask: true,
+              severity: "WARNING",
+              title: "„Обнови от Shopify“ не успя — поръчката не е обновена",
+              body: why,
+              entityType: "Order",
+              entityId: data.orderId,
+            },
+          });
+      }
     }
   });
 

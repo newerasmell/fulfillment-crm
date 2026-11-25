@@ -5,12 +5,20 @@ import { withAccountTransaction } from "@/server/db/client";
 import { enqueueOutboundInTx } from "@/server/outbox/outbox";
 import { warehouseCancelConfirmed, warehouseCancelRefused } from "@/server/override/cancel-effects";
 import { followShipment, transition } from "@/server/pipeline";
+import { settleAfterWarehouseCancel } from "@/server/override/settle-after-cancel";
 
 /**
  * What a definite euShipments answer means for our records (P3-05). Runs in the worker, after the vendor
  * answered, for real (non-test) sends only. Every effect is idempotent: it may run again after a read-back.
  */
 
+/** rawStatus of a shipment deleted at euShipments, by the answer that proved it (adapter: alreadyDeleted). */
+const DELETE_PROOF: Record<string, string> = {
+  accepted: "deleted (euShipments accepted the delete)",
+  awb: "deleted (every AWB: canceled/deleted)",
+  by_id: "deleted (euShipments: the order does not exist)",
+  history: "deleted (orders-history: Deleted with our AWB)",
+};
 const s = (v: unknown) => (typeof v === "string" && v ? v : null);
 const PRE_SUBMIT = ["QUEUED", "SUBMITTING", "SUBMIT_FAILED", "UNKNOWN"] as const;
 const ORDER_PRE_ACCEPT = ["APPROVED", "QUEUED", "SUBMITTING", "SUBMIT_FAILED"] as const;
@@ -103,10 +111,15 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
     async orderDeleted(ctx) {
       const fulfillmentId = s(ctx.fulfillmentId);
       if (!fulfillmentId) return;
-      await tx(async (db) => {
+      // How euShipments said it is gone (shown in the order's history; never our request alone).
+      const rawStatus = DELETE_PROOF[s(ctx.deleteProof) ?? "accepted"] ?? DELETE_PROOF.accepted!;
+      const settled = await tx(async (db) => {
         const f = await db.fulfillment.findUnique({ where: { id: fulfillmentId } });
-        if (!f || f.status === "CANCELLED") return;
-        await db.fulfillment.update({ where: { id: fulfillmentId }, data: { status: "CANCELLED" } });
+        if (!f || f.status === "CANCELLED") return null;
+        await db.fulfillment.update({
+          where: { id: fulfillmentId },
+          data: { status: "CANCELLED", rawStatus },
+        });
         await db.fulfillmentEvent.create({
           data: {
             accountId: f.accountId,
@@ -114,7 +127,8 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
             occurredAt: new Date(),
             source: "crm",
             status: "CANCELLED",
-            payload: { event: "deleted_at_vendor" },
+            rawStatus,
+            payload: { event: "deleted_at_vendor", proof: s(ctx.deleteProof) ?? "accepted" },
           },
         });
         // A CRM-requested delete: the order goes to BLOCKED (never for a reroute-owned shipment).
@@ -124,7 +138,9 @@ export function euEffects(accountOf: () => Promise<string>, connectionId: string
           fulfillmentId,
           source: "eushipments.delete",
         });
+        return { accountId: f.accountId, orderId: f.orderId };
       });
+      if (settled) await settleAfterWarehouseCancel(settled.accountId, settled.orderId, "eushipments.delete");
     },
 
     async orderDeleteRejected(ctx, error) {

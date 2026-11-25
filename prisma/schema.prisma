@@ -78,6 +78,9 @@ enum ShopifyWriteBackKind {
   FULFIL
   TRACKING
   EVENT
+  /// fulfillmentCancel of a shipment's Shopify fulfillment after the warehouse confirmed the shipment deleted and the
+  /// order has no other live shipment (owner request 2026-11-25). value = the Shopify fulfillment gid.
+  CANCEL
 }
 
 enum InventoryPushMode {
