@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { cancelledByWarehouseTag } from "@/server/override/cancel-effects";
 import { systemDb } from "@/server/db/client";
 import { euTestGroup, euTestOrder } from "./test-fixtures";
-import { checkProblemShipmentsByAwb } from "./awb-check";
+import { checkProblemShipmentsByAwb, flagRevivedDeletes } from "./awb-check";
+import { confirmWarehouseCancelByHand, warehouseCancelView } from "@/server/override/warehouse-cancel";
 
 // Owner report 2026-11-24: deleted in the cabinet, orders-history still "Awaiting pickup". Synthetic data only.
 describe("problem shipments checked by their AWB", () => {
@@ -200,6 +201,82 @@ describe("problem shipments checked by their AWB", () => {
     });
     expect(r.deleted).toBe(1);
     expect((await db.fulfillment.findUniqueOrThrow({ where: { id: other.f.id } })).status).toBe("CANCELLED");
+  });
+
+  it("a deleted shipment a stale status put back: a task only (nothing changed); a person confirms it by hand", async () => {
+    // Owner report 2026-11-25: deleted at euShipments, shown at the warehouse again, no „Изпрати отново“.
+    const g = await euTestGroup("awb-revived");
+    const db = systemDb();
+    const make = async (n: string, deletedEvent: boolean) => {
+      const { order } = await euTestOrder(g, { number: n });
+      await db.order.update({ where: { id: order.id }, data: { status: "BLOCKED" } });
+      const f = await db.fulfillment.create({
+        data: {
+          accountId: g.accountId,
+          orderId: order.id,
+          connectionId: g.connection.id,
+          externalId: `R${n}`,
+          status: "ACCEPTED",
+          rawStatus: "Information received",
+        },
+      });
+      if (deletedEvent)
+        await db.fulfillmentEvent.create({
+          data: {
+            accountId: g.accountId,
+            fulfillmentId: f.id,
+            occurredAt: new Date("2026-11-20T09:46:00Z"),
+            source: "crm",
+            status: "CANCELLED",
+            payload: { event: "deleted_at_vendor" },
+          },
+        });
+      return { order, f };
+    };
+    const revived = await make("#RV-1", true);
+    const plain = await make("#RV-2", false);
+    expect((await flagRevivedDeletes({ accountId: g.accountId })).flagged).toBe(1);
+    expect((await flagRevivedDeletes({ accountId: g.accountId })).flagged).toBe(0); // once
+    // Closed by a person (found it live in the cabinet): never asked again, and the button is no longer offered.
+    const t = await db.alert.findFirstOrThrow({
+      where: { entityId: revived.order.id, kind: "eushipments_revived_after_delete" },
+    });
+    await db.alert.update({ where: { id: t.id }, data: { status: "RESOLVED", resolvedAt: new Date() } });
+    expect((await flagRevivedDeletes({ accountId: g.accountId })).flagged).toBe(0);
+    expect(
+      (await warehouseCancelView(g.owner, revived.order.id)).rows.find(
+        (r) => r.fulfillmentId === revived.f.id,
+      )?.revived,
+    ).toBe(false);
+    await db.alert.update({ where: { id: t.id }, data: { status: "OPEN", resolvedAt: null } });
+    const st = async (id: string) => (await db.fulfillment.findUniqueOrThrow({ where: { id } })).status;
+    expect(await st(revived.f.id)).toBe("ACCEPTED"); // never changed by itself
+    expect(await st(plain.f.id)).toBe("ACCEPTED");
+    expect(
+      await db.alert.count({ where: { entityId: plain.order.id, kind: "eushipments_revived_after_delete" } }),
+    ).toBe(0);
+    // The order page offers the hand confirmation on it…
+    const view = await warehouseCancelView(g.owner, revived.order.id);
+    expect(view.rows.find((r) => r.fulfillmentId === revived.f.id)?.revived).toBe(true);
+    // …and a person who checked the cabinet confirms it: cancelled, the task answered.
+    await confirmWarehouseCancelByHand(g.owner, {
+      fulfillmentId: revived.f.id,
+      note: "Not in the cabinet, checked",
+    });
+    expect(await st(revived.f.id)).toBe("CANCELLED");
+    expect(
+      await db.alert.count({
+        where: {
+          entityId: revived.order.id,
+          kind: "eushipments_revived_after_delete",
+          status: { not: "RESOLVED" },
+        },
+      }),
+    ).toBe(0);
+    // A shipment never recorded as deleted (and never refused) cannot be confirmed this way.
+    await expect(
+      confirmWarehouseCancelByHand(g.owner, { fulfillmentId: plain.f.id, note: "Not in the cabinet" }),
+    ).rejects.toMatchObject({ code: "not_refused" });
   });
 
   it("names the cancelling warehouse in a Shopify tag (≤ 40 characters)", () => {

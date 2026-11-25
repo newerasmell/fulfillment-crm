@@ -1586,6 +1586,13 @@ const PROVEN_DELETE_RAW = [
   "deleted (euShipments: the order does not exist)",
   "deleted (orders-history: Deleted with our AWB)",
 ];
+/**
+ * Reroutes after which the CRM does not cancel the Shopify fulfillment by itself. CANCEL_QUEUED / DONE: the reroute took
+ * the shipment over (its new shipment adopts the Shopify fulfillment). UNCERTAIN: the reroute's own cancel request may
+ * count as a delete that left the CRM without proof — a person decides (orphan task). REFUSED / SIMULATED changed
+ * nothing (owner report 2026-11-25: a refused reroute kept the fulfillment "Fulfilled").
+ */
+const REROUTED_AWAY = ["CANCEL_QUEUED", "DONE", "UNCERTAIN"] as const;
 /** Write-back statuses of a CANCEL row that is handled or under way (REFUSED / FAILED leave it to a person). */
 const CANCEL_ACTIVE: OutboundStatus[] = [
   "PENDING",
@@ -1616,7 +1623,7 @@ async function cancelStillDue(
       id: fulfillmentId,
       status: "CANCELLED",
       OR: [{ rawStatus: null }, { rawStatus: { not: GONE_UNPROVEN } }],
-      reroutesFrom: { none: {} },
+      reroutesFrom: { none: { status: { in: [...REROUTED_AWAY] } } },
     },
     select: { rawStatus: true },
   });
@@ -1678,7 +1685,7 @@ export async function queueShopifyCancels(opts: {
         fulfillment: {
           status: "CANCELLED",
           OR: [{ rawStatus: null }, { rawStatus: { not: GONE_UNPROVEN } }],
-          reroutesFrom: { none: {} },
+          reroutesFrom: { none: { status: { in: [...REROUTED_AWAY] } } },
         },
       },
       select: {

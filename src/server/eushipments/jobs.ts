@@ -1,7 +1,8 @@
-import { checkProblemShipmentsByAwb } from "./awb-check";
+import { checkProblemShipmentsByAwb, flagRevivedDeletes } from "./awb-check";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { logger } from "@/lib/logger";
+import { scrubText } from "@/lib/scrub";
 import { systemDb } from "@/server/db/client";
 import { QUEUES } from "@/server/jobs/queues";
 import { EuVendorIds } from "./connection";
@@ -135,6 +136,15 @@ export async function registerEushipmentsWorkers(boss: PgBoss, opts: { pollingIn
     each(QUEUES.eushipmentsPollOrders.name, pollEuOrders),
   );
   await boss.work(QUEUES.eushipmentsAwbCheck.name, opts, async () => {
+    // Deleted shipments a stale status put back: a task for a person (nothing changed). Never stops the AWB lookups.
+    try {
+      await flagRevivedDeletes();
+    } catch (err) {
+      logger.warn(
+        { err: scrubText(String((err as Error)?.message ?? err), 300) },
+        "flag revived deletes failed",
+      );
+    }
     await checkProblemShipmentsByAwb();
   });
   await boss.work<EuConnectionJob>(

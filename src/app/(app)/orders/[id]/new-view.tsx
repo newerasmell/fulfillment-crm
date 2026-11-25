@@ -862,7 +862,7 @@ export async function NewOrderView({
                                 : ""}
                             </span>
                           )}
-                          {row.request?.status === "FAILED" && wc.canCancel && (
+                          {(row.request?.status === "FAILED" || row.revived) && wc.canCancel && (
                             <ConfirmDeletedByHand orderId={order.id} fulfillmentId={f.id} />
                           )}
                           {row.request &&

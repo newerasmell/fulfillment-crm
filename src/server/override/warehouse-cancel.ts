@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConnectionType, LiveMode, OutboundStatus, Prisma } from "@/generated/prisma/client";
 import { EU_OPS } from "@/integrations/eushipments/adapter";
+import { CONFIRMED_DELETE_EVENT, REVIVED_TASK, revivedMarker } from "@/server/eushipments/delete-events";
 import { DomainError } from "@/server/accounts";
 import { assertCan, can } from "@/server/auth/rbac";
 import { accountDb, isUniqueViolation, withAccountTransaction } from "@/server/db/client";
@@ -143,6 +144,8 @@ export interface WarehouseCancelRow {
   /** null = the button may be offered (still subject to the role). */
   refusal: string | null;
   manualShipmentId: string | null;
+  /** Recorded as deleted at euShipments, then shown live again by a stale status: a person may confirm by hand. */
+  revived: boolean;
   request: {
     id: string;
     status: OutboundStatus;
@@ -174,6 +177,30 @@ export async function warehouseCancelView(actor: ScopedActor, orderId: string, n
         },
       })
     : [];
+  const revivedIds = new Set(
+    active.length
+      ? (
+          await db.fulfillmentEvent.findMany({
+            where: {
+              fulfillmentId: {
+                in: active.filter((f) => ["ACCEPTED", "PROCESSING"].includes(f.status)).map((f) => f.id),
+              },
+              ...CONFIRMED_DELETE_EVENT,
+            },
+            select: { fulfillmentId: true },
+          })
+        ).map((e) => e.fulfillmentId)
+      : [],
+  );
+  // A person who found it live in the cabinet closed its task: the hand confirmation is no longer offered.
+  if (revivedIds.size) {
+    const closed = await db.alert.findMany({
+      where: { kind: REVIVED_TASK, entityType: "Order", entityId: order.id, status: "RESOLVED" },
+      select: { body: true },
+    });
+    for (const id of [...revivedIds])
+      if (closed.some((a) => (a.body ?? "").includes(revivedMarker(id)))) revivedIds.delete(id);
+  }
   const rows: WarehouseCancelRow[] = active.map((f) => {
     const req = requests.find((r) => r.fulfillmentId === f.id) ?? null;
     const refusal =
@@ -188,6 +215,7 @@ export async function warehouseCancelView(actor: ScopedActor, orderId: string, n
       liveMode: f.connection.liveMode,
       refusal,
       manualShipmentId: f.manualShipment?.id ?? null,
+      revived: revivedIds.has(f.id),
       request: req
         ? {
             id: req.id,
@@ -313,7 +341,9 @@ export async function confirmWarehouseCancelByHand(
   });
   if (!f || (actor.companyScope && !actor.companyScope.includes(f.order.companyId ?? "")))
     throw new DomainError("not_found");
-  await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate }) => {
+  await withAccountTransaction(actor.accountId, async (tx, { lockForUpdate, lockKey }) => {
+    // As the order-history poller locks it (its stale status must never overwrite this cancel).
+    await lockKey(`eushipments:fulfillment:${f.id}`);
     await lockForUpdate("Order", f.orderId);
     const fresh = await tx.fulfillment.findUniqueOrThrow({ where: { id: f.id }, select: { status: true } });
     if ((INACTIVE_SHIPMENT as readonly string[]).includes(fresh.status))
@@ -325,20 +355,30 @@ export async function confirmWarehouseCancelByHand(
     });
     // Only after the warehouse refused our cancel, never while a cancel (or any write) is on its way. A 401 is our
     // token, not the warehouse's answer: the cancel never reached it, so there is nothing to confirm.
-    if (!last || last.status !== "FAILED" || /unauthenticated|auth_failed/i.test(last.lastError ?? ""))
+    // Or: recorded as deleted at euShipments, then put back by a stale status (owner report 2026-11-25) — a person who
+    // checked the cabinet confirms it (the earlier delete request carries the reason).
+    const revived =
+      (fresh.status === "ACCEPTED" || fresh.status === "PROCESSING") &&
+      (await tx.fulfillmentEvent.count({ where: { fulfillmentId: f.id, ...CONFIRMED_DELETE_EVENT } })) > 0;
+    if (revived) {
+      // handled below with the same checks (no write on its way)
+    } else if (!last || last.status !== "FAILED" || /unauthenticated|auth_failed/i.test(last.lastError ?? ""))
       throw new DomainError("not_refused");
     // Positive evidence that the warehouse itself answered "no" to THIS request (not a transport failure, not
     // "max attempts (not sent)"): the refusal recorded by the vendor's answer, after the request was made.
-    const refused = await tx.orderEvent.findFirst({
-      where: {
-        orderId: f.orderId,
-        cause: "warehouse_cancel_refused",
-        createdAt: { gte: last.createdAt },
-        meta: { path: ["fulfillmentId"], equals: f.id },
-      },
-      select: { id: true },
-    });
-    if (!refused) throw new DomainError("not_refused");
+    const refused =
+      !revived && last
+        ? await tx.orderEvent.findFirst({
+            where: {
+              orderId: f.orderId,
+              cause: "warehouse_cancel_refused",
+              createdAt: { gte: last.createdAt },
+              meta: { path: ["fulfillmentId"], equals: f.id },
+            },
+            select: { id: true },
+          })
+        : null;
+    if (!revived && !refused) throw new DomainError("not_refused");
     // Any write of this shipment still on its way or of unknown outcome (a sent create is settled).
     const open = await tx.outboundRequest.count({
       where: {
@@ -368,7 +408,7 @@ export async function confirmWarehouseCancelByHand(
       fulfillmentId: f.id,
       source: "manual.confirmedDeleted",
       // The refused request carries the reason (e.g. no stock → „Липсващи артикули“ + Shopify tags).
-      request: { id: last.id, payload: last.payload },
+      ...(last ? { request: { id: last.id, payload: last.payload } } : {}),
     });
     // The "warehouse refused the cancel" task is answered.
     const tasks = await tx.alert.findMany({
@@ -377,7 +417,7 @@ export async function confirmWarehouseCancelByHand(
         status: { not: "RESOLVED" },
         entityType: "Order",
         entityId: f.orderId,
-        kind: "warehouse_cancel_refused",
+        kind: { in: ["warehouse_cancel_refused", REVIVED_TASK] },
       },
       select: { id: true },
     });

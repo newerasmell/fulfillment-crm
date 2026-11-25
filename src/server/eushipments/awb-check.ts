@@ -7,6 +7,8 @@ import { crmCancelLeft, warehouseCancelConfirmed } from "@/server/override/cance
 import { isSupersededShipment } from "@/server/pipeline";
 import { advanceOrderStatus } from "./statuses";
 import { euReadClientFor } from "./connection";
+import { CONFIRMED_DELETE_EVENT, REVIVED_TASK, revivedMarker } from "./delete-events";
+export { CONFIRMED_DELETE_EVENT, REVIVED_TASK } from "./delete-events";
 import { settleAfterWarehouseCancel } from "@/server/override/settle-after-cancel";
 
 /**
@@ -180,4 +182,49 @@ export async function checkProblemShipmentsByAwb(
   if (deleted)
     logger.info({ checked: shipments.length, deleted }, "euShipments AWB check: deleted shipments found");
   return { checked: shipments.length, deleted };
+}
+
+/**
+ * Shipments recorded as deleted at euShipments that an orders-history status put back to "accepted" (owner report
+ * 2026-11-25: deleted, then shown at the warehouse again, no „Изпрати отново“). The poller no longer does that; for the
+ * ones revived before, nothing is changed here — a delete by reference is not always exact proof (references are not
+ * unique there), so a person checks the cabinet: a task on the order, and „Складът я е изтрил — потвърди ръчно“ is
+ * offered on the shipment (confirmWarehouseCancelByHand). Read-only towards euShipments; one task per shipment, ever.
+ */
+export async function flagRevivedDeletes(deps: { accountId?: string } = {}) {
+  const db = systemDb();
+  const rows = await db.fulfillment.findMany({
+    where: {
+      status: { in: [...LIVE] },
+      connection: { type: "EUSHIPMENTS" },
+      manualShipment: { is: null },
+      ...(deps.accountId ? { accountId: deps.accountId } : {}),
+      events: { some: CONFIRMED_DELETE_EVENT },
+    },
+    select: { id: true, accountId: true, orderId: true, externalId: true },
+    orderBy: { id: "asc" },
+    take: 500,
+  });
+  let flagged = 0;
+  for (const f of rows) {
+    // Once per shipment, ever: a person who found it live in the cabinet and closed the task is not asked again.
+    const seen = await db.alert.count({
+      where: { accountId: f.accountId, kind: REVIVED_TASK, body: { contains: revivedMarker(f.id) } },
+    });
+    if (seen) continue;
+    await db.alert.create({
+      data: {
+        accountId: f.accountId,
+        kind: REVIVED_TASK,
+        isTask: true,
+        severity: "WARNING",
+        title: `Пратка ${f.externalId}: изтрита в euShipments, но отново се показва в склада — проверете в кабинета и „Складът я е изтрил — потвърди ръчно“`,
+        body: `An orders-history status put the shipment back after its delete was recorded (${revivedMarker(f.id)}).`,
+        entityType: "Order",
+        entityId: f.orderId,
+      },
+    });
+    flagged++;
+  }
+  return { flagged };
 }
