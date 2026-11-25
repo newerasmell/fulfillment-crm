@@ -659,6 +659,8 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-24 „Провери задачите“ closes the sweep's order-state tasks (submit failed, blocked, unknown, stuck) as soon as
   the order left that state. Attaching a manual shipment finds the manual order's live shipment when its ManualShipment
   has no shipment id; an order cancelled in the CRM is final and refused.
+- 2026-11-25 Fix: a REFUSED / SIMULATED reroute no longer stops the Shopify fulfillment cancel of a confirmed warehouse
+  delete (only CANCEL_QUEUED / DONE — adopted by the new shipment — and UNCERTAIN — a person decides — do).
 - 2026-11-25 After a confirmed warehouse cancel (euShipments answer / AWB check / by hand / FHB delete) the order's
   „Блокирани в склад“ case and every task whose cause is gone close at once (not at the 10-min sweep), with a note.
   The order history says how euShipments proved the delete (accepted / every AWB canceled/deleted / id does not
