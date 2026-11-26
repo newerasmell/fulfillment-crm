@@ -659,6 +659,8 @@ Phase 0 — Foundation (tasks done; waiting for GATE P0-G1)
 - 2026-11-24 „Провери задачите“ closes the sweep's order-state tasks (submit failed, blocked, unknown, stuck) as soon as
   the order left that state. Attaching a manual shipment finds the manual order's live shipment when its ManualShipment
   has no shipment id; an order cancelled in the CRM is final and refused.
+- 2026-11-26 Production: the owner raised fulfillment-crm-web to Standard (1 CPU, 2 GB) after out-of-memory restarts
+  on 23, 24 and 26.11 (512 MB starter at 60–80 % all day); render.yaml `plan: standard` so a Blueprint sync keeps it.
 - 2026-11-25 Orders store filter is one choice, applied at once (owner request): „Моите магазини (N)“ (default, no
   `store` in the URL), „Всички магазини“ (`store=all`) or ONE store (`store=<id>`, only its orders); the member's
   stores first, grouped by line, the others under „Други магазини“. The choice survives opening an order and coming
