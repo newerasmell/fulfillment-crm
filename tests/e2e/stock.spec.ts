@@ -122,17 +122,34 @@ test("stock board, inbound from picker + upload, Shopify inventory preview and d
   await myStores.getByRole("button", { name: "Запази" }).click();
   await expect(myStores.getByRole("status")).toContainText("Запазено: 1 магазина.");
   await page.goto("/orders?tab=all");
-  await expect(page.getByTestId("store-filter")).toContainText("Магазин С");
-  // The filter: grouped list with checkboxes; „Всички магазини“ widens it.
+  // The filter (owner request 2026-11-25): one choice, applied at once — „Моите магазини“ by default, „Всички
+  // магазини“, or one store (only its orders).
+  await expect(page.getByTestId("store-filter")).toContainText("Моите магазини (1)");
   await page.getByTestId("store-filter").click();
-  await page
-    .getByRole("group", { name: "Магазини" })
-    .getByRole("button", { name: "Всички магазини" })
-    .click();
+  const menu = page.getByRole("group", { name: "Магазини" });
+  await menu.getByRole("button", { name: "Всички магазини" }).click();
+  await expect(page).toHaveURL(/store=all/);
   await expect(page.getByTestId("store-filter")).toContainText("Всички магазини");
   await page.getByTestId("store-filter").click();
-  await page.getByRole("button", { name: "Филтрирай" }).click();
-  await expect(page).toHaveURL(/store=all/);
+  await page.getByTestId("store-filter-mine").getByRole("button", { name: "Магазин С" }).click();
+  await expect(page).toHaveURL(/store=c[a-z0-9]+/);
+  await expect(page.getByTestId("store-filter")).toContainText("Магазин С");
+  await expect(page.getByRole("link", { name: "#S-7001" })).toBeVisible();
+  // Opening the order and going back keeps the choice (one store, not widened or turned into a list).
+  await page.getByRole("link", { name: "#S-7001" }).click();
+  await page.locator('a[href^="/orders?tab="]').filter({ hasText: "Поръчки" }).first().click();
+  await expect(page).toHaveURL(/store=c[a-z0-9]+/);
+  await expect(page.getByTestId("store-filter")).toContainText("Магазин С");
+  // Back to the member's stores (no store in the URL), and the tab links keep the choice.
+  await page.getByTestId("store-filter").click();
+  await menu.getByRole("button", { name: "Моите магазини (1)" }).click();
+  await expect(page).not.toHaveURL(/store=/);
+  // A search never silently stays in one tab: the order is found and the tab it is in is named (owner 2026-11-25).
+  await page.goto("/orders?q=S-7001");
+  const elsewhere = page.getByTestId("search-other-tabs");
+  await expect(elsewhere).toContainText("Намерена в:");
+  await elsewhere.getByRole("link", { name: /Всички \(1\)/ }).click();
+  await expect(page.getByRole("link", { name: "#S-7001" })).toBeVisible();
 
   // „Поръчки“: pull the stores' orders now (the scheduled read-only pull; this group's store has no credentials).
   await page.goto("/orders");

@@ -16,7 +16,7 @@ import {
 import { BulkBar, RowCheckbox, SelectAllCheckbox, SelectionProvider } from "./selection";
 import { StatusChip } from "./status";
 import { PullOrdersNow } from "./pull-now";
-import { StoreMultiSelect } from "./store-multi-select";
+import { StoreSelect } from "./store-select";
 import { myStoreIds, storesByLine } from "@/server/store-preferences";
 import { CloseTasks } from "./close-tasks";
 import { lastOrdersPull } from "@/server/shopify/pull-now";
@@ -45,7 +45,13 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   // Only the member's stores visible under the active company / line (another company's would empty the list).
   const visible = new Set(stores.flatMap((g) => g.stores.map((s) => s.id)));
   const mine = saved.filter((id) => visible.has(id));
-  const storeParam = one(sp.store);
+  // A store link out of the current company / line (a bookmark, the sidebar changed): treated as no choice, never shown
+  // as „Всички магазини“ over an empty list.
+  const rawStore = one(sp.store);
+  const storeParam =
+    rawStore && rawStore !== "all" && !(parseStoreParam(rawStore) ?? []).every((id) => visible.has(id))
+      ? undefined
+      : rawStore;
   const storeIds = storeParam === undefined && mine.length ? mine : parseStoreParam(storeParam);
   const filters = {
     q: one(sp.q),
@@ -53,7 +59,8 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     country: one(sp.country)?.slice(0, 2),
     payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
   } as const;
-  const storeValue = storeIds?.length ? storeIds.join(",") : mine.length ? "all" : undefined;
+  // Tabs and pages keep the choice as it was made: none (= „Моите магазини“), "all", or one store.
+  const storeValue = storeParam;
   const page = Math.max(1, Number(one(sp.page)) || 1);
   const mayPull = can(ctx.role, "stores.sync");
   const mayCloseTasks = can(ctx.role, "alerts.manage");
@@ -63,7 +70,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     mayPull ? lastOrdersPull(ctx) : Promise.resolve(null),
   ]);
   // Carried to the order page: its J / K and "back" stay in this list.
-  const listQuery = orderListQuery({ tab, ...filters });
+  const listQuery = orderListQuery({ tab, ...filters, storeChoice: storeParam ?? null });
   const href = (patch: Record<string, string | number | undefined>) => {
     const p = new URLSearchParams();
     const merged = { tab, ...filters, store: storeValue, storeIds: undefined, page: undefined, ...patch };
@@ -116,10 +123,10 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               aria-label={t("search")}
               className={`${inputCls} w-72`}
             />
-            <StoreMultiSelect
-              key={(storeIds ?? []).join(",")}
+            <StoreSelect
+              key={storeParam ?? ""}
               groups={stores}
-              selected={storeIds ?? []}
+              current={storeParam === undefined && mine.length ? "mine" : (storeParam ?? "all")}
               mine={mine}
             />
             <input
@@ -145,7 +152,26 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
             </button>
           </form>
           {result.rows.length === 0 ? (
-            <p className="m-0 text-muted">{t("empty")}</p>
+            <div className="flex flex-col gap-2">
+              <p className="m-0 text-muted">{t("empty")}</p>
+              {/* Found under another tab: say where (the search never silently stays inside one tab). */}
+              {filters.q &&
+                (Object.keys(ORDER_TABS) as OrderTab[]).some((k) => k !== tab && counts[k] > 0) && (
+                  <p className="m-0 text-sm" data-testid="search-other-tabs">
+                    {t("foundIn")}{" "}
+                    {(Object.keys(ORDER_TABS) as OrderTab[])
+                      .filter((k) => k !== tab && counts[k] > 0)
+                      .map((k, i) => (
+                        <span key={k}>
+                          {i > 0 && ", "}
+                          <Link className="font-semibold text-accent underline" href={href({ tab: k })}>
+                            {t(`tab.${k}`)} ({counts[k]})
+                          </Link>
+                        </span>
+                      ))}
+                  </p>
+                )}
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">

@@ -299,7 +299,13 @@ export async function dashboardSummary(ctx: Ctx, now = new Date()) {
 }
 
 /** The orders list the order page was opened from (tab + filters), carried in the order page URL. */
-export type OrderListContext = Omit<OrderFilters, "page">;
+export type OrderListContext = Omit<OrderFilters, "page"> & {
+  /**
+   * The store choice exactly as the list had it (owner request 2026-11-25): null = none (the member's own stores),
+   * "all", or a store id — carried back to the list unchanged (never widened or turned into an id list).
+   */
+  storeChoice?: string | null;
+};
 
 /** `store=a,b,c` → the stores (max 100); "all" or nothing → none (no store filter). */
 export function parseStoreParam(v: string | undefined): string[] | undefined {
@@ -327,6 +333,7 @@ export function parseOrderListContext(
     tab,
     q: one(sp.q)?.slice(0, 100),
     storeIds: parseStoreParam(one(sp.store)),
+    storeChoice: one(sp.store)?.slice(0, 2000) ?? null,
     country: one(sp.country)?.slice(0, 2),
     payment: payment === "COD" || payment === "PREPAID" ? payment : undefined,
   };
@@ -337,7 +344,9 @@ export function orderListQuery(c: OrderListContext | null) {
   if (!c) return "";
   const p = new URLSearchParams({ tab: c.tab });
   if (c.q) p.set("q", c.q);
-  if (c.storeIds?.length) p.set("store", c.storeIds.join(","));
+  if (c.storeChoice !== undefined) {
+    if (c.storeChoice) p.set("store", c.storeChoice);
+  } else if (c.storeIds?.length) p.set("store", c.storeIds.join(","));
   else if (c.storeId) p.set("store", c.storeId);
   if (c.country) p.set("country", c.country);
   if (c.payment) p.set("payment", c.payment);
