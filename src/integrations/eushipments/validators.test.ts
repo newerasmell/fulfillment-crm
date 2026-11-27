@@ -314,6 +314,14 @@ describe("product mapping", () => {
       ok: false,
       missing: ["height", "weight"],
     });
+    // Weight is numeric(15.2) at the vendor: whole hundredths of a kg; the 10 g minimum stays 0.01.
+    const kg = (g: number) => {
+      const r = buildCreateProduct(332, { ...base, weightGrams: g });
+      return r.ok ? r.body.product.weight : null;
+    };
+    expect(kg(235)).toBe(0.24);
+    expect(kg(1255)).toBe(1.26);
+    expect(kg(10)).toBe(0.01);
   });
   it("applies the SKU prefix rule once", () => {
     expect(vendorRefNumber("ABC", { prefix: "SK-" })).toBe("SK-ABC");
