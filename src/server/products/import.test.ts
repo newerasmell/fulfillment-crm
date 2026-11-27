@@ -50,6 +50,59 @@ describe("product import: pure checks", () => {
     expect(fhb.errors).toEqual(["ean_invalid"]);
   });
 
+  it("euShipments' own import file: reference number is the SKU, cm / kg become mm / g (owner 2026-11-26)", () => {
+    const { rows, fileErrors } = parseImportTable("EUSHIPMENTS", [
+      [
+        "name",
+        "barcode",
+        "description",
+        "length (cm)",
+        "width (cm)",
+        "height (cm)",
+        "weight (kg)",
+        "reference number",
+      ],
+      ["Synthetic Cap", "SYN-BC-1", "", "20", "20", "8", "0.2", "SYN-REF-1"],
+      ["Synthetic Bag", "SYN-BC-2", "x", "35,5", "12.4", "40", "1,25", "SYN-REF-2"],
+      ["Synthetic Bad", "SYN-BC-3", "", "20", "abc", "8", "0.005", "SYN-REF-3"],
+    ]);
+    expect(fileErrors).toEqual([]);
+    expect(rows[0]).toMatchObject({
+      errors: [],
+      values: {
+        sku: "SYN-REF-1",
+        name: "Synthetic Cap",
+        ean: "SYN-BC-1",
+        lengthMm: 200,
+        widthMm: 200,
+        heightMm: 80,
+        weightGrams: 200,
+      },
+    });
+    expect(rows[1]).toMatchObject({
+      errors: [],
+      values: { lengthMm: 355, widthMm: 124, heightMm: 400, weightGrams: 1250 },
+    });
+    // Bulgarian headers with units, bracketed units, bounds and empty / negative cells.
+    const more = parseImportTable("EUSHIPMENTS", [
+      ["reference number", "name", "barcode", "Дължина (см)", "Ширина [см]", "Височина, см", "Тегло (кг)"],
+      ["SYN-REF-4", "Bounds ok", "SYN-BC-4", "999", "0.1", "1", "999"],
+      ["SYN-REF-5", "Bounds out", "SYN-BC-5", "999.1", "-1", "", "999.1"],
+      ["SYN-REF-6", "Comma kg", "SYN-BC-6", "10", "10", "10", "1,000"],
+    ]);
+    expect(more.fileErrors).toEqual([]);
+    expect(more.rows[0]).toMatchObject({
+      errors: [],
+      values: { lengthMm: 9990, widthMm: 1, weightGrams: 999_000 },
+    });
+    expect(more.rows[1]!.errors).toEqual(
+      expect.arrayContaining(["length_invalid", "width_invalid", "height_missing", "weight_invalid"]),
+    );
+    expect(more.rows[2]).toMatchObject({ errors: [], values: { weightGrams: 1000 } });
+    // Not a number, and below euShipments' 10 g minimum: refused, never guessed.
+    expect(rows[2]!.errors).toEqual(expect.arrayContaining(["width_invalid", "weight_invalid"]));
+  });
+
   it("FHB needs only SKU and name; a missing required column is a file error", () => {
     expect(
       parseImportTable("FHB_V3", [
@@ -74,6 +127,30 @@ describe("product import: plan and apply", () => {
       ["SKU", "Име", "Баркод (EAN)", "Тегло (г)", "Дължина (мм)", "Ширина (мм)", "Височина (мм)"],
       ...rows,
     ]).rows;
+
+  it("euShipments' own file: its prefixed reference number finds the existing master (never a second one)", async () => {
+    const stamp = Date.now();
+    await systemDb().fulfillmentConnection.update({
+      where: { id: g.connection.id },
+      data: { skuPrefixRule: { prefix: "SYNP-" } },
+    });
+    try {
+      await systemDb().product.create({
+        data: { accountId: g.accountId, sku: `IMP-PFX-${stamp}`, name: "Old" },
+      });
+      const parsed = parseImportTable("EUSHIPMENTS", [
+        ["name", "barcode", "length (cm)", "width (cm)", "height (cm)", "weight (kg)", "reference number"],
+        ["Synthetic", "2000000000039", "10", "10", "10", "0.3", `SYNP-IMP-PFX-${stamp}`],
+      ]).rows;
+      const plan = await planImport(g.owner, g.connection.id, parsed);
+      expect(plan.rows.map((r) => [r.action, r.values.sku])).toEqual([["update", `IMP-PFX-${stamp}`]]);
+    } finally {
+      await systemDb().fulfillmentConnection.update({
+        where: { id: g.connection.id },
+        data: { skuPrefixRule: {} },
+      });
+    }
+  });
 
   it("a new product is created in the CRM and queued at the warehouse; an existing one is completed; checked again on the server", async () => {
     const stamp = Date.now();

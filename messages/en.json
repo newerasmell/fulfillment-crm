@@ -3994,7 +3994,7 @@
     },
     "import": {
       "title": "Excel import",
-      "intro": "Create many products at once: download this warehouse's template, fill one row per product and upload the file (.xlsx or .csv). Every row is checked first; nothing is created before “Create”. Each row becomes a CRM product (or completes the existing one) and is sent to be created in the warehouse.",
+      "intro": "Create many products at once: download this warehouse's template, fill one row per product and upload the file (.xlsx or .csv). Every row is checked first; nothing is created before “Create”. Each row becomes a CRM product (or completes the existing one) and is sent to be created in the warehouse. euShipments' own import file is accepted too (name, barcode, length/width/height (cm), weight (kg), reference number = SKU): centimetres and kilograms are converted to mm and g.",
       "column": "Column",
       "rule": "What the warehouse requires",
       "template": "Download the template",

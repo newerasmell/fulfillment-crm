@@ -187,7 +187,8 @@ export interface ProductMaster {
 }
 
 const mmToCm = (mm: number | null) => (mm == null ? null : Math.round(mm) / 10);
-const gToKg = (g: number | null) => (g == null ? null : Math.round(g) / 1000);
+// euShipments takes weight as numeric(15.2) (kg): whole hundredths, never 0.235 (10 g stays 0.01, the minimum).
+const gToKg = (g: number | null) => (g == null ? null : Math.round(g / 10) / 100);
 
 /**
  * create-product body. The four size/weight fields are required flat fields at the vendor (cm / kg);

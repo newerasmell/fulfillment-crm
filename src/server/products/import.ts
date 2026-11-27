@@ -18,6 +18,7 @@ import { queueProductsToWarehouse, TO_WAREHOUSE_MAX, TO_WAREHOUSE_TYPES } from "
  *
  *   FHB (POST /product):           SKU*, Име*, EAN, Снимка (URL), HS код, Държава на произход
  *   euShipments (create-product):  SKU*, Име*, Баркод*, Тегло (г)*, Дължина (мм)*, Ширина (мм)*, Височина (мм)*, HS код
+ *   — or euShipments' own import file (name, barcode, length/width/height (cm), weight (kg), reference number).
  *
  * Sizes are in the CRM's units (grams, millimetres); the euShipments writer converts them to kg / cm.
  */
@@ -93,7 +94,30 @@ const ALIASES: Record<string, Field> = {
   height: "height",
   heightmm: "height",
 };
-const norm = (h: string) => h.toLowerCase().replace(/[\s()._\-*:/]+/g, "");
+/**
+ * euShipments' own product-import file (owner 2026-11-26: "it imports in their cabinet, ours refuses it"): name,
+ * barcode, description, length (cm), width (cm), height (cm), weight (kg), reference number. The reference number is
+ * the SKU; sizes and weight are converted to the CRM's millimetres / grams (the factor), decimals allowed there.
+ */
+const UNIT_ALIASES: Record<string, { field: Field; factor: number }> = {
+  lengthcm: { field: "length", factor: 10 },
+  widthcm: { field: "width", factor: 10 },
+  heightcm: { field: "height", factor: 10 },
+  weightkg: { field: "weight", factor: 1000 },
+  дължинасм: { field: "length", factor: 10 },
+  ширинасм: { field: "width", factor: 10 },
+  височинасм: { field: "height", factor: 10 },
+  теглокг: { field: "weight", factor: 1000 },
+};
+const SKU_ALIASES = ["referencenumber", "refnumber", "reference", "referenceno", "референтенномер"];
+const norm = (h: string) => h.toLowerCase().replace(/[\s()._\-*:/,[\]]+/g, "");
+/** A header → its field and the factor to the CRM's unit (1 = already grams / millimetres). */
+function headerOf(h: string): { field: Field; factor: number } | null {
+  const k = norm(h);
+  if (Object.hasOwn(UNIT_ALIASES, k)) return UNIT_ALIASES[k]!;
+  if (SKU_ALIASES.includes(k)) return { field: "sku", factor: 1 };
+  return Object.hasOwn(ALIASES, k) ? { field: ALIASES[k]!, factor: 1 } : null;
+}
 
 /** The template's first row (and nothing else: the rules are on the screen). */
 export function importTemplate(type: ImportType): string[][] {
@@ -126,8 +150,10 @@ const int = (v: string) => (/^\d+$/.test(v) ? Number.parseInt(v, 10) : Number.Na
 export function parseImportTable(type: ImportType, table: string[][]) {
   const rows = table.map((r, i) => ({ r, i })).filter(({ r }) => r.some((c) => c.trim() !== ""));
   if (!rows.length) return { rows: [] as ParsedImportRow[], fileErrors: ["empty"] };
-  const head = rows[0]!.r.map((h) => ALIASES[norm(h)] ?? null);
+  const heads = rows[0]!.r.map(headerOf);
+  const head = heads.map((h) => h?.field ?? null);
   const col = (f: Field) => head.indexOf(f);
+  const factor = (f: Field) => heads[col(f)]?.factor ?? 1;
   const missingCols = IMPORT_COLUMNS[type].filter((c) => c.required && col(c.field) < 0).map((c) => c.header);
   if (missingCols.length)
     return { rows: [] as ParsedImportRow[], fileErrors: ["missing_columns"], missingCols };
@@ -144,7 +170,15 @@ export function parseImportTable(type: ImportType, table: string[][]) {
     const photo = get("photo") || null;
     const hsCode = get("hsCode") || null;
     const country = get("country").toUpperCase() || null;
-    const num = (f: Field): number | null => (get(f) ? int(get(f).replace(/\s/g, "")) : null);
+    const num = (f: Field): number | null => {
+      const v = get(f).replace(/\s/g, "");
+      if (!v) return null;
+      if (factor(f) === 1) return int(v);
+      // In kg / cm (euShipments' file): decimals with a dot or a comma, converted to whole grams / millimetres.
+      return /^\d+([.,]\d+)?$/.test(v)
+        ? Math.round(Number.parseFloat(v.replace(",", ".")) * factor(f))
+        : Number.NaN;
+    };
     const weightGrams = num("weight");
     const lengthMm = num("length");
     const widthMm = num("width");
@@ -214,9 +248,25 @@ async function target(actor: ScopedActor, connectionId: string) {
 }
 
 /** What each row would do: a new product, an existing one (its empty fields filled), one the warehouse has already. */
-export async function planImport(actor: ScopedActor, connectionId: string, parsed: ParsedImportRow[]) {
+export async function planImport(actor: ScopedActor, connectionId: string, rawRows: ParsedImportRow[]) {
   assertCan(actor.role, "vendorProducts.write");
   const conn = await target(actor, connectionId);
+  // euShipments' own file carries its refNumber = the connection's prefix + our SKU (vendorRefNumber): the master is
+  // the SKU without it, so an existing product is found (never a second master for the same product).
+  const prefix =
+    conn.type === "EUSHIPMENTS" &&
+    conn.skuPrefixRule &&
+    typeof conn.skuPrefixRule === "object" &&
+    typeof (conn.skuPrefixRule as { prefix?: unknown }).prefix === "string"
+      ? (conn.skuPrefixRule as { prefix: string }).prefix
+      : "";
+  const parsed = prefix
+    ? rawRows.map((r) =>
+        r.values.sku.toUpperCase().startsWith(prefix.toUpperCase()) && r.values.sku.length > prefix.length
+          ? { ...r, values: { ...r.values, sku: r.values.sku.slice(prefix.length) } }
+          : r,
+      )
+    : rawRows;
   const db = accountDb(actor.accountId);
   const skus = parsed.filter((p) => p.values.sku).map((p) => p.values.sku);
   const masters = skus.length
